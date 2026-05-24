@@ -1389,6 +1389,9 @@ struct SessionsArgs {
     /// Emit JSON `{ "sessions": [...] }` to stdout instead of the pretty table.
     #[arg(long)]
     json: bool,
+    /// Seconds of inactivity before a session transitions from `working` to `idle`.
+    #[arg(long = "idle-secs", default_value_t = 60)]
+    idle_secs: u64,
 }
 
 impl From<SessionsArgs> for sessions::SessionsArgs {
@@ -1396,6 +1399,7 @@ impl From<SessionsArgs> for sessions::SessionsArgs {
         Self {
             workspace: a.workspace,
             json: a.json,
+            idle_secs: a.idle_secs,
         }
     }
 }

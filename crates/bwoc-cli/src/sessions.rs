@@ -20,6 +20,23 @@
 //! can be inferred from process names alone, so those entries appear with
 //! `agentId: null`.
 //!
+//! ## Activity (v2)
+//!
+//! For alive sessions the module derives a `last_activity` (epoch-seconds)
+//! and refines the state:
+//!
+//! - tmux pane present → query `#{window_activity}` via `tmux display-message`
+//! - no tmux, marker source → use marker file mtime as a proxy
+//! - no tmux, scan source  → `last_activity = None`
+//!
+//! State derivation (checked in order):
+//! 1. dead pid                                  → `stale`
+//! 2. alive + `last_activity` ≤ `idle_secs` ago → `working`
+//! 3. alive + `last_activity` >  `idle_secs` ago → `idle`
+//! 4. alive + no `last_activity`               → `running`  (unknown)
+//!
+//! Any tmux/mtime failure is best-effort: `last_activity = None` → `running`.
+//!
 //! ## Backend → process-name mapping
 //!
 //! Kept in one place: `BACKEND_PROCESSES`.  Adding a new backend is one
@@ -41,10 +58,11 @@
 //!       "backend": "claude",
 //!       "agentId": "agent-oracle",
 //!       "pid": 12345,
-//!       "state": "running",
+//!       "state": "working",
 //!       "source": "marker",
 //!       "startedAt": "2026-05-24T10:00:00Z",
-//!       "tmux": null
+//!       "tmux": "bwoc:0.0",
+//!       "lastActivity": 1716545000
 //!     }
 //!   ]
 //! }
@@ -75,13 +93,21 @@ static BACKEND_PROCESSES: &[(&str, &str)] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionState {
+    /// Alive + last_activity within idle_secs threshold.
+    Working,
+    /// Alive + last_activity older than idle_secs threshold.
+    Idle,
+    /// Alive + no activity signal available.
     Running,
+    /// Pid dead.
     Stale,
 }
 
 impl SessionState {
     fn as_str(&self) -> &'static str {
         match self {
+            SessionState::Working => "working",
+            SessionState::Idle => "idle",
             SessionState::Running => "running",
             SessionState::Stale => "stale",
         }
@@ -112,6 +138,8 @@ pub struct Session {
     pub source: SessionSource,
     pub started_at: Option<String>,
     pub tmux: Option<String>,
+    /// Epoch-seconds of last observed activity.  None = unknown.
+    pub last_activity: Option<u64>,
 }
 
 // ── Marker file schema ────────────────────────────────────────────────────────
@@ -178,6 +206,23 @@ pub trait ScanRunner {
     /// Run `pgrep` (or equivalent) for `process_name`. Returns pid lines.
     /// Failures (not found, no matches) return an empty Vec — never Err.
     fn scan_pids(&self, process_name: &str) -> ScanOutcome;
+
+    /// Query the epoch-seconds of last activity for a tmux pane target
+    /// (e.g. `"bwoc:0.0"`).  Returns `None` on any failure — best-effort only.
+    ///
+    /// Default implementation shells out to
+    /// `tmux display-message -p -t <pane> '#{window_activity}'`.
+    fn tmux_pane_activity(&self, pane: &str) -> Option<u64> {
+        let out = std::process::Command::new("tmux")
+            .args(["display-message", "-p", "-t", pane, "#{window_activity}"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        s.trim().parse::<u64>().ok()
+    }
 }
 
 /// Production scan runner — shells out to `pgrep`.
@@ -203,6 +248,7 @@ impl ScanRunner for ProcessScanRunner {
         };
         ScanOutcome { lines }
     }
+    // tmux_pane_activity uses the default implementation (shells out to tmux).
 }
 
 // ── Pid liveness ─────────────────────────────────────────────────────────────
@@ -219,6 +265,66 @@ fn pid_alive(pid: u32) -> bool {
 #[cfg(not(unix))]
 fn pid_alive(_pid: u32) -> bool {
     false
+}
+
+// ── Wall-clock helper (std-only, no chrono) ───────────────────────────────────
+
+/// Current time as epoch-seconds (u64).  Uses `std::time::SystemTime`.
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// mtime of a file as epoch-seconds.  Returns `None` on any error.
+fn file_mtime_secs(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    meta.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+// ── Activity derivation ───────────────────────────────────────────────────────
+
+/// Derive `last_activity` (epoch-seconds) for an alive session.
+///
+/// Priority:
+/// 1. tmux pane  → `ScanRunner::tmux_pane_activity`
+/// 2. marker file mtime (marker_path is Some)
+/// 3. None
+fn derive_last_activity(
+    tmux: Option<&str>,
+    marker_path: Option<&Path>,
+    runner: &dyn ScanRunner,
+) -> Option<u64> {
+    if let Some(pane) = tmux {
+        if let Some(ts) = runner.tmux_pane_activity(pane) {
+            return Some(ts);
+        }
+    }
+    if let Some(path) = marker_path {
+        return file_mtime_secs(path);
+    }
+    None
+}
+
+/// Derive `SessionState` for an alive session given `last_activity` and threshold.
+fn alive_state(last_activity: Option<u64>, idle_secs: u64) -> SessionState {
+    match last_activity {
+        None => SessionState::Running,
+        Some(ts) => {
+            let now = now_epoch_secs();
+            let age = now.saturating_sub(ts);
+            if age <= idle_secs {
+                SessionState::Working
+            } else {
+                SessionState::Idle
+            }
+        }
+    }
 }
 
 // ── Workspace resolution ──────────────────────────────────────────────────────
@@ -292,11 +398,12 @@ fn read_markers(workspace: &Path) -> Vec<(SessionMarker, PathBuf)> {
 /// Collect sessions from markers + scan fallback.
 ///
 /// 1. Read all markers; validate pid liveness.
-///    - Alive → `running/marker`; Dead → `stale/marker` + best-effort remove.
+///    - Alive → derive activity → state in {working, idle, running}; source `marker`.
+///    - Dead  → `stale/marker`; best-effort remove.
 /// 2. Collect pids seen in live markers (to skip them in scan).
 /// 3. For each backend process name, scan via `runner`; skip pids already
 ///    accounted for by a marker.
-pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner) -> Vec<Session> {
+pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner, idle_secs: u64) -> Vec<Session> {
     let mut sessions: Vec<Session> = Vec::new();
     let mut live_marker_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
@@ -304,14 +411,17 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner) -> Vec<Sessio
     for (marker, path) in read_markers(workspace) {
         if pid_alive(marker.pid) {
             live_marker_pids.insert(marker.pid);
+            let last_activity = derive_last_activity(marker.tmux.as_deref(), Some(&path), runner);
+            let state = alive_state(last_activity, idle_secs);
             sessions.push(Session {
                 backend: marker.backend,
                 agent_id: Some(marker.agent_id),
                 pid: marker.pid,
-                state: SessionState::Running,
+                state,
                 source: SessionSource::Marker,
                 started_at: Some(marker.started_at),
                 tmux: marker.tmux,
+                last_activity,
             });
         } else {
             // Stale — best-effort cleanup.
@@ -324,6 +434,7 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner) -> Vec<Sessio
                 source: SessionSource::Marker,
                 started_at: Some(marker.started_at),
                 tmux: marker.tmux,
+                last_activity: None,
             });
         }
     }
@@ -352,6 +463,7 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner) -> Vec<Sessio
             if !pid_alive(pid) {
                 continue;
             }
+            // Scan sessions have no tmux and no marker path — last_activity is None.
             sessions.push(Session {
                 backend: backend_name.to_string(),
                 agent_id: None,
@@ -360,6 +472,7 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner) -> Vec<Sessio
                 source: SessionSource::Scan,
                 started_at: None,
                 tmux: None,
+                last_activity: None,
             });
         }
     }
@@ -372,6 +485,9 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner) -> Vec<Sessio
 pub struct SessionsArgs {
     pub workspace: Option<PathBuf>,
     pub json: bool,
+    /// Seconds of inactivity before a session transitions from `working` to `idle`.
+    /// Default: 60.
+    pub idle_secs: u64,
 }
 
 /// Entry point called from `main.rs`.
@@ -389,7 +505,7 @@ pub fn run_with(args: SessionsArgs, runner: &dyn ScanRunner) -> i32 {
         return 2;
     };
 
-    let sessions = collect_sessions(&workspace, runner);
+    let sessions = collect_sessions(&workspace, runner, args.idle_secs);
 
     if args.json {
         emit_json(&sessions)
@@ -420,6 +536,8 @@ fn emit_table(sessions: &[Session]) -> i32 {
     for s in sessions {
         let agent = s.agent_id.as_deref().unwrap_or("—");
         let state_mark = match s.state {
+            SessionState::Working => "●",
+            SessionState::Idle => "◑",
             SessionState::Running => "●",
             SessionState::Stale => "○",
         };
@@ -449,6 +567,7 @@ fn emit_json(sessions: &[Session]) -> i32 {
                 "source": s.source.as_str(),
                 "startedAt": s.started_at,
                 "tmux": s.tmux,
+                "lastActivity": s.last_activity,
             })
         })
         .collect();
@@ -495,6 +614,8 @@ mod tests {
     struct MockScanRunner {
         /// Map process_name → list of pid strings to return.
         responses: std::collections::HashMap<String, Vec<String>>,
+        /// Map tmux pane target → epoch-seconds activity timestamp.
+        tmux_activity: std::collections::HashMap<String, u64>,
         /// Capture which names were scanned.
         scanned: RefCell<Vec<String>>,
     }
@@ -510,12 +631,19 @@ mod tests {
             }
             Self {
                 responses: map,
+                tmux_activity: std::collections::HashMap::new(),
                 scanned: RefCell::new(Vec::new()),
             }
         }
 
         fn empty() -> Self {
             Self::new(&[])
+        }
+
+        /// Register a tmux pane → activity epoch mapping.
+        fn with_tmux_activity(mut self, pane: &str, epoch: u64) -> Self {
+            self.tmux_activity.insert(pane.to_string(), epoch);
+            self
         }
     }
 
@@ -528,6 +656,10 @@ mod tests {
                 .cloned()
                 .unwrap_or_default();
             ScanOutcome { lines }
+        }
+
+        fn tmux_pane_activity(&self, pane: &str) -> Option<u64> {
+            self.tmux_activity.get(pane).copied()
         }
     }
 
@@ -549,9 +681,9 @@ mod tests {
         std::process::id()
     }
 
-    // ── Tests ─────────────────────────────────────────────────────────────────
+    // ── v1 tests (unchanged behaviour) ───────────────────────────────────────
 
-    /// (a) Live marker: current process pid → listed as `running/marker`.
+    /// (a) Live marker: current process pid → listed as alive/marker.
     // pid-liveness (`libc::kill`) is unix-only — the "running" state can't be
     // exercised on non-unix (Windows stubs it false). Session-monitor is unix-first.
     #[cfg(unix)]
@@ -570,11 +702,15 @@ mod tests {
         };
         write_marker(root, &marker);
 
+        // idle_secs=0 → any mtime ≥ now means working; but since no tmux and
+        // the marker was just written, mtime ~= now → could be working.
+        // Use idle_secs=0 to verify alive (not stale); state may be working or idle.
         let runner = MockScanRunner::empty();
-        let sessions = collect_sessions(root, &runner);
+        let sessions = collect_sessions(root, &runner, 60);
 
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].state, SessionState::Running);
+        // Must be alive — not Stale.
+        assert_ne!(sessions[0].state, SessionState::Stale);
         assert_eq!(sessions[0].source, SessionSource::Marker);
         assert_eq!(sessions[0].agent_id.as_deref(), Some("agent-test"));
         assert_eq!(sessions[0].backend, "claude");
@@ -600,7 +736,7 @@ mod tests {
         write_marker(root, &marker);
 
         let runner = MockScanRunner::empty();
-        let sessions = collect_sessions(root, &runner);
+        let sessions = collect_sessions(root, &runner, 60);
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].state, SessionState::Stale);
@@ -622,7 +758,7 @@ mod tests {
         // Use current process pid so kill(pid, 0) returns alive.
         let pid = current_pid();
         let runner = MockScanRunner::new(&[("claude", &[pid])]);
-        let sessions = collect_sessions(root, &runner);
+        let sessions = collect_sessions(root, &runner, 60);
 
         // Should find exactly one scan entry with no agentId.
         let scan_sessions: Vec<_> = sessions
@@ -630,6 +766,7 @@ mod tests {
             .filter(|s| s.source == SessionSource::Scan)
             .collect();
         assert_eq!(scan_sessions.len(), 1);
+        // Scan entries have no tmux/marker → Running (activity unknown).
         assert_eq!(scan_sessions[0].state, SessionState::Running);
         assert_eq!(scan_sessions[0].backend, "claude");
         assert!(scan_sessions[0].agent_id.is_none());
@@ -656,14 +793,14 @@ mod tests {
 
         // Scan also returns the same pid for "claude".
         let runner = MockScanRunner::new(&[("claude", &[pid])]);
-        let sessions = collect_sessions(root, &runner);
+        let sessions = collect_sessions(root, &runner, 60);
 
         // Should be exactly one entry (from marker), not two.
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].source, SessionSource::Marker);
     }
 
-    /// (d) JSON output shape: all required keys present.
+    /// (d) JSON output shape: all required keys present, including new v2 keys.
     // Builds a live (running) marker → unix-only (see `live_marker_is_running`).
     #[cfg(unix)]
     #[test]
@@ -682,7 +819,7 @@ mod tests {
         write_marker(root, &marker);
 
         let runner = MockScanRunner::empty();
-        let sessions = collect_sessions(root, &runner);
+        let sessions = collect_sessions(root, &runner, 60);
 
         let arr: Vec<serde_json::Value> = sessions
             .iter()
@@ -695,6 +832,7 @@ mod tests {
                     "source": s.source.as_str(),
                     "startedAt": s.started_at,
                     "tmux": s.tmux,
+                    "lastActivity": s.last_activity,
                 })
             })
             .collect();
@@ -703,7 +841,7 @@ mod tests {
 
         // Top-level shape.
         assert!(text.contains(r#""sessions""#));
-        // Per-session required keys.
+        // Per-session required keys (v1).
         assert!(text.contains(r#""backend""#));
         assert!(text.contains(r#""agentId""#));
         assert!(text.contains(r#""pid""#));
@@ -711,9 +849,10 @@ mod tests {
         assert!(text.contains(r#""source""#));
         assert!(text.contains(r#""startedAt""#));
         assert!(text.contains(r#""tmux""#));
+        // v2 additive keys.
+        assert!(text.contains(r#""lastActivity""#));
         // Value spot-checks.
         assert!(text.contains("agent-foo"));
-        assert!(text.contains("running"));
         assert!(text.contains("marker"));
         assert!(text.contains("bwoc:0.0"));
     }
@@ -755,5 +894,162 @@ mod tests {
     fn from_json_returns_none_on_garbage() {
         assert!(SessionMarker::from_json("not json at all").is_none());
         assert!(SessionMarker::from_json("{}").is_none()); // missing required fields
+    }
+
+    // ── v2 activity tests ─────────────────────────────────────────────────────
+
+    /// tmux session with activity within idle-secs → `working`.
+    #[cfg(unix)]
+    #[test]
+    fn tmux_activity_within_idle_secs_is_working() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let pid = current_pid();
+
+        let marker = SessionMarker {
+            agent_id: "agent-busy".to_string(),
+            backend: "claude".to_string(),
+            pid,
+            started_at: "2026-05-24T10:00:00Z".to_string(),
+            tmux: Some("bwoc:0.0".to_string()),
+        };
+        write_marker(root, &marker);
+
+        // Report activity 5 seconds ago — well within the 60-second threshold.
+        let recent = now_epoch_secs().saturating_sub(5);
+        let runner = MockScanRunner::empty().with_tmux_activity("bwoc:0.0", recent);
+        let sessions = collect_sessions(root, &runner, 60);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, SessionState::Working);
+        assert_eq!(sessions[0].last_activity, Some(recent));
+    }
+
+    /// tmux session with activity older than idle-secs → `idle`.
+    #[cfg(unix)]
+    #[test]
+    fn tmux_activity_older_than_idle_secs_is_idle() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let pid = current_pid();
+
+        let marker = SessionMarker {
+            agent_id: "agent-quiet".to_string(),
+            backend: "agy".to_string(),
+            pid,
+            started_at: "2026-05-24T10:00:00Z".to_string(),
+            tmux: Some("bwoc:1.0".to_string()),
+        };
+        write_marker(root, &marker);
+
+        // Report activity 120 seconds ago — beyond the 60-second threshold.
+        let old = now_epoch_secs().saturating_sub(120);
+        let runner = MockScanRunner::empty().with_tmux_activity("bwoc:1.0", old);
+        let sessions = collect_sessions(root, &runner, 60);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, SessionState::Idle);
+        assert_eq!(sessions[0].last_activity, Some(old));
+    }
+
+    /// Alive session with no tmux and no marker path fallback → `running`.
+    /// (Scan-sourced sessions: no tmux, no marker file.)
+    #[cfg(unix)]
+    #[test]
+    fn alive_scan_session_no_activity_signal_is_running() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let pid = current_pid();
+
+        // No marker written — session appears only via scan.
+        let runner = MockScanRunner::new(&[("claude", &[pid])]);
+        let sessions = collect_sessions(root, &runner, 60);
+
+        let scan_sessions: Vec<_> = sessions
+            .iter()
+            .filter(|s| s.source == SessionSource::Scan)
+            .collect();
+        assert_eq!(scan_sessions.len(), 1);
+        assert_eq!(scan_sessions[0].state, SessionState::Running);
+        assert!(scan_sessions[0].last_activity.is_none());
+    }
+
+    /// Dead pid → `stale`, regardless of idle_secs. (v1 regression guard.)
+    #[test]
+    fn dead_pid_is_stale_v2() {
+        let dir = make_workspace();
+        let root = dir.path();
+
+        let marker = SessionMarker {
+            agent_id: "agent-dead".to_string(),
+            backend: "kimi".to_string(),
+            pid: 999_998,
+            started_at: "2026-05-24T08:00:00Z".to_string(),
+            tmux: None,
+        };
+        write_marker(root, &marker);
+
+        let runner = MockScanRunner::empty();
+        let sessions = collect_sessions(root, &runner, 60);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, SessionState::Stale);
+        assert!(sessions[0].last_activity.is_none());
+    }
+
+    /// --json includes `lastActivity` and derived state; v1 keys intact.
+    #[cfg(unix)]
+    #[test]
+    fn json_includes_last_activity_and_derived_state() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let pid = current_pid();
+
+        let marker = SessionMarker {
+            agent_id: "agent-json".to_string(),
+            backend: "codex".to_string(),
+            pid,
+            started_at: "2026-05-24T10:00:00Z".to_string(),
+            tmux: Some("main:0.0".to_string()),
+        };
+        write_marker(root, &marker);
+
+        // Recent activity → working.
+        let recent = now_epoch_secs().saturating_sub(10);
+        let runner = MockScanRunner::empty().with_tmux_activity("main:0.0", recent);
+        let sessions = collect_sessions(root, &runner, 60);
+
+        // Simulate emit_json output.
+        let arr: Vec<serde_json::Value> = sessions
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "backend": s.backend,
+                    "agentId": s.agent_id,
+                    "pid": s.pid,
+                    "state": s.state.as_str(),
+                    "source": s.source.as_str(),
+                    "startedAt": s.started_at,
+                    "tmux": s.tmux,
+                    "lastActivity": s.last_activity,
+                })
+            })
+            .collect();
+        let text = serde_json::to_string_pretty(&serde_json::json!({ "sessions": arr })).unwrap();
+
+        // v1 keys still present.
+        assert!(text.contains(r#""backend""#));
+        assert!(text.contains(r#""agentId""#));
+        assert!(text.contains(r#""pid""#));
+        assert!(text.contains(r#""source""#));
+        assert!(text.contains(r#""startedAt""#));
+        assert!(text.contains(r#""tmux""#));
+        // v2 additive.
+        assert!(text.contains(r#""lastActivity""#));
+        assert!(text.contains("working"));
+        // lastActivity value is a number (not null).
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let la = &parsed["sessions"][0]["lastActivity"];
+        assert!(la.is_number(), "lastActivity should be a number, got {la}");
     }
 }
