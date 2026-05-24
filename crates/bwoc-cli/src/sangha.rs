@@ -788,7 +788,10 @@ mod tests {
     #[test]
     fn task_hook_missing_is_noop_blocking_is_err() {
         use std::os::unix::fs::PermissionsExt;
-        let ws = std::env::temp_dir().join(format!("bwoc-hook-{}", std::process::id()));
+        // Unique, auto-cleaned dir per test — never a PID-keyed shared /tmp path
+        // (a leftover dir from a recycled PID could carry a stale hook and flake).
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
         let hooks = ws.join(".bwoc/hooks");
         std::fs::create_dir_all(&hooks).unwrap();
 
@@ -812,8 +815,7 @@ mod tests {
         let err = run_task_hook(&ws, "task-created", &[]).unwrap_err();
         assert!(err.contains("blocked by task-created hook"), "got: {err}");
         assert!(err.contains("nope"), "stderr surfaced: {err}");
-
-        let _ = std::fs::remove_dir_all(&ws);
+        // `tmp` drops here → dir auto-removed.
     }
 
     /// task-claimed hook fires with the right env vars and blocks on non-zero exit.
@@ -822,7 +824,8 @@ mod tests {
     #[test]
     fn task_claimed_hook_receives_env_and_blocks() {
         use std::os::unix::fs::PermissionsExt;
-        let ws = std::env::temp_dir().join(format!("bwoc-claimed-hook-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
         let hooks = ws.join(".bwoc/hooks");
         std::fs::create_dir_all(&hooks).unwrap();
 
@@ -875,7 +878,6 @@ mod tests {
             run_task_hook(&ws, "task-claimed", &[("BWOC_TASK_EVENT", "task-claimed")]).unwrap_err();
         assert!(err.contains("blocked by task-claimed hook"), "got: {err}");
         assert!(err.contains("no new claims"), "stderr surfaced: {err}");
-
-        let _ = std::fs::remove_dir_all(&ws);
+        // `tmp` drops here → dir auto-removed.
     }
 }
