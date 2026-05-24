@@ -247,6 +247,29 @@ fn validate_route(raw: RawRoute) -> Result<Route, RouteValidationError> {
     })
 }
 
+// ── Shared-allowlist (cross-workspace learn, #20) ──────────────────────────────
+
+/// A peer's declared allowlist of doc-kinds readable across workspaces, from
+/// `<peer>/.bwoc/interconnect/shared.toml`. Absent or empty → nothing shared
+/// (opt-in; the safe default). The peer controls its own exposure.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct SharedAllowlist {
+    /// Doc-kind names the peer exposes (e.g. `["research", "retrospectives"]`).
+    #[serde(default)]
+    pub share: Vec<String>,
+}
+
+impl SharedAllowlist {
+    /// Load a peer's shared-allowlist. Absent or unparseable → empty (never errors).
+    pub fn load(peer_ws: &std::path::Path) -> Self {
+        let path = peer_ws.join(".bwoc/interconnect/shared.toml");
+        match std::fs::read_to_string(&path) {
+            Ok(c) => toml::from_str::<Self>(&c).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

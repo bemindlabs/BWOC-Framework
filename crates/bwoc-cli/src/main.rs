@@ -489,7 +489,7 @@ enum DocKindSubcommand {
 
 /// `bwoc peer` subcommands — read-only cross-workspace view (#20).
 ///
-/// Learn (ingestion) and give-feedback (write) are deferred to a later phase.
+/// Give-feedback (write) is deferred to a later phase.
 #[derive(clap::Subcommand, Debug)]
 enum PeerCommand {
     /// List peers declared in this workspace's routes.toml.
@@ -505,6 +505,21 @@ enum PeerCommand {
     View {
         /// Peer key as declared in routes.toml (agent id or namespace prefix).
         key: String,
+        /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
+    /// List or view shared documents from a peer's allowlist
+    /// (`<peer>/.bwoc/interconnect/shared.toml`).
+    ///
+    /// Without `<doc>`: list all shared documents.
+    /// With `<doc>`: print the contents of one named document (allowlist-gated).
+    Learn {
+        /// Peer key as declared in routes.toml.
+        key: String,
+        /// Optional document name (filename with or without `.md`).
+        /// Omit to list all shared documents.
+        doc: Option<String>,
         /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
@@ -1616,6 +1631,14 @@ fn main() -> ExitCode {
                 }),
                 PeerCommand::View { key, workspace } => peer::run(peer::PeerArgs {
                     action: peer::PeerAction::View { key },
+                    workspace,
+                }),
+                PeerCommand::Learn {
+                    key,
+                    doc,
+                    workspace,
+                } => peer::run(peer::PeerArgs {
+                    action: peer::PeerAction::Learn { key, doc },
                     workspace,
                 }),
             };

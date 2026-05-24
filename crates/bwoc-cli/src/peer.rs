@@ -1,20 +1,35 @@
 //! `bwoc peer` — read-only cross-workspace view (Phase 3, #20).
 //!
-//! Implements the read-only "view" slice of the cross-workspace view epic:
+//! Implements the read-only "view" + "learn" slices of the cross-workspace view
+//! epic:
 //!
-//! - `bwoc peer list`            — list peers declared in routes.toml
-//! - `bwoc peer <key>`           — show a peer's agents + open team tasks
-//! - `bwoc peer <key> status`    — alias for the above
+//! - `bwoc peer list`               — list peers declared in routes.toml
+//! - `bwoc peer <key>`              — show a peer's agents + open team tasks
+//! - `bwoc peer <key> status`       — alias for the above
+//! - `bwoc peer learn <key>`        — list shared docs from the peer's allowlist
+//! - `bwoc peer learn <key> <doc>`  — print one shared doc (allowlist-gated)
 //!
-//! Resolution: key → `Routes::resolve` → peer workspace root → peer
-//! `AgentsRegistry` + `.bwoc/teams/<id>.toml` + `.bwoc/teams/<id>/tasks.jsonl`.
+//! Allowlist: a peer declares what it exposes in
+//! `<peer>/.bwoc/interconnect/shared.toml`:
 //!
-//! Read-only. No write to peer workspace (learn + give-feedback deferred).
+//! ```toml
+//! share = ["research", "retrospectives"]   # doc-kind names
+//! ```
+//!
+//! Absent/empty file → nothing shared (safe default).
+//!
+//! Enforcement: every file path that `learn` resolves is checked to be
+//! path-contained inside the allowlisted kind directory (see
+//! `is_path_contained`). Any attempt to read outside that boundary is refused.
+//!
+//! Read-only. No write to peer workspace; auto-ingest into local memory is
+//! deferred to a later phase.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use bwoc_core::doc_kind;
 use bwoc_core::routing::{RouteKind, Routes};
 use bwoc_core::team::{self, Task, TaskState, Team};
 use bwoc_core::workspace::AgentsRegistry;
@@ -26,6 +41,12 @@ pub enum PeerAction {
     List,
     /// `bwoc peer <key>` or `bwoc peer <key> status` — view a peer.
     View { key: String },
+    /// `bwoc peer learn <key> [doc]` — list or view shared docs.
+    Learn {
+        key: String,
+        /// When `Some`, print the named document; when `None`, list all shared docs.
+        doc: Option<String>,
+    },
 }
 
 pub struct PeerArgs {
@@ -55,6 +76,7 @@ pub fn run(args: PeerArgs) -> i32 {
     match args.action {
         PeerAction::List => run_list(&routes),
         PeerAction::View { key } => run_view(&key, &routes, &root),
+        PeerAction::Learn { key, doc } => run_learn(&key, doc.as_deref(), &routes),
     }
 }
 
@@ -210,6 +232,233 @@ fn run_view(key: &str, routes: &Routes, local_root: &Path) -> i32 {
     // the signature for future "learn" extension (write path, deferred #20).
     let _ = local_root;
     0
+}
+
+// ── `bwoc peer learn <key> [doc]` ────────────────────────────────────────────
+
+// The peer's shared-allowlist (`shared.toml`) is parsed in `bwoc-core`
+// (`routing::SharedAllowlist`) — keeps TOML/serde parsing in core, cli dep-lean.
+
+/// Return `true` iff `candidate` is strictly inside (or equal to) `base`.
+///
+/// Uses `Path::canonicalize`-style prefix checking on the *normalised*
+/// component sequence so that `../` escapes are caught without requiring the
+/// path to exist on disk.  Both paths must be absolute.
+fn is_path_contained(base: &Path, candidate: &Path) -> bool {
+    // Normalise by resolving `.` and `..` in the component sequence without
+    // touching the filesystem (canonicalize would require the path to exist).
+    let norm = |p: &Path| -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in p.components() {
+            match c {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => out.push(other),
+            }
+        }
+        out
+    };
+    let base_n = norm(base);
+    let cand_n = norm(candidate);
+    cand_n.starts_with(&base_n)
+}
+
+/// Resolve a peer key to its workspace root, or print an error and return
+/// `None`.  Shared by `run_view` and `run_learn` to avoid duplication.
+fn resolve_peer_ws<'a>(key: &str, routes: &'a Routes) -> Option<&'a Path> {
+    let peer_ws = routes.resolve(key)?;
+    Some(peer_ws)
+}
+
+fn run_learn(key: &str, doc: Option<&str>, routes: &Routes) -> i32 {
+    // 1. Resolve the peer workspace root.
+    let peer_ws = match resolve_peer_ws(key, routes) {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let available: Vec<String> = routes
+                .routes
+                .iter()
+                .map(|r| match &r.kind {
+                    RouteKind::Agent(id) => id.clone(),
+                    RouteKind::Namespace(ns) => ns.clone(),
+                })
+                .collect();
+            if available.is_empty() {
+                eprintln!(
+                    "bwoc peer learn: unknown peer key '{key}'. \
+                     No peers are declared in routes.toml."
+                );
+            } else {
+                eprintln!(
+                    "bwoc peer learn: unknown peer key '{key}'. Available: {}",
+                    available.join(", ")
+                );
+            }
+            return 2;
+        }
+    };
+
+    if !peer_ws.is_dir() {
+        eprintln!(
+            "bwoc peer learn: peer workspace '{}' is not reachable \
+             (directory missing or not mounted).",
+            peer_ws.display()
+        );
+        return 1;
+    }
+
+    // 2. Load the peer's allowlist.
+    let shared = bwoc_core::routing::SharedAllowlist::load(&peer_ws);
+    if shared.share.is_empty() {
+        println!();
+        println!("Peer '{key}' shares nothing (no shared.toml or empty allowlist).");
+        println!();
+        return 0;
+    }
+
+    match doc {
+        None => run_learn_list(key, &peer_ws, &shared.share),
+        Some(name) => run_learn_view(key, name, &peer_ws, &shared.share),
+    }
+}
+
+/// List shared documents across all allowlisted kinds.
+fn run_learn_list(key: &str, peer_ws: &Path, share: &[String]) -> i32 {
+    println!();
+    println!("Shared documents from peer '{key}':");
+    println!();
+
+    let mut any = false;
+
+    for kind_name in share {
+        // Resolve the doc-kind to get its directory.
+        let kind = match doc_kind::kind(kind_name) {
+            Some(k) => k,
+            None => {
+                eprintln!(
+                    "  [warn] kind '{kind_name}' in shared.toml is not a known doc-kind — skipping"
+                );
+                continue;
+            }
+        };
+
+        let kind_dir = peer_ws.join(&kind.dir);
+        if !kind_dir.is_dir() {
+            // Kind dir missing in peer → no docs for this kind, not an error.
+            continue;
+        }
+
+        let entries = match fs::read_dir(&kind_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let mut docs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .collect();
+        docs.sort();
+
+        if docs.is_empty() {
+            continue;
+        }
+
+        println!("  [{kind_name}]");
+        for doc_path in &docs {
+            // Enforce containment — belt-and-suspenders.
+            if !is_path_contained(&kind_dir, doc_path) {
+                continue;
+            }
+            let filename = doc_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let title = first_heading(doc_path).unwrap_or_else(|| filename.to_string());
+            println!("    {filename}  —  {title}");
+            any = true;
+        }
+        println!();
+    }
+
+    if !any {
+        println!("  (no documents found in shared kinds)");
+        println!();
+    }
+    0
+}
+
+/// View one shared document — enforces allowlist + path-containment.
+fn run_learn_view(key: &str, doc_name: &str, peer_ws: &Path, share: &[String]) -> i32 {
+    // Walk each allowlisted kind and look for a match.
+    for kind_name in share {
+        let kind = match doc_kind::kind(kind_name) {
+            Some(k) => k,
+            None => {
+                // Unknown kind — silently skip (warning already emitted in list).
+                continue;
+            }
+        };
+
+        let kind_dir = peer_ws.join(&kind.dir);
+        if !kind_dir.is_dir() {
+            continue;
+        }
+
+        // Accept exact filename or filename-without-extension.
+        let candidate_exact = kind_dir.join(doc_name);
+        let candidate_md = kind_dir.join(format!("{doc_name}.md"));
+
+        for candidate in [&candidate_exact, &candidate_md] {
+            if !candidate.is_file() {
+                continue;
+            }
+
+            // Path-containment check — never read outside the kind dir.
+            if !is_path_contained(&kind_dir, candidate) {
+                eprintln!(
+                    "bwoc peer learn: path '{}' is outside the allowlisted \
+                     kind directory — refused.",
+                    candidate.display()
+                );
+                return 1;
+            }
+
+            match fs::read_to_string(candidate) {
+                Ok(content) => {
+                    println!("{content}");
+                    return 0;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "bwoc peer learn: failed to read '{}': {e}",
+                        candidate.display()
+                    );
+                    return 1;
+                }
+            }
+        }
+    }
+
+    // Not found in any allowlisted kind.
+    eprintln!(
+        "bwoc peer learn: document '{doc_name}' not found in any allowlisted \
+         kind for peer '{key}'. \
+         Use `bwoc peer learn {key}` to list available documents."
+    );
+    1
+}
+
+/// Extract the first Markdown heading (`# ...`) from a file as a plain string,
+/// or return `None` when no heading is present.
+fn first_heading(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim_start_matches('#').trim();
+        if line.starts_with('#') && !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -543,5 +792,196 @@ mod tests {
         let open = collect_open_tasks(&peer);
         assert!(open.is_empty());
         let _ = fs::remove_dir_all(&peer);
+    }
+
+    // ── peer learn ────────────────────────────────────────────────────────────
+
+    /// Seed a `shared.toml` and a research doc in the peer workspace.
+    fn seed_shared_doc(peer: &Path, kinds: &[&str], kind_dir: &str, filename: &str, body: &str) {
+        // Write shared.toml.
+        let ic_dir = peer.join(".bwoc/interconnect");
+        fs::create_dir_all(&ic_dir).unwrap();
+        let share_list: Vec<String> = kinds.iter().map(|s| format!("\"{s}\"")).collect();
+        fs::write(
+            ic_dir.join("shared.toml"),
+            format!("share = [{}]\n", share_list.join(", ")),
+        )
+        .unwrap();
+        // Write the doc.
+        let doc_dir = peer.join(kind_dir);
+        fs::create_dir_all(&doc_dir).unwrap();
+        fs::write(doc_dir.join(filename), body).unwrap();
+    }
+
+    #[test]
+    fn learn_lists_shared_research_but_not_retro() {
+        // Peer shares only "research". A retrospectives doc is present but NOT
+        // in the allowlist → must not appear in the listing.
+        let peer = make_peer_ws("learn-list", &[]);
+        let local = make_local_ws("learn-list-local");
+        write_routes(
+            &local,
+            &format!(
+                "[[route]]\nagent = \"peer-alpha\"\nworkspace = '{}'\n",
+                peer.display()
+            ),
+        );
+
+        // Shared: research doc.
+        seed_shared_doc(
+            &peer,
+            &["research"],
+            "research/",
+            "2026-05-24_test-topic.md",
+            "# Test Topic\n\nSome content.\n",
+        );
+        // Non-shared: retrospectives doc — must be invisible.
+        let retro_dir = peer.join("retrospectives/");
+        fs::create_dir_all(&retro_dir).unwrap();
+        fs::write(
+            retro_dir.join("2026-05-24_session.md"),
+            "# Session Retro\n\nSecret.\n",
+        )
+        .unwrap();
+
+        // List: only research should appear.
+        let code = run(PeerArgs {
+            action: PeerAction::Learn {
+                key: "peer-alpha".into(),
+                doc: None,
+            },
+            workspace: Some(local.clone()),
+        });
+        assert_eq!(code, 0);
+        let _ = fs::remove_dir_all(&local);
+        let _ = fs::remove_dir_all(&peer);
+    }
+
+    #[test]
+    fn learn_view_allowlisted_doc_succeeds() {
+        let peer = make_peer_ws("learn-view-ok", &[]);
+        let local = make_local_ws("learn-view-ok-local");
+        write_routes(
+            &local,
+            &format!(
+                "[[route]]\nagent = \"peer-beta\"\nworkspace = '{}'\n",
+                peer.display()
+            ),
+        );
+        seed_shared_doc(
+            &peer,
+            &["research"],
+            "research/",
+            "2026-05-24_my-research.md",
+            "# My Research\n\nHello from peer.\n",
+        );
+
+        let code = run(PeerArgs {
+            action: PeerAction::Learn {
+                key: "peer-beta".into(),
+                doc: Some("2026-05-24_my-research.md".into()),
+            },
+            workspace: Some(local.clone()),
+        });
+        assert_eq!(code, 0);
+        let _ = fs::remove_dir_all(&local);
+        let _ = fs::remove_dir_all(&peer);
+    }
+
+    #[test]
+    fn learn_view_non_allowlisted_doc_refused() {
+        // "retrospectives" NOT in allowlist → viewing it must fail.
+        let peer = make_peer_ws("learn-refuse", &[]);
+        let local = make_local_ws("learn-refuse-local");
+        write_routes(
+            &local,
+            &format!(
+                "[[route]]\nagent = \"peer-gamma\"\nworkspace = '{}'\n",
+                peer.display()
+            ),
+        );
+        // Only "research" shared.
+        seed_shared_doc(
+            &peer,
+            &["research"],
+            "research/",
+            "2026-05-24_allowed.md",
+            "# Allowed\n",
+        );
+        // Retro doc exists but is NOT in the allowlist.
+        let retro_dir = peer.join("retrospectives/");
+        fs::create_dir_all(&retro_dir).unwrap();
+        fs::write(retro_dir.join("2026-05-24_secret.md"), "# Secret\n").unwrap();
+
+        let code = run(PeerArgs {
+            action: PeerAction::Learn {
+                key: "peer-gamma".into(),
+                doc: Some("2026-05-24_secret.md".into()),
+            },
+            workspace: Some(local.clone()),
+        });
+        // Must not succeed (doc not found in any allowlisted kind).
+        assert_ne!(code, 0);
+        let _ = fs::remove_dir_all(&local);
+        let _ = fs::remove_dir_all(&peer);
+    }
+
+    #[test]
+    fn learn_absent_shared_toml_returns_nothing_shared() {
+        // No shared.toml at all → nothing shared, exit 0.
+        let peer = make_peer_ws("learn-absent-shared", &[]);
+        let local = make_local_ws("learn-absent-local");
+        write_routes(
+            &local,
+            &format!(
+                "[[route]]\nagent = \"peer-delta\"\nworkspace = '{}'\n",
+                peer.display()
+            ),
+        );
+
+        let code = run(PeerArgs {
+            action: PeerAction::Learn {
+                key: "peer-delta".into(),
+                doc: None,
+            },
+            workspace: Some(local.clone()),
+        });
+        assert_eq!(code, 0); // Nothing shared — but not an error.
+        let _ = fs::remove_dir_all(&local);
+        let _ = fs::remove_dir_all(&peer);
+    }
+
+    // ── is_path_contained ─────────────────────────────────────────────────────
+
+    #[test]
+    fn path_containment_accepts_child() {
+        assert!(is_path_contained(
+            Path::new("/peer/research"),
+            Path::new("/peer/research/2026-05-24_foo.md")
+        ));
+    }
+
+    #[test]
+    fn path_containment_accepts_same() {
+        assert!(is_path_contained(
+            Path::new("/peer/research"),
+            Path::new("/peer/research")
+        ));
+    }
+
+    #[test]
+    fn path_containment_rejects_sibling() {
+        assert!(!is_path_contained(
+            Path::new("/peer/research"),
+            Path::new("/peer/retrospectives/secret.md")
+        ));
+    }
+
+    #[test]
+    fn path_containment_rejects_parent_escape() {
+        assert!(!is_path_contained(
+            Path::new("/peer/research"),
+            Path::new("/peer/research/../retrospectives/secret.md")
+        ));
     }
 }
