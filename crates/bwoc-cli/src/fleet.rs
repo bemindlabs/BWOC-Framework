@@ -5,12 +5,43 @@
 //! v1 reports only; gating is deferred to v2.
 //!
 //! Conditions 1, 2, 4, 5 are mechanically computed (produce ✓ ok or ⚠ warn).
-//! Conditions 3, 6, 7 are informational — they print the spec's suggested
-//! operator practice (no git shell-out in v1).
+//! Conditions 3 and 6 are git-backed mechanical checks (produce ✓/⚠/ℹ via git
+//! shell-out through the `GitRunner` seam — offline-mockable).
+//! Condition 7 remains informational.
 
 use std::path::{Path, PathBuf};
 
 use bwoc_core::workspace::AgentsRegistry;
+
+// ── GitRunner seam ────────────────────────────────────────────────────────────
+
+/// Abstraction over read-only git shell-outs.  `ProcessGitRunner` in production;
+/// `MockGitRunner` in unit tests (offline-deterministic, no real repo needed).
+pub trait GitRunner {
+    /// Run `git <args>` with `cwd` as the working directory.
+    /// Returns captured stdout on success, or `Err(())` when the command fails
+    /// (non-zero exit or any I/O error).  Best-effort: callers must never panic
+    /// on `Err(())` — they degrade to `ℹ`.
+    fn git(&self, args: &[&str], cwd: &Path) -> Result<String, ()>;
+}
+
+/// Production runner — shells out to the system `git` binary.
+pub struct ProcessGitRunner;
+
+impl GitRunner for ProcessGitRunner {
+    fn git(&self, args: &[&str], cwd: &Path) -> Result<String, ()> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .map_err(|_| ())?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(())
+        }
+    }
+}
 
 // ── Public args ──────────────────────────────────────────────────────────────
 
@@ -82,7 +113,8 @@ pub fn run(args: FleetHealthArgs) -> i32 {
         }
     };
 
-    let results = evaluate_all(&workspace, &registry, args.stale_days);
+    let git_runner = ProcessGitRunner;
+    let results = evaluate_all(&workspace, &registry, args.stale_days, &git_runner);
 
     if args.json {
         emit_json(&results);
@@ -100,14 +132,15 @@ fn evaluate_all(
     workspace: &Path,
     registry: &AgentsRegistry,
     stale_days: u64,
+    git_runner: &dyn GitRunner,
 ) -> Vec<ConditionResult> {
     vec![
         condition_1_regular_meetings(workspace, registry, stale_days),
         condition_2_coordinated_start_end(workspace, registry),
-        condition_3_convention_change(),
+        condition_3_convention_change(workspace, git_runner),
         condition_4_honor_template_version(workspace, registry),
         condition_5_protect_vulnerable(workspace, registry),
-        condition_6_honor_shared_resources(),
+        condition_6_honor_shared_resources(workspace, git_runner),
         condition_7_protect_senior_agents(registry),
     ]
 }
@@ -282,16 +315,57 @@ fn condition_2_coordinated_start_end(
 
 // ── Condition 3: Process-bound convention change — appaññattaṃ na paññāpenti
 //
-// Informational only in v1. No git shell-out.
+// Run `git status --porcelain -- .bwoc/ modules/agent-template/` from the
+// workspace root.  Any uncommitted change to those paths indicates ungoverned
+// convention drift.
+//
+//   ✓  → porcelain output is empty (clean)
+//   ⚠  → one or more lines (uncommitted changes)
+//   ℹ  → git command fails (not a repo, git not on PATH, etc.)
 
-fn condition_3_convention_change() -> ConditionResult {
-    ConditionResult {
-        number: 3,
-        name: "Process-bound convention change (appaññattaṃ na paññāpenti)",
-        status: ConditionStatus::Info,
-        finding: "Operator practice: `git log -- .bwoc/ modules/agent-template/` — \
-                  schema bumps should be coordinated and operator-signed."
-            .into(),
+fn condition_3_convention_change(workspace: &Path, git_runner: &dyn GitRunner) -> ConditionResult {
+    const NAME: &str = "Process-bound convention change (appaññattaṃ na paññāpenti)";
+
+    let output = match git_runner.git(
+        &[
+            "status",
+            "--porcelain",
+            "--",
+            ".bwoc/",
+            "modules/agent-template/",
+        ],
+        workspace,
+    ) {
+        Ok(s) => s,
+        Err(()) => {
+            return ConditionResult {
+                number: 3,
+                name: NAME,
+                status: ConditionStatus::Info,
+                finding: "not a git repo — convention-change governance is manual.".into(),
+            };
+        }
+    };
+
+    let changed_count = output.lines().filter(|l| !l.trim().is_empty()).count();
+
+    if changed_count == 0 {
+        ConditionResult {
+            number: 3,
+            name: NAME,
+            status: ConditionStatus::Ok,
+            finding: "No uncommitted changes to .bwoc/ or modules/agent-template/.".into(),
+        }
+    } else {
+        ConditionResult {
+            number: 3,
+            name: NAME,
+            status: ConditionStatus::Warn,
+            finding: format!(
+                "ungoverned convention drift — {changed_count} uncommitted change(s) to \
+                 .bwoc/ or the template; commit through the normal process."
+            ),
+        }
     }
 }
 
@@ -442,16 +516,90 @@ fn count_jsonl_lines(path: &Path) -> usize {
 
 // ── Condition 6: Honor shared resources — cetiya ─────────────────────────────
 //
-// Informational in v1.
+// `git log --format=%an -- .bwoc/agents.toml` → unique set of committer names.
+// `git config user.name`                      → operator identity.
+//
+//   ✓  → all authors == operator name (or no history yet)
+//   ⚠  → any author != operator
+//   ℹ  → git command fails or no commit history for agents.toml
 
-fn condition_6_honor_shared_resources() -> ConditionResult {
-    ConditionResult {
-        number: 6,
-        name: "Honor shared resources (cetiya)",
-        status: ConditionStatus::Info,
-        finding: "Operator practice: `git blame .bwoc/agents.toml` — \
-                  only operator-authored changes expected in shared config files."
-            .into(),
+fn condition_6_honor_shared_resources(
+    workspace: &Path,
+    git_runner: &dyn GitRunner,
+) -> ConditionResult {
+    const NAME: &str = "Honor shared resources (cetiya)";
+
+    // Resolve operator identity — best-effort; empty string if unavailable.
+    let operator = git_runner
+        .git(&["config", "user.name"], workspace)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // Fetch unique author names from agents.toml history.
+    let log_output = match git_runner.git(
+        &["log", "--format=%an", "--", ".bwoc/agents.toml"],
+        workspace,
+    ) {
+        Ok(s) => s,
+        Err(()) => {
+            return ConditionResult {
+                number: 6,
+                name: NAME,
+                status: ConditionStatus::Info,
+                finding: "not a git repo — shared-resource authorship governance is manual.".into(),
+            };
+        }
+    };
+
+    let authors: std::collections::HashSet<&str> = log_output
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if authors.is_empty() {
+        return ConditionResult {
+            number: 6,
+            name: NAME,
+            status: ConditionStatus::Info,
+            finding: "No commit history for .bwoc/agents.toml — nothing to verify yet.".into(),
+        };
+    }
+
+    // Collect non-operator authors (if operator is unknown, treat all as non-operator).
+    let non_operator: Vec<&str> = if operator.is_empty() {
+        authors.iter().copied().collect()
+    } else {
+        authors
+            .iter()
+            .copied()
+            .filter(|&a| a != operator.as_str())
+            .collect()
+    };
+
+    if non_operator.is_empty() {
+        ConditionResult {
+            number: 6,
+            name: NAME,
+            status: ConditionStatus::Ok,
+            finding: format!(
+                ".bwoc/agents.toml modified only by operator ({operator}) — shared registry is \
+                 operator-owned."
+            ),
+        }
+    } else {
+        let mut names: Vec<&str> = non_operator;
+        names.sort_unstable();
+        ConditionResult {
+            number: 6,
+            name: NAME,
+            status: ConditionStatus::Warn,
+            finding: format!(
+                ".bwoc/agents.toml modified by non-operator author(s): {} — the shared \
+                 registry should be operator-owned.",
+                names.join(", ")
+            ),
+        }
     }
 }
 
@@ -568,6 +716,50 @@ fn resolve_workspace(explicit: Option<&Path>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+
+    // ── MockGitRunner ────────────────────────────────────────────────────────
+
+    /// Offline mock: maps (args[0], optional args[last]) → canned stdout.
+    /// Any unregistered call returns `Err(())` (simulates git failure).
+    struct MockGitRunner {
+        /// Entries: (first_arg, last_path_arg_or_empty) → stdout string.
+        responses: Vec<(String, String, Result<String, ()>)>,
+    }
+
+    impl MockGitRunner {
+        fn new() -> Self {
+            Self {
+                responses: Vec::new(),
+            }
+        }
+
+        /// Register: when git is called with `first_arg` and the last arg
+        /// contains `path_fragment`, return `response`.
+        fn on(mut self, first_arg: &str, path_fragment: &str, response: Result<&str, ()>) -> Self {
+            self.responses.push((
+                first_arg.to_string(),
+                path_fragment.to_string(),
+                response.map(|s| s.to_string()),
+            ));
+            self
+        }
+    }
+
+    impl GitRunner for MockGitRunner {
+        fn git(&self, args: &[&str], _cwd: &Path) -> Result<String, ()> {
+            let first = args.first().copied().unwrap_or("");
+            for (fa, pf, resp) in &self.responses {
+                let first_matches = fa == first;
+                // path_fragment matches if it appears in ANY arg (or is empty)
+                let path_matches = pf.is_empty() || args.iter().any(|a| a.contains(pf.as_str()));
+                if first_matches && path_matches {
+                    return resp.clone();
+                }
+            }
+            // Unregistered → simulate git failure
+            Err(())
+        }
+    }
 
     // ── Fixture helpers ──────────────────────────────────────────────────────
 
@@ -730,7 +922,8 @@ mod tests {
     fn json_shape_has_required_fields() {
         let ws = fresh_workspace("json-shape");
         let registry = AgentsRegistry::load(&ws).unwrap();
-        let results = evaluate_all(&ws, &registry, 7);
+        let git = MockGitRunner::new(); // all git calls → Err → ℹ for cond 3/6
+        let results = evaluate_all(&ws, &registry, 7, &git);
         // Serialize and parse back to verify shape.
         let items: Vec<serde_json::Value> = results
             .iter()
@@ -764,7 +957,8 @@ mod tests {
     fn clean_workspace_no_hard_failures() {
         let ws = fresh_workspace("clean");
         let registry = AgentsRegistry::load(&ws).unwrap();
-        let results = evaluate_all(&ws, &registry, 7);
+        let git = MockGitRunner::new();
+        let results = evaluate_all(&ws, &registry, 7, &git);
         // v1: no "fail" status exists; only ok/warn/info.
         for r in &results {
             assert_ne!(
@@ -795,5 +989,102 @@ mod tests {
         });
         assert_eq!(code, 0);
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    // ── Condition 3 — git-backed convention drift ────────────────────────────
+
+    #[test]
+    fn cond3_clean_porcelain_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        // Empty porcelain output → clean
+        let git = MockGitRunner::new().on("status", ".bwoc/", Ok(""));
+        let result = condition_3_convention_change(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Ok, "{}", result.finding);
+        assert!(result.finding.contains("No uncommitted"));
+    }
+
+    #[test]
+    fn cond3_dirty_porcelain_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        // Porcelain with two changed lines
+        let git = MockGitRunner::new().on(
+            "status",
+            ".bwoc/",
+            Ok(" M .bwoc/agents.toml\n M modules/agent-template/AGENTS.md\n"),
+        );
+        let result = condition_3_convention_change(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Warn, "{}", result.finding);
+        assert!(
+            result.finding.contains('2'),
+            "finding should mention count: {}",
+            result.finding
+        );
+    }
+
+    #[test]
+    fn cond3_git_failure_is_info() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        // No responses registered → git call returns Err(())
+        let git = MockGitRunner::new();
+        let result = condition_3_convention_change(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Info, "{}", result.finding);
+        assert!(result.finding.contains("not a git repo"));
+    }
+
+    // ── Condition 6 — shared-resource authorship ─────────────────────────────
+
+    #[test]
+    fn cond6_all_authors_are_operator_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        let git = MockGitRunner::new()
+            .on("config", "user.name", Ok("Alice\n"))
+            .on("log", "agents.toml", Ok("Alice\nAlice\n"));
+        let result = condition_6_honor_shared_resources(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Ok, "{}", result.finding);
+        assert!(result.finding.contains("Alice"));
+    }
+
+    #[test]
+    fn cond6_non_operator_author_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        let git = MockGitRunner::new()
+            .on("config", "user.name", Ok("Alice\n"))
+            .on("log", "agents.toml", Ok("Alice\nBob\n"));
+        let result = condition_6_honor_shared_resources(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Warn, "{}", result.finding);
+        assert!(
+            result.finding.contains("Bob"),
+            "finding should name non-operator: {}",
+            result.finding
+        );
+    }
+
+    #[test]
+    fn cond6_empty_log_is_info() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        // config resolves but agents.toml has no history
+        let git = MockGitRunner::new()
+            .on("config", "user.name", Ok("Alice\n"))
+            .on("log", "agents.toml", Ok(""));
+        let result = condition_6_honor_shared_resources(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Info, "{}", result.finding);
+        assert!(result.finding.contains("No commit history"));
+    }
+
+    #[test]
+    fn cond6_git_failure_is_info() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        // No git responses at all → both calls fail
+        let git = MockGitRunner::new();
+        let result = condition_6_honor_shared_resources(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Info, "{}", result.finding);
+        assert!(result.finding.contains("not a git repo"));
     }
 }
