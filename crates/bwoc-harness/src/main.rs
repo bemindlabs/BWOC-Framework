@@ -14,6 +14,7 @@ use bwoc_harness::{
     error::HarnessResult,
     policy::{HarnessPolicy, Policy},
     provider::{ChatMessage, OllamaClient, ProviderClient},
+    self_improve,
     tools::{ToolContext, registry::default_registry},
 };
 
@@ -187,6 +188,82 @@ async fn run() -> HarnessResult<()> {
     if let Err(e) = telemetry.finish(&metrics_path) {
         eprintln!("[bwoc-harness] warning: could not write session metrics: {e}");
     }
+
+    // ── Paññā-3 retrospective analysis ────────────────────────────────────
+    // Read-only analysis over recent session history.  Runs after the metrics
+    // record is written so the current session is included.  Any error is
+    // silently absorbed (best-effort — must not fail the run).
+    let retro = self_improve::analyse(&metrics_path);
+    if retro.retro_recommended {
+        eprintln!("[bwoc-harness] [panna-3] retrospective recommended:");
+        for reason in &retro.reasons {
+            eprintln!("[bwoc-harness] [panna-3]   - {reason}");
+        }
+
+        // Write a retrospective stub (best-effort; non-fatal).
+        let date = {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // Simple YYYY-MM-DD from seconds (UTC).
+            let days = secs / 86400;
+            let mut year = 1970u64;
+            let mut remaining = days;
+            loop {
+                let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                let dy = if leap { 366 } else { 365 };
+                if remaining < dy {
+                    break;
+                }
+                remaining -= dy;
+                year += 1;
+            }
+            let months = [31u64, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+            let mut month = 1u64;
+            for (i, &dim) in months.iter().enumerate() {
+                let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                let d = if i == 1 && leap { 29 } else { dim };
+                if remaining < d {
+                    month = i as u64 + 1;
+                    break;
+                }
+                remaining -= d;
+            }
+            let day = remaining + 1;
+            format!("{year:04}-{month:02}-{day:02}")
+        };
+
+        let retro_dir = workdir.join("retrospectives");
+        let stub_path = retro_dir.join(format!("{date}_auto.md"));
+        let stub_content = self_improve::build_retro_stub(&retro, "bwoc-harness", &date);
+
+        // Create the retrospectives directory if needed (best-effort).
+        let _ = std::fs::create_dir_all(&retro_dir);
+        match std::fs::write(&stub_path, &stub_content) {
+            Ok(()) => {
+                eprintln!(
+                    "[bwoc-harness] [panna-3] retrospective stub written: {}",
+                    stub_path.display()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[bwoc-harness] [panna-3] warning: could not write retro stub \
+                     ({}): {e}",
+                    stub_path.display()
+                );
+            }
+        }
+    }
+
+    // Propagate retro findings into the LoopResult for callers / tests.
+    let result = bwoc_harness::agent_loop::LoopResult {
+        retro_recommended: retro.retro_recommended,
+        retro_reasons: retro.reasons,
+        ..result
+    };
 
     println!("─────────────────────────────────────────────");
     println!("done in {} turn(s).\n", result.turns);

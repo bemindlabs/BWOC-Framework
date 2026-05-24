@@ -34,5 +34,6 @@ pub mod policy;
 pub mod provider;
 pub mod queue;
 pub mod sandbox;
+pub mod self_improve;
 pub mod telemetry;
 pub mod tools;

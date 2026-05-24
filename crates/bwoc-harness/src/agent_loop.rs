@@ -275,6 +275,13 @@ pub struct LoopResult {
     /// Number of token-pressure–driven model switches performed during this
     /// run.  Distinct from error-based fallback switches.
     pub token_pressure_switches: u32,
+    /// `true` if the Paññā-3 post-session analysis fired at least one trigger.
+    ///
+    /// Set by the caller (`main.rs`) after `telemetry.finish` + `self_improve::analyse`.
+    /// `run_loop` itself always returns `false` here; the caller owns the analysis.
+    pub retro_recommended: bool,
+    /// Human-readable trigger reasons.  Empty when `retro_recommended` is false.
+    pub retro_reasons: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +550,8 @@ pub async fn run_loop(
                 compactions,
                 active_model,
                 token_pressure_switches,
+                retro_recommended: false,
+                retro_reasons: Vec::new(),
             });
         }
 
