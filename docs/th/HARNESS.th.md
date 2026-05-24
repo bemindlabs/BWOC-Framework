@@ -211,6 +211,25 @@ bwoc spawn --backend ollama --path agents/my-agent
 4. ตรวจสอบว่า model มีอยู่จริงบน Ollama instance ก่อน turn แรก
 5. รัน agentic loop
 
+### Spawn agent แบบ OpenAI-compatible
+
+```bash
+# endpoint ใด ๆ ที่พูด OpenAI-compatible (vLLM, LM Studio, llama.cpp server, remote):
+bwoc spawn --backend openai-compatible --path agents/my-agent
+```
+
+ตั้งค่า `"baseUrl"` ใน `config.manifest.json` ของ agent ให้ชี้ไปยัง endpoint — **จำเป็น** สำหรับ `openai-compatible` (`ollama` ใช้ค่า default `http://localhost:11434/v1` และถือว่า `baseUrl` เป็น optional) `bwoc spawn` ส่งค่านี้ให้ harness ผ่าน `--endpoint` ลงทะเบียน backend ด้วย symlink `OPENAI.md → AGENTS.md` โดย provider client ไม่เปลี่ยน (ใช้ path `/v1/chat/completions` แบบ OpenAI-compatible เดิม)
+
+### การบังคับใช้ vetted-model
+
+`--vetted-mode off | warn | enforce` (default `warn`) ควบคุมว่า loop จะจัดการ model ที่**ไม่**อยู่ใน allowlist `vetted_models` อย่างไร:
+
+- `off` — ไม่ตรวจ
+- `warn` — log warning แล้วทำต่อ (พฤติกรรมเดิม, backward-compatible default)
+- `enforce` — ปฏิเสธไม่รัน **primary** model ที่ไม่ vetted (error ก่อน turn แรก)
+
+allowlist `vetted_models` ว่าง = ไม่จำกัด ไม่ว่า mode ใด
+
 ### เพิ่ม symlink OLLAMA.md ใน agent ที่มีอยู่
 
 ```bash

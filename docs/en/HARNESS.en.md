@@ -211,6 +211,25 @@ bwoc spawn --backend ollama --path agents/my-agent
 4. Validates that the model exists on the Ollama instance before the first turn.
 5. Runs the agentic loop.
 
+### Spawn an OpenAI-compatible agent
+
+```bash
+# Any OpenAI-compatible endpoint (vLLM, LM Studio, llama.cpp server, remote):
+bwoc spawn --backend openai-compatible --path agents/my-agent
+```
+
+Set `"baseUrl"` in the agent's `config.manifest.json` to the endpoint — **required** for `openai-compatible` (`ollama` defaults to `http://localhost:11434/v1` and treats `baseUrl` as optional). `bwoc spawn` passes it to the harness `--endpoint`. Register the backend with the `OPENAI.md → AGENTS.md` symlink; the provider client is unchanged (same OpenAI-compatible `/v1/chat/completions` path).
+
+### Vetted-model enforcement
+
+`--vetted-mode off | warn | enforce` (default `warn`) controls how the loop treats a model **not** in the `vetted_models` allowlist:
+
+- `off` — no check.
+- `warn` — log a warning and proceed (historical behaviour; backward-compatible default).
+- `enforce` — refuse to run an unvetted **primary** model (error before the first turn).
+
+An empty `vetted_models` allowlist means no restriction regardless of mode.
+
 ### Add the OLLAMA.md symlink to an existing agent
 
 ```bash
