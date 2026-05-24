@@ -52,6 +52,14 @@ toml = "0.8"
 # Heavy dep (platform integration): lives in bwoc-harness ONLY per dep-quarantine.
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
+# ---------------------------------------------------------------------------
+# Platform-specific dependencies
+# ---------------------------------------------------------------------------
+[target.'cfg(target_os = "linux")'.dependencies]
+# Landlock LSM bindings for kernel-enforced filesystem access control.
+# Allowed here: bwoc-harness is the dep-quarantine crate for heavy/platform deps.
+landlock = "0.4"
+
 [dev-dependencies]
 # HTTP mock server for offline provider tests
 wiremock = "0.6"

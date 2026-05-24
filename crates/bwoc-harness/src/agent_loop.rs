@@ -82,7 +82,7 @@ use std::sync::Arc;
 use crate::error::{HarnessError, HarnessResult};
 use crate::policy::{Policy, PolicyOutcome, run_pipeline};
 use crate::provider::{ChatMessage, ProviderClient, ToolCall};
-use crate::sandbox::{self, NoopOsSandbox};
+use crate::sandbox::{self, make_os_sandbox};
 use crate::telemetry::{Telemetry, TurnBuilder};
 use crate::tools::registry::dispatch;
 use crate::tools::{ToolContext, ToolRegistry};
@@ -791,7 +791,7 @@ async fn execute_tool_calls(
 ) -> Vec<ToolCallResult> {
     // P2: sequential execution (concurrent tool execution is P3).
     let mut results = Vec::with_capacity(calls.len());
-    let os_sandbox = NoopOsSandbox;
+    let os_sandbox = make_os_sandbox(&ctx.workdir);
 
     for call in calls {
         let tool_name = &call.function.name;
@@ -819,7 +819,7 @@ async fn execute_tool_calls(
                         .and_then(|v| v["command"].as_str().map(|s| s.to_string()))
                     {
                         Some(cmd) => {
-                            match sandbox::run_sandboxed(&cmd, &ctx.workdir, &os_sandbox).await {
+                            match sandbox::run_sandboxed(&cmd, &ctx.workdir, &*os_sandbox).await {
                                 Ok(output) => output.into_tool_result(),
                                 Err(e) => format!("error: {e}"),
                             }
