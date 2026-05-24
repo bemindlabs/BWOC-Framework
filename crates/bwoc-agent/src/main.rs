@@ -377,10 +377,17 @@ fn check_inbox_for_new(
         if !trimmed.is_empty() {
             let envelope_offset = from_offset + consumed;
             match trust::evaluate(trust_ctx, trimmed, envelope_offset) {
-                None => announce(trimmed),
-                Some(refusal) => {
-                    record_refusal(refusals_path, &refusal);
-                    announce_refused(trimmed, &refusal);
+                trust::TrustOutcome::Pass => announce(trimmed),
+                trust::TrustOutcome::Warn {
+                    ref from,
+                    ref missing,
+                } => {
+                    announce(trimmed);
+                    announce_warned(from, missing);
+                }
+                trust::TrustOutcome::Refuse(ref refusal) => {
+                    record_refusal(refusals_path, refusal);
+                    announce_refused(trimmed, refusal);
                 }
             }
         }
@@ -431,6 +438,16 @@ fn announce_refused(line: &str, refusal: &trust::Refusal) {
         "bwoc-agent: inbox REFUSED ← {from}: reason={} missing={:?}",
         refusal.reason, refusal.missing
     );
+}
+
+/// Emit a `trust_warn` log line when an envelope passes despite the
+/// sender missing required qualities (mode=warn). The envelope has
+/// already been announced via `announce`; this is the policy-level note.
+///
+/// Task (f): daemon emits this line on Warn and does NOT record a refusal.
+#[cfg(unix)]
+fn announce_warned(from: &str, missing: &[String]) {
+    eprintln!("bwoc-agent: trust_warn ← {from}: missing={missing:?}");
 }
 
 /// Print one inbox envelope to stderr in a one-line form. Tries to parse

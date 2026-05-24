@@ -59,6 +59,36 @@ pub struct Manifest {
     pub version: String,
 }
 
+/// Refusal mode for the trust gate (`trust.mode` manifest field).
+///
+/// Controls how the daemon responds when an incoming envelope's sender
+/// is missing one or more of the recipient's `requiredTrust` qualities.
+///
+/// **Backward-compat rule (Anicca / no silent security regression):**
+/// When the `mode` field is **absent** from the manifest, the framework
+/// computes an *effective mode* based on v1 behaviour:
+/// - empty `requiredTrust` → `Off` (was: gate inert, pass-all)
+/// - non-empty `requiredTrust` → `Refuse` (was: refuse on missing quality)
+///
+/// `Warn` is strictly opt-in: the agent author must write
+/// `"mode": "warn"` explicitly. Existing agents without the field are
+/// never silently flipped from `Refuse` to `Warn`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum RefusalMode {
+    /// Gate is inert — envelope always passes, no log entry.
+    /// Effective mode when `requiredTrust` is empty and `mode` is absent.
+    #[default]
+    Off,
+    /// Envelope passes but the daemon emits a `trust_warn` log line
+    /// naming the sender and missing qualities. Opt-in only.
+    Warn,
+    /// Envelope is refused: marked in `inbox.refusals.jsonl`, never
+    /// deleted. Effective mode when `requiredTrust` is non-empty and
+    /// `mode` is absent (v1 behaviour preserved).
+    Refuse,
+}
+
 /// Kalyāṇamitta 7 trust block. Two halves: `declared` (what this agent
 /// claims about itself) and `required_trust` (what this agent demands
 /// from peers that want to message it). They're independent — see
@@ -91,6 +121,31 @@ pub struct TrustBlock {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub required_trust: Vec<String>,
+    /// Optional explicit refusal mode. When absent, the effective mode
+    /// is computed from v1 rules: `Off` if `requiredTrust` is empty,
+    /// `Refuse` if non-empty. `Warn` is strictly opt-in.
+    #[serde(rename = "mode", default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<RefusalMode>,
+}
+
+impl TrustBlock {
+    /// Compute the *effective* `RefusalMode`.
+    ///
+    /// If `mode` is explicitly set, that value governs.
+    /// Otherwise, fall back to v1 rules so existing agents are
+    /// byte-for-byte compatible (Anicca — no silent regression):
+    /// - empty `requiredTrust` → `Off`
+    /// - non-empty `requiredTrust` → `Refuse`
+    pub fn effective_mode(&self) -> RefusalMode {
+        if let Some(m) = self.mode {
+            return m;
+        }
+        if self.required_trust.is_empty() {
+            RefusalMode::Off
+        } else {
+            RefusalMode::Refuse
+        }
+    }
 }
 
 impl Default for TrustBlock {
@@ -99,6 +154,7 @@ impl Default for TrustBlock {
             schema_version: 1,
             declared: TrustDeclared::default(),
             required_trust: Vec::new(),
+            mode: None,
         }
     }
 }
@@ -270,6 +326,7 @@ mod tests {
                 no_catthana: true,
             },
             required_trust: vec!["vatta".into(), "noCatthana".into()],
+            mode: None,
         });
         let json = serde_json::to_string(&m).unwrap();
         // Wire format uses camelCase + the rename for noCatthana.
@@ -362,6 +419,7 @@ mod tests {
             schema_version: 1,
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into()],
+            mode: None,
         };
         let peer = TrustDeclared {
             vatta: true,
@@ -377,6 +435,7 @@ mod tests {
             schema_version: 1,
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into(), "gambhira".into()],
+            mode: None,
         };
         let peer = TrustDeclared {
             vatta: true,
@@ -396,6 +455,7 @@ mod tests {
             schema_version: 1,
             declared: TrustDeclared::default(),
             required_trust: vec!["gambhira".into(), "vatta".into(), "piyo".into()],
+            mode: None,
         };
         let peer = TrustDeclared::default(); // nothing declared
         assert_eq!(block.missing_in(&peer), vec!["gambhira", "vatta", "piyo"]);
@@ -410,6 +470,7 @@ mod tests {
             schema_version: 1,
             declared: TrustDeclared::default(),
             required_trust: vec!["mudu".into()], // future-spec quality
+            mode: None,
         };
         let peer = TrustDeclared {
             piyo: true,
@@ -417,5 +478,93 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(block.missing_in(&peer), vec!["mudu"]);
+    }
+
+    // ---- RefusalMode + effective_mode tests ---------------------------------
+
+    /// v1 backward-compat: absent mode + empty requiredTrust → Off.
+    #[test]
+    fn effective_mode_off_when_no_mode_and_empty_required() {
+        let block = TrustBlock::default(); // mode: None, required_trust: []
+        assert_eq!(block.effective_mode(), RefusalMode::Off);
+    }
+
+    /// v1 backward-compat: absent mode + non-empty requiredTrust → Refuse.
+    /// This is the critical regression guard — existing manifests with
+    /// requiredTrust but no explicit mode must keep refusing, not warn-passing.
+    #[test]
+    fn effective_mode_refuse_when_no_mode_and_nonempty_required() {
+        let block = TrustBlock {
+            schema_version: 1,
+            declared: TrustDeclared::default(),
+            required_trust: vec!["vatta".into()],
+            mode: None,
+        };
+        assert_eq!(block.effective_mode(), RefusalMode::Refuse);
+    }
+
+    /// Explicit mode overrides the v1 inference — warn is strictly opt-in.
+    #[test]
+    fn effective_mode_explicit_warn_overrides() {
+        let block = TrustBlock {
+            schema_version: 1,
+            declared: TrustDeclared::default(),
+            required_trust: vec!["vatta".into()],
+            mode: Some(RefusalMode::Warn),
+        };
+        assert_eq!(block.effective_mode(), RefusalMode::Warn);
+    }
+
+    /// Explicit Refuse survives even with empty requiredTrust (unusual but
+    /// valid — caller declared mode explicitly).
+    #[test]
+    fn effective_mode_explicit_refuse_with_empty_required() {
+        let block = TrustBlock {
+            schema_version: 1,
+            declared: TrustDeclared::default(),
+            required_trust: vec![],
+            mode: Some(RefusalMode::Refuse),
+        };
+        assert_eq!(block.effective_mode(), RefusalMode::Refuse);
+    }
+
+    /// `"mode": "warn"` round-trips through serde as the camelCase string.
+    #[test]
+    fn refusal_mode_serde_roundtrip() {
+        let json = r#""warn""#;
+        let m: RefusalMode = serde_json::from_str(json).unwrap();
+        assert_eq!(m, RefusalMode::Warn);
+        assert_eq!(serde_json::to_string(&m).unwrap(), json);
+
+        let json_off = r#""off""#;
+        let m_off: RefusalMode = serde_json::from_str(json_off).unwrap();
+        assert_eq!(m_off, RefusalMode::Off);
+
+        let json_refuse = r#""refuse""#;
+        let m_refuse: RefusalMode = serde_json::from_str(json_refuse).unwrap();
+        assert_eq!(m_refuse, RefusalMode::Refuse);
+    }
+
+    /// `mode` field absent from trust block → `None`; `mode: "warn"` serializes
+    /// into the block; `mode: null` or missing both round-trip to `None`.
+    #[test]
+    fn trust_block_mode_field_serde() {
+        // Absent → None
+        let json_no_mode = r#"{"schemaVersion":1}"#;
+        let b: TrustBlock = serde_json::from_str(json_no_mode).unwrap();
+        assert!(b.mode.is_none());
+
+        // Present → Some(Warn)
+        let json_warn = r#"{"schemaVersion":1,"mode":"warn"}"#;
+        let b2: TrustBlock = serde_json::from_str(json_warn).unwrap();
+        assert_eq!(b2.mode, Some(RefusalMode::Warn));
+
+        // Roundtrip with mode=Warn serializes the field
+        let serialized = serde_json::to_string(&b2).unwrap();
+        assert!(serialized.contains("\"mode\":\"warn\""));
+
+        // Roundtrip without mode omits the field (skip_serializing_if = None)
+        let serialized_no_mode = serde_json::to_string(&b).unwrap();
+        assert!(!serialized_no_mode.contains("\"mode\""));
     }
 }

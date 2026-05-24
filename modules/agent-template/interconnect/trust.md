@@ -7,7 +7,7 @@ tags:
   - group/agents
   - type/design
   - meta/template
-status: draft (v2026.5.23 — spec only; no code yet)
+status: active (v2026.5.24 — Trust v2 warn-mode implemented)
 canonical-source: AN 7.36 (Mitta Sutta) — Aṅguttara Nikāya 7.36
 ---
 
@@ -62,12 +62,21 @@ A new top-level `trust` block in `config.manifest.json`. Both halves are optiona
       "gambhira": false,
       "noCatthana": true
     },
-    "requiredTrust": ["vatta", "noCatthana"]
+    "requiredTrust": ["vatta", "noCatthana"],
+    "mode": "warn"
   }
 }
 ```
 
 > [!note] `declared` describes **this agent's claim about itself**; `requiredTrust` describes **what this agent demands from peers who want to message it**. They are independent — an agent can require qualities it doesn't itself claim, and that's legitimate (recipients are entitled to their own bar).
+
+### `mode` field (Trust v2)
+
+The optional `"mode"` field on the trust block controls how the daemon responds when an incoming envelope's sender is missing a required quality. Accepted values: `"off"` | `"warn"` | `"refuse"`.
+
+**Backward-compat rule:** when `mode` is absent the framework computes an *effective mode* using v1 rules — empty `requiredTrust` → `off`; non-empty → `refuse`. This means existing manifests that predate the field are never silently demoted from refuse to warn. `warn` is strictly opt-in.
+
+To enable warn-mode on a specific agent, add `"mode": "warn"` to its `trust` block alongside a non-empty `requiredTrust`.
 
 ### `schemaVersion`
 
@@ -126,17 +135,21 @@ Sender == `user` is a special case: user-originated messages always pass (the us
 
 Default behavior — `trust.requiredTrust` empty or absent — is **no gating**. The framework ships permissive by default; recipients opt in to refusal. Newly-incarnated agents inherit a non-empty default from the template scaffold (`["vatta", "noCatthana"]`) — see [Manifest scaffolding](#manifest-scaffolding) — so the feature isn't vestigial in practice while staying permissive at the policy layer.
 
-### Refusal modes (planned for v2)
+### Refusal modes (Trust v2 — implemented)
 
-v1 has 2 states per quality per envelope: pass / refuse. v2 should add **warn-by-default** to make trust observable before policy hardens:
+The daemon supports a 3-state refusal mode controlled by the `mode` field in the recipient's `trust` block. The effective mode governs what happens when an incoming envelope's sender is missing a required quality:
 
-| Mode | When envelope arrives with missing required quality |
-|---|---|
-| `off` | (v1 default behavior when `requiredTrust` is empty) — envelope passes; no log entry |
-| `warn` (planned v2 default for declared `requiredTrust`) | Envelope passes BUT the daemon logs a `trust_warn` line referencing which qualities were missing. Recipient sees the pattern in `bwoc log -f` and can decide whether to upgrade to `refuse` |
-| `refuse` (v1 behavior when `requiredTrust` non-empty) | Envelope marked `refused`, written to inbox with `refused: { reason, missing }` block, never deleted |
+| Mode | Effective when | What the daemon does |
+|---|---|---|
+| `off` | `mode: "off"` explicitly, or `mode` absent and `requiredTrust` empty | Envelope passes; no log entry. |
+| `warn` | `mode: "warn"` explicitly (opt-in only) | Envelope **passes** (delivered normally) AND the daemon emits a `trust_warn` log line: `bwoc-agent: trust_warn ← <sender>: missing=["quality", ...]`. Recipient can monitor `bwoc log -f` and decide whether to upgrade to `refuse`. |
+| `refuse` | `mode: "refuse"` explicitly, or `mode` absent and `requiredTrust` non-empty (v1 default) | Envelope marked `refused` in `inbox.refusals.jsonl`, written with a `refused: { reason: "missing_trust", missing: [...] }` block, never deleted. |
 
-This 3-state design is Oracle's suggestion. The motivation: strict-by-default for a self-declared (un-signed) trust model is **security theater** — an adversary can lie in their manifest. Warn-by-default gives recipients data to decide whether refusal is warranted without committing the framework to false-strict semantics. v1 ships with 2 states (`off` and `refuse`); v2 adds `warn` as an intermediate when telemetry shows it's needed.
+**Can't-verify paths always refuse regardless of mode.** When the daemon cannot resolve the sender's manifest (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`), the envelope is refused. An unverifiable sender is not warn-passable.
+
+**`from: "user"` always passes** regardless of mode or required qualities. Trust gates govern agent→agent messaging only.
+
+The motivation for this 3-state design: strict-by-default for a self-declared (un-signed) trust model is **security theater** — an adversary can lie in their manifest. `warn` gives recipients data to decide whether refusal is warranted without committing the framework to false-strict semantics. `warn` is strictly opt-in so existing agents with non-empty `requiredTrust` keep their v1 refuse behaviour unchanged (Anicca — no silent security regression).
 
 ## What This Spec Does NOT Cover
 
@@ -153,16 +166,23 @@ This 3-state design is Oracle's suggestion. The motivation: strict-by-default fo
   - `trust.schemaVersion: 1` added; explicit "missing fields in `declared` → `false`" rule documented per Pi (Anicca seam for future v2 fields).
   - Scaffolding clause: incarnate.sh / `bwoc new` seed `requiredTrust: ["vatta", "noCatthana"]` per Pi (vestigial-feature defense without flipping framework default).
   - "Refusal modes" section added planning 3-state (`off` / `warn` / `refuse`) for v2 per Oracle (warn-by-default avoids security theater while gathering data).
+- **v2 / 2026-05-24 (Trust v2 warn-mode — Oracle, GH #6 / WS5):**
+  - `RefusalMode` enum (`off` | `warn` | `refuse`) added to `bwoc-core::manifest::TrustBlock`.
+  - Optional `"mode"` field on the trust block (serde key `"mode"`). Backward-compat: absent field computes effective mode from v1 rules (empty required → `Off`; non-empty → `Refuse`). `warn` is strictly opt-in.
+  - `evaluate()` now returns `TrustOutcome` (`Pass` / `Warn { from, missing }` / `Refuse(Refusal)`) instead of `Option<Refusal>`.
+  - Daemon caller handles `Warn`: delivers envelope normally + emits `trust_warn` log line via `announce_warned`. Does NOT record a refusal on `Warn`.
+  - Can't-verify paths (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`) always produce `Refuse` regardless of mode.
 
-## Implementation Order (when code work begins)
+## Implementation Order
 
-1. `bwoc-core::Manifest`: deserialize the `trust` block. Backward-compatible: missing block ≡ defaults.
+1. `bwoc-core::Manifest`: deserialize the `trust` block. Backward-compatible: missing block ≡ defaults. ✓ done (v1)
 2. `bwoc check`: add 7 verification checks per `evidence-rules` above. Surface as PASS / WARN / FAIL per quality.
 3. `bwoc trust <agent>` read command: table + `--json` output.
-4. `bwoc-agent --serve`: on inbox poll, resolve sender's `trust.declared`, compare against own `requiredTrust`, mark refused envelopes.
-5. CHANGELOG row + ROADMAP cross-reference + bilingual TH parity (`trust.th.md` mirrors this file).
+4. `bwoc-agent --serve`: on inbox poll, resolve sender's `trust.declared`, compare against own `requiredTrust`, mark refused envelopes. ✓ done (v1)
+5. Trust v2 warn-mode: `RefusalMode` enum + `mode` manifest field + `TrustOutcome` 3-state + `announce_warned`. ✓ done (v2, GH #6)
+6. CHANGELOG row + ROADMAP cross-reference + bilingual TH parity.
 
-Each step is mergeable independently. Step 4 is the only one with runtime risk and should ship behind a `BWOC_TRUST_GATING=1` env opt-in initially.
+Step 4+ is behind the `BWOC_TRUST_GATING=1` env opt-in.
 
 ## Cross-References
 
