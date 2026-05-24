@@ -194,6 +194,57 @@ fn check_destruction(
         }
     }
 
+    // ── Windows destructive commands (#31) ───────────────────────────────────
+    // The guardrail matches the command string, so this protects any host that
+    // runs an agent emitting a Windows shell command — WS7 enabled `bwoc-harness`
+    // on Windows, where `rm -rf` doesn't apply but `del /s`, `rmdir /s`, `format`,
+    // and `Remove-Item -Recurse -Force` do. Windows commands are case-insensitive.
+    {
+        let bin_lc = binary.to_ascii_lowercase();
+        let bin_lc = bin_lc.strip_suffix(".exe").unwrap_or(&bin_lc);
+        let toks_lc: Vec<String> = tokens.iter().map(|t| t.to_ascii_lowercase()).collect();
+        let has_slash_s = toks_lc.iter().any(|t| t == "/s");
+        // Windows flags start with `/`, PowerShell params with `-`; the rest are paths.
+        let win_paths: Vec<&str> = tokens
+            .iter()
+            .filter(|t| !t.starts_with('/') && !t.starts_with('-') && !t.contains('='))
+            .copied()
+            .skip(1)
+            .collect();
+        // Empty path with a recursive flag = operate on the cwd (worktree) → dangerous.
+        let hits_root = win_paths.is_empty()
+            || win_paths
+                .iter()
+                .any(|p| is_windows_root_like(p, worktree_root));
+
+        let violation = |what: &str| {
+            Err(GuardrailViolation {
+                rule: "sila_panatatipata",
+                reason: format!(
+                    "`{what}` targets a protected root (drive root, `/`, `.`, or the \
+                     worktree). Destructive recursive deletion / format is not permitted \
+                     (Pāṇātipāta)."
+                ),
+            })
+        };
+
+        match bin_lc {
+            "del" | "erase" if has_slash_s && hits_root => return violation("del /s"),
+            "rmdir" | "rd" if has_slash_s && hits_root => return violation("rmdir /s"),
+            // Formatting a volume is unconditionally destructive — no legitimate
+            // agent use; block regardless of target.
+            "format" => return violation("format"),
+            "remove-item" | "ri" => {
+                let recurse = toks_lc.iter().any(|t| t == "-recurse" || t == "-r");
+                let force = toks_lc.iter().any(|t| t == "-force");
+                if recurse && force && hits_root {
+                    return violation("Remove-Item -Recurse -Force");
+                }
+            }
+            _ => {}
+        }
+    }
+
     Ok(())
 }
 
@@ -486,6 +537,27 @@ fn is_dangerous_root(path: &Path, worktree_root: &Path) -> bool {
     path == Path::new("/") || path == worktree_root
 }
 
+/// `true` if `raw` looks like a protected root for a Windows destructive command:
+/// a drive root (`C:`, `C:\`, `C:/`), a filesystem root (`/`, `\`), the cwd
+/// (`.`), or the worktree root. Pure string check — no fs I/O.
+fn is_windows_root_like(raw: &str, worktree_root: &Path) -> bool {
+    let p = raw.trim_matches('"');
+    if matches!(p, "/" | "\\" | "." | "./" | ".\\") {
+        return true;
+    }
+    let b = p.as_bytes();
+    // Drive root: `C:`, `C:\`, `C:/`
+    if b.len() >= 2
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (p.len() == 2 || (p.len() == 3 && matches!(b[2], b'\\' | b'/')))
+    {
+        return true;
+    }
+    let resolved = resolve_target(p, worktree_root);
+    is_dangerous_root(&resolved, worktree_root)
+}
+
 /// Lexically normalize a path (collapse `..`/`.`) without hitting the fs.
 fn normalize_path_lex(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
@@ -563,6 +635,78 @@ mod tests {
     fn allows_rm_rf_subdir_not_root() {
         // Removing a subdirectory is OK at the guardrail level.
         let cmd = r#"{"command": "rm -rf build/artifacts"}"#;
+        assert!(check("run_command", cmd, &wt()).is_ok());
+    }
+
+    // ── Windows destructive commands (#31) ───────────────────────────────────
+
+    #[test]
+    fn blocks_win_del_s_drive_root() {
+        let cmd = r#"{"command": "del /s /q C:"}"#;
+        let err = check("run_command", cmd, &wt()).unwrap_err();
+        assert_eq!(err.rule, "sila_panatatipata");
+    }
+
+    #[test]
+    fn blocks_win_del_s_no_path_is_cwd() {
+        // `del /s` with no target = recursive delete of the cwd (worktree).
+        let cmd = r#"{"command": "del /s /q"}"#;
+        assert_eq!(
+            check("run_command", cmd, &wt()).unwrap_err().rule,
+            "sila_panatatipata"
+        );
+    }
+
+    #[test]
+    fn blocks_win_rmdir_s_backslash_root() {
+        let cmd = r#"{"command": "rmdir /s /q C:\\"}"#;
+        assert_eq!(
+            check("run_command", cmd, &wt()).unwrap_err().rule,
+            "sila_panatatipata"
+        );
+    }
+
+    #[test]
+    fn blocks_win_format() {
+        // Formatting a volume is unconditionally destructive.
+        let cmd = r#"{"command": "format C: /q"}"#;
+        assert_eq!(
+            check("run_command", cmd, &wt()).unwrap_err().rule,
+            "sila_panatatipata"
+        );
+    }
+
+    #[test]
+    fn blocks_win_remove_item_recurse_force_root() {
+        let cmd = r#"{"command": "Remove-Item -Recurse -Force C:"}"#;
+        assert_eq!(
+            check("run_command", cmd, &wt()).unwrap_err().rule,
+            "sila_panatatipata"
+        );
+    }
+
+    #[test]
+    fn win_matching_is_case_insensitive() {
+        let cmd = r#"{"command": "DEL /S /Q C:"}"#;
+        assert!(check("run_command", cmd, &wt()).is_err());
+    }
+
+    #[test]
+    fn allows_win_del_s_subdir_not_root() {
+        // Recursive delete of a subdirectory is OK at the guardrail level.
+        let cmd = r#"{"command": "del /s /q build\\out"}"#;
+        assert!(check("run_command", cmd, &wt()).is_ok());
+    }
+
+    #[test]
+    fn allows_win_del_single_file_no_recursive() {
+        let cmd = r#"{"command": "del old.txt"}"#;
+        assert!(check("run_command", cmd, &wt()).is_ok());
+    }
+
+    #[test]
+    fn allows_win_remove_item_subdir() {
+        let cmd = r#"{"command": "Remove-Item -Recurse -Force build"}"#;
         assert!(check("run_command", cmd, &wt()).is_ok());
     }
 
