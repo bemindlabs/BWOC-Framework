@@ -26,6 +26,7 @@ mod livecheck;
 mod log;
 mod memory;
 mod new;
+mod peer;
 mod ping;
 mod retire;
 mod run;
@@ -137,6 +138,9 @@ enum Commands {
     /// Manage a team's shared task list (add / list / claim / complete).
     #[command(subcommand)]
     Task(TaskCommand),
+    /// View peer workspaces declared in routes.toml (read-only cross-workspace view, #20).
+    #[command(subcommand)]
+    Peer(PeerCommand),
     /// Check for, or delegate, an upgrade of bwoc to the latest release.
     Update {
         /// Read-only: compare the binary's embedded CalVer to the latest GitHub
@@ -477,6 +481,30 @@ enum DocKindSubcommand {
         kind: String,
         /// Date prefix (e.g. `2026-05-24`) or full filename stem.
         name: String,
+        /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
+}
+
+/// `bwoc peer` subcommands — read-only cross-workspace view (#20).
+///
+/// Learn (ingestion) and give-feedback (write) are deferred to a later phase.
+#[derive(clap::Subcommand, Debug)]
+enum PeerCommand {
+    /// List peers declared in this workspace's routes.toml.
+    List {
+        /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
+    /// View a peer's agents and open team tasks.
+    /// Alias: `bwoc peer <key>` (no subcommand) is not yet supported in clap;
+    /// use `bwoc peer status <key>` or `bwoc peer view <key>`.
+    #[command(name = "status")]
+    View {
+        /// Peer key as declared in routes.toml (agent id or namespace prefix).
+        key: String,
         /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
@@ -1577,6 +1605,19 @@ fn main() -> ExitCode {
                     workspace,
                     json,
                 } => sangha::run_task_review(workspace, team, task, false, json),
+            };
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Peer(sub)) => {
+            let code = match sub {
+                PeerCommand::List { workspace } => peer::run(peer::PeerArgs {
+                    action: peer::PeerAction::List,
+                    workspace,
+                }),
+                PeerCommand::View { key, workspace } => peer::run(peer::PeerArgs {
+                    action: peer::PeerAction::View { key },
+                    workspace,
+                }),
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
