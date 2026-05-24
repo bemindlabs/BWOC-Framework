@@ -26,6 +26,7 @@ convention เดียวที่สอดคล้องสำหรับท
 | 10 | บันทึก (note) | `notes/` (scope ใดก็ได้) | `YYYY-MM-DD_<title>.md` | `notes/2026-05-22_workspace-design.md` |
 | 10a | Retrospective | `retrospectives/` (scope ใดก็ได้) | `YYYY-MM-DD_<title>.md` | `retrospectives/2026-05-24_sprint-1.md` |
 | 10b | เอกสารวิจัย (research) | `research/` (scope ใดก็ได้) | `YYYY-MM-DD_<title>.md` | `research/2026-05-24_llm-caching.md` |
+| 10c | Doc kind กำหนดเอง | `dir` ที่ประกาศใน `.bwoc/doc-kinds.toml` | `YYYY-MM-DD_<title>.md` | `decisions/2026-05-24_use-postgres.md` |
 | 11 | คำสั่ง Claude Code | repo root | `CLAUDE.md`, `CLAUDE.local.md` | `CLAUDE.md` · `CLAUDE.local.md` |
 | 12 | คำสั่ง agent (backend-neutral) | repo root ของ agent | `AGENTS.md` + symlinks | `AGENTS.md` · `CLAUDE.md → AGENTS.md` |
 
@@ -112,6 +113,35 @@ Note อยู่ได้ที่:
 สำหรับการสำรวจเชิงวิจัย: คำถาม, ขอบเขต, แหล่งข้อมูล, ผลการค้นพบ และคำแนะนำ commit ลง repo เหมือน note และ retrospective
 
 `bwoc research new "<title>"` สร้างไฟล์ใน `research/` ด้วย template ที่ built-in
+
+### `YYYY-MM-DD_<title>.md` — Doc kind กำหนดเอง (ใหม่)
+
+Workspace สามารถประกาศ document kind เพิ่มเติมใน `.bwoc/doc-kinds.toml`:
+
+```toml
+[[kind]]
+name = "decision"
+dir = "decisions"
+committed = true
+template = "# YYYY-MM-DD — <Decision>\n\n## Context\n\n## Decision\n\n## Consequences\n"
+# หรือ: template_file = ".bwoc/templates/decision.md"
+```
+
+ฟิลด์: `name` (ชื่อ kind ใน CLI), `dir` (directory สัมพัทธ์กับ workspace), `committed` (default `true`), และ `template` (inline string) หรือ `template_file` (path สัมพัทธ์กับ workspace root) อย่างใดอย่างหนึ่ง
+
+Custom kind ใช้รูปแบบ `YYYY-MM-DD_<title>.md` เดียวกันใน directory ที่ประกาศไว้
+
+ลำดับการ resolve: built-in kind ชนะก่อน แล้วตาม `.bwoc/doc-kinds.toml` kind ที่ไม่รู้จัก → error แสดง kind ทั้งหมดที่มี
+
+**CLI:** `bwoc doc <kind> new "<title>"` — resolve kind ใดก็ได้ (built-in หรือ custom) ผ่าน engine เดียวกัน
+
+```
+bwoc doc decision new "use postgres"   # custom kind
+bwoc doc notes new "my note"           # built-in ผ่าน generic command
+bwoc notes new "my note"               # built-in alias (ไม่เปลี่ยน)
+```
+
+alias ที่มีชื่อ (`bwoc notes`, `bwoc retro`, `bwoc research`) ยังคงเป็น thin wrapper และไม่ถูกยกเลิก
 
 ---
 

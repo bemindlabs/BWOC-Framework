@@ -3,6 +3,14 @@
 //! All three CLI aliases (`bwoc notes`, `bwoc retro`, `bwoc research`) dispatch
 //! into `run()` here — one code path for all kinds.  The `DocKind` descriptor
 //! from `bwoc-core::doc_kind` drives every decision.
+//!
+//! # Retro metrics-prefill (Feature B — TODO #10)
+//!
+//! When `bwoc retro new` scaffolds a retrospective, `cmd_new` best-effort reads
+//! `session-metrics.jsonl` from `metrics/` and/or `agents/*/metrics/` under the
+//! workspace root and injects a summary into the `## Metrics` table.  Absent or
+//! unparseable JSONL leaves the placeholder row unchanged — it never fails the
+//! scaffold.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,7 +68,15 @@ fn cmd_new(kind: DocKind, title: String, root: &Path) -> i32 {
         return 1;
     }
 
-    let body = kind.template();
+    // Obtain base template, passing workspace root so template_file kinds can
+    // read their template from disk.
+    let mut body = kind.template_with_root(Some(root));
+
+    // Feature B: for retrospectives, best-effort prefill the Metrics section.
+    if kind.name == "retrospectives" {
+        body = prefill_retro_metrics(body, root);
+    }
+
     if let Err(e) = fs::write(&path, body) {
         eprintln!(
             "bwoc {}: failed to write {}: {e}",
@@ -140,6 +156,120 @@ fn cmd_view(kind: DocKind, name: String, root: &Path) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// Feature B — retro metrics prefill
+// ---------------------------------------------------------------------------
+
+/// Summarise all `session-metrics.jsonl` files found under `workspace_root`
+/// and inject the totals into the `## Metrics` table in the retro template.
+///
+/// Searches `<root>/metrics/session-metrics.jsonl` and
+/// `<root>/agents/*/metrics/session-metrics.jsonl`.
+///
+/// Never panics / never returns an error — on any failure, the original
+/// `body` is returned unchanged.
+fn prefill_retro_metrics(body: String, root: &Path) -> String {
+    let candidates = collect_metrics_files(root);
+    if candidates.is_empty() {
+        return body;
+    }
+
+    let mut total_attempted: u64 = 0;
+    let mut total_completed: u64 = 0;
+    let mut total_gates_passed: u64 = 0;
+    let mut total_gates_failed: u64 = 0;
+
+    for path in &candidates {
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(metrics) = val.get("metrics") {
+                    total_attempted += metrics
+                        .get("tasksAttempted")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    total_completed += metrics
+                        .get("tasksCompleted")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    total_gates_passed += metrics
+                        .get("gatesPassed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    total_gates_failed += metrics
+                        .get("gatesFailed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                }
+            }
+        }
+    }
+
+    // Compute gate pass rate as percentage string.
+    let total_gates = total_gates_passed + total_gates_failed;
+    let gate_pass_rate = (100 * total_gates_passed)
+        .checked_div(total_gates)
+        .map_or_else(|| "n/a".to_string(), |pct| format!("{pct}%"));
+
+    // Replace empty-cell placeholder rows in the Metrics table.
+    // Pattern: `| <metric-col> | |`  →  `| <metric-col> | <value> |`
+    // The `gate_pass_rate` row has an extra space for column alignment.
+    let body = replace_metric_cell(body, "tasks_attempted", &total_attempted.to_string());
+    let body = replace_metric_cell(body, "tasks_completed", &total_completed.to_string());
+    replace_metric_cell(body, "gate_pass_rate ", &gate_pass_rate)
+}
+
+/// Replace an empty markdown table cell `| <label> | |` with `| <label> | <value> |`.
+///
+/// `label` is the exact left-column text as it appears in the template,
+/// including any trailing alignment spaces.  The right column is the empty
+/// placeholder `|` which becomes `| <value> |`.
+fn replace_metric_cell(body: String, label: &str, value: &str) -> String {
+    // The template rows look like:
+    //   | tasks_attempted | |
+    //   | gate_pass_rate  | |   ← extra space for visual alignment
+    //
+    // We match `| <label> | |` and replace the trailing ` | |` with ` | <value> |`.
+    let old = format!("| {label} | |");
+    let new = format!("| {label} | {value} |");
+    if body.contains(&old) {
+        body.replace(&old, &new)
+    } else {
+        body
+    }
+}
+
+/// Collect candidate `session-metrics.jsonl` paths under the workspace root.
+fn collect_metrics_files(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // 1. <workspace>/metrics/session-metrics.jsonl
+    let p = root.join("metrics/session-metrics.jsonl");
+    if p.is_file() {
+        paths.push(p);
+    }
+
+    // 2. <workspace>/agents/*/metrics/session-metrics.jsonl
+    let agents_dir = root.join("agents");
+    if let Ok(entries) = fs::read_dir(&agents_dir) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("metrics/session-metrics.jsonl");
+            if candidate.is_file() {
+                paths.push(candidate);
+            }
+        }
+    }
+
+    paths
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -169,7 +299,7 @@ fn slugify(title: &str) -> String {
 }
 
 /// Collect all `*.md` filenames (stem + extension, not full paths) from `dir`.
-fn collect_md_files(dir: &Path) -> Result<Vec<String>, std::io::Error> {
+pub(crate) fn collect_md_files(dir: &Path) -> Result<Vec<String>, std::io::Error> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -216,7 +346,7 @@ fn resolve_name(dir: &Path, name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bwoc_core::doc_kind::kind;
+    use bwoc_core::doc_kind::{kind, load_custom_kinds, resolve_kind};
     use tempfile::TempDir;
 
     fn tmp() -> TempDir {
@@ -314,7 +444,6 @@ mod tests {
         assert_eq!(code1, 0);
 
         // Attempt to create again with the same date → same filename → should fail.
-        // We rely on the date being the same within a single test run.
         let code2 = run(
             k,
             DocAction::New {
@@ -355,6 +484,54 @@ mod tests {
         assert!(dir.path().join("research").exists());
     }
 
+    // ---- custom kinds via bwoc doc engine -----------------------------------
+
+    #[test]
+    fn custom_kind_new_creates_right_dir_and_template() {
+        let dir = tmp();
+        let bwoc_dir = dir.path().join(".bwoc");
+        fs::create_dir_all(&bwoc_dir).unwrap();
+        // Use basic template without markdown ## to avoid Rust 2024 ## token issues.
+        fs::write(
+            bwoc_dir.join("doc-kinds.toml"),
+            "[[kind]]\nname = \"decision\"\ndir = \"decisions\"\ntemplate = \"Decision Context section\"\n",
+        )
+        .unwrap();
+
+        let custom = load_custom_kinds(dir.path());
+        assert_eq!(custom.len(), 1);
+
+        let k = custom.into_iter().next().unwrap();
+        let code = run(
+            k,
+            DocAction::New {
+                title: "use postgres".into(),
+            },
+            dir.path(),
+        );
+        assert_eq!(code, 0);
+        assert!(dir.path().join("decisions").exists());
+
+        let files: Vec<_> = fs::read_dir(dir.path().join("decisions"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(files.len(), 1);
+        let content = fs::read_to_string(files[0].path()).unwrap();
+        assert!(
+            content.contains("Context"),
+            "expected 'Context' in:\n{content}"
+        );
+    }
+
+    #[test]
+    fn resolve_kind_unknown_error_message() {
+        let dir = tmp();
+        let err = resolve_kind("doesnotexist", dir.path()).unwrap_err();
+        assert!(err.contains("doesnotexist"));
+        assert!(err.contains("notes"));
+    }
+
     // ---- list --------------------------------------------------------------
 
     #[test]
@@ -371,7 +548,6 @@ mod tests {
         let notes_dir = dir.path().join("notes");
         fs::create_dir_all(&notes_dir).unwrap();
 
-        // Write three files with explicit date prefixes to test ordering.
         for name in [
             "2026-01-01_alpha.md",
             "2026-03-15_gamma.md",
@@ -380,7 +556,6 @@ mod tests {
             fs::write(notes_dir.join(name), "# content").unwrap();
         }
 
-        // Capture stdout by redirecting — instead, test the collect+sort helper directly.
         let mut files = collect_md_files(&notes_dir).unwrap();
         files.sort_by(|a, b| b.cmp(a));
         assert_eq!(files[0], "2026-03-15_gamma.md");
@@ -459,5 +634,152 @@ mod tests {
         assert_eq!(slugify("My First Note!"), "my-first-note");
         assert_eq!(slugify("  spaces  "), "spaces");
         assert_eq!(slugify("A--B"), "a-b");
+    }
+
+    // ---- retro metrics prefill (Feature B) ---------------------------------
+
+    #[test]
+    fn retro_prefill_with_metrics_file() {
+        let dir = tmp();
+        let metrics_dir = dir.path().join("metrics");
+        fs::create_dir_all(&metrics_dir).unwrap();
+
+        // Two session records.
+        let jsonl = concat!(
+            r#"{"sessionId":"s1","agentId":"agent-oracle","startedAt":"2026-05-24T10:00:00Z","endedAt":"2026-05-24T11:00:00Z","metrics":{"tasksAttempted":3,"tasksCompleted":2,"tasksFailed":1,"gatesPassed":8,"gatesFailed":2,"revisionCycles":1,"memoriesCreated":0,"memoriesUpdated":0,"memoriesRemoved":0},"discoveries":[]}"#,
+            "\n",
+            r#"{"sessionId":"s2","agentId":"agent-oracle","startedAt":"2026-05-24T12:00:00Z","endedAt":"2026-05-24T13:00:00Z","metrics":{"tasksAttempted":2,"tasksCompleted":2,"tasksFailed":0,"gatesPassed":6,"gatesFailed":0,"revisionCycles":0,"memoriesCreated":1,"memoriesUpdated":0,"memoriesRemoved":0},"discoveries":[]}"#,
+            "\n",
+        );
+        fs::write(metrics_dir.join("session-metrics.jsonl"), jsonl).unwrap();
+
+        let k = kind("retrospectives").unwrap();
+        let code = run(
+            k,
+            DocAction::New {
+                title: "sprint 1".into(),
+            },
+            dir.path(),
+        );
+        assert_eq!(code, 0);
+
+        let retro_dir = dir.path().join("retrospectives");
+        let files: Vec<_> = fs::read_dir(&retro_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        let content = fs::read_to_string(files[0].path()).unwrap();
+
+        // tasks_attempted = 3+2 = 5
+        assert!(
+            content.contains("| tasks_attempted | 5 |"),
+            "expected tasks_attempted=5 in:\n{content}"
+        );
+        // tasks_completed = 2+2 = 4
+        assert!(
+            content.contains("| tasks_completed | 4 |"),
+            "expected tasks_completed=4 in:\n{content}"
+        );
+        // gate_pass_rate = (8+6)/(8+2+6+0) = 14/16 = 87%
+        assert!(
+            content.contains("| gate_pass_rate  | 87% |"),
+            "expected gate_pass_rate=87% in:\n{content}"
+        );
+    }
+
+    #[test]
+    fn retro_prefill_absent_metrics_leaves_placeholder() {
+        let dir = tmp();
+        // No metrics/ dir exists.
+        let k = kind("retrospectives").unwrap();
+        let code = run(
+            k,
+            DocAction::New {
+                title: "sprint no metrics".into(),
+            },
+            dir.path(),
+        );
+        assert_eq!(code, 0);
+
+        let retro_dir = dir.path().join("retrospectives");
+        let files: Vec<_> = fs::read_dir(&retro_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        let content = fs::read_to_string(files[0].path()).unwrap();
+
+        // Placeholder rows should remain unchanged.
+        assert!(
+            content.contains("| tasks_attempted | |"),
+            "placeholder should be unchanged:\n{content}"
+        );
+        assert!(
+            content.contains("| gate_pass_rate  | |"),
+            "placeholder should be unchanged:\n{content}"
+        );
+    }
+
+    #[test]
+    fn retro_prefill_agents_subdir_metrics() {
+        let dir = tmp();
+        // Put metrics under agents/agent-oracle/metrics/ — the secondary search path.
+        let metrics_dir = dir.path().join("agents/agent-oracle/metrics");
+        fs::create_dir_all(&metrics_dir).unwrap();
+
+        let jsonl = r#"{"sessionId":"s1","agentId":"agent-oracle","startedAt":"2026-05-24T10:00:00Z","endedAt":"2026-05-24T11:00:00Z","metrics":{"tasksAttempted":1,"tasksCompleted":1,"tasksFailed":0,"gatesPassed":4,"gatesFailed":0,"revisionCycles":0,"memoriesCreated":0,"memoriesUpdated":0,"memoriesRemoved":0},"discoveries":[]}"#;
+        fs::write(metrics_dir.join("session-metrics.jsonl"), jsonl).unwrap();
+
+        let k = kind("retrospectives").unwrap();
+        run(
+            k,
+            DocAction::New {
+                title: "agent subdir".into(),
+            },
+            dir.path(),
+        );
+
+        let retro_dir = dir.path().join("retrospectives");
+        let files: Vec<_> = fs::read_dir(&retro_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        let content = fs::read_to_string(files[0].path()).unwrap();
+
+        assert!(
+            content.contains("| tasks_attempted | 1 |"),
+            "expected prefill from agents/ subdir in:\n{content}"
+        );
+    }
+
+    #[test]
+    fn retro_prefill_malformed_jsonl_ignored() {
+        let dir = tmp();
+        let metrics_dir = dir.path().join("metrics");
+        fs::create_dir_all(&metrics_dir).unwrap();
+        // Mix of valid + garbage lines.
+        let jsonl = "not json at all\n{\"sessionId\":\"s1\",\"agentId\":\"a\",\"startedAt\":\"2026\",\"endedAt\":\"2026\",\"metrics\":{\"tasksAttempted\":2,\"tasksCompleted\":1,\"tasksFailed\":1,\"gatesPassed\":3,\"gatesFailed\":1,\"revisionCycles\":0,\"memoriesCreated\":0,\"memoriesUpdated\":0,\"memoriesRemoved\":0},\"discoveries\":[]}\n";
+        fs::write(metrics_dir.join("session-metrics.jsonl"), jsonl).unwrap();
+
+        let k = kind("retrospectives").unwrap();
+        let code = run(
+            k,
+            DocAction::New {
+                title: "mixed jsonl".into(),
+            },
+            dir.path(),
+        );
+        assert_eq!(code, 0);
+
+        let retro_dir = dir.path().join("retrospectives");
+        let files: Vec<_> = fs::read_dir(&retro_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        let content = fs::read_to_string(files[0].path()).unwrap();
+        // Valid line is parsed; tasks_attempted = 2.
+        assert!(
+            content.contains("| tasks_attempted | 2 |"),
+            "expected valid line to be parsed in:\n{content}"
+        );
     }
 }

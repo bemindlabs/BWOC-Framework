@@ -157,6 +157,11 @@ enum Commands {
     /// Manage workspace research documents (YYYY-MM-DD_<slug>.md in research/).
     #[command(subcommand)]
     Research(DocSubcommand),
+    /// Manage documents of any kind — built-in or workspace-declared custom
+    /// (via `.bwoc/doc-kinds.toml`). Use this for custom kinds; the named
+    /// aliases (`notes`, `retro`, `research`) are thin wrappers over this.
+    #[command(name = "doc", subcommand)]
+    Doc(DocKindSubcommand),
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -435,6 +440,41 @@ enum DocSubcommand {
     },
     /// Print a document matching a date prefix or exact filename.
     View {
+        /// Date prefix (e.g. `2026-05-24`) or full filename stem.
+        name: String,
+        /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
+}
+
+/// Generic `bwoc doc <kind> <action>` subcommand — resolves built-in OR
+/// workspace-declared custom kinds from `.bwoc/doc-kinds.toml`.
+#[derive(clap::Subcommand, Debug)]
+enum DocKindSubcommand {
+    /// Create a new document of the given kind with the given title.
+    New {
+        /// Document kind name (built-in: notes, retrospectives, research;
+        /// or any name declared in `.bwoc/doc-kinds.toml`).
+        kind: String,
+        /// Document title (used as the filename slug).
+        title: String,
+        /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
+    /// List documents of the given kind (newest first).
+    List {
+        /// Document kind name.
+        kind: String,
+        /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
+    /// Print a document of the given kind matching a date prefix or exact filename.
+    View {
+        /// Document kind name.
+        kind: String,
         /// Date prefix (e.g. `2026-05-24`) or full filename stem.
         name: String,
         /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
@@ -1556,6 +1596,10 @@ fn main() -> ExitCode {
             let code = dispatch_doc_cmd("research", sub);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
+        Some(Commands::Doc(sub)) => {
+            let code = dispatch_doc_kind_cmd(sub);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
         None => {
             // No subcommand — print the startup banner. Banner already
             // includes a `bwoc --help` hint at the bottom.
@@ -1601,6 +1645,39 @@ fn dispatch_doc_cmd(kind_name: &str, sub: DocSubcommand) -> i32 {
 
     let root = resolve_doc_workspace(workspace_opt);
     doc_cmd::run(k, action, &root)
+}
+
+/// Dispatch a generic `bwoc doc <kind> <action>` invocation.
+///
+/// Resolves the kind against built-ins first, then workspace-declared custom
+/// kinds from `.bwoc/doc-kinds.toml`.  Emits a clear error (listing available
+/// kinds) on unknown kind names.
+fn dispatch_doc_kind_cmd(sub: DocKindSubcommand) -> i32 {
+    use bwoc_core::doc_kind::resolve_kind;
+
+    let (kind_name, action, workspace_opt) = match sub {
+        DocKindSubcommand::New {
+            kind,
+            title,
+            workspace,
+        } => (kind, doc_cmd::DocAction::New { title }, workspace),
+        DocKindSubcommand::List { kind, workspace } => (kind, doc_cmd::DocAction::List, workspace),
+        DocKindSubcommand::View {
+            kind,
+            name,
+            workspace,
+        } => (kind, doc_cmd::DocAction::View { name }, workspace),
+    };
+
+    let root = resolve_doc_workspace(workspace_opt);
+
+    match resolve_kind(&kind_name, &root) {
+        Ok(k) => doc_cmd::run(k, action, &root),
+        Err(msg) => {
+            eprintln!("bwoc doc: {msg}");
+            1
+        }
+    }
 }
 
 /// Workspace resolution for document-kind commands.

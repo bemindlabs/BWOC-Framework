@@ -26,6 +26,7 @@ A single, consistent convention for every `*.md` file in the BWOC framework, age
 | 10 | Note | `notes/` (any scope) | `YYYY-MM-DD_<title>.md` | `notes/2026-05-22_workspace-design.md` |
 | 10a | Retrospective | `retrospectives/` (any scope) | `YYYY-MM-DD_<title>.md` | `retrospectives/2026-05-24_sprint-1.md` |
 | 10b | Research document | `research/` (any scope) | `YYYY-MM-DD_<title>.md` | `research/2026-05-24_llm-caching.md` |
+| 10c | Custom doc kind | declared `dir` in `.bwoc/doc-kinds.toml` | `YYYY-MM-DD_<title>.md` | `decisions/2026-05-24_use-postgres.md` |
 | 11 | Claude Code instructions | repo root | `CLAUDE.md`, `CLAUDE.local.md` | `CLAUDE.md` · `CLAUDE.local.md` |
 | 12 | Agent instructions (backend-neutral) | repo root of an agent | `AGENTS.md` + symlinks | `AGENTS.md` · `CLAUDE.md → AGENTS.md` |
 
@@ -112,6 +113,35 @@ Sections: **Sutamayā** (what the data / docs say), **Cintāmayā** (synthesis /
 For exploratory investigations: a question, scope, sources, findings, and recommendation.  Committed to the repo like notes and retrospectives.
 
 `bwoc research new "<title>"` creates one in `research/` using the built-in template.
+
+### `YYYY-MM-DD_<title>.md` — Custom doc kinds (NEW)
+
+A workspace may declare extra document kinds in `.bwoc/doc-kinds.toml`:
+
+```toml
+[[kind]]
+name = "decision"
+dir = "decisions"
+committed = true
+template = "# YYYY-MM-DD — <Decision>\n\n## Context\n\n## Decision\n\n## Consequences\n"
+# OR: template_file = ".bwoc/templates/decision.md"
+```
+
+Fields: `name` (CLI kind name), `dir` (workspace-relative directory), `committed` (default `true`), and exactly one of `template` (inline string) or `template_file` (path relative to workspace root).
+
+Custom kinds use the same `YYYY-MM-DD_<title>.md` pattern in the declared directory.
+
+Resolution order: built-in kinds win; `.bwoc/doc-kinds.toml` entries come after. Unknown kind → error listing all available kinds.
+
+**CLI:** `bwoc doc <kind> new "<title>"` — resolves any kind (built-in or custom) through the same generic engine.
+
+```
+bwoc doc decision new "use postgres"   # custom kind
+bwoc doc notes new "my note"           # built-in via generic command
+bwoc notes new "my note"               # built-in alias (unchanged)
+```
+
+The named aliases (`bwoc notes`, `bwoc retro`, `bwoc research`) remain thin wrappers and are not deprecated.
 
 ---
 
