@@ -453,6 +453,7 @@ mod tests {
             model: "mock".to_string(),
             fallback_models: Vec::new(),
             vetted_models: Vec::new(),
+            vetted_mode: crate::agent_loop::VettedMode::Warn,
             max_iterations: 10,
             stream: false,
             policy: Policy {

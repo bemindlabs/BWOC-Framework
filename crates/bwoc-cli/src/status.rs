@@ -491,6 +491,8 @@ mod tests {
             worktree_base: None,
             scope_description: None,
             out_of_scope: None,
+            backend: None,
+            base_url: None,
             trust: None,
             version: "2.0".into(),
         }

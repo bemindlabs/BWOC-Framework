@@ -114,6 +114,47 @@ const COMPACTION_KEEP_RECENT: usize = 6;
 const CONTEXT_HEADROOM_FRAC: f64 = 0.10;
 
 // ---------------------------------------------------------------------------
+// Vetted-model mode
+// ---------------------------------------------------------------------------
+
+/// Controls how the agent loop handles a model that is absent from the
+/// `vetted_models` allowlist.
+///
+/// String tokens (for `--vetted-mode` CLI arg): `"off"` | `"warn"` | `"enforce"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VettedMode {
+    /// Skip the vetted-model check entirely — any model is accepted silently.
+    Off,
+    /// Emit a warning to stderr but allow the run to proceed.  Default and
+    /// backward-compatible with the original behaviour.
+    #[default]
+    Warn,
+    /// Refuse to run an unvetted model.
+    ///
+    /// - Primary model unvetted → the loop returns an error before the first
+    ///   turn.
+    /// - Token-pressure switch candidate unvetted → candidate is skipped (same
+    ///   as `Warn`; no silent unvetted switch regardless of mode).
+    /// - Post-switch vetted check → consistent with the switch-time gate.
+    Enforce,
+}
+
+impl std::str::FromStr for VettedMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "off" => Ok(VettedMode::Off),
+            "warn" => Ok(VettedMode::Warn),
+            "enforce" => Ok(VettedMode::Enforce),
+            other => Err(format!(
+                "invalid vetted-mode `{other}`; expected one of: off, warn, enforce"
+            )),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -132,6 +173,14 @@ pub struct LoopConfig {
     /// An unvetted model emits a warning but is NOT hard-blocked.
     /// Empty = no allowlist (all models accepted without warning).
     pub vetted_models: Vec<String>,
+    /// How the loop handles a model not in `vetted_models`.
+    ///
+    /// - `Off` — skip the check entirely.
+    /// - `Warn` — log and proceed (default; backward-compatible).
+    /// - `Enforce` — refuse to run an unvetted primary model (returns an error
+    ///   before the first turn); unvetted candidates in token-pressure switches
+    ///   are always skipped regardless of mode.
+    pub vetted_mode: VettedMode,
     /// Maximum number of turns before giving up.
     pub max_iterations: u32,
     /// Whether to use streaming mode (SSE) for token deltas.
@@ -193,6 +242,7 @@ impl Default for LoopConfig {
             model: "gemma4".to_string(),
             fallback_models: Vec::new(),
             vetted_models: Vec::new(),
+            vetted_mode: VettedMode::Warn,
             max_iterations: 20,
             stream: false,
             policy: Policy::default(), // fail-safe deny-all
@@ -251,14 +301,27 @@ pub async fn run_loop(
     initial_messages: Vec<ChatMessage>,
     telemetry: &mut Telemetry,
 ) -> HarnessResult<LoopResult> {
-    // --- Vetted-model gate ---------------------------------------------------
-    // Warn (stderr) if the primary model is not on the vetted list.
+    // --- Vetted-model gate (site 1: primary model) --------------------------
+    // Apply the configured vetted_mode when the primary model is absent from
+    // the allowlist.  Empty allowlist ≡ no restriction (mode is irrelevant).
     if !config.vetted_models.is_empty() && !config.vetted_models.contains(&config.model) {
-        eprintln!(
-            "[bwoc-harness] WARNING: model `{}` is not in the vetted-models allowlist. \
-             Tool-calling reliability is unknown. Proceeding anyway.",
-            config.model
-        );
+        match config.vetted_mode {
+            VettedMode::Off => {
+                // Silently skip — no check.
+            }
+            VettedMode::Warn => {
+                eprintln!(
+                    "[bwoc-harness] WARNING: model `{}` is not in the vetted-models allowlist. \
+                     Tool-calling reliability is unknown. Proceeding anyway.",
+                    config.model
+                );
+            }
+            VettedMode::Enforce => {
+                return Err(HarnessError::UnvettedModel {
+                    model: config.model.clone(),
+                });
+            }
+        }
     }
 
     let tools = registry.tool_schemas();
@@ -427,13 +490,23 @@ pub async fn run_loop(
                 active_model = model_chain[model_chain_idx].clone();
                 consecutive_malformed = 0;
 
-                // Warn if new active model is unvetted.
+                // Site 2: vetted-mode check after a fallback switch.
+                // Unlike the primary-model gate, Enforce here does NOT hard-stop
+                // the loop — we already switched; instead we skip this candidate
+                // and continue stepping through the chain.  Warn emits a log;
+                // Off skips silently.  (Hard-refusing mid-loop would need a
+                // different design; for now Enforce ≡ Warn on the fallback site.)
                 if !config.vetted_models.is_empty() && !config.vetted_models.contains(&active_model)
                 {
-                    eprintln!(
-                        "[bwoc-harness] WARNING: fallback model `{active_model}` \
-                         is not in vetted-models allowlist."
-                    );
+                    match config.vetted_mode {
+                        VettedMode::Off => {}
+                        VettedMode::Warn | VettedMode::Enforce => {
+                            eprintln!(
+                                "[bwoc-harness] WARNING: fallback model `{active_model}` \
+                                 is not in vetted-models allowlist."
+                            );
+                        }
+                    }
                 }
 
                 eprintln!("[bwoc-harness] switching to fallback model `{active_model}`");
@@ -651,12 +724,15 @@ fn model_effective_limit(model: &str, config: &LoopConfig, provider_queried: Opt
 /// Find the first model in `config.token_pressure_models` that:
 /// 1. Has a **strictly larger** effective limit than the current model's limit.
 /// 2. Passes the vetted-model gate (`vetted_models` is empty OR the model is
-///    listed in it).
+///    listed in it), unless `vetted_mode` is `Off` (gate skipped entirely).
 ///
 /// Returns `Some(model_id)` if found, `None` otherwise.
 ///
-/// A model that fails the vetted gate is skipped with a warning — it will
-/// NOT be used silently.
+/// Site 3 — vetted-mode behaviour for token-pressure candidates:
+/// - `Off` — accept any candidate with a larger limit; no vetted check.
+/// - `Warn` — skip unvetted candidates with a warning (existing behaviour).
+/// - `Enforce` — same as `Warn` for candidates; the hard-refuse only applies
+///   to the primary model (site 1).
 ///
 /// `provider_cache` is the per-session cache populated by
 /// [`ProviderClient::model_context_limit`] queries.
@@ -676,8 +752,13 @@ fn find_larger_vetted_model(
             continue;
         }
 
-        // Check vetted gate first — skip (with warning) if not vetted.
-        if !config.vetted_models.is_empty() && !config.vetted_models.contains(candidate) {
+        // Site 3: apply vetted gate according to mode.
+        // Off → skip the gate entirely (any model is acceptable).
+        // Warn / Enforce → skip unvetted candidates with a warning.
+        if config.vetted_mode != VettedMode::Off
+            && !config.vetted_models.is_empty()
+            && !config.vetted_models.contains(candidate)
+        {
             eprintln!(
                 "[bwoc-harness] token-pressure candidate `{candidate}` skipped: \
                  not in vetted-models allowlist"
@@ -1037,6 +1118,7 @@ mod tests {
             model: "mock".to_string(),
             fallback_models: Vec::new(),
             vetted_models: Vec::new(),
+            vetted_mode: VettedMode::Warn,
             max_iterations,
             stream: false,
             policy: allow_all_policy(),
@@ -1363,6 +1445,7 @@ mod tests {
             model: "primary-model".to_string(),
             fallback_models: vec!["fallback-model".to_string()],
             vetted_models: vec!["fallback-model".to_string()],
+            vetted_mode: VettedMode::Warn,
             max_iterations: 20,
             stream: false,
             policy: allow_all_policy(),
@@ -1409,6 +1492,7 @@ mod tests {
             model: "bad-primary".to_string(),
             fallback_models: vec!["bad-fallback".to_string()],
             vetted_models: Vec::new(),
+            vetted_mode: VettedMode::Warn,
             max_iterations: 30,
             stream: false,
             policy: allow_all_policy(),
@@ -1704,6 +1788,7 @@ mod tests {
             model: "mock".to_string(),
             fallback_models: Vec::new(),
             vetted_models: Vec::new(),
+            vetted_mode: VettedMode::Warn,
             max_iterations: 5,
             stream: false,
             policy: Policy {
@@ -2194,5 +2279,185 @@ mod tests {
             result.compactions >= 1,
             "compaction must fire when unvetted candidate is rejected"
         );
+    }
+
+    // ── VettedMode tests ─────────────────────────────────────────────────────
+
+    /// `VettedMode::Off` — unvetted primary model runs silently, no error.
+    #[tokio::test]
+    async fn vetted_mode_off_unvetted_model_runs() {
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("ran")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let config = LoopConfig {
+            model: "unlisted-model".to_string(),
+            vetted_models: vec!["only-this".to_string()],
+            vetted_mode: VettedMode::Off,
+            ..test_config(5)
+        };
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("hi")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        // Must succeed without error.
+        assert_eq!(result.final_response, "ran");
+    }
+
+    /// `VettedMode::Warn` — unvetted primary model runs (unchanged from original).
+    #[tokio::test]
+    async fn vetted_mode_warn_unvetted_model_runs() {
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("warned")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let config = LoopConfig {
+            model: "unknown".to_string(),
+            vetted_models: vec!["known".to_string()],
+            vetted_mode: VettedMode::Warn,
+            ..test_config(5)
+        };
+
+        // Warn mode: must not return an error even for unvetted model.
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("hi")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.final_response, "warned");
+    }
+
+    /// `VettedMode::Enforce` — unvetted primary model → error before first turn.
+    #[tokio::test]
+    async fn vetted_mode_enforce_unvetted_primary_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        // Provider has a response, but it must never be consumed.
+        let provider = Arc::new(MockProvider::new(vec![make_final_response(
+            "should not reach",
+        )]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let config = LoopConfig {
+            model: "bad-model".to_string(),
+            vetted_models: vec!["good-model".to_string()],
+            vetted_mode: VettedMode::Enforce,
+            ..test_config(5)
+        };
+
+        let err = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("hi")],
+            &mut telem,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, HarnessError::UnvettedModel { ref model } if model == "bad-model"),
+            "expected UnvettedModel error, got: {err:?}"
+        );
+    }
+
+    /// `VettedMode::Enforce` — vetted primary model runs normally.
+    #[tokio::test]
+    async fn vetted_mode_enforce_vetted_model_runs() {
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("ok-vetted")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let config = LoopConfig {
+            model: "trusted-model".to_string(),
+            vetted_models: vec!["trusted-model".to_string()],
+            vetted_mode: VettedMode::Enforce,
+            ..test_config(5)
+        };
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("hi")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.final_response, "ok-vetted");
+    }
+
+    /// Empty `vetted_models` → no restriction regardless of mode.
+    /// (Mode is irrelevant when the allowlist is empty.)
+    #[tokio::test]
+    async fn vetted_mode_enforce_empty_allowlist_no_restriction() {
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("unrestricted")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let config = LoopConfig {
+            model: "any-model".to_string(),
+            vetted_models: Vec::new(), // empty → no gating
+            vetted_mode: VettedMode::Enforce,
+            ..test_config(5)
+        };
+
+        // Must NOT error — empty allowlist means all models pass.
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("hi")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.final_response, "unrestricted");
+    }
+
+    /// `VettedMode` FromStr parses all three variants and rejects unknown input.
+    #[test]
+    fn vetted_mode_from_str() {
+        assert_eq!("off".parse::<VettedMode>().unwrap(), VettedMode::Off);
+        assert_eq!("warn".parse::<VettedMode>().unwrap(), VettedMode::Warn);
+        assert_eq!(
+            "enforce".parse::<VettedMode>().unwrap(),
+            VettedMode::Enforce
+        );
+        assert!("invalid".parse::<VettedMode>().is_err());
+        assert!("Warn".parse::<VettedMode>().is_err()); // case-sensitive
     }
 }

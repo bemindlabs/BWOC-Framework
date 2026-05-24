@@ -24,37 +24,58 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use bwoc_core::manifest::Manifest;
+
 use crate::i18n;
 use crate::sessions::{SessionMarker, remove_marker, write_marker};
 
 /// Which backend CLI to invoke.
 ///
-/// Non-Ollama variants map 1:1 to an external CLI program name on PATH.
-/// `Ollama` is special: it execs the `bwoc-harness` sibling binary.
+/// Non-Ollama, non-OpenAiCompatible variants map 1:1 to an external CLI
+/// program name on PATH.  `Ollama` and `OpenAiCompatible` exec the
+/// `bwoc-harness` sibling binary; the difference is that `OpenAiCompatible`
+/// requires an explicit endpoint from the agent's `config.manifest.json`
+/// (`"baseUrl"` field) whereas `Ollama` has a built-in default
+/// (`http://localhost:11434/v1`).
+///
+/// Manifest `"backend"` string → variant mapping:
+/// - `"claude"` → `Claude`
+/// - `"agy"` → `Antigravity`
+/// - `"codex"` → `Codex`
+/// - `"kimi"` → `Kimi`
+/// - `"ollama"` → `Ollama`
+/// - `"openai-compatible"` → `OpenAiCompatible`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Backend {
     Claude,
     Antigravity,
     Codex,
     Kimi,
-    /// Self-hosted Ollama (or any OpenAI-compat endpoint).
-    /// Execs the `bwoc-harness` sibling binary instead of an external CLI.
+    /// Self-hosted Ollama.  Execs the `bwoc-harness` sibling binary with the
+    /// default endpoint `http://localhost:11434/v1`, or with `baseUrl` from
+    /// `config.manifest.json` when that field is present.
     Ollama,
+    /// Config-driven OpenAI-compatible provider.  Execs the `bwoc-harness`
+    /// sibling binary and passes the agent's `baseUrl` manifest field as
+    /// `--endpoint`.  **`baseUrl` is required** for this backend; spawn
+    /// returns a clear error when it is absent.
+    #[value(name = "openai-compatible")]
+    OpenAiCompatible,
 }
 
 impl Backend {
     /// External CLI program name for vendor backends.
     ///
-    /// Returns `None` for `Ollama` — that backend uses `harness_binary()`
-    /// instead. Callers that only care about the human-readable name should
-    /// use `display_name()`.
+    /// Returns `None` for `Ollama` and `OpenAiCompatible` — both use
+    /// `harness_binary()` instead. Callers that only care about the
+    /// human-readable name should use `display_name()`.
     pub fn cli_name(self) -> Option<&'static str> {
         match self {
             Backend::Claude => Some("claude"),
             Backend::Antigravity => Some("agy"),
             Backend::Codex => Some("codex"),
             Backend::Kimi => Some("kimi"),
-            Backend::Ollama => None,
+            Backend::Ollama | Backend::OpenAiCompatible => None,
         }
     }
 
@@ -66,7 +87,14 @@ impl Backend {
             Backend::Codex => "codex",
             Backend::Kimi => "kimi",
             Backend::Ollama => "ollama",
+            Backend::OpenAiCompatible => "openai-compatible",
         }
+    }
+
+    /// Returns `true` for backends that exec `bwoc-harness` rather than an
+    /// external vendor CLI.
+    pub fn uses_harness(self) -> bool {
+        matches!(self, Backend::Ollama | Backend::OpenAiCompatible)
     }
 
     /// Curated catalog of common LLM model identifiers per backend, surfaced
@@ -98,6 +126,9 @@ impl Backend {
                 "mistral-nemo",
                 "gemma4:8b",
             ],
+            // OpenAI-compatible endpoint: any model the server supports.
+            // These are common examples; free-text input is always accepted.
+            Backend::OpenAiCompatible => &["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
         }
     }
 
@@ -160,6 +191,12 @@ pub enum SpawnError {
          or add it to PATH"
     )]
     HarnessNotFound,
+    /// `openai-compatible` backend requires `"baseUrl"` in `config.manifest.json`.
+    #[error(
+        "backend `openai-compatible` requires a `\"baseUrl\"` field in config.manifest.json \
+         (e.g. \"https://api.openai.com/v1\"); none found in {0}"
+    )]
+    MissingBaseUrl(PathBuf),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 }
@@ -172,7 +209,8 @@ pub fn run(args: SpawnArgs) -> i32 {
             e @ (SpawnError::PathMissing(_)
             | SpawnError::NotAnAgent(_)
             | SpawnError::BackendNotFound { .. }
-            | SpawnError::HarnessNotFound),
+            | SpawnError::HarnessNotFound
+            | SpawnError::MissingBaseUrl(_)),
         ) => {
             eprintln!("bwoc spawn: {e}");
             2
@@ -214,28 +252,63 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     let workspace_root = find_workspace_root(&path);
 
     // ── Spawn the backend ────────────────────────────────────────────────────
-    // Ollama → exec bwoc-harness; all other backends → exec their external CLI.
-    let mut cmd = if args.backend == Backend::Ollama {
+    // Harness backends (Ollama, OpenAiCompatible) → exec bwoc-harness.
+    // Vendor backends (Claude, Antigravity, Codex, Kimi) → exec their CLI.
+    let mut cmd = if args.backend.uses_harness() {
+        // Read the manifest *before* locating the harness binary so that a
+        // missing-baseUrl error is reported before a harness-not-found error.
+        // This ordering matters for `openai-compatible` where baseUrl is
+        // required; a clear config error should take priority over a binary
+        // lookup error.
+        let manifest_path = path.join("config.manifest.json");
+        let base_url: Option<String> = Manifest::load_from_path(&manifest_path)
+            .ok()
+            .and_then(|m| m.base_url);
+
+        // For OpenAiCompatible, enforce that baseUrl is present before we
+        // bother finding (or failing to find) the harness binary.
+        if args.backend == Backend::OpenAiCompatible && base_url.is_none() {
+            return Err(SpawnError::MissingBaseUrl(manifest_path));
+        }
+
         let harness = Backend::harness_binary().ok_or(SpawnError::HarnessNotFound)?;
         let mut c = Command::new(&harness);
-        c.current_dir(&path).args(&args.extra);
+        c.current_dir(&path);
+
+        match args.backend {
+            Backend::OpenAiCompatible => {
+                // base_url is Some — validated above.
+                let endpoint = base_url.expect("validated above");
+                c.arg("--endpoint").arg(&endpoint);
+            }
+            Backend::Ollama => {
+                // Pass baseUrl when explicitly configured; otherwise the
+                // harness uses its built-in default (http://localhost:11434/v1).
+                if let Some(url) = base_url {
+                    c.arg("--endpoint").arg(&url);
+                }
+            }
+            _ => unreachable!("uses_harness() only true for Ollama and OpenAiCompatible"),
+        }
+
+        c.args(&args.extra);
         c
     } else {
         let cli = args
             .backend
             .cli_name()
-            .expect("non-Ollama backend always has a cli_name");
+            .expect("vendor backend always has a cli_name");
         let mut c = Command::new(cli);
         c.current_dir(&path).args(&args.extra);
         c
     };
 
     let mut child = cmd.spawn().map_err(|e| {
-        if args.backend != Backend::Ollama {
+        if !args.backend.uses_harness() {
             let cli = args
                 .backend
                 .cli_name()
-                .expect("non-Ollama backend always has a cli_name");
+                .expect("vendor backend always has a cli_name");
             if e.kind() == io::ErrorKind::NotFound {
                 return SpawnError::BackendNotFound { backend: cli };
             }
@@ -361,8 +434,9 @@ mod tests {
         assert_eq!(Backend::Antigravity.cli_name(), Some("agy"));
         assert_eq!(Backend::Codex.cli_name(), Some("codex"));
         assert_eq!(Backend::Kimi.cli_name(), Some("kimi"));
-        // Ollama has no external CLI — uses bwoc-harness instead.
+        // Harness backends have no external CLI.
         assert_eq!(Backend::Ollama.cli_name(), None);
+        assert_eq!(Backend::OpenAiCompatible.cli_name(), None);
     }
 
     #[test]
@@ -372,11 +446,112 @@ mod tests {
         assert_eq!(Backend::Codex.display_name(), "codex");
         assert_eq!(Backend::Kimi.display_name(), "kimi");
         assert_eq!(Backend::Ollama.display_name(), "ollama");
+        assert_eq!(
+            Backend::OpenAiCompatible.display_name(),
+            "openai-compatible"
+        );
     }
 
     #[test]
     fn ollama_has_models() {
         assert!(!Backend::Ollama.models().is_empty());
+    }
+
+    #[test]
+    fn openai_compatible_has_models() {
+        assert!(!Backend::OpenAiCompatible.models().is_empty());
+    }
+
+    #[test]
+    fn uses_harness_correct() {
+        assert!(Backend::Ollama.uses_harness());
+        assert!(Backend::OpenAiCompatible.uses_harness());
+        assert!(!Backend::Claude.uses_harness());
+        assert!(!Backend::Antigravity.uses_harness());
+        assert!(!Backend::Codex.uses_harness());
+        assert!(!Backend::Kimi.uses_harness());
+    }
+
+    /// `openai-compatible` spawn with a missing `config.manifest.json` (or one
+    /// without `baseUrl`) must return `MissingBaseUrl` — not a panic or IO error.
+    #[test]
+    fn openai_compatible_missing_base_url_returns_error() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("agent-test");
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        // Minimal AGENTS.md to pass validate_agent_path.
+        fs::write(agent_dir.join("AGENTS.md"), "# Agent").unwrap();
+
+        // Write a manifest WITHOUT baseUrl.
+        let manifest_json = r#"{
+            "name": "test", "agentId": "agent-test", "agentRole": "x",
+            "primaryModel": "gpt-4o", "memoryPath": "memories/",
+            "lintCmd": "true", "formatCmd": "true",
+            "testCmd": "true", "buildCmd": "true",
+            "version": "2.0",
+            "backend": "openai-compatible"
+        }"#;
+        fs::write(agent_dir.join("config.manifest.json"), manifest_json).unwrap();
+
+        let args = SpawnArgs {
+            path: Some(agent_dir),
+            backend: Backend::OpenAiCompatible,
+            extra: vec![],
+            lang: "en".to_string(),
+        };
+
+        let result = spawn(args);
+        assert!(
+            matches!(result, Err(SpawnError::MissingBaseUrl(_))),
+            "expected MissingBaseUrl, got: {result:?}"
+        );
+    }
+
+    /// `openai-compatible` spawn with `baseUrl` present would proceed to exec
+    /// bwoc-harness; we can only verify it fails with HarnessNotFound (since
+    /// the binary doesn't exist in a unit test context where CARGO_BIN_EXE
+    /// isn't set).  The key assertion: it must NOT return MissingBaseUrl.
+    #[test]
+    fn openai_compatible_with_base_url_attempts_harness() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("agent-openai");
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        fs::write(agent_dir.join("AGENTS.md"), "# Agent").unwrap();
+
+        let manifest_json = r#"{
+            "name": "test", "agentId": "agent-openai", "agentRole": "x",
+            "primaryModel": "gpt-4o", "memoryPath": "memories/",
+            "lintCmd": "true", "formatCmd": "true",
+            "testCmd": "true", "buildCmd": "true",
+            "version": "2.0",
+            "backend": "openai-compatible",
+            "baseUrl": "https://api.openai.com/v1"
+        }"#;
+        fs::write(agent_dir.join("config.manifest.json"), manifest_json).unwrap();
+
+        let args = SpawnArgs {
+            path: Some(agent_dir),
+            backend: Backend::OpenAiCompatible,
+            extra: vec!["-t".into(), "ping".into()],
+            lang: "en".to_string(),
+        };
+
+        let result = spawn(args);
+        // MissingBaseUrl must NOT appear — we did provide baseUrl.
+        assert!(
+            !matches!(result, Err(SpawnError::MissingBaseUrl(_))),
+            "baseUrl was provided; must not get MissingBaseUrl"
+        );
+        // Without the harness binary available, we expect HarnessNotFound or
+        // a non-zero exit (binary launched or not found).  Either way, not MissingBaseUrl.
     }
 
     #[test]

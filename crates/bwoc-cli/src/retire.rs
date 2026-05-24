@@ -455,6 +455,8 @@ mod tests {
             worktree_base: worktree_base.map(str::to_string),
             scope_description: None,
             out_of_scope: None,
+            backend: None,
+            base_url: None,
             trust: None,
             version: "2.0".into(),
         };

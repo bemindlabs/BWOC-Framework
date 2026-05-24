@@ -1012,6 +1012,8 @@ fn build_manifest(r: &Resolved) -> Manifest {
         // For now, `bwoc new` writes no trust block — equivalent to
         // "no qualities declared, no gating" per the spec.
         trust: None,
+        backend: None,
+        base_url: None,
         version: "2.0".to_string(),
     }
 }

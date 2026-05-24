@@ -29,6 +29,14 @@ pub enum HarnessError {
         last_error: String,
     },
 
+    /// The configured model is not in the vetted-models allowlist and
+    /// `vetted_mode` is `Enforce`.  The loop refused to start.
+    #[error(
+        "model `{model}` is not in the vetted-models allowlist \
+         and vetted_mode=enforce; refusing to run"
+    )]
+    UnvettedModel { model: String },
+
     /// The model returned malformed or unparseable tool calls repeatedly
     /// and all retry/fallback attempts were exhausted.
     #[error("malformed tool calls from model `{model}` after {attempts} attempts")]

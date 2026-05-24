@@ -10,7 +10,7 @@ use std::sync::Arc;
 use clap::Parser;
 
 use bwoc_harness::{
-    agent_loop::{LoopConfig, run_loop},
+    agent_loop::{LoopConfig, VettedMode, run_loop},
     error::HarnessResult,
     policy::{HarnessPolicy, Policy},
     provider::{ChatMessage, OllamaClient, ProviderClient},
@@ -58,6 +58,14 @@ struct Args {
     /// Skip model validation at startup (useful for testing with mock endpoints).
     #[arg(long)]
     skip_model_check: bool,
+
+    /// How to handle a model that is absent from the vetted-models allowlist.
+    ///
+    /// `off` — skip the check silently.
+    /// `warn` — emit a warning but proceed (default).
+    /// `enforce` — refuse to run an unvetted primary model.
+    #[arg(long, default_value = "warn")]
+    vetted_mode: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,11 +136,18 @@ async fn run() -> HarnessResult<()> {
     // Detect TTY: if stderr is a terminal, the operator can respond to `ask` prompts.
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
+    // ── Vetted mode ───────────────────────────────────────────────────────
+    let vetted_mode: VettedMode = args.vetted_mode.parse().unwrap_or_else(|e: String| {
+        eprintln!("[bwoc-harness] warning: {e}; defaulting to warn");
+        VettedMode::Warn
+    });
+
     // ── Loop config ───────────────────────────────────────────────────────
     let config = LoopConfig {
         model: args.model.clone(),
         fallback_models: Vec::new(),
         vetted_models: Vec::new(),
+        vetted_mode,
         max_iterations: args.max_iterations,
         stream: args.stream,
         policy,

@@ -106,6 +106,11 @@ pub enum RunError {
          (`cargo install --path crates/bwoc-harness`) or add it to PATH"
     )]
     HarnessNotFound,
+    #[error(
+        "backend `openai-compatible` requires a `\"baseUrl\"` field in config.manifest.json; \
+         none found in {0}"
+    )]
+    MissingBaseUrl(PathBuf),
     #[error("failed to start agent process: {0}")]
     Io(#[from] io::Error),
     #[error("task timed out after {secs}s")]
@@ -256,6 +261,32 @@ pub fn build_command(
         }
         Backend::Ollama => {
             let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
+            let mut args = vec![
+                "--workdir".to_string(),
+                agent_dir.to_string_lossy().into_owned(),
+                "--task".to_string(),
+                task.to_string(),
+                "--model".to_string(),
+                primary_model.to_string(),
+            ];
+            // Honour baseUrl from config.manifest.json when present.
+            let manifest_path = agent_dir.join("config.manifest.json");
+            if let Ok(m) = Manifest::load_from_path(&manifest_path) {
+                if let Some(url) = m.base_url {
+                    args.push("--endpoint".to_string());
+                    args.push(url);
+                }
+            }
+            Ok((harness.to_string_lossy().into_owned(), args))
+        }
+        Backend::OpenAiCompatible => {
+            let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
+            // baseUrl is required for openai-compatible.
+            let manifest_path = agent_dir.join("config.manifest.json");
+            let base_url = Manifest::load_from_path(&manifest_path)
+                .ok()
+                .and_then(|m| m.base_url)
+                .ok_or(RunError::MissingBaseUrl(manifest_path))?;
             let args = vec![
                 "--workdir".to_string(),
                 agent_dir.to_string_lossy().into_owned(),
@@ -263,6 +294,8 @@ pub fn build_command(
                 task.to_string(),
                 "--model".to_string(),
                 primary_model.to_string(),
+                "--endpoint".to_string(),
+                base_url,
             ];
             Ok((harness.to_string_lossy().into_owned(), args))
         }
@@ -385,6 +418,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "codex" => Some(Backend::Codex),
         "kimi" => Some(Backend::Kimi),
         "ollama" => Some(Backend::Ollama),
+        "openai-compatible" => Some(Backend::OpenAiCompatible),
         _ => None,
     }
 }

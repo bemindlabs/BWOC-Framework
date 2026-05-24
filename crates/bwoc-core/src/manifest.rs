@@ -48,6 +48,25 @@ pub struct Manifest {
     /// `{{outOfScope}}` in AGENTS.md and persona/README.md.
     #[serde(rename = "outOfScope", skip_serializing_if = "Option::is_none")]
     pub out_of_scope: Option<String>,
+    /// Which spawn backend this agent uses.
+    ///
+    /// Accepted values: `"claude"` | `"agy"` | `"codex"` | `"kimi"` |
+    /// `"ollama"` | `"openai-compatible"`.
+    ///
+    /// Required for `openai-compatible`; optional/ignored for vendor backends
+    /// that are selected on the CLI with `--backend`. When present, `bwoc
+    /// spawn` can auto-select the backend without an explicit flag.
+    #[serde(rename = "backend", skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// Base URL of the OpenAI-compatible inference endpoint.
+    ///
+    /// Required when `backend` is `"openai-compatible"`. Passed to the harness
+    /// as `--endpoint <baseUrl>`. Ignored for vendor backends that use their
+    /// own CLI.
+    ///
+    /// Example: `"https://api.openai.com/v1"` or `"http://localhost:8000/v1"`.
+    #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     /// Inter-agent trust declaration per the Kalyāṇamitta 7 spec
     /// (`modules/agent-template/interconnect/trust.md`). Absent block
     /// means "no qualities declared, no qualities required" — the
@@ -267,6 +286,8 @@ mod tests {
             worktree_base: None,
             scope_description: None,
             out_of_scope: None,
+            backend: None,
+            base_url: None,
             trust: None,
             version: "2.0".into(),
         }

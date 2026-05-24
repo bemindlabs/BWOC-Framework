@@ -199,6 +199,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "codex" => Some(Backend::Codex),
         "kimi" => Some(Backend::Kimi),
         "ollama" => Some(Backend::Ollama),
+        "openai-compatible" => Some(Backend::OpenAiCompatible),
         _ => None,
     }
 }
