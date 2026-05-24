@@ -354,17 +354,22 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 ## Status
 
-**Current phase:** Phase 3 DoD met; `bwoc-harness` (self-hosted agentic runtime, the fifth backend) shipped in v2026.5.24-0 (2.2.0). Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
+**Current phase:** Phase 3 DoD met and the **plugin-system cycle is complete** (v2.3.0) — the pluggable edges are all filled in. Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
 
-**Latest release:** [`v2026.5.24-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.24-0) (2.2.0) shipped 2026-05-24 — adds `bwoc-harness` (self-hosted Ollama / OpenAI-compatible backend). First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23) with cross-platform binaries for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, and `x86_64-pc-windows-msvc`. CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`; SHA-256 checksums shipped alongside each binary.
+**Latest release:** [`v2026.5.24-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.24-1) (2.3.0) shipped 2026-05-24 — the plugin-system cycle. Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23).
 
-**Latest unreleased work (post v2026.5.23-1):**
+**Shipped in v2.3.0 — the plugin-system cycle:**
 
-- **Kalyāṇamitta-7 trust — all 5 implementation steps complete.** Recipients declare 7 booleans + an opt-in `requiredTrust` list in `config.manifest.json`; `bwoc check` verifies each declaration against repo evidence; `bwoc trust <agent>` reads a peer's profile; `bwoc-agent --serve` refuses inbox envelopes from senders missing required qualities (behind `BWOC_TRUST_GATING=1` env opt-in, v1 safety), writing refusals to a sidecar log that `bwoc inbox` joins at read time. Spec: [`interconnect/trust.md`](modules/agent-template/interconnect/trust.md). See [`notes/2026-05-23_trust-step-4.md`](notes/2026-05-23_trust-step-4.md).
-- **Agent → agent messaging (sammā-vācā Phase 1).** `bwoc send --from <agent>` writes a real sender identity into the envelope; the recipient daemon's trust gate already verifies against that sender's manifest (from trust step 4). **Sāraṇīyadhamma 6** norms in [`interconnect/messaging.md`](modules/agent-template/interconnect/messaging.md) (+ `.th.md`). See [`notes/2026-05-23_agent-to-agent-messaging.md`](notes/2026-05-23_agent-to-agent-messaging.md).
-- **Phase 4 fleet-governance spec (Aparihāniya-dhamma 7).** [`docs/en/FLEET-GOVERNANCE.en.md`](docs/en/FLEET-GOVERNANCE.en.md) (+ `.th.md`) — seven non-decline conditions from DN 16 mapped to workspace-level operator practices (regular `bwoc list` cadence, coordinated start/stop, schemaVersion discipline, template-version honoring, refusal-respect, shared-resource ownership, senior-agent protection). v1 ships observable signals; v2 may promote signals to gates. See [`notes/2026-05-23_phase-4-fleet-governance.md`](notes/2026-05-23_phase-4-fleet-governance.md).
-- **`bwoc check` becomes dual-mode** (template vs incarnation). The check reads `manifest.name` to decide what to assert: template-mode keeps the existing behavior (placeholders present + neutrality rules); incarnation-mode asserts placeholders are _gone_ (except runtime `{{taskId}}`) and skips neutrality rules (those guard the scaffold, not per-agent commitments). Closes a latent bug where un-personalized agents silently passed. See [`notes/2026-05-23_check-dual-mode-and-personalize.md`](notes/2026-05-23_check-dual-mode-and-personalize.md).
-- **`agents/agent-pi/` + `agents/agent-oracle/` personalized.** Both now pass `bwoc check` with 0 violations.
+- **Real OS-level sandbox** — `bwoc-harness` replaces the stub with **landlock** (Linux) + **sandbox-exec** (macOS), confining tool writes to the worktree; graceful-degrade where unsupported. Defence-in-depth over the existing path-allowlist.
+- **Windows support for `bwoc-harness`** — cross-platform shell-out (`cmd /C`), re-enabled in Windows CI (workspace tested on macOS · Linux · Windows).
+- **OpenAI-compatible provider + vetted-model mode** — `bwoc spawn --backend openai-compatible` runs any OpenAI-compatible endpoint (vLLM / LM Studio / llama.cpp / remote) via a `baseUrl`; `--vetted-mode off|warn|enforce` gates unvetted models.
+- **Cross-workspace `bwoc peer`** — read-only `view` (peer agents + Saṅgha tasks) and allowlist-gated `learn` (shared docs), local-FS, no central broker.
+- **`bwoc sessions`** — discover + monitor running agent sessions across backends (spawn-dropped markers + process/tmux scan; observe-only).
+- **Trust v2 warn-mode** — `off` / `warn` / `refuse` trust gate (`trust.md` §Refusal modes); cryptographic signed envelopes deferred by decision.
+- **Document-kind mechanism** — `bwoc notes | retro | research` (+ workspace-declared custom kinds via `.bwoc/doc-kinds.toml`).
+- **Headless + self-update + token-switch** — `bwoc run <agent> --task` (headless), `bwoc update --check` (release-drift), per-model token-limit auto-switch in the harness.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full list and [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) for binaries.
 
 | Area                                                            | Status                                                         |
 | --------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -372,8 +377,8 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 | Lifecycle, Observability, Failure, Improvement                  | Ready                                                          |
 | Coordination, Governance                                        | Ready                                                          |
 | Kalyāṇamitta-7 trust (manifest + check + read + daemon refusal) | **Phase 3 ✓ (behind `BWOC_TRUST_GATING=1`)**                   |
-| `bwoc` CLI (Rust, macOS · Linux · Windows · CI matrix green)    | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 in progress**                |
-| `bwoc-agent` runtime (Rust; `--serve` daemon on Unix)           | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 in progress**                |
+| `bwoc` CLI (Rust, macOS · Linux · Windows · CI matrix green)    | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 ✓ · plugin-cycle ✓**          |
+| `bwoc-agent` runtime (Rust; `--serve` daemon on Unix)           | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 ✓ · plugin-cycle ✓**          |
 | Reference agents (`agent-pi`, `agent-oracle`)                   | **Phase 3 ✓ (incarnated + personalized + `bwoc check` clean)** |
 | Fleet dashboard (`bwoc dashboard` TUI)                          | **Phase 2 ✓**                                                  |
 
