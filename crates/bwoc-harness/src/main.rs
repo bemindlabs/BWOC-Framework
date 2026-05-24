@@ -138,6 +138,8 @@ async fn run() -> HarnessResult<()> {
         policy,
         is_tty,
         context_limit: 0, // no compaction by default; operator sets via config
+        model_context_limits: std::collections::HashMap::new(),
+        token_pressure_models: Vec::new(),
     };
 
     // ── Telemetry ─────────────────────────────────────────────────────────

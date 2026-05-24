@@ -76,6 +76,7 @@
 //! A blocked call returns the blocking reason as the tool result message so
 //! the model can adapt — it is NOT a hard error that stops the loop.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{HarnessError, HarnessResult};
@@ -123,6 +124,8 @@ pub struct LoopConfig {
     pub model: String,
     /// Ordered fallback model list.  If the primary errors fatally or returns
     /// malformed tool calls repeatedly, the loop switches to the next model.
+    /// This is the **error-based** fallback chain — distinct from
+    /// `token_pressure_models`.
     /// Empty = no fallback.
     pub fallback_models: Vec<String>,
     /// Allowlist of model IDs known to support tool-calling reliably.
@@ -140,10 +143,48 @@ pub struct LoopConfig {
     /// Whether the harness has a controlling TTY for `ask`-mode prompts.
     /// `false` = autonomous / non-TTY mode; `ask` falls back to `deny`.
     pub is_tty: bool,
-    /// Context-window token limit for this model.  When the running context
-    /// approaches this limit, the loop compacts the history.
-    /// `0` = no compaction.
+    /// Default context-window token limit used when a model is absent from
+    /// `model_context_limits`.  When the running context approaches this
+    /// limit, the loop compacts the history.
+    /// `0` = no compaction / no limit checking.
     pub context_limit: u32,
+    /// Per-model context-window token limits.
+    ///
+    /// Key = model identifier, Value = context limit in tokens.
+    /// When the active model is found in this map its limit overrides
+    /// `context_limit`.  The **point of this map** is that different models
+    /// in a fleet have different window sizes; tracking them separately lets
+    /// the loop detect pressure per-model and switch to a larger-context
+    /// model rather than compacting.
+    ///
+    /// `0` values are treated as "no limit" (same as absent).
+    ///
+    /// # Example
+    /// ```text
+    /// model_context_limits = {
+    ///   "small-model" => 4096,
+    ///   "large-model" => 32768,
+    /// }
+    /// ```
+    ///
+    /// // TODO(#13): optional provider-queried limits (dynamic, not static)
+    pub model_context_limits: HashMap<String, u32>,
+    /// Ordered list of candidate models to switch to when token pressure is
+    /// detected on the active model.
+    ///
+    /// This is a **proactive, token-pressure–driven** switch — distinct from
+    /// the error-based `fallback_models`.  When the active model's context
+    /// approaches its limit, the loop searches this list (in order) for the
+    /// first model that:
+    ///
+    /// 1. Has a **larger** configured limit than the current model's limit.
+    /// 2. Is present in `vetted_models` (or `vetted_models` is empty).
+    ///
+    /// If a qualifying model is found the loop switches to it without history
+    /// loss.  If no model qualifies, the existing compaction path runs instead.
+    ///
+    /// Empty = token-pressure auto-switch is disabled (compaction only).
+    pub token_pressure_models: Vec<String>,
 }
 
 impl Default for LoopConfig {
@@ -157,6 +198,8 @@ impl Default for LoopConfig {
             policy: Policy::default(), // fail-safe deny-all
             is_tty: false,
             context_limit: 0,
+            model_context_limits: HashMap::new(),
+            token_pressure_models: Vec::new(),
         }
     }
 }
@@ -179,6 +222,9 @@ pub struct LoopResult {
     /// Model that produced the final answer (may differ from config.model if
     /// fallback was triggered).
     pub active_model: String,
+    /// Number of token-pressure–driven model switches performed during this
+    /// run.  Distinct from error-based fallback switches.
+    pub token_pressure_switches: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -224,10 +270,11 @@ pub async fn run_loop(
 
     let mut turns = 0u32;
     let mut compactions = 0u32;
+    let mut token_pressure_switches = 0u32;
 
     // Active model may shift to a fallback; we track it here.
     let mut active_model = config.model.clone();
-    // Build the full model chain: primary + fallbacks.
+    // Build the full model chain: primary + fallbacks (error-based).
     let model_chain: Vec<String> = {
         let mut chain = vec![config.model.clone()];
         chain.extend(config.fallback_models.iter().cloned());
@@ -244,18 +291,59 @@ pub async fn run_loop(
             return Err(HarnessError::MaxIterations(config.max_iterations));
         }
 
-        // ── Context compaction ────────────────────────────────────────────────
-        if config.context_limit > 0 {
+        // ── Token-pressure check + auto-switch ───────────────────────────────
+        // Evaluated BEFORE compaction so a larger-context switch is preferred
+        // over discarding history when a qualifying model is configured.
+        //
+        // 1. Determine the effective limit for the current model.
+        // 2. If approaching the limit, look for a larger vetted model in
+        //    `token_pressure_models`.
+        // 3. If found → switch (no history loss).  If not → fall through to
+        //    the existing compaction path.
+        let mut this_turn_pressure_switch = 0u32;
+        let effective_limit = model_effective_limit(&active_model, &config);
+        if effective_limit > 0 {
             let estimated = estimate_context_tokens(&history);
-            let threshold = (config.context_limit as f64 * (1.0 - CONTEXT_HEADROOM_FRAC)) as u32;
+            let threshold = (effective_limit as f64 * (1.0 - CONTEXT_HEADROOM_FRAC)) as u32;
             if estimated >= threshold {
-                compact_history(&mut history);
-                compactions += 1;
+                if let Some(larger_model) = find_larger_vetted_model(&active_model, &config) {
+                    eprintln!(
+                        "[bwoc-harness] token pressure on `{active_model}` \
+                         ({estimated}/{effective_limit} tokens, threshold {threshold}): \
+                         switching to `{larger_model}` (larger context window)"
+                    );
+                    active_model = larger_model;
+                    token_pressure_switches += 1;
+                    this_turn_pressure_switch = 1;
+                    // Continue to the compaction check; if the new model also
+                    // has a limit configured and we're already over it (edge
+                    // case: model limits very close together), compaction will
+                    // fire on the next iteration.  For the common case the new
+                    // model has plenty of headroom and we skip compaction.
+                }
+                // If no qualifying model was found we fall through to the
+                // standard compaction path below.
+            }
+        }
+
+        // ── Context compaction ────────────────────────────────────────────────
+        // Runs after the token-pressure check.  If a switch happened above and
+        // the new model still exceeds its own limit (rare), compaction fires.
+        {
+            let compact_limit = model_effective_limit(&active_model, &config);
+            if compact_limit > 0 {
+                let estimated = estimate_context_tokens(&history);
+                let threshold = (compact_limit as f64 * (1.0 - CONTEXT_HEADROOM_FRAC)) as u32;
+                if estimated >= threshold {
+                    compact_history(&mut history);
+                    compactions += 1;
+                }
             }
         }
 
         // ── Turn builder (telemetry) ──────────────────────────────────────────
         let mut tb = TurnBuilder::new(turns);
+        tb.token_pressure_switch = this_turn_pressure_switch;
 
         // Snapshot context token estimate for this turn's start.
         tb.context_tokens = estimate_context_tokens(&history);
@@ -349,6 +437,7 @@ pub async fn run_loop(
                 history,
                 compactions,
                 active_model,
+                token_pressure_switches,
             });
         }
 
@@ -497,6 +586,53 @@ fn compact_history(history: &mut Vec<ChatMessage>) {
     history.push(system);
     history.push(marker);
     history.extend(tail);
+}
+
+/// Return the effective context-window token limit for `model`.
+///
+/// Looks up `model` in `config.model_context_limits` first; falls back to
+/// `config.context_limit`.  A value of `0` means "no limit / disabled".
+fn model_effective_limit(model: &str, config: &LoopConfig) -> u32 {
+    let from_map = config.model_context_limits.get(model).copied().unwrap_or(0);
+    if from_map > 0 {
+        from_map
+    } else {
+        config.context_limit
+    }
+}
+
+/// Find the first model in `config.token_pressure_models` that:
+/// 1. Has a **strictly larger** effective limit than the current model's limit.
+/// 2. Passes the vetted-model gate (`vetted_models` is empty OR the model is
+///    listed in it).
+///
+/// Returns `Some(model_id)` if found, `None` otherwise.
+///
+/// A model that fails the vetted gate is skipped with a warning — it will
+/// NOT be used silently.
+fn find_larger_vetted_model(current_model: &str, config: &LoopConfig) -> Option<String> {
+    let current_limit = model_effective_limit(current_model, config);
+
+    for candidate in &config.token_pressure_models {
+        if candidate == current_model {
+            continue;
+        }
+
+        // Check vetted gate first — skip (with warning) if not vetted.
+        if !config.vetted_models.is_empty() && !config.vetted_models.contains(candidate) {
+            eprintln!(
+                "[bwoc-harness] token-pressure candidate `{candidate}` skipped: \
+                 not in vetted-models allowlist"
+            );
+            continue;
+        }
+
+        let candidate_limit = model_effective_limit(candidate, config);
+        if candidate_limit > current_limit {
+            return Some(candidate.clone());
+        }
+    }
+    None
 }
 
 /// Dispatch all tool calls in a turn sequentially, passing each through the
@@ -844,6 +980,8 @@ mod tests {
             policy: allow_all_policy(),
             is_tty: false,
             context_limit: 0,
+            model_context_limits: std::collections::HashMap::new(),
+            token_pressure_models: Vec::new(),
         }
     }
 
@@ -1168,6 +1306,8 @@ mod tests {
             policy: allow_all_policy(),
             is_tty: false,
             context_limit: 0,
+            model_context_limits: std::collections::HashMap::new(),
+            token_pressure_models: Vec::new(),
         };
 
         let result = run_loop(
@@ -1212,6 +1352,8 @@ mod tests {
             policy: allow_all_policy(),
             is_tty: false,
             context_limit: 0,
+            model_context_limits: std::collections::HashMap::new(),
+            token_pressure_models: Vec::new(),
         };
 
         let err = run_loop(
@@ -1509,6 +1651,8 @@ mod tests {
             },
             is_tty: false,
             context_limit: 0,
+            model_context_limits: std::collections::HashMap::new(),
+            token_pressure_models: Vec::new(),
         };
 
         let result = run_loop(
@@ -1636,5 +1780,195 @@ mod tests {
             },
         }];
         assert!(!has_malformed_tool_calls(&calls));
+    }
+
+    // ── Token-pressure auto-switch tests ─────────────────────────────────────
+
+    /// (a) Token pressure detected + a larger vetted model configured → switches.
+    ///
+    /// Setup: small-model has a 100-token limit; large-model has a 32 768-token
+    /// limit.  The initial message is long enough to exceed
+    /// `100 * (1 - 0.10) = 90` tokens.  `large-model` is vetted.
+    /// Expected: loop switches to large-model; `token_pressure_switches == 1`.
+    #[tokio::test]
+    async fn token_pressure_switches_to_larger_vetted_model() {
+        let tmp = TempDir::new().unwrap();
+
+        // A message long enough to exceed the small model's threshold.
+        // estimate_context_tokens: chars / 4.  "system prompt" ≈ 3 tokens.
+        // We need > 90 total tokens → > 360 chars in history.
+        let long_user_msg: String = "x".repeat(500);
+
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("done")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let mut limits = std::collections::HashMap::new();
+        limits.insert("small-model".to_string(), 100u32);
+        limits.insert("large-model".to_string(), 32_768u32);
+
+        let config = LoopConfig {
+            model: "small-model".to_string(),
+            vetted_models: vec!["small-model".to_string(), "large-model".to_string()],
+            token_pressure_models: vec!["large-model".to_string()],
+            model_context_limits: limits,
+            ..test_config(5)
+        };
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "system prompt".to_string(),
+            vec![ChatMessage::user(long_user_msg)],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result.active_model, "large-model",
+            "loop should switch to large-model on token pressure"
+        );
+        assert_eq!(
+            result.token_pressure_switches, 1,
+            "expected exactly 1 token-pressure switch"
+        );
+        // No compaction should have happened (large model has plenty of room).
+        assert_eq!(result.compactions, 0, "no compaction expected after switch");
+    }
+
+    /// (b) Token pressure + no larger model configured → compacts (existing path).
+    ///
+    /// small-model is under pressure but `token_pressure_models` is empty.
+    /// Expected: compaction fires; no model switch.
+    #[tokio::test]
+    async fn token_pressure_no_candidate_falls_back_to_compaction() {
+        let tmp = TempDir::new().unwrap();
+
+        let long_user_msg: String = "x".repeat(500);
+
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("compacted")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let mut limits = std::collections::HashMap::new();
+        limits.insert("small-model".to_string(), 100u32);
+
+        let config = LoopConfig {
+            model: "small-model".to_string(),
+            vetted_models: vec!["small-model".to_string()],
+            token_pressure_models: Vec::new(), // No candidate configured.
+            model_context_limits: limits,
+            ..test_config(5)
+        };
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "system prompt".to_string(),
+            vec![ChatMessage::user(long_user_msg)],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.active_model, "small-model", "model must not change");
+        assert_eq!(result.token_pressure_switches, 0, "no switch expected");
+        assert!(result.compactions >= 1, "compaction must have fired");
+    }
+
+    /// (c) Under token limit → neither switch nor compaction.
+    #[tokio::test]
+    async fn under_token_limit_no_switch_no_compaction() {
+        let tmp = TempDir::new().unwrap();
+
+        // Very short message — well under any reasonable limit.
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("ok")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let mut limits = std::collections::HashMap::new();
+        limits.insert("model-a".to_string(), 32_768u32);
+
+        let config = LoopConfig {
+            model: "model-a".to_string(),
+            vetted_models: vec!["model-a".to_string(), "model-b".to_string()],
+            token_pressure_models: vec!["model-b".to_string()],
+            model_context_limits: limits,
+            ..test_config(5)
+        };
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("hi")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.active_model, "model-a", "model must not change");
+        assert_eq!(result.token_pressure_switches, 0);
+        assert_eq!(result.compactions, 0);
+    }
+
+    /// (d) Larger model exists but fails the vetted gate → does NOT switch
+    ///     (falls through to compaction instead).
+    #[tokio::test]
+    async fn token_pressure_unvetted_candidate_does_not_switch() {
+        let tmp = TempDir::new().unwrap();
+
+        let long_user_msg: String = "x".repeat(500);
+
+        let provider = Arc::new(MockProvider::new(vec![make_final_response("compacted")]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        let mut limits = std::collections::HashMap::new();
+        limits.insert("small-model".to_string(), 100u32);
+        limits.insert("large-model".to_string(), 32_768u32);
+
+        let config = LoopConfig {
+            model: "small-model".to_string(),
+            // vetted_models does NOT contain "large-model" — it will be rejected.
+            vetted_models: vec!["small-model".to_string()],
+            token_pressure_models: vec!["large-model".to_string()],
+            model_context_limits: limits,
+            ..test_config(5)
+        };
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "system prompt".to_string(),
+            vec![ChatMessage::user(long_user_msg)],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result.active_model, "small-model",
+            "unvetted model must not be switched to"
+        );
+        assert_eq!(result.token_pressure_switches, 0, "no switch expected");
+        // Compaction must have fired instead.
+        assert!(
+            result.compactions >= 1,
+            "compaction must fire when unvetted candidate is rejected"
+        );
     }
 }

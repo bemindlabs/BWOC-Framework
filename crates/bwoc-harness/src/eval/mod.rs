@@ -462,6 +462,8 @@ mod tests {
             },
             is_tty: false,
             context_limit: 0,
+            model_context_limits: std::collections::HashMap::new(),
+            token_pressure_models: Vec::new(),
         }
     }
 

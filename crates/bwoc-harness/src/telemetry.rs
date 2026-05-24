@@ -87,6 +87,9 @@ pub struct TurnMetrics {
     pub gates_failed: u32,
     /// Total context-window tokens at the end of this turn (prompt + history).
     pub context_tokens: u32,
+    /// `1` if a token-pressure–driven model switch occurred at the start of
+    /// this turn; `0` otherwise.  Distinct from error-based fallback switches.
+    pub token_pressure_switch: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +106,9 @@ pub struct SessionTotals {
     pub denials: u64,
     pub gates_passed: u64,
     pub gates_failed: u64,
+    /// Total number of token-pressure–driven model switches across all turns.
+    /// Distinct from error-based fallback switches (not counted here).
+    pub token_pressure_switches: u64,
 }
 
 impl SessionTotals {
@@ -114,6 +120,7 @@ impl SessionTotals {
         self.denials += u64::from(turn.denials);
         self.gates_passed += u64::from(turn.gates_passed);
         self.gates_failed += u64::from(turn.gates_failed);
+        self.token_pressure_switches += u64::from(turn.token_pressure_switch);
     }
 }
 
@@ -277,6 +284,9 @@ pub struct TurnBuilder {
     pub gates_passed: u32,
     pub gates_failed: u32,
     pub context_tokens: u32,
+    /// Set to `1` when a token-pressure–driven model switch occurred before
+    /// this turn's provider call.  `0` = no switch this turn.
+    pub token_pressure_switch: u32,
 }
 
 impl TurnBuilder {
@@ -291,6 +301,7 @@ impl TurnBuilder {
             gates_passed: 0,
             gates_failed: 0,
             context_tokens: 0,
+            token_pressure_switch: 0,
         }
     }
 
@@ -306,6 +317,7 @@ impl TurnBuilder {
             gates_passed: self.gates_passed,
             gates_failed: self.gates_failed,
             context_tokens: self.context_tokens,
+            token_pressure_switch: self.token_pressure_switch,
         }
     }
 }
@@ -451,6 +463,7 @@ mod tests {
             gates_failed: 0,
             latency_ms: 200,
             context_tokens: 300,
+            token_pressure_switch: 0,
         };
         let t2 = TurnMetrics {
             turn: 2,
@@ -462,6 +475,7 @@ mod tests {
             gates_failed: 1,
             latency_ms: 150,
             context_tokens: 600,
+            token_pressure_switch: 0,
         };
         totals.accumulate(&t1);
         totals.accumulate(&t2);
@@ -489,6 +503,7 @@ mod tests {
             gates_failed: 0,
             latency_ms: 300,
             context_tokens: 500,
+            token_pressure_switch: 0,
         };
         telem.record_turn(m);
         telem.agent.tasks_attempted = 1;
@@ -555,6 +570,7 @@ mod tests {
             gates_failed: 0,
             latency_ms: 100,
             context_tokens: 200,
+            token_pressure_switch: 0,
         });
         telem.finish(&sink).unwrap();
 
@@ -614,6 +630,7 @@ mod tests {
             gates_failed: 0,
             latency_ms: 200,
             context_tokens: 400,
+            token_pressure_switch: 0,
         };
         let json = serde_json::to_value(&m).unwrap();
         // Every value in the TurnMetrics JSON must be a number, not a string.
