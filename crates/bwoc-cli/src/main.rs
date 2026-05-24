@@ -32,6 +32,7 @@ mod retire;
 mod run;
 mod sangha;
 mod send;
+mod sessions;
 mod spawn;
 mod start;
 mod status;
@@ -141,6 +142,8 @@ enum Commands {
     /// View peer workspaces declared in routes.toml (read-only cross-workspace view, #20).
     #[command(subcommand)]
     Peer(PeerCommand),
+    /// List running agent sessions detected via markers and process scan (#21).
+    Sessions(SessionsArgs),
     /// Check for, or delegate, an upgrade of bwoc to the latest release.
     Update {
         /// Read-only: compare the binary's embedded CalVer to the latest GitHub
@@ -1340,6 +1343,25 @@ impl NewArgs {
     }
 }
 
+#[derive(Args, Debug)]
+struct SessionsArgs {
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit JSON `{ "sessions": [...] }` to stdout instead of the pretty table.
+    #[arg(long)]
+    json: bool,
+}
+
+impl From<SessionsArgs> for sessions::SessionsArgs {
+    fn from(a: SessionsArgs) -> Self {
+        Self {
+            workspace: a.workspace,
+            json: a.json,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let lang = resolve_lang(cli.lang);
@@ -1619,6 +1641,10 @@ fn main() -> ExitCode {
                     workspace,
                 }),
             };
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Sessions(args)) => {
+            let code = sessions::run(args.into());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Update { check, run }) => {

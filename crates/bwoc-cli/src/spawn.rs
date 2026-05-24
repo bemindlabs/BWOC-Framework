@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::i18n;
+use crate::sessions::{SessionMarker, remove_marker, write_marker};
 
 /// Which backend CLI to invoke.
 ///
@@ -201,33 +202,142 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
         )
     );
 
+    // Detect the agent id from the agent directory (basename convention
+    // is "agent-<name>"; fall back to the dir name verbatim).
+    let agent_id = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Resolve the workspace root for the session marker (walk up from agent dir).
+    // Best-effort — if we can't find it we skip the marker write silently.
+    let workspace_root = find_workspace_root(&path);
+
+    // ── Spawn the backend ────────────────────────────────────────────────────
     // Ollama → exec bwoc-harness; all other backends → exec their external CLI.
-    let status = if args.backend == Backend::Ollama {
+    let mut cmd = if args.backend == Backend::Ollama {
         let harness = Backend::harness_binary().ok_or(SpawnError::HarnessNotFound)?;
-        Command::new(&harness)
-            .current_dir(&path)
-            .args(&args.extra)
-            .status()
-            .map_err(SpawnError::Io)?
+        let mut c = Command::new(&harness);
+        c.current_dir(&path).args(&args.extra);
+        c
     } else {
         let cli = args
             .backend
             .cli_name()
             .expect("non-Ollama backend always has a cli_name");
-        Command::new(cli)
-            .current_dir(&path)
-            .args(&args.extra)
-            .status()
-            .map_err(|e| {
-                if e.kind() == io::ErrorKind::NotFound {
-                    SpawnError::BackendNotFound { backend: cli }
-                } else {
-                    SpawnError::Io(e)
-                }
-            })?
+        let mut c = Command::new(cli);
+        c.current_dir(&path).args(&args.extra);
+        c
     };
 
+    let mut child = cmd.spawn().map_err(|e| {
+        if args.backend != Backend::Ollama {
+            let cli = args
+                .backend
+                .cli_name()
+                .expect("non-Ollama backend always has a cli_name");
+            if e.kind() == io::ErrorKind::NotFound {
+                return SpawnError::BackendNotFound { backend: cli };
+            }
+        } else if e.kind() == io::ErrorKind::NotFound {
+            return SpawnError::HarnessNotFound;
+        }
+        SpawnError::Io(e)
+    })?;
+
+    let pid = child.id();
+
+    // ── Write session marker (best-effort) ──────────────────────────────────
+    if let Some(ref ws) = workspace_root {
+        let started_at = iso8601_now();
+        let tmux = detect_tmux_pane();
+        let marker = SessionMarker {
+            agent_id: agent_id.clone(),
+            backend: backend_name.to_string(),
+            pid,
+            started_at,
+            tmux,
+        };
+        write_marker(ws, &marker);
+    }
+
+    // ── Wait for the backend to exit ─────────────────────────────────────────
+    let status = child.wait().map_err(SpawnError::Io)?;
+
+    // ── Remove marker on clean exit (best-effort) ───────────────────────────
+    if let Some(ref ws) = workspace_root {
+        remove_marker(ws, &agent_id);
+    }
+
     Ok(status.code().unwrap_or(1))
+}
+
+/// Walk up from `start` to find the nearest `.bwoc/workspace.toml`.
+fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur.join(".bwoc/workspace.toml").is_file() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+/// Best-effort ISO-8601 UTC timestamp using only std — no chrono/time crate.
+/// Format: `YYYY-MM-DDTHH:MM:SSZ` (second precision is sufficient for markers).
+fn iso8601_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Compute year/month/day/hour/min/sec from Unix epoch seconds.
+    // Algorithm: days-since-epoch → Gregorian date (civil_from_days, Neri-Schneider).
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hh = time_of_day / 3600;
+    let mm = (time_of_day % 3600) / 60;
+    let ss = time_of_day % 60;
+
+    let (y, mo, d) = days_to_ymd(days);
+    format!("{y:04}-{mo:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+/// Convert days since 1970-01-01 to (year, month, day).
+fn days_to_ymd(days: u64) -> (u32, u32, u32) {
+    // Shift epoch to 0001-03-01 for Gregorian cycle math.
+    // Using the Euclidean algorithm for civil_from_days (public domain).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as u32, m as u32, d as u32)
+}
+
+/// Detect the current tmux pane/window string if running inside tmux.
+/// Returns `None` when `$TMUX` is not set. Format: `<session>:<window>.<pane>`.
+fn detect_tmux_pane() -> Option<String> {
+    std::env::var("TMUX").ok()?; // Only probe when inside tmux.
+    let out = std::process::Command::new("tmux")
+        .args(["display-message", "-p", "#S:#I.#P"])
+        .output()
+        .ok()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    } else {
+        None
+    }
 }
 
 fn validate_agent_path(path: &Path) -> Result<(), SpawnError> {
