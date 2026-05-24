@@ -17,6 +17,7 @@ mod dashboard;
 mod deep_memory_cmd;
 mod doc_cmd;
 mod doctor;
+mod fleet;
 mod git_worktree;
 mod help;
 mod i18n;
@@ -169,6 +170,28 @@ enum Commands {
     /// aliases (`notes`, `retro`, `research`) are thin wrappers over this.
     #[command(name = "doc", subcommand)]
     Doc(DocKindSubcommand),
+    /// Fleet governance — Aparihāniya-dhamma 7 health signals (read-only, report-only).
+    #[command(name = "fleet", subcommand)]
+    Fleet(FleetCommand),
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum FleetCommand {
+    /// Check all 7 Aparihāniya-dhamma fleet-governance signals (read-only).
+    Health(FleetHealthArgs),
+}
+
+#[derive(Args, Debug)]
+struct FleetHealthArgs {
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit a machine-readable JSON array instead of the human report.
+    #[arg(long)]
+    json: bool,
+    /// Days without activity before an agent is considered stale (condition 1).
+    #[arg(long = "stale-days", default_value_t = 7)]
+    stale_days: u64,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1688,6 +1711,16 @@ fn main() -> ExitCode {
         }
         Some(Commands::Doc(sub)) => {
             let code = dispatch_doc_kind_cmd(sub);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Fleet(sub)) => {
+            let code = match sub {
+                FleetCommand::Health(args) => fleet::run(fleet::FleetHealthArgs {
+                    workspace: args.workspace,
+                    json: args.json,
+                    stale_days: args.stale_days,
+                }),
+            };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         None => {
