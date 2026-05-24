@@ -32,12 +32,10 @@ jobs:
   # (macOS · Linux · Windows). The Status badge in README.md claims
   # all three; this matrix backs the claim.
   #
-  # Two known limitations:
+  # Known limitation:
   #   - `bwoc-agent --serve` uses Unix domain sockets and signal-0 for
   #     liveness checks; Windows builds compile but the `--serve` path
   #     is a no-op there. Tests stay platform-agnostic (cfg-gated).
-  #   - Some unit tests touch tempdirs under /tmp; cargo's TMPDIR
-  #     handling is portable, so no platform-specific harness needed.
   build-and-test:
     name: build + test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -45,16 +43,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          # `bwoc-harness` is Unix-first in v1: its tool layer shells out to a
-          # POSIX shell and its sandbox / denial tests assume Unix commands
-          # (`pwd`, `rm -rf`, …). The crate still BUILDS on Windows (build step
-          # below); only its TESTS are scoped to Unix. Windows support for the
-          # harness is a tracked follow-up — see docs/en/HARNESS.en.md §Caveats.
-          - os: windows-latest
-            test_exclude: --exclude bwoc-harness
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --workspace --verbose
-      - run: cargo test --workspace ${{ matrix.test_exclude }} --verbose
+      - run: cargo test --workspace --verbose

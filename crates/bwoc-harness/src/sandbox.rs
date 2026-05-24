@@ -338,6 +338,35 @@ impl CommandOutput {
     }
 }
 
+/// Build a cross-platform shell command for the given script string.
+///
+/// On Unix the script is executed via `sh -c <script>`.
+/// On Windows it is executed via `cmd /C <script>`.
+///
+/// Both variants preserve the existing security pipeline: the command still
+/// flows through the sandbox arg-scan, env-scrub, and OS-sandbox layers.
+pub(crate) fn shell_command(script: &str) -> tokio::process::Command {
+    #[cfg(unix)]
+    {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.arg("/C").arg(script);
+        cmd
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // Fallback for exotic targets: attempt sh.
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd
+    }
+}
+
 /// Run a shell command inside the sandbox.
 ///
 /// - `cwd` is forced to `worktree_root` regardless of what the caller passes.
@@ -358,10 +387,8 @@ pub async fn run_sandboxed(
 
     let safe_env = scrub_env();
 
-    let mut command = tokio::process::Command::new("sh");
+    let mut command = shell_command(cmd);
     command
-        .arg("-c")
-        .arg(cmd)
         .current_dir(worktree_root)
         .env_clear()
         .envs(&safe_env);
@@ -555,7 +582,7 @@ mod tests {
         assert!(!result.contains_key("MY_API_KEY"));
     }
 
-    // ── Sandboxed command runner (integration, requires sh) ──────────────────
+    // ── Sandboxed command runner (integration) ───────────────────────────────
 
     #[tokio::test]
     async fn sandboxed_echo_runs_in_worktree() {
@@ -564,10 +591,12 @@ mod tests {
         let output = run_sandboxed("echo hello", tmp.path(), &sandbox)
             .await
             .unwrap();
-        assert!(output.stdout.trim() == "hello");
+        assert!(output.stdout.contains("hello"));
         assert_eq!(output.exit_code, 0);
     }
 
+    // `pwd` is a Unix command; on Windows use `cd` via CMD — gate to Unix only.
+    #[cfg(unix)]
     #[tokio::test]
     async fn sandboxed_command_cwd_is_worktree() {
         let tmp = TempDir::new().unwrap();

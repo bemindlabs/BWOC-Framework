@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use super::{ToolContext, ToolImpl};
 use crate::error::HarnessError;
+use crate::sandbox::shell_command;
 
 // ---------------------------------------------------------------------------
 // edit_file — targeted string replacement (unique-match patch)
@@ -601,9 +602,7 @@ impl ToolImpl for RunGates {
         let mut all_passed = true;
 
         for (gate_name, cmd) in &gate_cmds {
-            let output = tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(cmd)
+            let output = shell_command(cmd)
                 .current_dir(&ctx.workdir)
                 .output()
                 .await
@@ -1230,12 +1229,17 @@ mod tests {
         Runtime::new().unwrap().block_on(async {
             let tmp = TempDir::new().unwrap();
             // Initialise a real git repo so `git status` works.
+            // HOME (Unix) / USERPROFILE (Windows) let git find its global config.
+            let home_val = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
             tokio::process::Command::new("git")
                 .args(["init", "-b", "main"])
                 .current_dir(tmp.path())
                 .env_clear()
                 .env("PATH", std::env::var("PATH").unwrap_or_default())
-                .env("HOME", std::env::var("HOME").unwrap_or_default())
+                .env("HOME", &home_val)
+                .env("USERPROFILE", &home_val)
                 .env("GIT_AUTHOR_NAME", "Test")
                 .env("GIT_AUTHOR_EMAIL", "test@example.com")
                 .env("GIT_COMMITTER_NAME", "Test")
@@ -1326,21 +1330,27 @@ mod tests {
 
     #[test]
     fn run_gates_with_passing_manifest() {
+        // `true` (Unix) / `exit 0` (Windows CMD) — always-passing gate command.
+        #[cfg(unix)]
+        let pass_cmd = "true";
+        #[cfg(windows)]
+        let pass_cmd = "exit 0";
+
         Runtime::new().unwrap().block_on(async {
             let tmp = TempDir::new().unwrap();
             let ctx = ctx_for(&tmp);
 
-            // Write a minimal manifest where all gate commands are `true` (always pass).
+            // Write a minimal manifest where all gate commands always pass.
             let manifest_json = serde_json::json!({
                 "name": "test-agent",
                 "agentId": "agent-test",
                 "agentRole": "test",
                 "primaryModel": "model-x",
                 "memoryPath": "memories/",
-                "lintCmd": "true",
-                "formatCmd": "true",
-                "testCmd": "true",
-                "buildCmd": "true",
+                "lintCmd": pass_cmd,
+                "formatCmd": pass_cmd,
+                "testCmd": pass_cmd,
+                "buildCmd": pass_cmd,
                 "version": "2.0"
             });
             tokio::fs::write(
@@ -1363,6 +1373,17 @@ mod tests {
 
     #[test]
     fn run_gates_with_failing_gate() {
+        // `false` (Unix) / `exit 1` (Windows CMD) — always-failing gate command.
+        #[cfg(unix)]
+        let fail_cmd = "false";
+        #[cfg(windows)]
+        let fail_cmd = "exit 1";
+        // pass_cmd: same as above
+        #[cfg(unix)]
+        let pass_cmd = "true";
+        #[cfg(windows)]
+        let pass_cmd = "exit 0";
+
         Runtime::new().unwrap().block_on(async {
             let tmp = TempDir::new().unwrap();
             let ctx = ctx_for(&tmp);
@@ -1373,10 +1394,10 @@ mod tests {
                 "agentRole": "test",
                 "primaryModel": "model-x",
                 "memoryPath": "memories/",
-                "lintCmd": "false",
-                "formatCmd": "true",
-                "testCmd": "true",
-                "buildCmd": "true",
+                "lintCmd": fail_cmd,
+                "formatCmd": pass_cmd,
+                "testCmd": pass_cmd,
+                "buildCmd": pass_cmd,
                 "version": "2.0"
             });
             tokio::fs::write(

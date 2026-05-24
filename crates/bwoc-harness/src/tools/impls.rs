@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use super::{ToolContext, ToolImpl};
 use crate::error::HarnessError;
+use crate::sandbox::shell_command;
 
 // ---------------------------------------------------------------------------
 // read_file
@@ -256,9 +257,7 @@ impl ToolImpl for RunCommand {
             }
         }
 
-        let output = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
+        let output = shell_command(cmd)
             .current_dir(&ctx.workdir)
             .output()
             .await

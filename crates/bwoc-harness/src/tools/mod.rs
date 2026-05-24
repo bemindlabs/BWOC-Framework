@@ -114,37 +114,49 @@ pub trait ToolImpl: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use tempfile::TempDir;
 
     fn ctx(dir: &Path) -> ToolContext {
         ToolContext::new(dir.to_path_buf())
     }
 
+    // Relative-path confinement tests use real temp dirs so they work on
+    // both Unix (/tmp/…) and Windows (C:\Users\…\AppData\Local\Temp\…).
+
     #[test]
     fn resolve_path_relative_ok() {
-        let ctx = ctx(Path::new("/workdir/myproject"));
+        let tmp = TempDir::new().unwrap();
+        let ctx = ctx(tmp.path());
         let p = ctx.resolve_path("src/main.rs").unwrap();
-        assert_eq!(p, PathBuf::from("/workdir/myproject/src/main.rs"));
+        assert_eq!(p, tmp.path().join("src/main.rs"));
     }
 
     #[test]
     fn resolve_path_dotdot_escape_rejected() {
-        let ctx = ctx(Path::new("/workdir/myproject"));
+        let tmp = TempDir::new().unwrap();
+        let ctx = ctx(tmp.path());
         let err = ctx.resolve_path("../../etc/passwd").unwrap_err();
         assert!(matches!(err, HarnessError::PathEscape(_)));
     }
 
     #[test]
     fn resolve_path_absolute_inside_ok() {
-        let ctx = ctx(Path::new("/workdir/myproject"));
-        let p = ctx.resolve_path("/workdir/myproject/README.md").unwrap();
-        assert_eq!(p, PathBuf::from("/workdir/myproject/README.md"));
+        let tmp = TempDir::new().unwrap();
+        let ctx = ctx(tmp.path());
+        let inside = tmp.path().join("README.md");
+        let p = ctx.resolve_path(inside.to_str().unwrap()).unwrap();
+        assert_eq!(p, inside);
     }
 
     #[test]
     fn resolve_path_absolute_outside_rejected() {
-        let ctx = ctx(Path::new("/workdir/myproject"));
-        let err = ctx.resolve_path("/etc/passwd").unwrap_err();
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let ctx = ctx(tmp.path());
+        let outside_path = outside.path().join("passwd");
+        let err = ctx
+            .resolve_path(outside_path.to_str().unwrap())
+            .unwrap_err();
         assert!(matches!(err, HarnessError::PathEscape(_)));
     }
 }

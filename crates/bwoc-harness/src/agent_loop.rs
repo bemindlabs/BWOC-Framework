@@ -1328,6 +1328,11 @@ mod tests {
         assert_eq!(harness.turns[0].tokens_out, 30);
     }
 
+    // Asserts denial of a unix-specific threat (`rm -rf /`). The guardrail's
+    // dangerous-path detection is unix-oriented; Windows-specific destructive
+    // patterns (e.g. `del /s /q`, `rmdir /s`) are a documented follow-up, so
+    // this case is gated to unix. String-based guardrails still run on Windows.
+    #[cfg(unix)]
     #[tokio::test]
     async fn telemetry_denial_count_increments_on_blocked_tool() {
         let tmp = TempDir::new().unwrap();
@@ -1730,6 +1735,8 @@ mod tests {
 
     // ── P2 Safety pipeline integration tests ─────────────────────────────────
 
+    // Unix-specific threat denial (see `telemetry_denial_count_*`); gated to unix.
+    #[cfg(unix)]
     #[tokio::test]
     async fn guardrail_denial_is_fed_back_as_tool_result() {
         let tmp = TempDir::new().unwrap();
