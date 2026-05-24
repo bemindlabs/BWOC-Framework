@@ -158,10 +158,20 @@ pub enum FinishReason {
 // ---------------------------------------------------------------------------
 
 /// One SSE data chunk in a streaming response.
+///
+/// OpenAI-compatible servers emit a final chunk with `choices: []` and a
+/// populated `usage` field when the request includes
+/// `stream_options: { include_usage: true }`.  We capture that field here so
+/// the streaming path can report token counts.  Servers that ignore
+/// `stream_options` will simply never send this field; `usage` stays `None`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamChunk {
     pub id: String,
     pub choices: Vec<StreamDelta>,
+    /// Populated only in the final usage chunk (when requested via
+    /// `stream_options`).  `None` for all ordinary delta chunks.
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 /// One streaming choice delta.

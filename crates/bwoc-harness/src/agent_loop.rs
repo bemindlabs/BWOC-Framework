@@ -582,8 +582,8 @@ async fn call_provider_once(
     stream: bool,
 ) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
     if stream {
-        let msg = stream_and_accumulate(provider, messages, tools, model).await?;
-        Ok((msg, None)) // streaming path doesn't expose usage counts
+        let (msg, usage) = stream_and_accumulate(provider, messages, tools, model).await?;
+        Ok((msg, usage))
     } else {
         let completion = provider.complete(messages, tools, model).await?;
         let usage = completion.usage.clone();
@@ -864,12 +864,18 @@ struct ToolCallResult {
 
 /// Stream a response and accumulate content + tool_calls into a single
 /// [`ChatMessage`] as if it were a non-streaming completion.
+///
+/// Also captures the trailing usage chunk emitted by OpenAI-compatible servers
+/// when the request sets `stream_options: { include_usage: true }`.  That chunk
+/// has `choices: []` and a populated `usage` field.  If no usage chunk arrives
+/// (server ignores `stream_options`) the returned `Option<Usage>` is `None` —
+/// the caller treats that as zero/unknown and never errors.
 async fn stream_and_accumulate(
     provider: &dyn ProviderClient,
     messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::Tool>,
     model: &str,
-) -> HarnessResult<ChatMessage> {
+) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
     use futures_util::StreamExt;
 
     let mut stream = provider.stream(messages, tools, model).await?;
@@ -878,9 +884,19 @@ async fn stream_and_accumulate(
     // tool_calls accumulation: index → (id, type, name, args_buf)
     let mut tool_calls_acc: std::collections::HashMap<u32, ToolCallAccumulator> =
         std::collections::HashMap::new();
+    // Captured from the final usage chunk (choices: [], usage: {...}).
+    let mut captured_usage: Option<crate::provider::Usage> = None;
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result?;
+
+        // Capture the usage chunk regardless of whether choices are present.
+        // The final usage frame typically has `choices: []` so the loop below
+        // is a no-op for it — we must read `usage` before iterating choices.
+        if let Some(u) = chunk.usage {
+            captured_usage = Some(u);
+        }
+
         for delta_choice in chunk.choices {
             let delta = delta_choice.delta;
 
@@ -929,7 +945,7 @@ async fn stream_and_accumulate(
             .collect()
     };
 
-    Ok(ChatMessage::assistant(
+    let msg = ChatMessage::assistant(
         if content_buf.is_empty() {
             None
         } else {
@@ -940,7 +956,9 @@ async fn stream_and_accumulate(
         } else {
             Some(tool_calls)
         },
-    ))
+    );
+
+    Ok((msg, captured_usage))
 }
 
 #[derive(Default)]
@@ -2466,5 +2484,200 @@ mod tests {
         );
         assert!("invalid".parse::<VettedMode>().is_err());
         assert!("Warn".parse::<VettedMode>().is_err()); // case-sensitive
+    }
+
+    // ── Streaming usage capture (HV2-7) ──────────────────────────────────────
+
+    use crate::provider::types::{Delta, FinishReason as FR, StreamDelta};
+
+    /// Build a stream of `StreamChunk`s from a vec.
+    fn make_sse_stream(
+        chunks: Vec<StreamChunk>,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>> {
+        Box::pin(futures_util::stream::iter(
+            chunks.into_iter().map(Ok::<_, HarnessError>),
+        ))
+    }
+
+    fn content_chunk(id: &str, text: &str) -> StreamChunk {
+        StreamChunk {
+            id: id.to_string(),
+            choices: vec![StreamDelta {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: Some(text.to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
+
+    fn stop_chunk(id: &str) -> StreamChunk {
+        StreamChunk {
+            id: id.to_string(),
+            choices: vec![StreamDelta {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some(FR::Stop),
+            }],
+            usage: None,
+        }
+    }
+
+    fn usage_chunk(prompt: u32, completion: u32) -> StreamChunk {
+        StreamChunk {
+            id: "usage-chunk".to_string(),
+            choices: vec![], // final usage frame has no choices
+            usage: Some(Usage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: prompt + completion,
+            }),
+        }
+    }
+
+    /// Mock provider that serves a pre-built SSE stream from a vec of chunks.
+    struct StreamingMockProvider {
+        chunks: Mutex<Option<Vec<StreamChunk>>>,
+    }
+
+    impl StreamingMockProvider {
+        fn new(chunks: Vec<StreamChunk>) -> Self {
+            Self {
+                chunks: Mutex::new(Some(chunks)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ProviderClient for StreamingMockProvider {
+        async fn complete(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Vec<Tool>,
+            _model: &str,
+        ) -> Result<ChatCompletion, HarnessError> {
+            Err(HarnessError::Provider(
+                "mock: complete not implemented".to_string(),
+            ))
+        }
+
+        async fn stream(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Vec<Tool>,
+            _model: &str,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>>,
+            HarnessError,
+        > {
+            let chunks = self
+                .chunks
+                .lock()
+                .unwrap()
+                .take()
+                .expect("StreamingMockProvider stream already consumed");
+            Ok(make_sse_stream(chunks))
+        }
+
+        async fn validate_model(&self, _model: &str) -> Result<(), HarnessError> {
+            Ok(())
+        }
+    }
+
+    /// (HV2-7-a) Stream with a trailing usage chunk → tokens_in/tokens_out populated.
+    #[tokio::test]
+    async fn streaming_usage_chunk_populates_token_counts() {
+        let chunks = vec![
+            content_chunk("c1", "Hello, "),
+            content_chunk("c2", "world!"),
+            stop_chunk("c3"),
+            usage_chunk(123, 45), // trailing usage frame, choices: []
+        ];
+
+        let provider = StreamingMockProvider::new(chunks);
+        let (msg, usage) = stream_and_accumulate(&provider, vec![], vec![], "mock")
+            .await
+            .unwrap();
+
+        assert_eq!(msg.content.as_deref(), Some("Hello, world!"));
+        let u = usage.expect("usage must be Some when trailing usage chunk present");
+        assert_eq!(u.prompt_tokens, 123, "tokens_in mismatch");
+        assert_eq!(u.completion_tokens, 45, "tokens_out mismatch");
+        assert_eq!(u.total_tokens, 168);
+    }
+
+    /// (HV2-7-b) Stream with NO usage chunk → usage is None, no panic.
+    #[tokio::test]
+    async fn streaming_no_usage_chunk_returns_none_gracefully() {
+        let chunks = vec![
+            content_chunk("c1", "just text"),
+            stop_chunk("c2"),
+            // No usage_chunk — server ignored stream_options.
+        ];
+
+        let provider = StreamingMockProvider::new(chunks);
+        let (msg, usage) = stream_and_accumulate(&provider, vec![], vec![], "mock")
+            .await
+            .unwrap();
+
+        assert_eq!(msg.content.as_deref(), Some("just text"));
+        assert!(
+            usage.is_none(),
+            "usage must be None when no usage chunk sent"
+        );
+    }
+
+    /// (HV2-7-c) Final chunk has choices: [] AND usage → handled without panic.
+    ///
+    /// This is the canonical OpenAI shape: the usage frame has an empty
+    /// `choices` array.  Our loop must not index into `choices[0]` on it.
+    #[tokio::test]
+    async fn streaming_empty_choices_in_usage_chunk_no_panic() {
+        let chunks = vec![
+            content_chunk("c1", "ok"),
+            // Simulate a server that sends stop inside choices AND then emits
+            // a separate usage frame with choices: [].
+            StreamChunk {
+                id: "c2".to_string(),
+                choices: vec![StreamDelta {
+                    index: 0,
+                    delta: Delta {
+                        role: None,
+                        content: None,
+                        tool_calls: None,
+                    },
+                    finish_reason: Some(FR::Stop),
+                }],
+                usage: None,
+            },
+            // The usage frame — choices is empty, usage is populated.
+            StreamChunk {
+                id: "c3".to_string(),
+                choices: vec![],
+                usage: Some(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                }),
+            },
+        ];
+
+        let provider = StreamingMockProvider::new(chunks);
+        let (msg, usage) = stream_and_accumulate(&provider, vec![], vec![], "mock")
+            .await
+            .unwrap();
+
+        assert_eq!(msg.content.as_deref(), Some("ok"));
+        let u = usage.expect("usage must be captured from empty-choices frame");
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 5);
     }
 }

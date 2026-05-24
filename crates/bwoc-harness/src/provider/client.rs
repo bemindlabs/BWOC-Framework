@@ -324,6 +324,15 @@ fn build_request_body(
         "stream": stream,
     });
 
+    // Ask the server to emit a final usage chunk.  OpenAI-compatible servers
+    // that honour this option append one last SSE frame with `choices: []` and
+    // `usage: { prompt_tokens, completion_tokens, total_tokens }`.  Servers
+    // that don't understand the option ignore it silently — we handle the
+    // no-usage case gracefully on the receive side.
+    if stream {
+        body["stream_options"] = json!({ "include_usage": true });
+    }
+
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools).unwrap_or(Value::Array(vec![]));
     }
