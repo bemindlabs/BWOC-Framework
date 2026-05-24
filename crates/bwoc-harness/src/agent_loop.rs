@@ -272,6 +272,13 @@ pub async fn run_loop(
     let mut compactions = 0u32;
     let mut token_pressure_switches = 0u32;
 
+    // Per-session cache of provider-queried context limits.
+    // Key = model id; Value = result of one `model_context_limit` call.
+    // `None` means "provider returned nothing / query failed".
+    // Each model is queried at most once per session regardless of how many
+    // turns use it (cache-aside, populated on first encounter).
+    let mut provider_limit_cache: HashMap<String, Option<u32>> = HashMap::new();
+
     // Active model may shift to a fallback; we track it here.
     let mut active_model = config.model.clone();
     // Build the full model chain: primary + fallbacks (error-based).
@@ -291,6 +298,15 @@ pub async fn run_loop(
             return Err(HarnessError::MaxIterations(config.max_iterations));
         }
 
+        // ── Provider limit cache — query once per model ───────────────────────
+        // If this model has not been seen yet this session, ask the provider
+        // for its context-window size.  Failures are stored as `None` so we
+        // don't retry on every turn.
+        if !provider_limit_cache.contains_key(active_model.as_str()) {
+            let queried = provider.model_context_limit(&active_model).await;
+            provider_limit_cache.insert(active_model.clone(), queried);
+        }
+
         // ── Token-pressure check + auto-switch ───────────────────────────────
         // Evaluated BEFORE compaction so a larger-context switch is preferred
         // over discarding history when a qualifying model is configured.
@@ -301,12 +317,21 @@ pub async fn run_loop(
         // 3. If found → switch (no history loss).  If not → fall through to
         //    the existing compaction path.
         let mut this_turn_pressure_switch = 0u32;
-        let effective_limit = model_effective_limit(&active_model, &config);
+        let effective_limit = model_effective_limit(
+            &active_model,
+            &config,
+            provider_limit_cache
+                .get(active_model.as_str())
+                .copied()
+                .flatten(),
+        );
         if effective_limit > 0 {
             let estimated = estimate_context_tokens(&history);
             let threshold = (effective_limit as f64 * (1.0 - CONTEXT_HEADROOM_FRAC)) as u32;
             if estimated >= threshold {
-                if let Some(larger_model) = find_larger_vetted_model(&active_model, &config) {
+                if let Some(larger_model) =
+                    find_larger_vetted_model(&active_model, &config, &provider_limit_cache)
+                {
                     eprintln!(
                         "[bwoc-harness] token pressure on `{active_model}` \
                          ({estimated}/{effective_limit} tokens, threshold {threshold}): \
@@ -330,7 +355,14 @@ pub async fn run_loop(
         // Runs after the token-pressure check.  If a switch happened above and
         // the new model still exceeds its own limit (rare), compaction fires.
         {
-            let compact_limit = model_effective_limit(&active_model, &config);
+            let compact_limit = model_effective_limit(
+                &active_model,
+                &config,
+                provider_limit_cache
+                    .get(active_model.as_str())
+                    .copied()
+                    .flatten(),
+            );
             if compact_limit > 0 {
                 let estimated = estimate_context_tokens(&history);
                 let threshold = (compact_limit as f64 * (1.0 - CONTEXT_HEADROOM_FRAC)) as u32;
@@ -590,15 +622,30 @@ fn compact_history(history: &mut Vec<ChatMessage>) {
 
 /// Return the effective context-window token limit for `model`.
 ///
-/// Looks up `model` in `config.model_context_limits` first; falls back to
-/// `config.context_limit`.  A value of `0` means "no limit / disabled".
-fn model_effective_limit(model: &str, config: &LoopConfig) -> u32 {
+/// Precedence (highest → lowest):
+/// 1. Explicit entry in `config.model_context_limits` — operator static
+///    override; always wins so the operator can cap or extend a model's
+///    window deliberately.
+/// 2. `provider_queried` — value returned by [`ProviderClient::model_context_limit`]
+///    and cached by the loop (one network call per model per session).
+/// 3. `config.context_limit` — global default; used when neither source has
+///    information.  `0` means "no limit / compaction disabled".
+fn model_effective_limit(model: &str, config: &LoopConfig, provider_queried: Option<u32>) -> u32 {
+    // Layer 1 — static config (operator override wins).
     let from_map = config.model_context_limits.get(model).copied().unwrap_or(0);
     if from_map > 0 {
-        from_map
-    } else {
-        config.context_limit
+        return from_map;
     }
+
+    // Layer 2 — provider-queried value (dynamic, best-effort).
+    if let Some(queried) = provider_queried {
+        if queried > 0 {
+            return queried;
+        }
+    }
+
+    // Layer 3 — global default.
+    config.context_limit
 }
 
 /// Find the first model in `config.token_pressure_models` that:
@@ -610,8 +657,19 @@ fn model_effective_limit(model: &str, config: &LoopConfig) -> u32 {
 ///
 /// A model that fails the vetted gate is skipped with a warning — it will
 /// NOT be used silently.
-fn find_larger_vetted_model(current_model: &str, config: &LoopConfig) -> Option<String> {
-    let current_limit = model_effective_limit(current_model, config);
+///
+/// `provider_cache` is the per-session cache populated by
+/// [`ProviderClient::model_context_limit`] queries.
+fn find_larger_vetted_model(
+    current_model: &str,
+    config: &LoopConfig,
+    provider_cache: &HashMap<String, Option<u32>>,
+) -> Option<String> {
+    let current_limit = model_effective_limit(
+        current_model,
+        config,
+        provider_cache.get(current_model).copied().flatten(),
+    );
 
     for candidate in &config.token_pressure_models {
         if candidate == current_model {
@@ -627,7 +685,11 @@ fn find_larger_vetted_model(current_model: &str, config: &LoopConfig) -> Option<
             continue;
         }
 
-        let candidate_limit = model_effective_limit(candidate, config);
+        let candidate_limit = model_effective_limit(
+            candidate,
+            config,
+            provider_cache.get(candidate).copied().flatten(),
+        );
         if candidate_limit > current_limit {
             return Some(candidate.clone());
         }
@@ -1920,6 +1982,168 @@ mod tests {
         assert_eq!(result.active_model, "model-a", "model must not change");
         assert_eq!(result.token_pressure_switches, 0);
         assert_eq!(result.compactions, 0);
+    }
+
+    // ── Provider-queried context limit tests (#13) ────────────────────────────
+    //
+    // All four cases are offline (no real network).  A configurable mock
+    // returns a fixed value from `model_context_limit`.
+
+    /// Mock provider where `model_context_limit` returns a configurable value.
+    struct LimitedMockProvider {
+        /// Responses for `complete` (reuses the same ordering approach as
+        /// MockProvider).
+        responses: Mutex<Vec<Result<ChatCompletion, HarnessError>>>,
+        /// Value returned by `model_context_limit` (None = provider unknown).
+        queried_limit: Option<u32>,
+        /// Count of how many times `model_context_limit` was called.
+        limit_query_count: std::sync::atomic::AtomicU32,
+    }
+
+    impl LimitedMockProvider {
+        fn new(responses: Vec<ChatCompletion>, queried_limit: Option<u32>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+                queried_limit,
+                limit_query_count: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+
+        fn query_count(&self) -> u32 {
+            self.limit_query_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ProviderClient for LimitedMockProvider {
+        async fn complete(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Vec<Tool>,
+            _model: &str,
+        ) -> Result<ChatCompletion, HarnessError> {
+            let mut lock = self.responses.lock().unwrap();
+            if lock.is_empty() {
+                return Err(HarnessError::Provider("mock exhausted".to_string()));
+            }
+            Ok(lock.remove(0).unwrap())
+        }
+
+        async fn stream(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Vec<Tool>,
+            _model: &str,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>>,
+            HarnessError,
+        > {
+            Err(HarnessError::Provider(
+                "mock: stream not implemented".to_string(),
+            ))
+        }
+
+        async fn validate_model(&self, _model: &str) -> Result<(), HarnessError> {
+            Ok(())
+        }
+
+        async fn model_context_limit(&self, _model: &str) -> Option<u32> {
+            self.limit_query_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.queried_limit
+        }
+    }
+
+    /// (a) Static config present → static wins; provider query is NOT used to
+    ///     override.
+    ///
+    /// config has `small-model → 200` tokens; provider would return 99 999.
+    /// The static entry must win (operator override).
+    #[test]
+    fn ctx_limit_static_config_wins_over_provider() {
+        let mut config = test_config(5);
+        config
+            .model_context_limits
+            .insert("small-model".to_string(), 200u32);
+
+        // provider_queried = 99_999 — would override default, but static wins.
+        let limit = model_effective_limit("small-model", &config, Some(99_999));
+        assert_eq!(
+            limit, 200,
+            "static config must win over provider-queried value"
+        );
+    }
+
+    /// (b) No static entry; provider returns a limit → that limit is used.
+    #[test]
+    fn ctx_limit_provider_value_used_when_no_static() {
+        let config = test_config(5); // no model_context_limits entries
+        let limit = model_effective_limit("some-model", &config, Some(8_192));
+        assert_eq!(
+            limit, 8_192,
+            "provider-queried limit must be used when static is absent"
+        );
+    }
+
+    /// (c) No static entry; provider returns None → falls back to context_limit
+    ///     default.
+    #[test]
+    fn ctx_limit_falls_back_to_default_when_provider_returns_none() {
+        let config = LoopConfig {
+            context_limit: 4_096,
+            ..test_config(5)
+        };
+        let limit = model_effective_limit("some-model", &config, None);
+        assert_eq!(
+            limit, 4_096,
+            "global default must be used when provider returns None"
+        );
+    }
+
+    /// (d) Cache: `model_context_limit` is called once per model across turns.
+    ///
+    /// Run a 3-turn loop (2 tool calls + final answer) against a
+    /// `LimitedMockProvider`.  The provider's query counter must be 1 regardless
+    /// of the number of turns.
+    #[tokio::test]
+    async fn ctx_limit_provider_queried_once_per_model() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("a.txt"), "hi")
+            .await
+            .unwrap();
+
+        let provider = Arc::new(LimitedMockProvider::new(
+            vec![
+                make_tool_call_response("read_file", r#"{"path": "a.txt"}"#),
+                make_tool_call_response("read_file", r#"{"path": "a.txt"}"#),
+                make_final_response("done after two tool calls"),
+            ],
+            Some(16_384), // provider reports 16 k context
+        ));
+
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+
+        run_loop(
+            provider.clone(),
+            registry,
+            ctx,
+            test_config(10),
+            "sys".to_string(),
+            vec![ChatMessage::user("read a.txt twice")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            provider.query_count(),
+            1,
+            "provider must be queried exactly once per model per session, got {}",
+            provider.query_count()
+        );
     }
 
     /// (d) Larger model exists but fails the vetted gate → does NOT switch

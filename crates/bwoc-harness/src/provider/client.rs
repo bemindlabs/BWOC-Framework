@@ -53,6 +53,18 @@ pub trait ProviderClient: Send + Sync {
     /// Validate that `model` is available at this endpoint.
     /// Returns `Ok(())` if found, `Err(HarnessError::ModelNotFound)` otherwise.
     async fn validate_model(&self, model: &str) -> Result<(), HarnessError>;
+
+    /// Query the provider for the context-window size of `model`.
+    ///
+    /// Best-effort: network or parse failures return `None` rather than
+    /// propagating an error — the loop treats `None` as "unknown" and falls
+    /// back to the configured default.
+    ///
+    /// The default implementation returns `None` so that providers that do
+    /// not expose this information degrade gracefully without any code change.
+    async fn model_context_limit(&self, _model: &str) -> Option<u32> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +100,22 @@ impl OllamaClient {
 
     fn models_url(&self) -> String {
         format!("{}/models", self.base_url)
+    }
+
+    /// Derive the Ollama native API root from the configured base URL.
+    ///
+    /// `base_url` ends in `/v1` (OpenAI-compat path); strip it to get the
+    /// Ollama root so we can reach native endpoints like `POST /api/show`.
+    fn ollama_root(&self) -> String {
+        self.base_url
+            .strip_suffix("/v1")
+            .unwrap_or(&self.base_url)
+            .to_string()
+    }
+
+    /// URL for Ollama's native model-info endpoint.
+    fn show_url(&self) -> String {
+        format!("{}/api/show", self.ollama_root())
     }
 }
 
@@ -218,6 +246,65 @@ impl ProviderClient for OllamaClient {
         } else {
             Err(HarnessError::ModelNotFound(model.to_string()))
         }
+    }
+
+    /// Query Ollama's native `POST /api/show` endpoint for the model's
+    /// context-window size.
+    ///
+    /// Ollama returns a JSON object where the context length appears in one
+    /// of two places (in priority order):
+    ///
+    /// 1. `model_info["llama.context_length"]` (or similar architecture
+    ///    prefix — we scan all keys ending in `".context_length"`).
+    /// 2. The `parameters` string, which contains `num_ctx <N>` lines when
+    ///    the model was loaded with a custom context override.
+    ///
+    /// If neither is present, or if the request fails for any reason, we
+    /// return `None` — best-effort, never hard-fails the loop.
+    async fn model_context_limit(&self, model: &str) -> Option<u32> {
+        let body = json!({"name": model});
+
+        let resp = self
+            .client
+            .post(self.show_url())
+            .json(&body)
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let data: Value = resp.json().await.ok()?;
+
+        // Priority 1: model_info object — scan for any key ending in
+        // ".context_length" (covers llama, mistral, gemma architecture prefixes).
+        if let Some(info) = data.get("model_info").and_then(|v| v.as_object()) {
+            for (key, val) in info {
+                if key.ends_with(".context_length") {
+                    if let Some(n) = val.as_u64() {
+                        return u32::try_from(n).ok();
+                    }
+                }
+            }
+        }
+
+        // Priority 2: parameters string — look for a `num_ctx <N>` line.
+        if let Some(params) = data.get("parameters").and_then(|v| v.as_str()) {
+            for line in params.lines() {
+                let mut parts = line.split_whitespace();
+                if parts.next() == Some("num_ctx") {
+                    if let Some(n_str) = parts.next() {
+                        if let Ok(n) = n_str.parse::<u32>() {
+                            return Some(n);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
 
