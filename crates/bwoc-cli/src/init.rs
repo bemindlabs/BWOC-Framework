@@ -190,6 +190,10 @@ agents/*/.bwoc/agent.pid
 agents/*/.bwoc/agent.sock
 agents/*/.bwoc/inbox.cursor
 
+# Trust v2 — ed25519 private signing key. NEVER commit: it is the agent's
+# identity secret. The public key lives in config.manifest.json (trust.publicKey).
+agents/*/.bwoc/agent.key
+
 # bwoc inbox messages — uncomment if you'd rather not track them.
 # Most teams DO want them in history (audit trail / replay), so the
 # default is to keep them tracked.

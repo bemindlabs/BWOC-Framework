@@ -12,6 +12,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
+# Trust v2 — ed25519 asymmetric signing for agent identity proofs (HV2-4, #39).
+# ed25519-dalek: pure-Rust ed25519 implementation; "rand" feature pulls rand_core
+# for key generation. No network, no async. Hex encoding via the `hex` crate.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

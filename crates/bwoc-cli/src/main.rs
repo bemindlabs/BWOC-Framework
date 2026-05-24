@@ -119,7 +119,8 @@ enum Commands {
     Ping(PingArgs),
     /// Supervise an agent's daemon — restart on crash, exit cleanly when stopped.
     Supervise(SuperviseArgs),
-    /// Read an agent's Kalyāṇamitta-7 trust profile (declared + requiredTrust).
+    /// Read an agent's Kalyāṇamitta-7 trust profile (declared + requiredTrust),
+    /// or generate an ed25519 keypair (`bwoc trust keygen <agent>`).
     Trust(TrustArgs),
     /// Append a message to an agent's inbox (`.bwoc/inbox.jsonl`).
     Send(SendArgs),
@@ -918,6 +919,15 @@ struct TrustArgs {
     /// Emit JSON instead of the human-readable table.
     #[arg(long)]
     json: bool,
+    /// Generate an ed25519 keypair for the agent (Trust v2 / HV2-4).
+    /// Writes the private key to `<agent>/.bwoc/agent.key` (mode 0600)
+    /// and stamps the public key into `config.manifest.json` `trust.publicKey`.
+    /// Idempotent: refuses to overwrite an existing key unless `--force`.
+    #[arg(long = "keygen")]
+    keygen: bool,
+    /// Overwrite an existing keypair (used with `--keygen`).
+    #[arg(long = "force", requires = "keygen")]
+    force: bool,
 }
 
 impl From<TrustArgs> for trust::TrustArgs {
@@ -926,6 +936,11 @@ impl From<TrustArgs> for trust::TrustArgs {
             agent: a.agent,
             workspace: a.workspace,
             json: a.json,
+            keygen: if a.keygen {
+                Some(trust::KeygenArgs { force: a.force })
+            } else {
+                None
+            },
         }
     }
 }

@@ -145,6 +145,22 @@ pub struct TrustBlock {
     /// `Refuse` if non-empty. `Warn` is strictly opt-in.
     #[serde(rename = "mode", default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<RefusalMode>,
+    /// Trust v2: hex-encoded ed25519 public key for this agent (64 hex chars = 32 bytes).
+    /// Written by `bwoc trust keygen`. Absent for agents that have not yet generated a
+    /// keypair. Verifier reads this to authenticate envelope signatures. Backward-compat:
+    /// agents without a `publicKey` field are treated as unsigned senders.
+    #[serde(rename = "publicKey", default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    /// Trust v2: when `true`, unsigned envelopes (no `sig` field) are refused at this
+    /// agent's receive gate. Default `false` — backward-compatible: unsigned envelopes
+    /// still pass the signature step unless the recipient has opted in to strict mode.
+    #[serde(rename = "requireSignature", default, skip_serializing_if = "is_false")]
+    pub require_signature: bool,
+}
+
+/// `skip_serializing_if` helper: omit a `bool` field when it is `false` (the default).
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 impl TrustBlock {
@@ -174,6 +190,8 @@ impl Default for TrustBlock {
             declared: TrustDeclared::default(),
             required_trust: Vec::new(),
             mode: None,
+            public_key: None,
+            require_signature: false,
         }
     }
 }
@@ -348,6 +366,7 @@ mod tests {
             },
             required_trust: vec!["vatta".into(), "noCatthana".into()],
             mode: None,
+            ..TrustBlock::default()
         });
         let json = serde_json::to_string(&m).unwrap();
         // Wire format uses camelCase + the rename for noCatthana.
@@ -437,10 +456,8 @@ mod tests {
     #[test]
     fn missing_in_all_satisfied_returns_empty() {
         let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into()],
-            mode: None,
+            ..TrustBlock::default()
         };
         let peer = TrustDeclared {
             vatta: true,
@@ -453,10 +470,8 @@ mod tests {
     #[test]
     fn missing_in_partial_returns_only_missing() {
         let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into(), "gambhira".into()],
-            mode: None,
+            ..TrustBlock::default()
         };
         let peer = TrustDeclared {
             vatta: true,
@@ -473,10 +488,8 @@ mod tests {
         // Order in the required_trust array is the order reported back —
         // recipient's preferences drive the surfaced diagnostic.
         let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["gambhira".into(), "vatta".into(), "piyo".into()],
-            mode: None,
+            ..TrustBlock::default()
         };
         let peer = TrustDeclared::default(); // nothing declared
         assert_eq!(block.missing_in(&peer), vec!["gambhira", "vatta", "piyo"]);
@@ -488,10 +501,8 @@ mod tests {
         // v1 manifest doesn't know about → quality is missing (since
         // unknown → false). Forward-compat works as expected.
         let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["mudu".into()], // future-spec quality
-            mode: None,
+            ..TrustBlock::default()
         };
         let peer = TrustDeclared {
             piyo: true,
@@ -516,10 +527,8 @@ mod tests {
     #[test]
     fn effective_mode_refuse_when_no_mode_and_nonempty_required() {
         let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into()],
-            mode: None,
+            ..TrustBlock::default()
         };
         assert_eq!(block.effective_mode(), RefusalMode::Refuse);
     }
@@ -528,10 +537,9 @@ mod tests {
     #[test]
     fn effective_mode_explicit_warn_overrides() {
         let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into()],
             mode: Some(RefusalMode::Warn),
+            ..TrustBlock::default()
         };
         assert_eq!(block.effective_mode(), RefusalMode::Warn);
     }
@@ -541,10 +549,8 @@ mod tests {
     #[test]
     fn effective_mode_explicit_refuse_with_empty_required() {
         let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
-            required_trust: vec![],
             mode: Some(RefusalMode::Refuse),
+            ..TrustBlock::default()
         };
         assert_eq!(block.effective_mode(), RefusalMode::Refuse);
     }

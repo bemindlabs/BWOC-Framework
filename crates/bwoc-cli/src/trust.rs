@@ -1,15 +1,24 @@
 //! `bwoc trust <agent>` — read an agent's Kalyāṇamitta-7 trust profile.
-//! See `modules/agent-template/interconnect/trust.md`. Read-only.
+//! `bwoc trust keygen [--agent <path>]` — generate an ed25519 keypair (Trust v2 / HV2-4).
+//! See `modules/agent-template/interconnect/trust.md`.
 
 use std::path::PathBuf;
 
-use bwoc_core::manifest::{Manifest, TrustDeclared};
+use bwoc_core::manifest::{Manifest, TrustBlock, TrustDeclared};
+use bwoc_core::signing;
 use bwoc_core::workspace::AgentsRegistry;
 
 pub struct TrustArgs {
     pub agent: String,
     pub workspace: Option<PathBuf>,
     pub json: bool,
+    /// When `Some`, run `keygen` for the named agent instead of showing the profile.
+    pub keygen: Option<KeygenArgs>,
+}
+
+pub struct KeygenArgs {
+    /// Overwrite an existing key without prompting.
+    pub force: bool,
 }
 
 /// The 7 Kalyāṇamitta qualities in canonical (manifest-key) order.
@@ -24,6 +33,10 @@ const QUALITIES: &[(&str, &str)] = &[
 ];
 
 pub fn run(args: TrustArgs) -> i32 {
+    if let Some(kg) = args.keygen {
+        return run_keygen(&args.agent, args.workspace, kg);
+    }
+
     let Some(workspace) = resolve_workspace(args.workspace) else {
         eprintln!(
             "bwoc trust: no workspace found. Pass --workspace, set BWOC_WORKSPACE, \
@@ -71,6 +84,105 @@ pub fn run(args: TrustArgs) -> i32 {
     0
 }
 
+/// `bwoc trust keygen [--agent <name>] [--force]`
+///
+/// Generates an ed25519 keypair for the named agent:
+/// - Private key → `<agent>/.bwoc/agent.key` (hex, mode 0600).
+/// - Public key → `trust.publicKey` in `<agent>/config.manifest.json`.
+///
+/// Idempotent: refuses to overwrite an existing key unless `--force`.
+fn run_keygen(agent_name: &str, workspace: Option<PathBuf>, kg: KeygenArgs) -> i32 {
+    let Some(ws) = resolve_workspace(workspace) else {
+        eprintln!(
+            "bwoc trust keygen: no workspace found. Pass --workspace, set BWOC_WORKSPACE, \
+             or run `bwoc init`."
+        );
+        return 2;
+    };
+    let registry = match AgentsRegistry::load(&ws) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("bwoc trust keygen: failed to read agents.toml: {e}");
+            return 1;
+        }
+    };
+    let lookup_id = if agent_name.starts_with("agent-") {
+        agent_name.to_string()
+    } else {
+        format!("agent-{agent_name}")
+    };
+    let Some(entry) = registry.agents.iter().find(|a| a.id == lookup_id) else {
+        eprintln!(
+            "bwoc trust keygen: no agent named '{agent_name}' in workspace {}.",
+            ws.display()
+        );
+        return 2;
+    };
+
+    let agent_dir = ws.join(&entry.path);
+    let bwoc_dir = agent_dir.join(".bwoc");
+    let manifest_path = agent_dir.join("config.manifest.json");
+
+    // Generate keypair (writes private key to .bwoc/agent.key).
+    let pubkey_hex = match signing::generate_keypair(&bwoc_dir, kg.force) {
+        Ok(pk) => pk,
+        Err(signing::SigningError::KeyExists(p)) => {
+            eprintln!(
+                "bwoc trust keygen: key already exists at {}. \
+                 Pass --force to overwrite.",
+                p.display()
+            );
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("bwoc trust keygen: failed to generate keypair: {e}");
+            return 1;
+        }
+    };
+
+    // Patch trust.publicKey in config.manifest.json.
+    let mut manifest = match Manifest::load_from_path(&manifest_path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!(
+                "bwoc trust keygen: failed to read {}: {e}",
+                manifest_path.display()
+            );
+            return 1;
+        }
+    };
+    let trust = manifest.trust.get_or_insert_with(|| TrustBlock {
+        schema_version: 1,
+        ..TrustBlock::default()
+    });
+    trust.public_key = Some(pubkey_hex.clone());
+
+    if let Err(e) = manifest.save_to_path(&manifest_path) {
+        eprintln!(
+            "bwoc trust keygen: failed to write {}: {e}",
+            manifest_path.display()
+        );
+        return 1;
+    }
+
+    println!();
+    println!("Keypair generated for {}", entry.id);
+    println!(
+        "  Private key: {}/.bwoc/agent.key (mode 0600)",
+        agent_dir.display()
+    );
+    println!("  Public key:  {pubkey_hex}");
+    println!(
+        "  Manifest:    {} (trust.publicKey updated)",
+        manifest_path.display()
+    );
+    println!();
+    println!("The private key is gitignored by convention (.bwoc/agent.key).");
+    println!("Add .bwoc/agent.key to your .gitignore if not already present.");
+    println!();
+    0
+}
+
 fn print_human(agent_id: &str, m: &Manifest) {
     println!();
     println!("Trust profile: {agent_id}");
@@ -103,6 +215,14 @@ fn print_human(agent_id: &str, m: &Manifest) {
                     println!("  {mark} {q}");
                 }
             }
+            println!();
+            match &t.public_key {
+                None => println!(
+                    "publicKey: (none — no keypair generated; run `bwoc trust keygen {agent_id}`)"
+                ),
+                Some(pk) => println!("publicKey: {pk}"),
+            }
+            println!("requireSignature: {}", t.require_signature);
         }
     }
     println!();
@@ -125,6 +245,8 @@ fn print_json(agent_id: &str, m: &Manifest) {
                     "noCatthana": t.declared.no_catthana,
                 },
                 "requiredTrust": t.required_trust,
+                "publicKey": t.public_key,
+                "requireSignature": t.require_signature,
             },
         }),
     };

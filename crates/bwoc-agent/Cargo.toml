@@ -17,3 +17,6 @@ fluent-bundle = { workspace = true }
 unic-langid = { workspace = true }
 ctrlc = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

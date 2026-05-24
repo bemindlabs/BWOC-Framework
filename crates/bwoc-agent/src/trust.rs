@@ -2,6 +2,18 @@
 //! `modules/agent-template/interconnect/trust.md` §"Refusal Semantics"
 //! and §"Refusal modes".
 //!
+//! Trust v2 (HV2-4, #39): adds asymmetric ed25519 signature verification.
+//! The gate now has two sequential steps:
+//!
+//! 1. **Signature step** — verify `sig` against the sender's `trust.publicKey`.
+//!    - Valid sig → identity proven; proceed to step 2.
+//!    - Bad / tampered sig → `Refuse(bad_signature)` regardless of mode.
+//!    - No sig + `requireSignature=false` (default) → pass signature step.
+//!    - No sig + `requireSignature=true` → `Refuse(unsigned)`.
+//!    - Sender has no `publicKey` in manifest → treated as unsigned sender.
+//!
+//! 2. **Kalyāṇamitta step** — existing quality checks (unchanged from v1).
+//!
 //! Behind the `BWOC_TRUST_GATING=1` env opt-in (v1 safety). When enabled
 //! AND the recipient's manifest declares a non-empty `requiredTrust`,
 //! the daemon resolves each new inbox envelope's sender, reads the
@@ -21,6 +33,7 @@
 use std::path::{Path, PathBuf};
 
 use bwoc_core::manifest::{Manifest, RefusalMode};
+use bwoc_core::signing;
 use bwoc_core::workspace::AgentsRegistry;
 
 /// Daemon trust posture, built once at `--serve` startup.
@@ -40,17 +53,26 @@ pub struct TrustContext {
     /// Reflects `BWOC_TRUST_GATING=1`. When false, `evaluate` always
     /// returns `Pass` (permissive).
     pub gating_enabled: bool,
+    /// Trust v2: when `true`, envelopes without a `sig` field are refused
+    /// (`reason: unsigned`). Default `false` — backward-compat.
+    pub require_signature: bool,
 }
 
 impl TrustContext {
     /// Build from the recipient's own manifest + cwd. Reads env at call
     /// time so daemon can be relaunched with new env without code change.
     pub fn build(own: &Manifest, cwd: &Path) -> Self {
-        let (required, mode) = own
+        let (required, mode, require_signature) = own
             .trust
             .as_ref()
-            .map(|t| (t.required_trust.clone(), t.effective_mode()))
-            .unwrap_or_else(|| (Vec::new(), RefusalMode::Off));
+            .map(|t| {
+                (
+                    t.required_trust.clone(),
+                    t.effective_mode(),
+                    t.require_signature,
+                )
+            })
+            .unwrap_or_else(|| (Vec::new(), RefusalMode::Off, false));
         let gating_enabled = std::env::var("BWOC_TRUST_GATING").ok().as_deref() == Some("1");
         let workspace_root = find_workspace_root(cwd);
         Self {
@@ -58,6 +80,7 @@ impl TrustContext {
             mode,
             workspace_root,
             gating_enabled,
+            require_signature,
         }
     }
 
@@ -123,27 +146,32 @@ impl Refusal {
 
 /// Evaluate a single inbox envelope against the daemon's trust posture.
 ///
+/// Trust v2 adds a signature step (step 1) before the existing Kalyāṇamitta
+/// quality checks (step 2). The signature step is always run when gating
+/// is enabled, regardless of `requiredTrust` / `is_inert` — it short-circuits
+/// early on `bad_signature` and `unsigned` before the quality gate.
+///
 /// Returns a `TrustOutcome`:
-/// - `Pass` — gating off, no requirements, `from=user`, or sender
-///   satisfies all required qualities.
+/// - `Pass` — gating off, `from=user`, sig valid (or unsigned+not required),
+///   and sender satisfies all required qualities.
 /// - `Warn` — gating on, effective mode is `Warn`, and sender is
 ///   missing ≥1 required quality. Envelope still delivered.
-/// - `Refuse` — gating on, effective mode is `Refuse` (or a
-///   can't-verify condition), and sender is missing ≥1
-///   required quality (or can't be looked up). Envelope
-///   blocked and logged.
+/// - `Refuse` — bad/tampered sig (`bad_signature`); missing required sig
+///   (`unsigned`); gating on + missing qualities; or can't-verify condition.
 ///
 /// Can't-verify paths (`no_workspace`, `registry_unreadable`,
 /// `unknown_sender`, `sender_manifest_unreadable`) always produce
-/// `Refuse` regardless of mode — an unknown sender cannot be warn-passed.
+/// `Refuse` regardless of mode.
 ///
 /// `envelope_offset` is the byte offset of the envelope's line within
 /// `inbox.jsonl` — it's the join key `bwoc inbox` uses when overlaying
 /// refusals onto the envelope view.
 pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -> TrustOutcome {
-    if ctx.is_inert() {
+    // Gating completely off → fast pass (skip all parsing).
+    if !ctx.gating_enabled {
         return TrustOutcome::Pass;
     }
+
     let env: serde_json::Value = match serde_json::from_str(envelope_line) {
         Ok(v) => v,
         Err(_) => return TrustOutcome::Pass, // malformed → silently skip (v1 behaviour)
@@ -163,13 +191,22 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
         .unwrap_or("")
         .to_string();
 
+    // Early-exit: if we don't need workspace for any check, pass now.
+    // Workspace is needed for: sig lookup (when sig present), require_signature
+    // enforcement, and quality gating. If none apply, skip all I/O.
+    let sig_present = env.get("sig").and_then(|v| v.as_str()).is_some();
+    let needs_workspace = sig_present || ctx.require_signature || !ctx.required.is_empty();
+    if !needs_workspace {
+        return TrustOutcome::Pass;
+    }
+
     // Can't-verify helpers — always Refuse regardless of mode.
     macro_rules! cant_verify {
         ($reason:expr) => {
             TrustOutcome::Refuse(Refusal {
                 envelope_offset,
-                envelope_ts,
-                envelope_from: from,
+                envelope_ts: envelope_ts.clone(),
+                envelope_from: from.clone(),
                 reason: $reason,
                 missing: ctx.required.clone(),
             })
@@ -191,10 +228,83 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     };
 
     let manifest_path = ws.join(&entry.path).join("config.manifest.json");
-    let declared = match Manifest::load_from_path(&manifest_path) {
-        Ok(m) => m.trust.map(|t| t.declared).unwrap_or_default(),
+    let sender_manifest = match Manifest::load_from_path(&manifest_path) {
+        Ok(m) => m,
         Err(_) => return cant_verify!("sender_manifest_unreadable"),
     };
+
+    // ── Step 1: Signature verification (Trust v2) ────────────────────────────
+    //
+    // Extract sig + required envelope fields. If any required field for
+    // canonical-bytes construction is missing, treat as unsigned.
+    let sig_opt = env.get("sig").and_then(|v| v.as_str());
+    let msg_id = env.get("messageId").and_then(|v| v.as_str()).unwrap_or("");
+    let to_field = env.get("to").and_then(|v| v.as_str()).unwrap_or("");
+    let body = env.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    let sender_pubkey = sender_manifest
+        .trust
+        .as_ref()
+        .and_then(|t| t.public_key.as_deref());
+
+    match (sig_opt, sender_pubkey) {
+        (Some(sig_hex), Some(pubkey_hex)) => {
+            // Sender has a pubkey and the envelope carries a sig — verify.
+            let payload = signing::canonical_bytes(&from, to_field, &envelope_ts, msg_id, body);
+            match signing::load_verifying_key(pubkey_hex) {
+                Ok(vk) => {
+                    if signing::verify(&vk, &payload, sig_hex).is_err() {
+                        return TrustOutcome::Refuse(Refusal {
+                            envelope_offset,
+                            envelope_ts,
+                            envelope_from: from,
+                            reason: "bad_signature",
+                            missing: vec![],
+                        });
+                    }
+                    // Sig valid — identity proven; fall through to quality gate.
+                }
+                Err(_) => {
+                    // Malformed pubkey in manifest — treat as can't-verify.
+                    return cant_verify!("bad_pubkey");
+                }
+            }
+        }
+        (Some(_sig_hex), None) => {
+            // Envelope has a sig but sender has no pubkey in manifest —
+            // can't verify. Treat as bad_signature (conservative).
+            return TrustOutcome::Refuse(Refusal {
+                envelope_offset,
+                envelope_ts,
+                envelope_from: from,
+                reason: "bad_signature",
+                missing: vec![],
+            });
+        }
+        (None, _) => {
+            // No sig in envelope.
+            if ctx.require_signature {
+                // Recipient requires signatures — refuse unsigned.
+                return TrustOutcome::Refuse(Refusal {
+                    envelope_offset,
+                    envelope_ts,
+                    envelope_from: from,
+                    reason: "unsigned",
+                    missing: vec![],
+                });
+            }
+            // requireSignature=false (default) — unsigned is allowed; proceed.
+        }
+    }
+
+    // ── Step 2: Kalyāṇamitta quality gate (v1 logic, unchanged) ────────────
+    if ctx.is_inert() {
+        return TrustOutcome::Pass;
+    }
+
+    let declared = sender_manifest
+        .trust
+        .map(|t| t.declared)
+        .unwrap_or_default();
 
     let missing: Vec<String> = ctx
         .required
@@ -238,7 +348,7 @@ fn find_workspace_root(start: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bwoc_core::manifest::{TrustBlock, TrustDeclared};
+    use bwoc_core::manifest::TrustBlock;
     use std::sync::Mutex;
 
     /// Serializes env-mutating tests. Rust 2024 marks `set_var/remove_var`
@@ -262,6 +372,7 @@ mod tests {
             mode,
             workspace_root: ws,
             gating_enabled: gating,
+            require_signature: false, // default: backward-compat
         }
     }
 
@@ -420,10 +531,9 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let mut m = sample_manifest();
         m.trust = Some(TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into()],
             mode: None, // absent → effective Refuse (v1 compat)
+            ..TrustBlock::default()
         });
         unsafe {
             std::env::remove_var("BWOC_TRUST_GATING");
@@ -440,10 +550,9 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let mut m = sample_manifest();
         m.trust = Some(TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into()],
             mode: Some(RefusalMode::Warn),
+            ..TrustBlock::default()
         });
         unsafe {
             std::env::remove_var("BWOC_TRUST_GATING");
@@ -490,6 +599,280 @@ mod tests {
             base_url: None,
             trust: None,
             version: "2.0".into(),
+        }
+    }
+
+    // ── Trust v2 signature tests (HV2-4, #39) ─────────────────────────────────
+
+    use bwoc_core::signing::{self, AgentSigningKey};
+    use bwoc_core::workspace::{
+        AgentEntry, AgentsRegistry, Workspace, WorkspaceDefaults, WorkspaceMeta,
+    };
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Build a minimal workspace with a sender agent and write a manifest for it.
+    /// Returns (workspace_root, sender_bwoc_dir).
+    fn setup_signing_workspace(
+        sender_id: &str,
+        sender_pubkey: Option<&str>,
+        require_sig: bool,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        fs::create_dir_all(ws.join(".bwoc")).unwrap();
+        let agent_path = format!("agents/{sender_id}");
+        let agent_dir = ws.join(&agent_path);
+        fs::create_dir_all(agent_dir.join(".bwoc")).unwrap();
+
+        Workspace {
+            workspace: WorkspaceMeta {
+                name: "test".into(),
+                version: "0.1.0".into(),
+                created: "2026-05-24T00:00:00Z".into(),
+            },
+            defaults: WorkspaceDefaults::default(),
+        }
+        .save(ws)
+        .unwrap();
+
+        let mut reg = AgentsRegistry::default();
+        reg.agents.push(AgentEntry {
+            id: sender_id.into(),
+            path: agent_path.clone(),
+            backend: "claude".into(),
+            incarnated: "2026-05-24T00:00:00Z".into(),
+            status: "active".into(),
+        });
+        reg.save(ws).unwrap();
+
+        // Write sender manifest with optional publicKey.
+        let mut m = sample_manifest();
+        m.agent_id = sender_id.into();
+        m.trust = Some(TrustBlock {
+            public_key: sender_pubkey.map(|s| s.to_string()),
+            require_signature: require_sig,
+            ..TrustBlock::default()
+        });
+        m.save_to_path(&ws.join(&agent_path).join("config.manifest.json"))
+            .unwrap();
+
+        let sender_bwoc = ws.join(&agent_path).join(".bwoc");
+        (dir, sender_bwoc)
+    }
+
+    fn signed_envelope_line(
+        from: &str,
+        to: &str,
+        ts: &str,
+        msg_id: &str,
+        body: &str,
+        signing_key: &AgentSigningKey,
+    ) -> String {
+        let payload = signing::canonical_bytes(from, to, ts, msg_id, body);
+        let sig = signing::sign(signing_key, &payload);
+        serde_json::json!({
+            "ts": ts,
+            "messageId": msg_id,
+            "from": from,
+            "to": to,
+            "message": body,
+            "sig": sig,
+        })
+        .to_string()
+    }
+
+    fn unsigned_envelope_line(from: &str, to: &str, ts: &str, msg_id: &str, body: &str) -> String {
+        serde_json::json!({
+            "ts": ts,
+            "messageId": msg_id,
+            "from": from,
+            "to": to,
+            "message": body,
+        })
+        .to_string()
+    }
+
+    /// Valid signed envelope: identity proven → passes signature step.
+    #[test]
+    fn sig_valid_passes_signature_step() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Generate a keypair; register pubkey in sender manifest.
+        let key_dir = tempdir().unwrap();
+        let bwoc_dir = key_dir.path().join(".bwoc");
+        let pubkey_hex = signing::generate_keypair(&bwoc_dir, false).unwrap();
+        let signing_key = signing::load_signing_key(&bwoc_dir).unwrap().unwrap();
+
+        let (ws_dir, _) = setup_signing_workspace("agent-sender", Some(&pubkey_hex), false);
+        let ws = ws_dir.path();
+
+        let line = signed_envelope_line(
+            "agent-sender",
+            "agent-me",
+            "2026-05-24T10:00:00Z",
+            "msg-001",
+            "hello",
+            &signing_key,
+        );
+
+        // Use a context with gating on but no required qualities (is_inert for qualities).
+        // The signature check still runs (gating_enabled=true guards it).
+        let ctx = TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            workspace_root: Some(ws.to_path_buf()),
+            gating_enabled: true,
+            require_signature: false,
+        };
+        assert!(
+            matches!(evaluate(&ctx, &line, 0), TrustOutcome::Pass),
+            "valid signature + no quality requirements must pass"
+        );
+    }
+
+    /// Tampered envelope body: verify fails → Refuse(bad_signature).
+    #[test]
+    fn sig_tampered_body_refuses_bad_signature() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let key_dir = tempdir().unwrap();
+        let bwoc_dir = key_dir.path().join(".bwoc");
+        let pubkey_hex = signing::generate_keypair(&bwoc_dir, false).unwrap();
+        let signing_key = signing::load_signing_key(&bwoc_dir).unwrap().unwrap();
+
+        let (ws_dir, _) = setup_signing_workspace("agent-sender", Some(&pubkey_hex), false);
+        let ws = ws_dir.path();
+
+        // Sign with "original body" but then swap the message field.
+        let payload = signing::canonical_bytes(
+            "agent-sender",
+            "agent-me",
+            "2026-05-24T10:00:00Z",
+            "msg-001",
+            "original body",
+        );
+        let sig = signing::sign(&signing_key, &payload);
+
+        // Build an envelope with the tampered body but original sig.
+        let tampered = serde_json::json!({
+            "ts": "2026-05-24T10:00:00Z",
+            "messageId": "msg-001",
+            "from": "agent-sender",
+            "to": "agent-me",
+            "message": "tampered body",
+            "sig": sig,
+        })
+        .to_string();
+
+        let ctx = TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            workspace_root: Some(ws.to_path_buf()),
+            gating_enabled: true,
+            require_signature: false,
+        };
+        match evaluate(&ctx, &tampered, 0) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "bad_signature"),
+            other => panic!("expected Refuse(bad_signature), got {other:?}"),
+        }
+    }
+
+    /// Wrong pubkey in manifest: sig is valid for the actual key, but the
+    /// manifest carries a different pubkey → verify fails → Refuse(bad_signature).
+    #[test]
+    fn sig_wrong_pubkey_refuses_bad_signature() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Key 1: used to sign the envelope.
+        let key1_dir = tempdir().unwrap();
+        let bwoc1 = key1_dir.path().join(".bwoc");
+        signing::generate_keypair(&bwoc1, false).unwrap();
+        let signing_key1 = signing::load_signing_key(&bwoc1).unwrap().unwrap();
+
+        // Key 2: different keypair whose pubkey is registered in the manifest.
+        let key2_dir = tempdir().unwrap();
+        let bwoc2 = key2_dir.path().join(".bwoc");
+        let pubkey2_hex = signing::generate_keypair(&bwoc2, false).unwrap();
+
+        // Register pubkey2 in the workspace but sign with key1.
+        let (ws_dir, _) = setup_signing_workspace("agent-sender", Some(&pubkey2_hex), false);
+        let ws = ws_dir.path();
+
+        let line = signed_envelope_line(
+            "agent-sender",
+            "agent-me",
+            "2026-05-24T10:00:00Z",
+            "msg-001",
+            "hello",
+            &signing_key1, // sign with key1, manifest has pubkey2
+        );
+
+        let ctx = TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            workspace_root: Some(ws.to_path_buf()),
+            gating_enabled: true,
+            require_signature: false,
+        };
+        match evaluate(&ctx, &line, 0) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "bad_signature"),
+            other => panic!("expected Refuse(bad_signature), got {other:?}"),
+        }
+    }
+
+    /// Unsigned envelope + requireSignature=false (default) → passes sig step.
+    #[test]
+    fn unsigned_require_sig_false_passes() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Sender has no pubkey in manifest (not yet keygen'd).
+        let (ws_dir, _) = setup_signing_workspace("agent-sender", None, false);
+        let ws = ws_dir.path();
+
+        let line = unsigned_envelope_line(
+            "agent-sender",
+            "agent-me",
+            "2026-05-24T10:00:00Z",
+            "msg-001",
+            "unsigned is fine",
+        );
+
+        let ctx = TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            workspace_root: Some(ws.to_path_buf()),
+            gating_enabled: true,
+            require_signature: false,
+        };
+        assert!(
+            matches!(evaluate(&ctx, &line, 0), TrustOutcome::Pass),
+            "unsigned + requireSignature=false must pass"
+        );
+    }
+
+    /// Unsigned envelope + requireSignature=true → Refuse(unsigned).
+    #[test]
+    fn unsigned_require_sig_true_refuses() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Sender has no pubkey; recipient requires signatures.
+        let (ws_dir, _) = setup_signing_workspace("agent-sender", None, false);
+        let ws = ws_dir.path();
+
+        let line = unsigned_envelope_line(
+            "agent-sender",
+            "agent-me",
+            "2026-05-24T10:00:00Z",
+            "msg-001",
+            "unsigned should be refused",
+        );
+
+        let ctx = TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            workspace_root: Some(ws.to_path_buf()),
+            gating_enabled: true,
+            require_signature: true, // recipient opts in
+        };
+        match evaluate(&ctx, &line, 0) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unsigned"),
+            other => panic!("expected Refuse(unsigned), got {other:?}"),
         }
     }
 }

@@ -4,11 +4,15 @@
 //! `<agent>/.bwoc/inbox.jsonl`. Each line is one message:
 //!
 //!   {"ts":"...","messageId":"msg-...","from":"user","to":"<agent-id>",
-//!    "message":"...","replyTo":"msg-..."?}
+//!    "message":"...","replyTo":"msg-..."?,"sig":"<hex>"?}
 //!
 //! `messageId` is always present (generated here). `replyTo` is present
-//! only when the caller passes `--reply-to` — typically the Stop hook
-//! at `modules/agent-template/.claude/hooks/inbox-auto-reply.sh`.
+//! only when the caller passes `--reply-to`. `sig` is present when
+//! `--from <agent>` is passed AND that agent has a `.bwoc/agent.key` file
+//! (generated via `bwoc trust keygen`). Trust v2 / HV2-4 / #39.
+//!
+//! Backward-compat: envelopes without `sig` continue to work; the receive
+//! gate honours `requireSignature=false` (default) for unsigned passes.
 //!
 //! Agent → agent messaging (the full sammā-vācā channel with
 //! Sāraṇīyadhamma 6 + Kalyāṇamitta 7 trust scoring) lands later.
@@ -22,6 +26,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bwoc_core::routing::Routes;
+use bwoc_core::signing;
 use bwoc_core::workspace::{AgentEntry, AgentsRegistry};
 
 pub struct SendArgs {
@@ -66,6 +71,8 @@ pub enum SendError {
     Routing(#[from] bwoc_core::routing::RoutingError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("signing error: {0}")]
+    Signing(#[from] bwoc_core::signing::SigningError),
 }
 
 pub fn run(args: SendArgs) -> i32 {
@@ -139,8 +146,11 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     // The sender lives in the sending workspace; only the recipient gains
     // the peer path. The bare `from` id crossing the boundary is the
     // intentional Trust-v2 seam — do NOT widen the envelope schema.
-    let from = match args.from.as_deref() {
-        None => "user".to_string(),
+    //
+    // Also capture the sender's agent directory so we can look up the
+    // signing key (Trust v2). sender_agent_dir is None for user origin.
+    let (from, sender_agent_dir): (String, Option<PathBuf>) = match args.from.as_deref() {
+        None => ("user".to_string(), None),
         Some(name) => {
             let sender_id = canonicalize(name);
             let sender = registry
@@ -151,7 +161,8 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                     name: name.to_string(),
                     workspace: workspace.clone(),
                 })?;
-            sender.id.clone()
+            let dir = workspace.join(&sender.path);
+            (sender.id.clone(), Some(dir))
         }
     };
 
@@ -173,6 +184,21 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     if let Some(rt) = args.reply_to.as_deref() {
         envelope.insert("replyTo".into(), rt.into());
     }
+
+    // Trust v2 — sign envelope when the sender is an agent with a key.
+    // If the sender is "user" or the agent has no key file, send unsigned
+    // (backward-compat: requireSignature=false default at the receive gate).
+    if let Some(agent_dir) = &sender_agent_dir {
+        let bwoc_dir = agent_dir.join(".bwoc");
+        if let Some(signing_key) = signing::load_signing_key(&bwoc_dir)? {
+            let payload =
+                signing::canonical_bytes(&from, &entry.id, &ts, &message_id, &args.message);
+            let sig_hex = signing::sign(&signing_key, &payload);
+            envelope.insert("sig".into(), sig_hex.into());
+        }
+        // No key file → send unsigned; no error (backward-compat).
+    }
+
     let line = serde_json::to_string(&serde_json::Value::Object(envelope))?;
 
     // Append-only — multiple `bwoc send` calls just stack lines. The
