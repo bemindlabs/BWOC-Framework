@@ -1,0 +1,7 @@
+# Code owners — review duty for the BWOC Framework.
+# Referenced by CONTRIBUTING.md. A matching owner is auto-requested for review
+# on every PR touching the pattern. Syntax: <pattern> <owner...>.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+
+# Single maintainer owns the whole tree until a maintainers team is formed.
+* @bemindlab

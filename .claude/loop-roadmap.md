@@ -1,6 +1,6 @@
 # BWOC Refinement Loop — Roadmap
 
-Read this file at the start of every loop fire. Pick the **first `[ ]` pending item**, implement it, tick it `[x]`, add any follow-ups under **Discovered**, then stop. Do not chain ahead.
+> **RETIRED (2026-05-25).** This refinement loop is no longer driven by any cron or `/loop`. The pivot to Phase 1 v2.0 Rust implementation superseded it (see **Discovered → "Loop superseded"**). The **live tracker is now [`docs/en/ROADMAP.en.md`](../docs/en/ROADMAP.en.md)** — trust it over the `[ ]` checkboxes below, most of which shipped under the implementation iterations recorded later in this file. This document is kept as a **historical record** of the doc-refinement and implementation iterations only; do not action its checklist. — Anattā
 
 ## Constraints (apply to every item)
 
