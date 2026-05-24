@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.25-0] — 2026-05-25 — 2.4.0
+
+**Minor release.** Phase 4's one framework-owned line item lands as a command — `bwoc fleet health` (#35) — and the Windows destructive-command guardrails (#31) close the caveat flagged in 2.3.0's Windows-support entry. Cargo SemVer `2.3.0` → `2.4.0`. CalVer per [VERSION.md policy](VERSION.md#versioning-policy--dual-namespaces). (The `bwoc sessions` monitor (#21) also merged in this window; it was already described in the 2.3.0 entry below.)
+
+### Added
+
+- **`bwoc fleet health [--json]` — Aparihāniya-dhamma 7 governance signals (issue #35)** — turns the [`FLEET-GOVERNANCE.en.md`](docs/en/FLEET-GOVERNANCE.en.md) spec's *stubbed* signals into a real **read-only, report-only** command (no gating — v1 ships signals; v2 may promote to gates once telemetry justifies). One workspace-scoped run reports each of the seven DN 16 non-decline conditions as ✓ / ⚠ / ℹ: **1** regular meetings (agent-dir mtime vs `--stale-days`), **2** coordinated start/end (reuses `doctor` stale PID/socket findings), **4** honor template version, **5** protect vulnerable (inbox-refusal counts) — mechanical; **3** convention drift (`git status .bwoc/` porcelain) and **6** shared-resource authorship (`git` author vs operator) — git-backed mechanical checks (exceeding the v1 informational-only slice); **7** protect senior agents — informational. Orchestrates existing surfaces (registry / `doctor` / `check` / inbox refusals) rather than reimplementing; dep-lean; backend-neutral. 15 unit tests.
+
+### Fixed
+
+- **Windows destructive-command guardrails (issue #31)** — the harness dangerous-path guard was unix-oriented; it now also blocks Windows destructive patterns (`del /s`, `rmdir /s`, `format`, `Remove-Item -Recurse`), closing the caveat noted in the 2.3.0 `bwoc-harness — Windows support` entry. Realises Sīla *Pāṇātipāta* (no destruction) uniformly across shells (Samānattatā).
+
 ## [v2026.5.24-1] — 2026-05-24 — 2.3.0
 
 **Minor release.** The plugin-system cycle (#6) — a real OS-level sandbox (landlock / `sandbox-exec`, replacing the stub), `bwoc-harness` Windows support, an OpenAI-compatible provider + vetted-model mode, cross-workspace `bwoc peer` view/learn, the `bwoc sessions` monitor, Trust v2 warn-mode, the document-kind mechanism, per-model token-limit auto-switch, and `bwoc run` / `bwoc update`. Cargo SemVer `2.2.0` → `2.3.0`. CalVer per [VERSION.md policy](VERSION.md#versioning-policy--dual-namespaces).

@@ -174,7 +174,7 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
 name = "bwoc-agent"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "bwoc-core",
  "ctrlc",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-cli"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "bwoc-core",
  "clap",
@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-core"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-harness"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "async-trait",
  "bwoc-core",
