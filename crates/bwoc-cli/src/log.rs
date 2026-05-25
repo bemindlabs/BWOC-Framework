@@ -120,16 +120,25 @@ pub fn run(args: LogArgs) -> i32 {
     0
 }
 
-/// Print the last `n` lines of `path` to stdout. Uses a simple
+/// Read the last `n` lines of `path` into a `Vec<String>`. Uses a simple
 /// read-into-memory + split approach — adequate for daemon logs that
 /// are kept small (most agents will be hundreds of lines, not MBs).
 /// If/when log rotation becomes a real concern, switch to a backwards-
 /// reading byte-windowed approach.
-fn print_tail(path: &Path, n: usize) -> std::io::Result<()> {
+///
+/// Extracted so non-stdout consumers (the dashboard's detail-pane log
+/// tail, refreshed on its 2s tick) can reuse the exact same tail logic
+/// without shelling out or duplicating the read.
+pub fn tail_lines(path: &Path, n: usize) -> std::io::Result<Vec<String>> {
     let content = std::fs::read_to_string(path)?;
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n);
-    for line in &lines[start..] {
+    Ok(lines[start..].iter().map(|l| l.to_string()).collect())
+}
+
+/// Print the last `n` lines of `path` to stdout.
+fn print_tail(path: &Path, n: usize) -> std::io::Result<()> {
+    for line in tail_lines(path, n)? {
         println!("{line}");
     }
     Ok(())
@@ -191,5 +200,38 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
         if !cur.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_lines_returns_last_n() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("agent.log");
+        std::fs::write(&path, "l1\nl2\nl3\nl4\nl5\n").unwrap();
+        let got = tail_lines(&path, 2).unwrap();
+        assert_eq!(got, vec!["l4".to_string(), "l5".to_string()]);
+    }
+
+    #[test]
+    fn tail_lines_caps_at_available_when_fewer_than_n() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("agent.log");
+        std::fs::write(&path, "only\ntwo\n").unwrap();
+        // Asking for more lines than exist returns all of them, not an error.
+        let got = tail_lines(&path, 50).unwrap();
+        assert_eq!(got, vec!["only".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn tail_lines_missing_file_is_err() {
+        // Missing log → Err, so callers can degrade gracefully (the
+        // dashboard renders "(no log yet)" rather than blank).
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("nope.log");
+        assert!(tail_lines(&missing, 10).is_err());
     }
 }

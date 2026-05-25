@@ -7,14 +7,20 @@
 //! `.bwoc/agents.toml` with `↑`/`↓` (or `j`/`k`) navigation, a
 //! highlighted selection row, and `r` to refresh.
 //!
-//! Phase 2 (next): detail pane reusing `doctor`-style probes.
-//! Phase 3: Fluent i18n. Phase 4: log tail + editor handoff.
+//! Phase 2 (shipped): detail pane reusing `doctor`-style probes.
+//! Phase 3: Fluent i18n.
+//! Phase 4 (this slice, issue #45): live agent-activity — an activity
+//! column on each row fed by the `sessions` resolution (working/idle/
+//! running/—) on the 2s tick, plus session detail (backend/pid/last-
+//! activity) and a log tail in the detail pane. Observe-only: the
+//! dashboard reads session state, it never drives a session.
 
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::i18n;
+use crate::sessions::{ProcessScanRunner, Session, SessionState, collect_sessions};
 use bwoc_core::manifest::Manifest;
 use bwoc_core::workspace::{AgentEntry, AgentsRegistry};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -78,6 +84,16 @@ pub fn run(args: DashboardArgs) -> i32 {
 /// the disk for huge registries.
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Inactivity threshold (seconds) before a live session is reported
+/// `idle` rather than `working`. Matches `bwoc sessions`' default so the
+/// dashboard and the CLI agree on what "idle" means.
+const IDLE_SECS: u64 = 60;
+
+/// Lines of the selected agent's log shown in the detail pane. Capped so
+/// the tail never crowds out the manifest/health summary above it
+/// (mattaññutā — right amount). The pane clips anything past its height.
+const DETAIL_LOG_TAIL_LINES: usize = 10;
+
 struct App {
     workspace: Option<PathBuf>,
     agents: Vec<AgentEntry>,
@@ -85,6 +101,17 @@ struct App {
     last_refresh_error: Option<String>,
     bundle: FluentBundle<FluentResource>,
     last_refresh_at: Instant,
+    /// Snapshot of live sessions from `collect_sessions`, recomputed on
+    /// each 2s tick (NOT per-draw — the scan shells out to `pgrep`/`tmux`
+    /// and must not run 5×/sec). Feeds the activity column + detail pane.
+    sessions: Vec<Session>,
+    /// Tail of the selected agent's `.bwoc/agent.log`, refreshed on tick
+    /// and on selection change. Empty when no log / nothing selected.
+    detail_log: Vec<String>,
+    /// One-line note shown in place of the log tail when it is empty —
+    /// e.g. "(no log yet)" or a read error. None when `detail_log` has
+    /// content.
+    detail_log_note: Option<String>,
     /// One-line transient feedback from the last user action (e.g. tmux
     /// open result). Shown in the footer; cleared on next action.
     last_action: Option<String>,
@@ -105,6 +132,9 @@ impl App {
             last_refresh_at: Instant::now(),
             last_action: None,
             show_help: false,
+            sessions: Vec::new(),
+            detail_log: Vec::new(),
+            detail_log_note: None,
         };
         app.refresh();
         app
@@ -132,11 +162,54 @@ impl App {
                     self.table_state.select(None);
                 }
             }
+            // Recompute the live-session snapshot on the tick (not per-draw).
+            // `collect_sessions` is best-effort: missing markers/sessions dir
+            // → empty Vec, so the activity column degrades to "—" silently.
+            self.sessions = collect_sessions(root, &ProcessScanRunner, IDLE_SECS);
         } else {
             self.agents.clear();
             self.last_refresh_error = None;
             self.table_state.select(None);
+            self.sessions.clear();
         }
+        self.refresh_detail();
+    }
+
+    /// Reload the selected agent's log tail. Called on the 2s tick and on
+    /// every selection change so the detail pane never lags more than the
+    /// user's own keystroke. Reads only the last `DETAIL_LOG_TAIL_LINES`
+    /// lines; a missing/unreadable log is not an error — it sets a note.
+    fn refresh_detail(&mut self) {
+        self.detail_log.clear();
+        self.detail_log_note = None;
+
+        let (Some(root), Some(idx)) = (&self.workspace, self.table_state.selected()) else {
+            return;
+        };
+        let Some(entry) = self.agents.get(idx) else {
+            return;
+        };
+        let log_path = root.join(&entry.path).join(".bwoc/agent.log");
+        if !log_path.exists() {
+            self.detail_log_note = Some("(no log yet — start the agent to capture output)".into());
+            return;
+        }
+        match crate::log::tail_lines(&log_path, DETAIL_LOG_TAIL_LINES) {
+            Ok(lines) if lines.is_empty() => {
+                self.detail_log_note = Some("(log is empty)".into());
+            }
+            Ok(lines) => self.detail_log = lines,
+            Err(e) => self.detail_log_note = Some(format!("(log unreadable: {e})")),
+        }
+    }
+
+    /// The live session for `agent_id`, if any. Only marker-sourced
+    /// sessions carry an `agent_id`; scan-only entries (agentId = null)
+    /// can't be attributed to a registry row and are skipped here.
+    fn session_for(&self, agent_id: &str) -> Option<&Session> {
+        self.sessions
+            .iter()
+            .find(|s| s.agent_id.as_deref() == Some(agent_id))
     }
 
     fn next(&mut self) {
@@ -145,6 +218,7 @@ impl App {
         }
         let i = self.table_state.selected().unwrap_or(0);
         self.table_state.select(Some((i + 1) % self.agents.len()));
+        self.refresh_detail();
     }
 
     fn prev(&mut self) {
@@ -154,6 +228,7 @@ impl App {
         let i = self.table_state.selected().unwrap_or(0);
         let new = if i == 0 { self.agents.len() - 1 } else { i - 1 };
         self.table_state.select(Some(new));
+        self.refresh_detail();
     }
 }
 
@@ -783,6 +858,43 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Span::raw(" "),
         Span::styled(runtime_text, Style::default().fg(runtime_color)),
     ]));
+
+    // Backend session — from the `sessions` resolution (marker + scan +
+    // idle-secs). Distinct from `runtime` above: that tracks the daemon
+    // (`bwoc-agent --serve`); this tracks the interactive backend process
+    // (claude/agy/codex/…). No live session → dim em-dash.
+    match app.session_for(&entry.id) {
+        Some(s) => {
+            let (glyph, color, label) = activity_display(Some(&s.state));
+            lines.push(Line::from(vec![
+                Span::styled("session     ", key_style),
+                Span::styled(
+                    glyph,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(label, Style::default().fg(color)),
+                Span::styled(
+                    format!("  ({}, pid {})", s.backend, s.pid),
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("last seen   ", key_style),
+                Span::raw(format_activity_age(s.last_activity)),
+            ]));
+        }
+        None => {
+            lines.push(Line::from(vec![
+                Span::styled("session     ", key_style),
+                Span::styled(
+                    "— no live backend session",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+    }
+
     let count = crate::livecheck::inbox_count(root, entry);
     let inbox_color = if count == 0 {
         Color::DarkGray
@@ -959,12 +1071,71 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Span::styled(msg, Style::default().fg(color)),
     ]));
 
+    // Log tail — the last N lines of the selected agent's daemon log,
+    // refreshed on the tick + on selection change (see `refresh_detail`).
+    // Reuses `log::tail_lines` (the same read the `--follow` path uses) so
+    // the dashboard and `bwoc log` show identical content. Missing/empty
+    // logs degrade to a dim note rather than a blank gap.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("log (last {DETAIL_LOG_TAIL_LINES}):"),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    if let Some(note) = &app.detail_log_note {
+        lines.push(Line::from(Span::styled(
+            format!("  {note}"),
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    } else {
+        for log_line in &app.detail_log {
+            lines.push(Line::from(Span::styled(
+                format!("  {log_line}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
     let p = Paragraph::new(lines).block(block);
     f.render_widget(p, area);
 }
 
 // Liveness + inbox helpers (signal_zero_alive, running_pid,
 // query_uptime, format_uptime, inbox_count) moved to crate::livecheck.
+
+/// Map a session state (or its absence) to (glyph, colour, label) for the
+/// activity column. Pure + single-sourced so the column and the detail
+/// pane render the same vocabulary. `None` = no live backend session for
+/// this agent → a dim em-dash. Note this is the *backend session* (claude
+/// /agy/codex/…), distinct from the daemon "runtime ●" line, which tracks
+/// `bwoc-agent --serve`.
+fn activity_display(state: Option<&SessionState>) -> (&'static str, Color, &'static str) {
+    match state {
+        Some(SessionState::Working) => ("●", Color::Green, "working"),
+        Some(SessionState::Idle) => ("◑", Color::Yellow, "idle"),
+        Some(SessionState::Running) => ("●", Color::Cyan, "running"),
+        Some(SessionState::Stale) => ("○", Color::DarkGray, "stale"),
+        None => ("—", Color::DarkGray, ""),
+    }
+}
+
+/// Render `last_activity` (epoch-seconds) as a human "N ago" age relative
+/// to now, reusing `livecheck::format_uptime` for the unit formatting.
+/// `None` → "unknown" (scan-sourced sessions have no activity signal).
+fn format_activity_age(last_activity: Option<u64>) -> String {
+    let Some(ts) = last_activity else {
+        return "unknown".to_string();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!(
+        "{} ago",
+        crate::livecheck::format_uptime(now.saturating_sub(ts))
+    )
+}
 
 const BACKEND_SYMLINKS: &[&str] = &["CLAUDE.md", "AGY.md", "CODEX.md", "KIMI.md"];
 
@@ -1116,6 +1287,7 @@ fn draw_agents(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let header = Row::new(vec![
         Cell::from("ID"),
+        Cell::from("ACTIVITY"),
         Cell::from("STATUS"),
         Cell::from("BACKEND"),
         Cell::from("PATH"),
@@ -1130,8 +1302,17 @@ fn draw_agents(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .agents
         .iter()
         .map(|a| {
+            // Live activity from the session snapshot (marker/scan resolved
+            // on the tick). No session for this id → "—".
+            let (glyph, color, label) = activity_display(app.session_for(&a.id).map(|s| &s.state));
+            let activity = Line::from(vec![
+                Span::styled(glyph, Style::default().fg(color)),
+                Span::raw(" "),
+                Span::styled(label, Style::default().fg(color)),
+            ]);
             Row::new(vec![
                 Cell::from(a.id.clone()),
+                Cell::from(activity),
                 Cell::from(a.status.clone()),
                 Cell::from(a.backend.clone()),
                 Cell::from(a.path.clone()),
@@ -1140,10 +1321,11 @@ fn draw_agents(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .collect();
 
     let widths = [
-        Constraint::Percentage(30),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
-        Constraint::Percentage(40),
+        Constraint::Percentage(26),
+        Constraint::Percentage(16),
+        Constraint::Percentage(13),
+        Constraint::Percentage(13),
+        Constraint::Percentage(32),
     ];
 
     let table = Table::new(rows, widths)
@@ -1209,4 +1391,47 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     ]))
     .alignment(Alignment::Center);
     f.render_widget(footer, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_display_covers_every_state_and_absence() {
+        assert_eq!(
+            activity_display(Some(&SessionState::Working)),
+            ("●", Color::Green, "working")
+        );
+        assert_eq!(
+            activity_display(Some(&SessionState::Idle)),
+            ("◑", Color::Yellow, "idle")
+        );
+        assert_eq!(
+            activity_display(Some(&SessionState::Running)),
+            ("●", Color::Cyan, "running")
+        );
+        assert_eq!(
+            activity_display(Some(&SessionState::Stale)),
+            ("○", Color::DarkGray, "stale")
+        );
+        // No live session → dim em-dash, empty label.
+        assert_eq!(activity_display(None), ("—", Color::DarkGray, ""));
+    }
+
+    #[test]
+    fn format_activity_age_none_is_unknown() {
+        assert_eq!(format_activity_age(None), "unknown");
+    }
+
+    #[test]
+    fn format_activity_age_recent_reads_as_ago() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // ~5s ago → "5s ago" (or a tick more if the clock advances).
+        let s = format_activity_age(Some(now.saturating_sub(5)));
+        assert!(s.ends_with(" ago"), "expected a relative age, got {s:?}");
+    }
 }

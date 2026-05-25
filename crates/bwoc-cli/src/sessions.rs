@@ -104,7 +104,7 @@ pub enum SessionState {
 }
 
 impl SessionState {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             SessionState::Working => "working",
             SessionState::Idle => "idle",
