@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.25-1] — 2026-05-25 — 2.5.0
+
+**Minor release.** Live fleet operations + a self-updating toolchain. Cargo SemVer `2.4.0` → `2.5.0`. CalVer per [VERSION.md policy](VERSION.md#versioning-policy--dual-namespaces).
+
+### Added
+
+- **`bwoc inbox --all --watch` — fleet-wide merged live message stream (#46)** — lifts the prior `--all`+`--watch` refusal (`--clear` stays refused under `--all`) and tails every agent's inbox at once, each new envelope tagged with its recipient in arrival order; `--json` adds a `recipient` field. Reuses the single-inbox tail core (`read_complete_lines_from`) — one watcher, not two.
+- **`bwoc dashboard` live agent-activity (#45)** — the TUI dashboard gains a per-agent activity column (working/idle/running/stale) fed by `bwoc sessions` on the existing 2 s tick, plus a detail pane (session state + backend + pid + last-seen) and a capped live log tail. Observe-only; reuses the `sessions` resolver.
+- **Startup update-check — opportunistic drift notice (#44)** — released binaries now print a one-line "newer release available" notice (to stderr) on normal use, throttled to ≤1 network check / 24 h via a `~/.bwoc/update-check.json` cache refreshed in a detached background process. Guarded (TTY-only, skips `--json`/piped/`SourceBuild`/the `update` command), opt-out `BWOC_NO_UPDATE_CHECK=1`, silent offline. Closes the stale-install gap first observed in #3.
+
+### Changed
+
+- **Homebrew formula auto-bumps on release (#52)** — `release.yml` gains a `bump-formula` job that rewrites `Formula/bwoc.rb` (version + url tags + sha256 from the release sidecars) and commits it on every release-tag publish, so the tap can never go stale again. Logic lives in `scripts/bump-formula.sh` (locally testable). Manual 2.4.0 catch-up was #51.
+
+### Fixed
+
+- **What's New banner showed the wrong version** — `whats_new` HEADLINE/HIGHLIGHTS were stuck at the 2.3 release, so a 2.4.0 build greeted users with "BWOC 2.3". Updated, and a guard test (`headline_version_matches_build`) now asserts HEADLINE tracks `CARGO_PKG_VERSION` major.minor so it can't silently drift again.
+
 ## [v2026.5.25-0] — 2026-05-25 — 2.4.0
 
 **Minor release.** Phase 4's one framework-owned line item lands as a command — `bwoc fleet health` (#35) — and the Windows destructive-command guardrails (#31) close the caveat flagged in 2.3.0's Windows-support entry. Cargo SemVer `2.3.0` → `2.4.0`. CalVer per [VERSION.md policy](VERSION.md#versioning-policy--dual-namespaces). (The `bwoc sessions` monitor (#21) also merged in this window; it was already described in the 2.3.0 entry below.)

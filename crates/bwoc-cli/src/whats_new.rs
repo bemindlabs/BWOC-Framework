@@ -12,13 +12,15 @@ use std::io::IsTerminal;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// One-line headline for the current release.
-pub const HEADLINE: &str = "BWOC 2.4 — fleet-health governance + Windows guardrails";
+pub const HEADLINE: &str = "BWOC 2.5 — live fleet ops + self-updating";
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc fleet health` — Aparihāniya-dhamma 7 governance signals (read-only)",
-    "Windows destructive-command guardrails (del / rmdir / format / Remove-Item)",
+    "`bwoc dashboard` — live agent-activity (working/idle + log tail)",
+    "`bwoc inbox --all --watch` — fleet-wide live message stream",
+    "Startup update-check — opportunistic 'newer release' drift notice",
+    "Homebrew formula auto-bumps on every release (no more stale taps)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
