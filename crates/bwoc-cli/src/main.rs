@@ -1405,6 +1405,15 @@ impl From<SessionsArgs> for sessions::SessionsArgs {
 }
 
 fn main() -> ExitCode {
+    // Detached background update-check refresh (issue #44): the parent spawns
+    // us with this env set to do the network fetch + cache write off the hot
+    // path. Short-circuit before arg parsing and every other hook so the child
+    // does no user-visible work, then exit.
+    if std::env::var_os(update::REFRESH_ENV).is_some() {
+        update::run_background_refresh();
+        return ExitCode::SUCCESS;
+    }
+
     let cli = Cli::parse();
     let lang = resolve_lang(cli.lang);
     let bundle = i18n::bundle_for(&lang);
@@ -1421,6 +1430,9 @@ fn main() -> ExitCode {
     // skip the notice there to avoid doubling up.
     if cli.command.is_some() {
         whats_new::notify_if_updated();
+        // Opportunistic "newer release available" notice (issue #44). Reads the
+        // throttle cache; refreshes in a detached child at most once / 24h.
+        update::notify_if_drifted(matches!(cli.command, Some(Commands::Update { .. })));
     }
 
     match cli.command {

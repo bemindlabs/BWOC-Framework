@@ -24,6 +24,8 @@
 //! needs, not one abstraction, so they are kept separate rather than merged.
 
 use serde_json::Value;
+use std::io::IsTerminal;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── CalVer types ──────────────────────────────────────────────────────────────
 
@@ -430,6 +432,247 @@ fn exec_delegated(program: &str, args: &[String]) -> i32 {
     }
 }
 
+// ── Startup drift guard (issue #44) ─────────────────────────────────────────────
+//
+// On a normal interactive invocation, surface a one-line "update available"
+// notice — reusing `fetch_latest_tag` + `CalVer` above. Three moving parts,
+// each kept pure + unit-testable behind a seam:
+//   • a throttle cache at `~/.bwoc/update-check.json` (network ≤ once / 24h),
+//   • a detached background refresh (never blocks the command), and
+//   • a guarded notice that degrades silently offline (Musāvāda — never a
+//     false "up to date").
+// `notify_if_drifted` is the only impure piece; it wires the real env / TTY /
+// clock / filesystem to the pure decisions (`should_check`, `drift_notice`,
+// `throttle_elapsed`).
+
+/// Env var the parent sets on the detached child so it runs only the
+/// background refresh (fetch + cache write) and exits before any arg parsing.
+pub const REFRESH_ENV: &str = "BWOC__UPDATE_REFRESH";
+
+/// Env var an operator sets to opt out of the startup drift notice entirely.
+const OPT_OUT_ENV: &str = "BWOC_NO_UPDATE_CHECK";
+
+/// The network is hit at most once per this window; other runs read the cache.
+const THROTTLE_SECS: u64 = 24 * 60 * 60;
+
+/// Cache filename under `~/.bwoc/`.
+const CACHE_FILE: &str = "update-check.json";
+
+// ── Mockable clock seam ─────────────────────────────────────────────────────────
+
+/// Wall-clock seam so throttle-window logic is unit-testable without sleeping.
+pub trait Clock {
+    /// Seconds since the Unix epoch.
+    fn now_unix(&self) -> u64;
+}
+
+/// Production clock.
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_unix(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+}
+
+// ── Throttle cache ──────────────────────────────────────────────────────────────
+
+/// Parsed `~/.bwoc/update-check.json`. `latest_seen` is `""` until a fetch
+/// lands, so an offline first run records the check time without a false
+/// version. Hand-parsed via `serde_json::Value` to match this file's existing
+/// JSON style (no serde-derive dep added).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateCache {
+    pub last_checked: u64,
+    pub latest_seen: String,
+}
+
+impl UpdateCache {
+    /// Parse on-disk JSON. Tolerant: a missing/garbled field defaults rather
+    /// than failing the whole read (a corrupt cache must never wedge the CLI).
+    fn from_json(s: &str) -> Option<Self> {
+        let v: Value = serde_json::from_str(s).ok()?;
+        Some(Self {
+            last_checked: v.get("last_checked").and_then(|x| x.as_u64()).unwrap_or(0),
+            latest_seen: v
+                .get("latest_seen")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+        })
+    }
+
+    fn to_json(&self) -> String {
+        serde_json::json!({
+            "last_checked": self.last_checked,
+            "latest_seen": self.latest_seen,
+        })
+        .to_string()
+    }
+}
+
+fn read_cache(path: &std::path::Path) -> Option<UpdateCache> {
+    UpdateCache::from_json(&std::fs::read_to_string(path).ok()?)
+}
+
+fn write_cache(path: &std::path::Path, cache: &UpdateCache) -> std::io::Result<()> {
+    std::fs::write(path, cache.to_json())
+}
+
+/// True once the throttle window has fully elapsed since `last_checked`.
+/// Pure — `now` and `window` are injected so tests need no real clock.
+/// `saturating_sub` makes a future `last_checked` (clock skew) read as "fresh".
+fn throttle_elapsed(last_checked: u64, now: u64, window: u64) -> bool {
+    now.saturating_sub(last_checked) >= window
+}
+
+// ── Drift detection (pure) ────────────────────────────────────────────────────────
+
+/// If `latest_seen` parses as a CalVer strictly newer than `current`, return
+/// the `(current, latest)` canonical tags to show. Otherwise `None` — including
+/// when either side is unparseable (offline / empty cache → silent).
+pub fn drift_notice(current: &str, latest_seen: &str) -> Option<(String, String)> {
+    let cur = CalVer::parse(current)?;
+    let lat = CalVer::parse(latest_seen)?;
+    (lat > cur).then(|| (cur.to_tag(), lat.to_tag()))
+}
+
+// ── Guard decision (pure) ─────────────────────────────────────────────────────────
+
+/// Everything that decides whether the startup check runs at all. Gathered
+/// from the real environment by `notify_if_drifted`, but kept as plain data so
+/// `should_check` is exhaustively unit-testable.
+pub struct GuardContext {
+    /// The invoked subcommand is `update` itself (it does its own check).
+    pub is_update_command: bool,
+    /// `--json` appears on the command line (machine-readable mode).
+    pub is_json: bool,
+    /// stdout is a real terminal (false ⇒ piped / redirected / CI).
+    pub stdout_is_tty: bool,
+    /// `BWOC_NO_UPDATE_CHECK` is set.
+    pub opt_out: bool,
+    /// A source/dev build (`BWOC_RELEASE_CALVER` unset) — only released
+    /// binaries drift-check, since there's no embedded version to compare.
+    pub is_source_build: bool,
+}
+
+/// Pure gate: run the drift check only on an interactive, released,
+/// non-JSON, non-`update` invocation that hasn't opted out.
+pub fn should_check(ctx: &GuardContext) -> bool {
+    !ctx.is_update_command
+        && !ctx.is_json
+        && ctx.stdout_is_tty
+        && !ctx.opt_out
+        && !ctx.is_source_build
+}
+
+// ── Orchestration + notice ──────────────────────────────────────────────────────
+
+/// Startup hook — call beside `whats_new::notify_if_updated()` for subcommands.
+/// Prints the *cached* drift notice (if any) this run, then — only when the
+/// throttle window has elapsed — spawns a detached refresh for next time. Never
+/// blocks on the network, never fails a command, silent offline.
+pub fn notify_if_drifted(is_update_command: bool) {
+    // Released binaries only: source builds have no embedded CalVer to compare.
+    let current = match option_env!("BWOC_RELEASE_CALVER") {
+        Some(c) => c,
+        None => return,
+    };
+    let ctx = GuardContext {
+        is_update_command,
+        is_json: std::env::args().any(|a| a == "--json"),
+        stdout_is_tty: std::io::stdout().is_terminal(),
+        opt_out: std::env::var_os(OPT_OUT_ENV).is_some(),
+        is_source_build: false, // current is Some ⇒ released
+    };
+    if !should_check(&ctx) {
+        return;
+    }
+    let Ok(home) = crate::user_home::bwoc_home() else {
+        return;
+    };
+    let path = home.join(CACHE_FILE);
+
+    match read_cache(&path) {
+        Some(cache) => {
+            // Print what we already know this run (cheap, no network).
+            if let Some((cur, lat)) = drift_notice(current, &cache.latest_seen) {
+                print_drift_notice(&cur, &lat);
+            }
+            // Refresh in the background only once the window has elapsed.
+            if throttle_elapsed(cache.last_checked, SystemClock.now_unix(), THROTTLE_SECS) {
+                spawn_background_refresh();
+            }
+        }
+        // No cache yet → silent this run; seed it in the background for next time.
+        None => spawn_background_refresh(),
+    }
+}
+
+/// One-line notice to **stderr** (so it never pollutes stdout / JSON). Colored
+/// only when stderr is a TTY.
+fn print_drift_notice(current: &str, latest: &str) {
+    let (yellow, reset) = if std::io::stderr().is_terminal() {
+        ("\x1b[1;33m", "\x1b[0m")
+    } else {
+        ("", "")
+    };
+    eprintln!("{yellow}⬆ bwoc {latest} available (you have {current}) — run 'bwoc update'{reset}");
+}
+
+// ── Detached background refresh ──────────────────────────────────────────────────
+
+/// Run only by the detached child (`REFRESH_ENV` set): ensure `~/.bwoc/`, hit
+/// the network once, update the cache, exit. Production entry — wires the real
+/// runner + clock + path.
+pub fn run_background_refresh() {
+    let _ = crate::user_home::ensure_initialized();
+    let Ok(home) = crate::user_home::bwoc_home() else {
+        return;
+    };
+    refresh_cache_at(&home.join(CACHE_FILE), &ProcessShellRunner, &SystemClock);
+}
+
+/// Testable core: fetch the latest tag and write the cache at an explicit path.
+/// Always advances `last_checked` (so an offline run still throttles), but only
+/// overwrites `latest_seen` on a valid fetch — never fabricate a version, never
+/// wipe a known one (Musāvāda).
+fn refresh_cache_at(path: &std::path::Path, runner: &dyn ShellRunner, clock: &dyn Clock) {
+    let previous = read_cache(path).map(|c| c.latest_seen).unwrap_or_default();
+    let latest_seen = match fetch_latest_tag(runner) {
+        Some(tag) if CalVer::parse(&tag).is_some() => tag,
+        _ => previous,
+    };
+    let _ = write_cache(
+        path,
+        &UpdateCache {
+            last_checked: clock.now_unix(),
+            latest_seen,
+        },
+    );
+}
+
+/// Spawn ourselves detached with `REFRESH_ENV` set, null stdio, and no wait.
+/// The child outlives this process (reparented on exit) and writes the cache
+/// for the *next* run; this process returns immediately — the command never
+/// blocks on the network. Spawn failure is swallowed: a missed refresh just
+/// means one more cached run, never a broken command.
+fn spawn_background_refresh() {
+    use std::process::{Command, Stdio};
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let _ = Command::new(exe)
+        .env(REFRESH_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -834,5 +1077,219 @@ mod tests {
             &runner,
         );
         assert_eq!(code, 2);
+    }
+
+    // ── Startup drift guard (issue #44) ────────────────────────────────────
+
+    struct MockClock(u64);
+    impl Clock for MockClock {
+        fn now_unix(&self) -> u64 {
+            self.0
+        }
+    }
+
+    fn clear_ctx() -> GuardContext {
+        GuardContext {
+            is_update_command: false,
+            is_json: false,
+            stdout_is_tty: true,
+            opt_out: false,
+            is_source_build: false,
+        }
+    }
+
+    // — guard skips —
+
+    #[test]
+    fn guard_runs_on_clear_interactive_release() {
+        assert!(should_check(&clear_ctx()));
+    }
+
+    #[test]
+    fn guard_skips_the_update_command_itself() {
+        let ctx = GuardContext {
+            is_update_command: true,
+            ..clear_ctx()
+        };
+        assert!(!should_check(&ctx));
+    }
+
+    #[test]
+    fn guard_skips_json_mode() {
+        let ctx = GuardContext {
+            is_json: true,
+            ..clear_ctx()
+        };
+        assert!(!should_check(&ctx));
+    }
+
+    #[test]
+    fn guard_skips_when_stdout_is_not_a_tty() {
+        let ctx = GuardContext {
+            stdout_is_tty: false,
+            ..clear_ctx()
+        };
+        assert!(!should_check(&ctx));
+    }
+
+    #[test]
+    fn guard_skips_when_opted_out() {
+        let ctx = GuardContext {
+            opt_out: true,
+            ..clear_ctx()
+        };
+        assert!(!should_check(&ctx));
+    }
+
+    #[test]
+    fn guard_skips_source_builds() {
+        let ctx = GuardContext {
+            is_source_build: true,
+            ..clear_ctx()
+        };
+        assert!(!should_check(&ctx));
+    }
+
+    // — CalVer-newer detection —
+
+    #[test]
+    fn drift_notice_fires_when_latest_is_newer() {
+        let r = drift_notice("v2026.5.20-0", "v2026.5.25-0");
+        assert_eq!(
+            r,
+            Some(("v2026.5.20-0".to_string(), "v2026.5.25-0".to_string()))
+        );
+    }
+
+    #[test]
+    fn drift_notice_silent_when_equal() {
+        assert_eq!(drift_notice("v2026.5.25-0", "v2026.5.25-0"), None);
+    }
+
+    #[test]
+    fn drift_notice_silent_when_current_is_ahead() {
+        // Dev/local binary tagged ahead of the published release — no notice.
+        assert_eq!(drift_notice("v2026.5.26-0", "v2026.5.25-0"), None);
+    }
+
+    #[test]
+    fn drift_notice_silent_on_empty_or_malformed_cache() {
+        // Offline first run leaves latest_seen "" → must stay silent (Musāvāda).
+        assert_eq!(drift_notice("v2026.5.25-0", ""), None);
+        assert_eq!(drift_notice("v2026.5.25-0", "garbage"), None);
+        assert_eq!(drift_notice("garbage", "v2026.5.25-0"), None);
+    }
+
+    // — throttle window —
+
+    #[test]
+    fn throttle_skips_within_window() {
+        // 12h since last check < 24h window → do not hit the network.
+        assert!(!throttle_elapsed(0, 12 * 60 * 60, THROTTLE_SECS));
+    }
+
+    #[test]
+    fn throttle_fires_at_and_past_window() {
+        assert!(throttle_elapsed(0, THROTTLE_SECS, THROTTLE_SECS)); // exactly 24h
+        assert!(throttle_elapsed(0, THROTTLE_SECS + 1, THROTTLE_SECS)); // past
+    }
+
+    #[test]
+    fn throttle_treats_future_last_checked_as_fresh() {
+        // Clock skew: last_checked ahead of now → saturating_sub = 0 → skip.
+        assert!(!throttle_elapsed(2_000, 1_000, THROTTLE_SECS));
+    }
+
+    // — cache round-trip —
+
+    #[test]
+    fn cache_json_round_trips() {
+        let c = UpdateCache {
+            last_checked: 1_700_000_000,
+            latest_seen: "v2026.5.25-0".to_string(),
+        };
+        assert_eq!(UpdateCache::from_json(&c.to_json()).unwrap(), c);
+    }
+
+    #[test]
+    fn cache_parse_is_tolerant_of_missing_fields() {
+        let c = UpdateCache::from_json("{}").unwrap();
+        assert_eq!(c.last_checked, 0);
+        assert_eq!(c.latest_seen, "");
+        assert!(UpdateCache::from_json("not json").is_none());
+    }
+
+    // — background refresh (mock runner + clock, explicit path; no $HOME) —
+
+    fn tmp_cache_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "bwoc-update-check-{}-{}.json",
+            std::process::id(),
+            tag
+        ))
+    }
+
+    #[test]
+    fn refresh_writes_fetched_tag_and_clock() {
+        let path = tmp_cache_path("fetched");
+        let _ = std::fs::remove_file(&path);
+        let runner = MockRunner::new(vec![("gh", "release", 0, "v2026.5.25-0")]);
+        refresh_cache_at(&path, &runner, &MockClock(1_000));
+
+        let cache = read_cache(&path).unwrap();
+        assert_eq!(cache.last_checked, 1_000);
+        assert_eq!(cache.latest_seen, "v2026.5.25-0");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn refresh_offline_keeps_prior_version_but_advances_clock() {
+        // Pre-seed a known-newer version, then go offline. The version must
+        // survive (no false "up to date") while the clock advances so the
+        // 24h throttle still holds.
+        let path = tmp_cache_path("offline-keep");
+        write_cache(
+            &path,
+            &UpdateCache {
+                last_checked: 0,
+                latest_seen: "v2026.5.24-0".to_string(),
+            },
+        )
+        .unwrap();
+        let offline = MockRunner::new(vec![]); // gh + curl both 127
+        refresh_cache_at(&path, &offline, &MockClock(2_000));
+
+        let cache = read_cache(&path).unwrap();
+        assert_eq!(cache.latest_seen, "v2026.5.24-0", "keep known version");
+        assert_eq!(cache.last_checked, 2_000, "throttle clock advanced");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn refresh_offline_first_run_records_no_version() {
+        // No prior cache + offline → empty latest_seen (silent), time recorded.
+        let path = tmp_cache_path("offline-first");
+        let _ = std::fs::remove_file(&path);
+        let offline = MockRunner::new(vec![]);
+        refresh_cache_at(&path, &offline, &MockClock(500));
+
+        let cache = read_cache(&path).unwrap();
+        assert_eq!(cache.latest_seen, "");
+        assert_eq!(cache.last_checked, 500);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn refresh_ignores_malformed_fetched_tag() {
+        // A non-CalVer tag must not be cached as a version.
+        let path = tmp_cache_path("malformed");
+        let _ = std::fs::remove_file(&path);
+        let runner = MockRunner::new(vec![("gh", "release", 0, "not-a-calver")]);
+        refresh_cache_at(&path, &runner, &MockClock(700));
+
+        let cache = read_cache(&path).unwrap();
+        assert_eq!(cache.latest_seen, "");
+        assert_eq!(cache.last_checked, 700);
+        let _ = std::fs::remove_file(&path);
     }
 }
