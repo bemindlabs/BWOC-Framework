@@ -30,9 +30,10 @@ pub struct InboxArgs {
     pub count: bool,
     /// Print every agent's inbox concatenated, each preceded by a
     /// `=== <agent-id> (N message(s)) ===` header. Mutually exclusive
-    /// with `agent`. `--clear` and `--watch` are refused with `--all`
-    /// (no plausible safe semantics: mass-clear is too destructive;
-    /// mass-watch would interleave updates from many agents).
+    /// with `agent`. With `--watch`, becomes the merged live tail (issue
+    /// #46): every inbox interleaved in arrival order, each envelope
+    /// tagged with its recipient. `--clear` is still refused with `--all`
+    /// (mass-clear is too destructive — clear one agent at a time).
     pub all: bool,
 }
 
@@ -71,13 +72,15 @@ fn inbox(args: InboxArgs) -> Result<(), InboxError> {
     let registry = AgentsRegistry::load(&workspace)?;
 
     if args.all {
-        if args.clear || args.watch {
-            eprintln!(
-                "bwoc inbox --all: --clear and --watch are not supported with --all \
-                 (use `bwoc inbox <name> --clear` per agent, or `bwoc list --inbox-pending` \
-                 to find candidates)."
-            );
+        if let Some(msg) = all_flag_refusal(args.clear) {
+            eprintln!("{msg}");
             return Ok(());
+        }
+        if args.watch {
+            // Merged live tail across every agent's inbox (issue #46) — a
+            // fleet-wide stream, not a new watcher: it reuses the same
+            // per-file poll mechanism as the single-inbox `--watch`.
+            return watch_inbox_all(&workspace, &registry, args.json, args.limit);
         }
         return inbox_all(&workspace, &registry, args.json, args.limit);
     }
@@ -324,6 +327,54 @@ fn inbox_all(
     Ok(())
 }
 
+/// One parsed line from an inbox tail: either a decoded envelope, or a
+/// malformed line carried as `(parse-error, raw-text)` so the caller can
+/// decide how to surface it (stderr warning vs. JSON error envelope).
+type LineResult = Result<serde_json::Value, (String, String)>;
+
+/// Read the complete (newline-terminated) lines appended to `path` at or
+/// after byte `start`. Returns `(bytes_consumed, lines)` — the caller owns
+/// offset bookkeeping, truncation policy, and poll cadence; this owns the
+/// fiddly part: seek, split on whole lines only, parse, and count exactly
+/// the bytes consumed so a partially-flushed trailing line is retried next
+/// tick. A missing file yields `(0, [])` (an inbox no one has written to
+/// yet is just empty, not an error). This is the single tail mechanism
+/// shared by the single-inbox `--watch`, its `--json` variant, and the
+/// merged `--all --watch` stream.
+fn read_complete_lines_from(
+    path: &std::path::Path,
+    start: u64,
+) -> Result<(u64, Vec<LineResult>), InboxError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, Vec::new())),
+        Err(e) => return Err(e.into()),
+    };
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = String::new();
+    file.read_to_string(&mut buf)?;
+
+    let mut consumed: u64 = 0;
+    let mut out: Vec<LineResult> = Vec::new();
+    for line in buf.split_inclusive('\n') {
+        if !line.ends_with('\n') {
+            break; // partial — wait for the rest
+        }
+        consumed += line.len() as u64;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(v) => out.push(Ok(v)),
+            Err(e) => out.push(Err((e.to_string(), trimmed.to_string()))),
+        }
+    }
+    Ok((consumed, out))
+}
+
 /// JSON streaming tail. Same poll loop as `watch_inbox`, but each new
 /// envelope is printed as a single compact-JSON line — no header, no
 /// numbering, no decoration. Designed for `bwoc inbox alpha --watch
@@ -346,31 +397,18 @@ fn watch_inbox_json(inbox_path: &std::path::Path) -> Result<(), InboxError> {
             std::thread::sleep(Duration::from_millis(300));
             continue;
         }
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file = std::fs::File::open(inbox_path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut buf = String::new();
-        file.read_to_string(&mut buf)?;
-        let mut consumed: u64 = 0;
-        for line in buf.split_inclusive('\n') {
-            if !line.ends_with('\n') {
-                break;
-            }
-            let trimmed = line.trim();
-            consumed += line.len() as u64;
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Pass through verbatim if it parses as JSON; otherwise emit
-            // a one-shot error envelope so consumers see something rather
-            // than silently dropping malformed lines.
-            match serde_json::from_str::<serde_json::Value>(trimmed) {
+        let (consumed, lines) = read_complete_lines_from(inbox_path, offset)?;
+        for line in lines {
+            match line {
+                // Pass through verbatim. On a malformed line emit a
+                // one-shot error envelope so consumers see something
+                // rather than silently dropping it.
                 Ok(v) => println!("{}", serde_json::to_string(&v)?),
-                Err(e) => {
+                Err((detail, raw)) => {
                     let err = serde_json::json!({
                         "error": "malformed_envelope",
-                        "detail": e.to_string(),
-                        "raw": trimmed,
+                        "detail": detail,
+                        "raw": raw,
                     });
                     println!("{}", serde_json::to_string(&err)?);
                 }
@@ -409,34 +447,180 @@ fn watch_inbox(inbox_path: &std::path::Path, mut idx: usize) -> Result<(), Inbox
             std::thread::sleep(Duration::from_millis(300));
             continue;
         }
-
-        // Read past-offset and print complete lines.
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file = std::fs::File::open(inbox_path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut buf = String::new();
-        file.read_to_string(&mut buf)?;
-        let mut consumed: u64 = 0;
-        for line in buf.split_inclusive('\n') {
-            if !line.ends_with('\n') {
-                break; // partial — wait for the rest
-            }
-            let trimmed = line.trim();
-            consumed += line.len() as u64;
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<serde_json::Value>(trimmed) {
+        let (consumed, lines) = read_complete_lines_from(inbox_path, offset)?;
+        for line in lines {
+            match line {
                 Ok(v) => {
                     idx += 1;
                     print_envelope(idx, &v);
                 }
-                Err(e) => {
+                Err((e, _raw)) => {
                     eprintln!("bwoc inbox: warning — malformed JSON skipped ({e})");
                 }
             }
         }
         offset += consumed;
+    }
+}
+
+/// With `--all`, `--clear` stays refused — a mass-clear across every agent
+/// is too destructive to express in one flag (clear one inbox at a time).
+/// `--watch`, by contrast, is now the merged live tail (issue #46), so this
+/// predicate deliberately does NOT consider `watch`: `--all --watch` is a
+/// supported combination. Returns the refusal message when disallowed.
+fn all_flag_refusal(clear: bool) -> Option<&'static str> {
+    if clear {
+        Some(
+            "bwoc inbox --all: --clear is not supported with --all (mass-clear is too \
+             destructive — use `bwoc inbox <name> --clear` per agent, or \
+             `bwoc list --inbox-pending` to find candidates).",
+        )
+    } else {
+        None
+    }
+}
+
+/// Return a copy of `env` with a top-level `recipient` field naming the
+/// agent whose inbox it came from — the tag that lets a merged
+/// `--all --watch` stream stay attributable. A well-formed envelope is a
+/// JSON object; anything else is wrapped rather than dropped.
+fn tag_with_recipient(recipient: &str, env: &serde_json::Value) -> serde_json::Value {
+    let mut v = env.clone();
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "recipient".to_string(),
+            serde_json::Value::String(recipient.to_string()),
+        );
+        v
+    } else {
+        serde_json::json!({ "recipient": recipient, "envelope": env })
+    }
+}
+
+/// Human-mode line for the merged tail: a header naming the recipient and
+/// sender, then the (multi-line-aware) message body indented beneath. No
+/// global numbering — index has no meaning across interleaved inboxes.
+fn print_tagged_envelope(recipient: &str, m: &serde_json::Value) {
+    let ts = m.get("ts").and_then(|v| v.as_str()).unwrap_or("—");
+    let from = m.get("from").and_then(|v| v.as_str()).unwrap_or("—");
+    let msg = m
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no message)");
+    println!("  {ts}  →{recipient}  ←{from}");
+    for line in msg.lines() {
+        println!("        {line}");
+    }
+    println!();
+}
+
+/// Emit one envelope in the merged stream, tagged with its recipient —
+/// compact JSON line (`--json`) or the human block above.
+fn emit_tagged(recipient: &str, m: &serde_json::Value, json: bool) -> Result<(), InboxError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&tag_with_recipient(recipient, m))?
+        );
+    } else {
+        print_tagged_envelope(recipient, m);
+    }
+    Ok(())
+}
+
+/// Merged live tail across every agent's inbox (issue #46). Reuses the
+/// single-inbox poll mechanism (`read_complete_lines_from`) per file and
+/// interleaves the outputs — no new watcher, no global sort. `--limit`
+/// applies to the per-agent backlog printed before tailing begins; after
+/// that, only newly appended envelopes are emitted, each tagged with its
+/// recipient in arrival order (Samānattatā — every inbox watched equally).
+/// A missing inbox is skipped, not an error. Blocks until Ctrl-C.
+fn watch_inbox_all(
+    workspace: &std::path::Path,
+    registry: &AgentsRegistry,
+    json: bool,
+    limit: Option<usize>,
+) -> Result<(), InboxError> {
+    use std::time::Duration;
+
+    struct Tail {
+        recipient: String,
+        path: PathBuf,
+        offset: u64,
+    }
+
+    // Backlog first: print the last `limit` of each inbox (tagged), then
+    // pin each tail's offset to that inbox's current EOF so the live loop
+    // emits only envelopes that arrive from here on.
+    let mut tails: Vec<Tail> = Vec::with_capacity(registry.agents.len());
+    for entry in &registry.agents {
+        let path = workspace.join(&entry.path).join(".bwoc/inbox.jsonl");
+        let messages = read_messages(&path)?; // missing inbox -> empty (graceful)
+        let view: Vec<&serde_json::Value> = if let Some(n) = limit {
+            messages.iter().rev().take(n).rev().collect()
+        } else {
+            messages.iter().collect()
+        };
+        for m in &view {
+            emit_tagged(&entry.id, m, json)?;
+        }
+        let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        tails.push(Tail {
+            recipient: entry.id.clone(),
+            path,
+            offset,
+        });
+    }
+
+    if !json {
+        println!("(watching all inboxes for new messages — Ctrl-C to stop)");
+        println!();
+    }
+
+    loop {
+        let mut any = false;
+        for t in &mut tails {
+            // Per-file size/offset check mirrors the single-inbox loops;
+            // a missing inbox just has no metadata this tick — skip it.
+            let Ok(meta) = std::fs::metadata(&t.path) else {
+                continue;
+            };
+            let size = meta.len();
+            if size < t.offset {
+                t.offset = size; // truncated — reset, stay quiet across the fleet
+                continue;
+            }
+            if size == t.offset {
+                continue;
+            }
+            let (consumed, lines) = read_complete_lines_from(&t.path, t.offset)?;
+            for line in lines {
+                any = true;
+                match line {
+                    Ok(v) => emit_tagged(&t.recipient, &v, json)?,
+                    Err((detail, raw)) => {
+                        if json {
+                            let err = serde_json::json!({
+                                "recipient": t.recipient,
+                                "error": "malformed_envelope",
+                                "detail": detail,
+                                "raw": raw,
+                            });
+                            println!("{}", serde_json::to_string(&err)?);
+                        } else {
+                            eprintln!(
+                                "bwoc inbox: warning — malformed JSON in {} skipped ({detail})",
+                                t.recipient
+                            );
+                        }
+                    }
+                }
+            }
+            t.offset += consumed;
+        }
+        if !any {
+            std::thread::sleep(Duration::from_millis(300));
+        }
     }
 }
 
@@ -734,6 +918,77 @@ mod tests {
         let msgs = read_messages(&root.join("agents/agent-alpha/.bwoc/inbox.jsonl")).unwrap();
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].get("refused").is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- Merged --all --watch (issue #46) -----------------------------------
+
+    #[test]
+    fn all_watch_no_longer_refused() {
+        // The whole point of #46: `--all --watch` (clear=false) must NOT be
+        // refused — the predicate ignores `watch`. `--clear` still is.
+        assert!(
+            all_flag_refusal(false).is_none(),
+            "--all (with or without --watch) must be allowed"
+        );
+        assert!(
+            all_flag_refusal(true).is_some(),
+            "--all --clear must still be refused"
+        );
+    }
+
+    #[test]
+    fn merged_tail_tags_recipient() {
+        let env = serde_json::json!({
+            "ts": "t1", "from": "agent-x", "to": "agent-beta", "message": "hi"
+        });
+        let tagged = tag_with_recipient("agent-beta", &env);
+        // Recipient added, original fields preserved.
+        assert_eq!(tagged["recipient"], "agent-beta");
+        assert_eq!(tagged["from"], "agent-x");
+        assert_eq!(tagged["message"], "hi");
+        // A non-object line is wrapped, not dropped.
+        let wrapped = tag_with_recipient("agent-beta", &serde_json::json!("oops"));
+        assert_eq!(wrapped["recipient"], "agent-beta");
+        assert_eq!(wrapped["envelope"], "oops");
+    }
+
+    #[test]
+    fn tail_skips_missing_inbox() {
+        // A registered agent whose inbox file doesn't exist yet must yield
+        // no lines and no error (graceful degrade), and not advance offset.
+        let root = setup("tail-missing");
+        let missing = root.join("agents/agent-alpha/.bwoc/inbox.jsonl");
+        let (consumed, lines) = read_complete_lines_from(&missing, 0).unwrap();
+        assert_eq!(consumed, 0);
+        assert!(lines.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tail_reads_only_complete_appended_lines() {
+        let root = setup("tail-append");
+        let path = root.join("agents/agent-alpha/.bwoc/inbox.jsonl");
+        // Two complete lines plus a partial (no trailing newline) tail.
+        let l1 = r#"{"ts":"t1","from":"u","to":"agent-alpha","message":"a"}"#;
+        let l2 = r#"{"ts":"t2","from":"u","to":"agent-alpha","message":"b"}"#;
+        let partial = r#"{"ts":"t3","partial"#;
+        fs::write(&path, format!("{l1}\n{l2}\n{partial}")).unwrap();
+        let (consumed, lines) = read_complete_lines_from(&path, 0).unwrap();
+        // Only the two newline-terminated lines are returned; the partial
+        // is left for the next tick, so consumed stops before it.
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].as_ref().unwrap()["message"], "a");
+        assert_eq!(lines[1].as_ref().unwrap()["message"], "b");
+        let full = fs::metadata(&path).unwrap().len();
+        assert!(
+            consumed < full,
+            "partial trailing line must not be consumed"
+        );
+        // A second read from the new offset finds nothing more yet.
+        let (consumed2, lines2) = read_complete_lines_from(&path, consumed).unwrap();
+        assert_eq!(consumed2, 0);
+        assert!(lines2.is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 }
