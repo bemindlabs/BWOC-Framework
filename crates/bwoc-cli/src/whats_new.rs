@@ -12,17 +12,13 @@ use std::io::IsTerminal;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// One-line headline for the current release.
-pub const HEADLINE: &str = "BWOC 2.3 — plugin-system cycle complete";
+pub const HEADLINE: &str = "BWOC 2.4 — fleet-health governance + Windows guardrails";
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "OS-level sandbox — landlock (Linux) + sandbox-exec (macOS)",
-    "Windows support for `bwoc-harness` (re-enabled in CI)",
-    "OpenAI-compatible provider (vLLM/LM Studio/llama.cpp) + vetted-model mode",
-    "Cross-workspace `bwoc peer` view/learn · `bwoc sessions` monitor",
-    "Trust v2 warn-mode · per-model token-limit auto-switch",
-    "`bwoc run` headless · `bwoc update` · doc-kinds (notes/retro/research)",
+    "`bwoc fleet health` — Aparihāniya-dhamma 7 governance signals (read-only)",
+    "Windows destructive-command guardrails (del / rmdir / format / Remove-Item)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
@@ -97,5 +93,18 @@ mod tests {
         assert!(!HIGHLIGHTS.is_empty());
         assert!(HIGHLIGHTS.len() <= 6, "keep the What's New list short");
         assert!(HIGHLIGHTS.iter().all(|h| !h.contains('\n')));
+    }
+
+    #[test]
+    fn headline_version_matches_build() {
+        // Guard against the stale-HEADLINE class of bug: the headline must
+        // name the current MAJOR.MINOR, so a `bwoc` build never greets users
+        // with a version it isn't. Bumping Cargo without updating HEADLINE
+        // fails here (same lesson as the formula auto-bump, #52).
+        let expected = format!("BWOC {}", major_minor());
+        assert!(
+            HEADLINE.starts_with(&expected),
+            "HEADLINE {HEADLINE:?} must start with {expected:?} (CARGO_PKG_VERSION major.minor)"
+        );
     }
 }
