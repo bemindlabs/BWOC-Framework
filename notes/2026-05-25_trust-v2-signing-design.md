@@ -1,6 +1,8 @@
 # 2026-05-25 — Trust v2: signed envelopes & cross-workspace identity (design draft)
 
-Design draft for the keystone deferred decision (#17 / #39 HV2-4) that gates **#20 give-feedback** and all cross-workspace *write* paths. Drafted by agent-oracle (architect lane) for maintainer review — **not implemented**. Decisions marked **[DECIDE]** need your call before any code.
+Design draft for the keystone deferred decision (#17 / #39 HV2-4) that gates **#20 give-feedback** and all cross-workspace *write* paths. Drafted by agent-oracle (architect lane) for maintainer review.
+
+> **SUPERSEDED-IN-PART (2026-05-25).** After drafting this I found **PR #40** already implements HV2-4 (ed25519 signed envelopes) — a Yoniso miss on my part (I didn't check open PRs first). #40 settles three of the four axes below: **identity** (per-agent key) and **backward compat** (`requireSignature=false` default) match this draft; **crypto** uses the `ed25519-dalek` crate (this draft leaned toward an `ssh-keygen` shell-out — revised: the in-process crate is the stronger per-message choice; recommend accepting it behind a `--features signing` gate). The still-useful part of this draft is the **key-distribution** discussion (§3): #40 puts the pubkey in the manifest; a `routes.toml` TOFU/pin layer is the cross-workspace hardening, addable later without touching the envelope. See the #39 review comment.
 
 ## Dukkha — what's actually unsafe today
 
