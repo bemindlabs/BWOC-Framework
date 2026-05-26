@@ -34,6 +34,7 @@ pub mod eval;
 pub mod policy;
 pub mod provider;
 pub mod queue;
+pub mod retrospective;
 pub mod sandbox;
 pub mod telemetry;
 pub mod tools;

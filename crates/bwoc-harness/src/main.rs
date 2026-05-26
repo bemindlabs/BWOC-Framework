@@ -223,11 +223,26 @@ async fn run() -> HarnessResult<()> {
     )
     .await?;
 
+    // Reaching here means `run_loop` returned Ok — the run produced a final
+    // answer.  Record the run as one attempted-and-completed task so the
+    // §8b completion-rate trigger has a denominator.
+    telemetry.agent.tasks_attempted += 1;
+    telemetry.agent.tasks_completed += 1;
+
     // Persist session metrics (best-effort; non-fatal if it fails).
     let metrics_path = args.workdir.join("session-metrics.jsonl");
     if let Err(e) = telemetry.finish(&metrics_path) {
         eprintln!("[bwoc-harness] warning: could not write session metrics: {e}");
     }
+
+    // ── Run-end retrospective (HV2-3) ─────────────────────────────────────
+    // Read the just-built record back into this run and surface any §8b
+    // self-improvement triggers.  Observe-don't-drive: printed, never applied.
+    let retro = bwoc_harness::retrospective::Retrospective::analyze(
+        &telemetry.build_record(),
+        &bwoc_harness::retrospective::RetroThresholds::default(),
+    );
+    eprint!("{}", retro.render());
 
     println!("─────────────────────────────────────────────");
     println!("done in {} turn(s).\n", result.turns);
