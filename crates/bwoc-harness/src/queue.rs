@@ -41,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 use bwoc_core::team::{Task, TaskState};
 
 use crate::error::HarnessError;
+use crate::worker::{NoopRunner, SpawnRunner, WorkerConfig, WorkerSpec};
 
 // ---------------------------------------------------------------------------
 // TaskSource trait — injectable abstraction for Saṅgha integration
@@ -183,6 +184,19 @@ pub struct TaskQueue {
     cancel: CancellationToken,
 }
 
+// ---------------------------------------------------------------------------
+// Worker runner wiring (HV2-1)
+// ---------------------------------------------------------------------------
+
+/// Bundles the [`SpawnRunner`] and [`WorkerConfig`] the worker loop uses to
+/// turn a `WorkItem` into a running worker.  Held behind `Arc`s so the worker
+/// task owns clones cheaply.
+#[derive(Clone)]
+struct RunnerCtx {
+    runner: Arc<dyn SpawnRunner>,
+    config: Arc<WorkerConfig>,
+}
+
 impl TaskQueue {
     /// Create a new queue and spawn the worker loop.
     ///
@@ -193,13 +207,34 @@ impl TaskQueue {
     /// The worker loop runs until `cancel` is cancelled or the sender is
     /// dropped.
     pub fn new(capacity: usize, cancel: CancellationToken) -> Self {
+        // Default runner is a no-op (scheduling only) — preserves the queue's
+        // historical behaviour for callers/tests that don't spawn real workers.
+        Self::with_runner(
+            capacity,
+            cancel,
+            Arc::new(NoopRunner),
+            Arc::new(WorkerConfig::default()),
+        )
+    }
+
+    /// Create a queue whose worker loop spawns real workers via `runner`.
+    ///
+    /// Each admitted `WorkItem` becomes a [`WorkerSpec`] (built from the item's
+    /// task plus `config`) and is handed to `runner.run()`.
+    pub fn with_runner(
+        capacity: usize,
+        cancel: CancellationToken,
+        runner: Arc<dyn SpawnRunner>,
+        config: Arc<WorkerConfig>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel::<WorkItem>(capacity + 1);
         let in_flight: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
         let in_flight_worker = Arc::clone(&in_flight);
         let cancel_worker = cancel.clone();
+        let ctx = RunnerCtx { runner, config };
 
         tokio::spawn(async move {
-            run_worker(rx, in_flight_worker, cancel_worker).await;
+            run_worker(rx, in_flight_worker, cancel_worker, ctx).await;
         });
 
         Self {
@@ -268,6 +303,7 @@ async fn run_worker(
     mut rx: mpsc::Receiver<WorkItem>,
     in_flight: Arc<Mutex<HashSet<PathBuf>>>,
     cancel: CancellationToken,
+    ctx: RunnerCtx,
 ) {
     loop {
         tokio::select! {
@@ -290,9 +326,8 @@ async fn run_worker(
                     None => break, // all senders dropped
                     Some(item) => {
                         let worktree = item.worktree_path.clone();
-                        // Execute the task (currently a no-op placeholder;
-                        // the real loop invocation is wired in agent_loop.rs).
-                        let result = execute_item(&item).await;
+                        // Spawn the worker for this item via the injected runner.
+                        let result = execute_item(&item, &ctx).await;
                         // Release the worktree slot.
                         in_flight.lock().unwrap().remove(&worktree);
                         // Send outcome (ignore if the receiver has already dropped).
@@ -304,21 +339,30 @@ async fn run_worker(
     }
 }
 
-/// Execute a [`WorkItem`].
+/// Execute a [`WorkItem`] by spawning its worker (HV2-1).
 ///
-/// In P3 this is a minimal placeholder — the real harness loop integration is
-/// done in `agent_loop.rs` where telemetry and tool dispatch are available.
-/// The queue's job is scheduling and cancellation; it delegates actual work.
-async fn execute_item(item: &WorkItem) -> Result<(), HarnessError> {
-    // Verify the worktree exists.
+/// The queue owns scheduling and cancellation; the actual work is delegated to
+/// the injected [`SpawnRunner`].  A worker runs in its own worktree as a
+/// separate `bwoc-harness` process, so the guardrails→permission→sandbox
+/// invariant is re-applied by the child — this loop never executes task code
+/// in-process.
+async fn execute_item(item: &WorkItem, ctx: &RunnerCtx) -> Result<(), HarnessError> {
+    // Verify the worktree exists before spawning into it.
     if !item.worktree_path.exists() {
         return Err(HarnessError::Other(format!(
             "worktree does not exist: {}",
             item.worktree_path.display()
         )));
     }
-    // Successfully "processed" — the caller integrates agent_loop::run_loop.
-    Ok(())
+    let spec = WorkerSpec {
+        task_id: item.task.id.clone(),
+        prompt: item.task.title.clone(),
+        worktree: item.worktree_path.clone(),
+        model: ctx.config.model.clone(),
+        endpoint: ctx.config.endpoint.clone(),
+        skip_model_check: ctx.config.skip_model_check,
+    };
+    ctx.runner.run(&spec).await
 }
 
 // ---------------------------------------------------------------------------
@@ -674,5 +718,87 @@ mod tests {
         let submitted = poll_sangha(&source, &queue, "agent-oracle", tmp.path()).await;
         // Only the pending task should be submitted.
         assert_eq!(submitted, 1);
+    }
+
+    // ── Runner integration (HV2-1) ────────────────────────────────────────────
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A SpawnRunner that records how many times it ran and returns a fixed
+    /// outcome — proves the queue routes WorkItems to the injected runner.
+    struct CountingRunner {
+        calls: Arc<AtomicUsize>,
+        ok: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SpawnRunner for CountingRunner {
+        async fn run(&self, spec: &WorkerSpec) -> Result<(), HarnessError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.ok {
+                Ok(())
+            } else {
+                Err(HarnessError::Other(format!(
+                    "worker {} failed",
+                    spec.task_id
+                )))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn with_runner_routes_item_to_runner_and_returns_ok() {
+        let tmp = TempDir::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        let queue = TaskQueue::with_runner(
+            4,
+            cancel,
+            Arc::new(CountingRunner {
+                calls: Arc::clone(&calls),
+                ok: true,
+            }),
+            Arc::new(WorkerConfig::default()),
+        );
+
+        let (tx, rx) = oneshot::channel();
+        queue
+            .submit(WorkItem {
+                task: pending_task("t1"),
+                worktree_path: tmp.path().to_path_buf(),
+                result_tx: tx,
+            })
+            .await
+            .unwrap();
+
+        assert!(rx.await.unwrap().is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "runner ran exactly once");
+    }
+
+    #[tokio::test]
+    async fn with_runner_propagates_worker_failure() {
+        let tmp = TempDir::new().unwrap();
+        let cancel = CancellationToken::new();
+        let queue = TaskQueue::with_runner(
+            4,
+            cancel,
+            Arc::new(CountingRunner {
+                calls: Arc::new(AtomicUsize::new(0)),
+                ok: false,
+            }),
+            Arc::new(WorkerConfig::default()),
+        );
+
+        let (tx, rx) = oneshot::channel();
+        queue
+            .submit(WorkItem {
+                task: pending_task("t1"),
+                worktree_path: tmp.path().to_path_buf(),
+                result_tx: tx,
+            })
+            .await
+            .unwrap();
+
+        assert!(rx.await.unwrap().is_err(), "worker failure propagates");
     }
 }

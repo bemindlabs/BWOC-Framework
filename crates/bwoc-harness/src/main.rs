@@ -41,6 +41,28 @@ struct Args {
     #[arg(long, conflicts_with = "task")]
     resume: Option<String>,
 
+    /// Run as a Saṅgha lead (HV2-1): drain claimable tasks from `--tasks`,
+    /// spawning a `bwoc-harness` worker subprocess per task in its own git
+    /// worktree off `--workdir`.  Mutually exclusive with `--task`/`--resume`.
+    #[arg(long, conflicts_with_all = ["task", "resume"])]
+    lead: bool,
+
+    /// Path to the Saṅgha `tasks.jsonl` (required with `--lead`).
+    #[arg(long, requires = "lead")]
+    tasks: Option<PathBuf>,
+
+    /// Agent id the lead claims tasks as (lead mode).
+    #[arg(long, default_value = "agent-lead")]
+    agent: String,
+
+    /// Max tasks to process this lead invocation; `0` = drain all.
+    #[arg(long, default_value_t = 0)]
+    max_tasks: usize,
+
+    /// Worker concurrency for lead mode (collection is currently sequential).
+    #[arg(long, default_value_t = 1)]
+    concurrency: usize,
+
     /// Working directory (worktree root).  All file operations are confined
     /// to this directory.  Defaults to the current directory.
     #[arg(long, short = 'd', default_value = ".")]
@@ -102,6 +124,13 @@ async fn run() -> HarnessResult<()> {
     println!("  model    : {}", args.model);
     println!("  endpoint : {}", args.endpoint);
     println!("  stream   : {}", args.stream);
+
+    // ── Saṅgha lead mode (HV2-1) ──────────────────────────────────────────
+    // Drains tasks and spawns worker subprocesses; the parent never runs task
+    // code or calls a provider — each worker does, as its own sandboxed process.
+    if args.lead {
+        return run_lead_mode(&args, &workdir).await;
+    }
 
     // ── Provider ──────────────────────────────────────────────────────────
     let provider: Arc<dyn ProviderClient> = Arc::new(OllamaClient::new(args.endpoint.clone()));
@@ -248,6 +277,51 @@ async fn run() -> HarnessResult<()> {
     println!("done in {} turn(s).\n", result.turns);
     println!("{}", result.final_response);
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Saṅgha lead mode (HV2-1)
+// ---------------------------------------------------------------------------
+
+/// Run the lead loop: drain `--tasks` and spawn a worker subprocess per task.
+async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<()> {
+    use bwoc_harness::lead::{JsonlTaskSource, LeadConfig, run_lead};
+    use bwoc_harness::worker::{SubprocessRunner, WorkerConfig};
+
+    let tasks_path = args.tasks.as_ref().ok_or_else(|| {
+        bwoc_harness::error::HarnessError::Other("--lead requires --tasks <path>".to_string())
+    })?;
+
+    let source = JsonlTaskSource::new(tasks_path);
+    let runner = std::sync::Arc::new(SubprocessRunner::new()?);
+    let cfg = LeadConfig {
+        agent_id: args.agent.clone(),
+        repo_root: workdir.to_path_buf(),
+        worktree_base: workdir.join(".bwoc").join("worktrees"),
+        worker: WorkerConfig {
+            model: args.model.clone(),
+            endpoint: args.endpoint.clone(),
+            skip_model_check: args.skip_model_check,
+        },
+        capacity: args.concurrency,
+        max_tasks: args.max_tasks,
+    };
+
+    println!(
+        "  mode     : Saṅgha lead (agent={}, tasks={})",
+        cfg.agent_id,
+        tasks_path.display()
+    );
+    println!("─────────────────────────────────────────────");
+
+    let summary = run_lead(&source, runner, &cfg).await?;
+
+    println!("─────────────────────────────────────────────");
+    println!(
+        "lead done: {} claimed, {} completed, {} failed.",
+        summary.claimed, summary.completed, summary.failed
+    );
     Ok(())
 }
 
