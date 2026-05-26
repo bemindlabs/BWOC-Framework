@@ -139,8 +139,11 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     // The sender lives in the sending workspace; only the recipient gains
     // the peer path. The bare `from` id crossing the boundary is the
     // intentional Trust-v2 seam — do NOT widen the envelope schema.
-    let from = match args.from.as_deref() {
-        None => "user".to_string(),
+    // `sender_bwoc_dir` is the sender agent's `.bwoc/` in the LOCAL workspace —
+    // where its ed25519 signing key lives (HV2-4). `None` for the `user` origin
+    // (the local operator is the trust root; user messages are unsigned).
+    let (from, sender_bwoc_dir) = match args.from.as_deref() {
+        None => ("user".to_string(), None),
         Some(name) => {
             let sender_id = canonicalize(name);
             let sender = registry
@@ -151,7 +154,8 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                     name: name.to_string(),
                     workspace: workspace.clone(),
                 })?;
-            sender.id.clone()
+            let dir = workspace.join(&sender.path).join(".bwoc");
+            (sender.id.clone(), Some(dir))
         }
     };
 
@@ -173,6 +177,44 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     if let Some(rt) = args.reply_to.as_deref() {
         envelope.insert("replyTo".into(), rt.into());
     }
+
+    // HV2-4: sign the envelope when the sender is an agent with a key.  The
+    // signature covers the canonical form of {from,to,ts,messageId,message,
+    // nonce}; `nonce` + `sig` are added to the wire envelope.  A sender with no
+    // key sends unsigned (a warning) — recipients in enforce mode will refuse
+    // it, which is the operator's cue to run `bwoc trust keygen`.
+    if let Some(dir) = &sender_bwoc_dir {
+        match bwoc_signing::load_signing_key(dir) {
+            Ok(Some(key)) => {
+                let nonce = bwoc_signing::new_nonce();
+                let canonical = bwoc_signing::canonical_bytes(
+                    &from,
+                    &entry.id,
+                    &ts,
+                    &message_id,
+                    &args.message,
+                    &nonce,
+                );
+                let sig = bwoc_signing::sign(&key, &canonical);
+                envelope.insert("nonce".into(), nonce.into());
+                envelope.insert("sig".into(), sig.into());
+            }
+            Ok(None) => {
+                eprintln!(
+                    "[bwoc send] warning: agent `{from}` has no signing key — sending \
+                     UNSIGNED. Run `bwoc trust keygen {from}`; enforce-mode recipients \
+                     will refuse unsigned messages."
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[bwoc send] warning: could not load signing key for `{from}`: {e} \
+                     — sending unsigned."
+                );
+            }
+        }
+    }
+
     let line = serde_json::to_string(&serde_json::Value::Object(envelope))?;
 
     // Append-only — multiple `bwoc send` calls just stack lines. The

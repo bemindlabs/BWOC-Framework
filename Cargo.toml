@@ -2,13 +2,14 @@
 resolver = "3"
 members = [
     "crates/bwoc-core",
+    "crates/bwoc-signing",
     "crates/bwoc-cli",
     "crates/bwoc-agent",
     "crates/bwoc-harness",
 ]
 
 [workspace.package]
-version = "2.5.0"
+version = "2.6.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -16,6 +17,7 @@ repository = "https://github.com/bmt-bwol-ops/bwoc-framwork"
 
 [workspace.dependencies]
 bwoc-core = { path = "crates/bwoc-core" }
+bwoc-signing = { path = "crates/bwoc-signing" }
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 ratatui = "0.30"

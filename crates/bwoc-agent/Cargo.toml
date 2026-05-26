@@ -13,7 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 bwoc-core = { workspace = true }
+bwoc-signing = { workspace = true }
 fluent-bundle = { workspace = true }
 unic-langid = { workspace = true }
 ctrlc = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Signature-verification tests generate ephemeral keypairs in a tempdir.
+tempfile = "3"

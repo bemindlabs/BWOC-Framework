@@ -1,0 +1,24 @@
+[package]
+name = "bwoc-signing"
+description = "ed25519 message-signing primitives for BWOC agent identity proof (HV2-4). Lean: crypto + hex only, no async/HTTP — usable from both bwoc-cli (sign) and bwoc-agent (verify) without pulling the harness runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Pure-Rust ed25519; `rand_core` feature pulls the keygen RNG bound.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# OS entropy for keygen + nonce.  Kept at 0.6 to match ed25519-dalek v2's bound.
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Minimal hex encode/decode for key + signature material.
+hex = "0.4"
+# Canonical-JSON serialization of the signed fields (RFC 8785 / JCS — sorted
+# keys via BTreeMap, compact).  serde_json is already a workspace dep.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

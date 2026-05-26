@@ -1,27 +1,28 @@
 ---
-title: Trust v2 — Cryptographic Message Authentication
+title: Message Signing — Cryptographic Message Authentication
 aliases:
   - Message Signing
   - Identity Signing
+  - Trust v2 (authentication layer)
   - HV2-4
 tags:
   - group/harness
   - type/spec
   - meta/security
-status: draft (spec gate — HV2-4 / BWOC-3, awaiting maintainer ratification)
+status: ratified (HV2-4 / BWOC-3 — §9 decisions ratified 2026-05-27; implementation in progress)
 canonical-source: Musāvāda-veramaṇī (4th precept) + Kalyāṇamitta 7 (AN 7.36)
 ---
 
-# Trust v2 — Cryptographic Message Authentication
+# Message Signing — Cryptographic Message Authentication
 
 | | |
 |---|---|
-| **Document** | docs/en/TRUST-V2.en.md |
-| **Bilingual Pair** | docs/th/TRUST-V2.th.md |
+| **Document** | docs/en/SIGNING.en.md |
+| **Bilingual Pair** | docs/th/SIGNING.th.md |
 | **Workstream** | HV2-4 (BWOC-3), gated by GH #39; unblocks #20 (cross-workspace give-feedback) |
 | **Primary Framework** | Musāvāda-veramaṇī — abstaining from false speech (no forged identity) |
 | **Supporting** | Kalyāṇamitta 7 — the trust this layer authenticates |
-| **Status** | **Spec gate.** No crate code until this spec is ratified. |
+| **Status** | **Ratified** — §9 decisions settled; crate code in progress. |
 
 ---
 
@@ -60,8 +61,8 @@ A shared-secret MAC (HMAC) fails the **cross-workspace** case that motivates the
 
 **ed25519** (asymmetric) separates the two: the **private** key only signs, the **public** key only verifies. Publishing the public key lets anyone verify and *no one* forge. ed25519 is small (32-byte keys, 64-byte signatures), fast, and has no parameter footguns.
 
-> [!note] Dependency note (dep-quarantine)
-> ed25519 needs a signing crate (candidate: `ed25519-dalek`). Heavy/crypto deps live **only** in `bwoc-harness` per the dep-quarantine, alongside `keyring`/`landlock`. This is consistent with the existing rule; the exact crate + version is a §9 ratification item.
+> [!note] Dependency note (dep-quarantine) — **ratified**
+> ed25519 (`ed25519-dalek` v2 + `rand_core` + `hex`) lives in a dedicated lean crate **`bwoc-signing`** — *not* `bwoc-core` (dep-quarantine forbids crypto there) and *not* `bwoc-harness` (the sign point `bwoc send` and verify point `bwoc-agent` don't depend on the harness). `bwoc-cli` and `bwoc-agent` both depend on `bwoc-signing`; it pulls no async/HTTP, so `bwoc-core` stays lean.
 
 ---
 
@@ -69,8 +70,8 @@ A shared-secret MAC (HMAC) fails the **cross-workspace** case that motivates the
 
 | Stage | What | Where |
 |---|---|---|
-| Generation | One ed25519 keypair per agent, at incarnation. | `bwoc new` / incarnation. |
-| Private key | Stored in the OS keyring via the existing broker (`crates/bwoc-harness/src/tools/auth.rs`, `CredentialRequest { keyring_service: "bwoc/signing", keyring_account: <agentId> }`). Never written to disk, never in telemetry. | OS keyring. |
+| Generation | One ed25519 keypair per agent. | `bwoc trust --keygen [<agent>|--all]` (backfills existing agents). `bwoc new` keygen-at-incarnation is a follow-up. |
+| Private key | Hex in `<agent>/.bwoc/agent.key`, mode `0600`, gitignored. **(Ratified: a 0600 file, not the OS keyring — agents run headless/CI where the keyring is unavailable; the harness keyring test is `#[ignore]`d for the same reason. The local-OS-user trust boundary makes this acceptable.)** Never in telemetry. | `<agent>/.bwoc/agent.key`. |
 | Public key | Published with the agent's identity so recipients can verify. | Agent manifest (`config.manifest.json`) and/or the agent's `interconnect/trust.md` descriptor. **(§9: which is canonical.)** |
 | Rotation | Replace keypair; old public key retired. | `bwoc` subcommand **(§9: rotation UX deferred?)**. |
 

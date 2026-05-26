@@ -60,8 +60,8 @@ MAC แบบกุญแจร่วม (HMAC) ล้มเหลวในก�
 
 **ed25519** (อสมมาตร) แยกสองบทบาทออกจากกัน: กุญแจ **ส่วนตัว** ใช้เซ็นเท่านั้น กุญแจ **สาธารณะ** ใช้ตรวจสอบเท่านั้น การเผยแพร่กุญแจสาธารณะทำให้ใครก็ตรวจสอบได้แต่ *ไม่มีใคร* ปลอมได้ ed25519 มีขนาดเล็ก (กุญแจ 32 ไบต์ ลายเซ็น 64 ไบต์) เร็ว และไม่มีพารามิเตอร์ให้พลาด
 
-> [!note] หมายเหตุ dependency (dep-quarantine)
-> ed25519 ต้องใช้ไลบรารีเซ็น (ตัวเลือก: `ed25519-dalek`) dependency ที่หนัก/เกี่ยวกับ crypto จะอยู่ **เฉพาะใน** `bwoc-harness` ตามกฎ dep-quarantine เคียงข้าง `keyring`/`landlock` ซึ่งสอดคล้องกับกฎเดิม ส่วน crate + เวอร์ชันที่แน่นอนเป็นรายการให้รับรองใน §9
+> [!note] หมายเหตุ dependency (dep-quarantine) — **รับรองแล้ว**
+> ed25519 (`ed25519-dalek` v2 + `rand_core` + `hex`) อยู่ใน crate แยกแบบ lean ชื่อ **`bwoc-signing`** — *ไม่ใช่* `bwoc-core` (dep-quarantine ห้าม crypto) และ *ไม่ใช่* `bwoc-harness` (จุดเซ็น `bwoc send` กับจุด verify `bwoc-agent` ไม่ได้ depend harness) ทั้ง `bwoc-cli` และ `bwoc-agent` depend `bwoc-signing`; crate นี้ไม่ลาก async/HTTP จึงให้ `bwoc-core` คง lean ได้
 
 ---
 
@@ -69,8 +69,8 @@ MAC แบบกุญแจร่วม (HMAC) ล้มเหลวในก�
 
 | ขั้น | อะไร | ที่ไหน |
 |---|---|---|
-| สร้าง | คู่กุญแจ ed25519 หนึ่งคู่ต่อหนึ่งตัวแทน ตอน incarnation | `bwoc new` / incarnation |
-| กุญแจส่วนตัว | เก็บใน OS keyring ผ่าน broker เดิม (`crates/bwoc-harness/src/tools/auth.rs`, `CredentialRequest { keyring_service: "bwoc/signing", keyring_account: <agentId> }`) ไม่เขียนลงดิสก์ ไม่อยู่ใน telemetry | OS keyring |
+| สร้าง | คู่กุญแจ ed25519 หนึ่งคู่ต่อหนึ่งตัวแทน | `bwoc trust --keygen [<agent>|--all]` (backfill ตัวแทนเดิมได้) ส่วน keygen ตอน `bwoc new` เป็น follow-up |
+| กุญแจส่วนตัว | hex ใน `<agent>/.bwoc/agent.key` สิทธิ์ `0600` และ gitignored **(รับรอง: ใช้ไฟล์ 0600 ไม่ใช่ OS keyring — ตัวแทนรันแบบ headless/CI ที่ keyring ใช้ไม่ได้ การทดสอบ keyring ใน harness ก็ถูก `#[ignore]` ด้วยเหตุผลเดียวกัน ขอบเขตความไว้วางใจระดับ local-OS-user ทำให้ยอมรับได้)** ไม่อยู่ใน telemetry | `<agent>/.bwoc/agent.key` |
 | กุญแจสาธารณะ | เผยแพร่พร้อมตัวตนของตัวแทนเพื่อให้ผู้รับตรวจสอบได้ | manifest ของตัวแทน (`config.manifest.json`) และ/หรือ descriptor `interconnect/trust.md` ของตัวแทน **(§9: อันไหนเป็นแหล่งหลัก)** |
 | หมุนกุญแจ | เปลี่ยนคู่กุญแจ ปลดกุญแจสาธารณะเก่า | คำสั่งย่อย `bwoc` **(§9: UX การหมุนกุญแจเลื่อนไว้?)** |
 

@@ -145,6 +145,17 @@ pub struct TrustBlock {
     /// `Refuse` if non-empty. `Warn` is strictly opt-in.
     #[serde(rename = "mode", default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<RefusalMode>,
+    /// ed25519 public key (lowercase hex, 64 chars) used to verify this
+    /// agent's signed message envelopes (HV2-4 / `docs/en/SIGNING.en.md`).
+    /// `None` = no key published yet (the agent can't be authenticated; the
+    /// signing mode decides whether that is refused). Set by `bwoc trust
+    /// keygen`; the matching private key lives in `<agent>/.bwoc/agent.key`.
+    #[serde(
+        rename = "signingPublicKey",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signing_public_key: Option<String>,
 }
 
 impl TrustBlock {
@@ -174,6 +185,7 @@ impl Default for TrustBlock {
             declared: TrustDeclared::default(),
             required_trust: Vec::new(),
             mode: None,
+            signing_public_key: None,
         }
     }
 }
@@ -348,6 +360,7 @@ mod tests {
             },
             required_trust: vec!["vatta".into(), "noCatthana".into()],
             mode: None,
+            signing_public_key: None,
         });
         let json = serde_json::to_string(&m).unwrap();
         // Wire format uses camelCase + the rename for noCatthana.
@@ -441,6 +454,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into()],
             mode: None,
+            signing_public_key: None,
         };
         let peer = TrustDeclared {
             vatta: true,
@@ -457,6 +471,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into(), "gambhira".into()],
             mode: None,
+            signing_public_key: None,
         };
         let peer = TrustDeclared {
             vatta: true,
@@ -477,6 +492,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["gambhira".into(), "vatta".into(), "piyo".into()],
             mode: None,
+            signing_public_key: None,
         };
         let peer = TrustDeclared::default(); // nothing declared
         assert_eq!(block.missing_in(&peer), vec!["gambhira", "vatta", "piyo"]);
@@ -492,6 +508,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["mudu".into()], // future-spec quality
             mode: None,
+            signing_public_key: None,
         };
         let peer = TrustDeclared {
             piyo: true,
@@ -520,6 +537,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into()],
             mode: None,
+            signing_public_key: None,
         };
         assert_eq!(block.effective_mode(), RefusalMode::Refuse);
     }
@@ -532,6 +550,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into()],
             mode: Some(RefusalMode::Warn),
+            signing_public_key: None,
         };
         assert_eq!(block.effective_mode(), RefusalMode::Warn);
     }
@@ -545,6 +564,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec![],
             mode: Some(RefusalMode::Refuse),
+            signing_public_key: None,
         };
         assert_eq!(block.effective_mode(), RefusalMode::Refuse);
     }

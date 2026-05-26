@@ -798,6 +798,12 @@ impl From<RunCliArgs> for run::RunArgs {
 
 #[derive(Args, Debug)]
 #[command(group(clap::ArgGroup::new("body").required(true).args(["message", "file"])))]
+// clap renders the required `body` group ahead of the plain `to` positional,
+// producing a usage line (`<MESSAGE|--file> <TO>`) that contradicts the actual
+// parse order (`to` is positional 1, `message` is positional 2). Pin the usage
+// string to reality so the help text doesn't mislead. (Yoniso Manasikāra —
+// the docs match the behaviour, not clap's default rendering.)
+#[command(override_usage = "bwoc send [OPTIONS] <TO> <MESSAGE|--file <FILE>>")]
 struct SendArgs {
     /// Recipient agent. Matches by id ("agent-foo") or bare name ("foo").
     to: String,
@@ -910,8 +916,19 @@ impl From<SuperviseArgs> for supervise::SuperviseArgs {
 
 #[derive(Args, Debug)]
 struct TrustArgs {
-    /// Agent name. Matches by id ("agent-foo") or bare name ("foo").
-    agent: String,
+    /// Agent name ("agent-foo" or "foo"). Optional only with `--keygen --all`.
+    agent: Option<String>,
+    /// Generate an ed25519 signing keypair (HV2-4) instead of reading the
+    /// profile: private key → <agent>/.bwoc/agent.key (0600), public key →
+    /// manifest `signingPublicKey`.
+    #[arg(long)]
+    keygen: bool,
+    /// With `--keygen`: generate for every registered agent (backfill).
+    #[arg(long)]
+    all: bool,
+    /// With `--keygen`: overwrite an existing key (rotates the agent's identity).
+    #[arg(long)]
+    force: bool,
     /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
     workspace: Option<PathBuf>,
@@ -926,6 +943,9 @@ impl From<TrustArgs> for trust::TrustArgs {
             agent: a.agent,
             workspace: a.workspace,
             json: a.json,
+            keygen: a.keygen,
+            all: a.all,
+            force: a.force,
         }
     }
 }

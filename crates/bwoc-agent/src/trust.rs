@@ -23,6 +23,33 @@ use std::path::{Path, PathBuf};
 use bwoc_core::manifest::{Manifest, RefusalMode};
 use bwoc_core::workspace::AgentsRegistry;
 
+/// Signature-enforcement posture (HV2-4 / `docs/en/SIGNING.en.md` §6).
+///
+/// Independent of the Kalyāṇamitta `BWOC_TRUST_GATING` opt-in: signature
+/// verification runs on its own, controlled by `BWOC_SIGNING_MODE`. A bad /
+/// tampered signature is refused in *every* mode (it is an attack); the mode
+/// only governs unsigned or unverifiable-but-not-tampered messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningMode {
+    /// No signature checking (legacy / migration escape hatch).
+    Off,
+    /// Verify when present; accept unsigned / unpublished-key senders.
+    Warn,
+    /// Refuse unsigned or unverifiable agent messages. The ratified default.
+    Enforce,
+}
+
+impl SigningMode {
+    /// Read `BWOC_SIGNING_MODE` (`off` | `warn` | `enforce`). Default `Enforce`.
+    pub fn from_env() -> Self {
+        match std::env::var("BWOC_SIGNING_MODE").ok().as_deref() {
+            Some("off") => SigningMode::Off,
+            Some("warn") => SigningMode::Warn,
+            _ => SigningMode::Enforce,
+        }
+    }
+}
+
 /// Daemon trust posture, built once at `--serve` startup.
 pub struct TrustContext {
     /// Recipient's `requiredTrust` list (own manifest). Empty ≡ no gating
@@ -37,9 +64,12 @@ pub struct TrustContext {
     /// daemon is running outside a workspace; sender lookup is impossible
     /// so gating refuses every non-`user` envelope when on.
     pub workspace_root: Option<PathBuf>,
-    /// Reflects `BWOC_TRUST_GATING=1`. When false, `evaluate` always
-    /// returns `Pass` (permissive).
+    /// Reflects `BWOC_TRUST_GATING=1`. When false, the Kalyāṇamitta quality
+    /// gate is permissive (but signature verification still runs per
+    /// `signing_mode`).
     pub gating_enabled: bool,
+    /// Signature-enforcement posture (HV2-4), from `BWOC_SIGNING_MODE`.
+    pub signing_mode: SigningMode,
 }
 
 impl TrustContext {
@@ -58,6 +88,7 @@ impl TrustContext {
             mode,
             workspace_root,
             gating_enabled,
+            signing_mode: SigningMode::from_env(),
         }
     }
 
@@ -141,7 +172,11 @@ impl Refusal {
 /// `inbox.jsonl` — it's the join key `bwoc inbox` uses when overlaying
 /// refusals onto the envelope view.
 pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -> TrustOutcome {
-    if ctx.is_inert() {
+    // Fast path only when BOTH layers are idle: signing off AND the
+    // Kalyāṇamitta gate inert. With signing on (the default), verification
+    // runs even if no `requiredTrust` is declared.
+    let signing_off = matches!(ctx.signing_mode, SigningMode::Off);
+    if signing_off && ctx.is_inert() {
         return TrustOutcome::Pass;
     }
     let env: serde_json::Value = match serde_json::from_str(envelope_line) {
@@ -191,10 +226,28 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     };
 
     let manifest_path = ws.join(&entry.path).join("config.manifest.json");
-    let declared = match Manifest::load_from_path(&manifest_path) {
-        Ok(m) => m.trust.map(|t| t.declared).unwrap_or_default(),
+    let sender_manifest = match Manifest::load_from_path(&manifest_path) {
+        Ok(m) => m,
         Err(_) => return cant_verify!("sender_manifest_unreadable"),
     };
+
+    // ── Step 1: signature verification (HV2-4) — runs before the quality gate
+    // so an unverifiable identity is refused before its declared qualities are
+    // even consulted (§5: verify, then authorize).
+    if !signing_off {
+        if let Some(outcome) =
+            verify_signature(ctx, &env, &from, &envelope_ts, envelope_offset, &sender_manifest)
+        {
+            return outcome;
+        }
+    }
+
+    // ── Step 2: Kalyāṇamitta quality gate ──
+    if ctx.is_inert() {
+        // Signature accepted (or signing off) and no quality requirements.
+        return TrustOutcome::Pass;
+    }
+    let declared = sender_manifest.trust.map(|t| t.declared).unwrap_or_default();
 
     let missing: Vec<String> = ctx
         .required
@@ -218,6 +271,69 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
             reason: "missing_trust",
             missing,
         }),
+    }
+}
+
+/// Signature step of [`evaluate`] (HV2-4 / `docs/en/SIGNING.en.md` §5).
+///
+/// Returns `Some(outcome)` to short-circuit, or `None` to proceed to the
+/// quality gate:
+/// - valid signature → `None` (identity proven).
+/// - bad / tampered signature → `Refuse(bad_signature)` in EVERY mode (attack).
+/// - signed but malformed published key → `bad_pubkey` (refuse in Enforce).
+/// - signed but sender publishes no key → `no_pubkey` (refuse in Enforce).
+/// - unsigned → `unsigned` (refuse in Enforce).
+///
+/// In Warn mode the unverifiable-but-not-tampered cases proceed (`None`).
+fn verify_signature(
+    ctx: &TrustContext,
+    env: &serde_json::Value,
+    from: &str,
+    envelope_ts: &str,
+    envelope_offset: u64,
+    sender_manifest: &Manifest,
+) -> Option<TrustOutcome> {
+    let enforce = matches!(ctx.signing_mode, SigningMode::Enforce);
+    let refuse = |reason: &'static str| {
+        Some(TrustOutcome::Refuse(Refusal {
+            envelope_offset,
+            envelope_ts: envelope_ts.to_string(),
+            envelope_from: from.to_string(),
+            reason,
+            missing: vec![],
+        }))
+    };
+
+    let sig = env.get("sig").and_then(|v| v.as_str());
+    let pubkey = sender_manifest
+        .trust
+        .as_ref()
+        .and_then(|t| t.signing_public_key.as_deref());
+
+    match (sig, pubkey) {
+        (Some(sig), Some(pubkey)) => {
+            let field = |k: &str| env.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let canonical = bwoc_signing::canonical_bytes(
+                from,
+                field("to"),
+                envelope_ts,
+                field("messageId"),
+                field("message"),
+                field("nonce"),
+            );
+            match bwoc_signing::load_verifying_key(pubkey) {
+                Ok(vk) => match bwoc_signing::verify(&vk, &canonical, sig) {
+                    Ok(()) => None, // identity proven → proceed
+                    Err(_) => refuse("bad_signature"), // tampered — refuse in all modes
+                },
+                Err(_) if enforce => refuse("bad_pubkey"),
+                Err(_) => None,
+            }
+        }
+        (Some(_), None) if enforce => refuse("no_pubkey"),
+        (None, _) if enforce => refuse("unsigned"),
+        // Warn / unverifiable-but-not-tampered → proceed.
+        _ => None,
     }
 }
 
@@ -262,6 +378,20 @@ mod tests {
             mode,
             workspace_root: ws,
             gating_enabled: gating,
+            // Existing Kalyāṇamitta tests exercise the quality gate, not signing.
+            signing_mode: SigningMode::Off,
+        }
+    }
+
+    /// Build a context with only the signing mode set (no workspace / quality
+    /// gating) for `verify_signature` unit tests.
+    fn ctx_with_signing(mode: SigningMode) -> TrustContext {
+        TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            workspace_root: None,
+            gating_enabled: false,
+            signing_mode: mode,
         }
     }
 
@@ -424,6 +554,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into(), "noCatthana".into()],
             mode: None, // absent → effective Refuse (v1 compat)
+            signing_public_key: None,
         });
         unsafe {
             std::env::remove_var("BWOC_TRUST_GATING");
@@ -444,6 +575,7 @@ mod tests {
             declared: TrustDeclared::default(),
             required_trust: vec!["vatta".into()],
             mode: Some(RefusalMode::Warn),
+            signing_public_key: None,
         });
         unsafe {
             std::env::remove_var("BWOC_TRUST_GATING");
@@ -466,6 +598,90 @@ mod tests {
         assert!(ctx.is_inert());
         unsafe {
             std::env::remove_var("BWOC_TRUST_GATING");
+        }
+    }
+
+    // ---- signature verification (HV2-4) ------------------------------------
+
+    /// Build a sender manifest carrying `pubkey_hex` as its published key.
+    fn manifest_with_pubkey(pubkey_hex: &str) -> Manifest {
+        let mut m = sample_manifest();
+        m.trust = Some(TrustBlock {
+            schema_version: 1,
+            declared: TrustDeclared::default(),
+            required_trust: vec![],
+            mode: None,
+            signing_public_key: Some(pubkey_hex.to_string()),
+        });
+        m
+    }
+
+    #[test]
+    fn valid_signature_proceeds_tampered_refused_in_every_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let bwoc = dir.path().join(".bwoc");
+        let pubkey = bwoc_signing::generate_keypair(&bwoc, false).unwrap();
+        let key = bwoc_signing::load_signing_key(&bwoc).unwrap().unwrap();
+        let sm = manifest_with_pubkey(&pubkey);
+
+        let (from, to, ts, mid, body) = ("agent-x", "agent-me", "2026-05-27T00:00:00Z", "msg-1", "hi");
+        let nonce = bwoc_signing::new_nonce();
+        let canonical = bwoc_signing::canonical_bytes(from, to, ts, mid, body, &nonce);
+        let sig = bwoc_signing::sign(&key, &canonical);
+        let env = serde_json::json!({
+            "from": from, "to": to, "ts": ts, "messageId": mid,
+            "message": body, "nonce": nonce, "sig": sig,
+        });
+
+        // Valid signature → proceed (None) in any signing mode.
+        for mode in [SigningMode::Enforce, SigningMode::Warn] {
+            assert!(
+                verify_signature(&ctx_with_signing(mode), &env, from, ts, 0, &sm).is_none(),
+                "valid sig must proceed in {mode:?}"
+            );
+        }
+
+        // Tampered field → bad_signature, refused even in Warn.
+        let mut bad = env.clone();
+        bad["message"] = "tampered".into();
+        for mode in [SigningMode::Enforce, SigningMode::Warn] {
+            match verify_signature(&ctx_with_signing(mode), &bad, from, ts, 0, &sm) {
+                Some(TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "bad_signature"),
+                other => panic!("tampered must refuse in {mode:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn unsigned_refused_in_enforce_proceeds_in_warn() {
+        let sm = sample_manifest(); // no published key
+        let env = serde_json::json!({
+            "from": "agent-x", "to": "agent-me", "ts": "t", "message": "hi",
+        });
+        match verify_signature(&ctx_with_signing(SigningMode::Enforce), &env, "agent-x", "t", 0, &sm) {
+            Some(TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "unsigned"),
+            other => panic!("expected unsigned refuse, got {other:?}"),
+        }
+        assert!(
+            verify_signature(&ctx_with_signing(SigningMode::Warn), &env, "agent-x", "t", 0, &sm)
+                .is_none(),
+            "warn mode proceeds on unsigned"
+        );
+    }
+
+    #[test]
+    fn signing_mode_from_env_defaults_enforce() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("BWOC_SIGNING_MODE");
+        }
+        assert_eq!(SigningMode::from_env(), SigningMode::Enforce);
+        unsafe {
+            std::env::set_var("BWOC_SIGNING_MODE", "off");
+        }
+        assert_eq!(SigningMode::from_env(), SigningMode::Off);
+        unsafe {
+            std::env::remove_var("BWOC_SIGNING_MODE");
         }
     }
 

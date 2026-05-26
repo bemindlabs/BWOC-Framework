@@ -1,15 +1,22 @@
 //! `bwoc trust <agent>` — read an agent's Kalyāṇamitta-7 trust profile.
 //! See `modules/agent-template/interconnect/trust.md`. Read-only.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bwoc_core::manifest::{Manifest, TrustDeclared};
 use bwoc_core::workspace::AgentsRegistry;
 
 pub struct TrustArgs {
-    pub agent: String,
+    /// Optional — required for the read path; with `--keygen --all` it may be absent.
+    pub agent: Option<String>,
     pub workspace: Option<PathBuf>,
     pub json: bool,
+    /// Generate an ed25519 signing keypair (HV2-4) instead of reading the profile.
+    pub keygen: bool,
+    /// With `--keygen`: every registered agent (backfill).
+    pub all: bool,
+    /// With `--keygen`: overwrite an existing key (rotates identity).
+    pub force: bool,
 }
 
 /// The 7 Kalyāṇamitta qualities in canonical (manifest-key) order.
@@ -24,7 +31,7 @@ const QUALITIES: &[(&str, &str)] = &[
 ];
 
 pub fn run(args: TrustArgs) -> i32 {
-    let Some(workspace) = resolve_workspace(args.workspace) else {
+    let Some(workspace) = resolve_workspace(args.workspace.clone()) else {
         eprintln!(
             "bwoc trust: no workspace found. Pass --workspace, set BWOC_WORKSPACE, \
              or run `bwoc init`."
@@ -38,15 +45,22 @@ pub fn run(args: TrustArgs) -> i32 {
             return 1;
         }
     };
-    let lookup_id = if args.agent.starts_with("agent-") {
-        args.agent.clone()
-    } else {
-        format!("agent-{}", args.agent)
+
+    // ── keygen path (HV2-4) ───────────────────────────────────────────────
+    if args.keygen {
+        return keygen(&workspace, &registry, args.agent.as_deref(), args.all, args.force);
+    }
+
+    // ── read path (Kalyāṇamitta-7 profile) ────────────────────────────────
+    let Some(agent) = args.agent.as_deref() else {
+        eprintln!("bwoc trust: an agent name is required (or use `--keygen --all`).");
+        return 2;
     };
+    let lookup_id = canonical_id(agent);
     let Some(entry) = registry.agents.iter().find(|a| a.id == lookup_id) else {
         eprintln!(
             "bwoc trust: no agent named '{}' in workspace {}.",
-            args.agent,
+            agent,
             workspace.display()
         );
         return 2;
@@ -69,6 +83,86 @@ pub fn run(args: TrustArgs) -> i32 {
         print_human(&entry.id, &manifest);
     }
     0
+}
+
+/// `bwoc trust --keygen [agent | --all]` — generate ed25519 signing keypair(s)
+/// (HV2-4): private key → `<agent>/.bwoc/agent.key` (0600), public key →
+/// manifest `trust.signingPublicKey`. Backfills existing agents so enforce-mode
+/// messaging works.
+fn keygen(
+    workspace: &Path,
+    registry: &AgentsRegistry,
+    agent: Option<&str>,
+    all: bool,
+    force: bool,
+) -> i32 {
+    let targets: Vec<_> = if all {
+        registry.agents.iter().collect()
+    } else {
+        let Some(a) = agent else {
+            eprintln!("bwoc trust --keygen: pass an agent name or --all.");
+            return 2;
+        };
+        let id = canonical_id(a);
+        match registry.agents.iter().find(|e| e.id == id) {
+            Some(e) => vec![e],
+            None => {
+                eprintln!("bwoc trust: no agent named '{a}' in workspace.");
+                return 2;
+            }
+        }
+    };
+
+    let (mut generated, mut skipped, mut failed) = (0u32, 0u32, 0u32);
+    for entry in targets {
+        let bwoc_dir = workspace.join(&entry.path).join(".bwoc");
+        match bwoc_signing::generate_keypair(&bwoc_dir, force) {
+            Ok(pubkey) => {
+                let manifest_path = workspace.join(&entry.path).join("config.manifest.json");
+                match publish_pubkey(&manifest_path, &pubkey) {
+                    Ok(()) => {
+                        println!("✓ {} — keypair generated, public key published", entry.id);
+                        generated += 1;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "✗ {} — key written but manifest update failed: {e}",
+                            entry.id
+                        );
+                        failed += 1;
+                    }
+                }
+            }
+            Err(bwoc_signing::SigningError::KeyExists(_)) => {
+                println!("· {} — key already exists (use --force to rotate)", entry.id);
+                skipped += 1;
+            }
+            Err(e) => {
+                eprintln!("✗ {} — keygen failed: {e}", entry.id);
+                failed += 1;
+            }
+        }
+    }
+    println!("\nkeygen: {generated} generated, {skipped} skipped, {failed} failed");
+    i32::from(failed > 0)
+}
+
+/// Load the manifest, set `trust.signingPublicKey`, and save it back.
+fn publish_pubkey(manifest_path: &Path, pubkey_hex: &str) -> Result<(), String> {
+    let mut m = Manifest::load_from_path(manifest_path).map_err(|e| e.to_string())?;
+    let mut block = m.trust.take().unwrap_or_default();
+    block.signing_public_key = Some(pubkey_hex.to_string());
+    m.trust = Some(block);
+    m.save_to_path(manifest_path).map_err(|e| e.to_string())
+}
+
+/// Resolve a bare name or full id to the canonical `agent-<name>` id.
+fn canonical_id(name: &str) -> String {
+    if name.starts_with("agent-") {
+        name.to_string()
+    } else {
+        format!("agent-{name}")
+    }
 }
 
 fn print_human(agent_id: &str, m: &Manifest) {
