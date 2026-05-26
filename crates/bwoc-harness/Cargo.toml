@@ -17,13 +17,20 @@ path = "src/main.rs"
 [features]
 # Optional OpenTelemetry export.  The default build has ZERO OTEL deps.
 # Enable with: cargo build --features otel
-# The exporter is a stub in P3; a real exporter is wired in P4.
-otel = []
+# Pulls the OTEL crate graph (heavy + network egress) ONLY under this feature —
+# the dep-quarantine holds for the default build.
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 
 [dependencies]
 # Lean shared types — bwoc-core carries only serde/toml/thiserror.
 # This dep does NOT violate the dep-quarantine invariant.
 bwoc-core = { path = "../bwoc-core" }
+
+# OpenTelemetry — OPTIONAL, behind the `otel` feature only (heavy + network
+# egress). Dep-quarantine: these never enter the default build.
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.27", optional = true }
 
 # Async runtime — required for streaming + concurrent tool execution + queue
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "time"] }

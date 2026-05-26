@@ -44,8 +44,10 @@
 //!
 //! ## OpenTelemetry export (optional)
 //!
-//! Compile with `--features otel` to enable OTEL span export.  The default
-//! build has **no OTEL dependency** — a stub exporter is used instead.
+//! Compile with `--features otel` to export one OTLP span per session to the
+//! collector at `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4317`).
+//! The default build has **no OTEL dependency** — the export call compiles to
+//! nothing without the feature.
 //!
 //! ## Secrets
 //!
@@ -323,18 +325,64 @@ impl TurnBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// OTEL stub — active only under `--features otel`
+// OTEL exporter — active only under `--features otel`
 // ---------------------------------------------------------------------------
 
+/// Export one OTLP span per finished session (BWOC-2 / HV2 follow-up).
+///
+/// Best-effort: builds a one-shot OTLP/tonic exporter, emits a `bwoc.session`
+/// span carrying the record's key metrics as attributes, flushes, and shuts
+/// down.  The collector endpoint comes from the standard
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` env var (default `http://localhost:4317`); any
+/// failure is logged, never fatal — telemetry must not break a run.
 #[cfg(feature = "otel")]
 fn export_otel_span(record: &SessionRecord) {
-    // TODO(P4): replace with a real opentelemetry exporter.
-    // For now this is a compile-gated stub so the feature flag works without
-    // pulling the full OTEL crate graph into the default build.
-    eprintln!(
-        "[otel-stub] would export span for session {} agent {}",
-        record.session_id, record.agent_id
-    );
+    use opentelemetry::KeyValue;
+    use opentelemetry::trace::{Span, Tracer, TracerProvider as _};
+
+    let exporter = match opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()
+    {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[otel] exporter build failed: {e}");
+            return;
+        }
+    };
+
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        .build();
+    let tracer = provider.tracer("bwoc-harness");
+
+    let mut span = tracer.start("bwoc.session");
+    span.set_attribute(KeyValue::new("session.id", record.session_id.clone()));
+    span.set_attribute(KeyValue::new("agent.id", record.agent_id.clone()));
+    span.set_attribute(KeyValue::new(
+        "tasks.attempted",
+        i64::from(record.metrics.tasks_attempted),
+    ));
+    span.set_attribute(KeyValue::new(
+        "tasks.completed",
+        i64::from(record.metrics.tasks_completed),
+    ));
+    span.set_attribute(KeyValue::new(
+        "gates.passed",
+        record.metrics.gates_passed as i64,
+    ));
+    span.set_attribute(KeyValue::new(
+        "gates.failed",
+        record.metrics.gates_failed as i64,
+    ));
+    span.end();
+
+    // Flush the batch before the provider drops, or the span may never ship.
+    for result in provider.force_flush() {
+        if let Err(e) = result {
+            eprintln!("[otel] flush error: {e}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
