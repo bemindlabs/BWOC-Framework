@@ -217,7 +217,10 @@ pub struct LoopConfig {
     /// }
     /// ```
     ///
-    /// // TODO(#13): optional provider-queried limits (dynamic, not static)
+    /// Static entries here are the operator override; when a model is absent,
+    /// the loop falls back to a provider-queried dynamic limit
+    /// (`ProviderClient::model_context_limit`, cached per model) and then to
+    /// `context_limit`.  See `model_effective_limit` (#13, implemented).
     pub model_context_limits: HashMap<String, u32>,
     /// Ordered list of candidate models to switch to when token pressure is
     /// detected on the active model.
