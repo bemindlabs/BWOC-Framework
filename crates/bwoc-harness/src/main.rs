@@ -30,9 +30,16 @@ use bwoc_harness::{
 #[derive(Parser, Debug)]
 #[command(name = "bwoc-harness", version, about, long_about = None)]
 struct Args {
-    /// Initial task / prompt for the agent.
+    /// Initial task / prompt for the agent.  Required for a new run; ignored
+    /// (and may be omitted) when `--resume` is given.
     #[arg(long, short = 't')]
-    task: String,
+    task: Option<String>,
+
+    /// Resume a previously-checkpointed run by id.  Reloads its history,
+    /// counters, and active model and continues against the existing worktree
+    /// (no replay).  Mutually exclusive with a fresh `--task`.
+    #[arg(long, conflicts_with = "task")]
+    resume: Option<String>,
 
     /// Working directory (worktree root).  All file operations are confined
     /// to this directory.  Defaults to the current directory.
@@ -142,6 +149,36 @@ async fn run() -> HarnessResult<()> {
         VettedMode::Warn
     });
 
+    // ── Durable run (HV2-2) ───────────────────────────────────────────────
+    // Either resume a checkpointed run or start a fresh one.  The harness
+    // binary always checkpoints; `LoopConfig::checkpoint = None` is reserved
+    // for embedders/tests.
+    let (checkpoint, initial_messages) = match &args.resume {
+        Some(run_id) => {
+            let cfg =
+                bwoc_harness::checkpoint::CheckpointConfig::resume(run_id).unwrap_or_else(|e| {
+                    eprintln!("[bwoc-harness] error: cannot resume run `{run_id}`: {e}");
+                    std::process::exit(1);
+                });
+            let prior_turns = cfg.resume.as_ref().map(|s| s.turns).unwrap_or(0);
+            println!("  resuming : {run_id} ({prior_turns} prior turn(s))");
+            // Resumed history seeds the loop; no fresh task message.
+            (Some(cfg), Vec::new())
+        }
+        None => {
+            let task = args.task.clone().unwrap_or_else(|| {
+                eprintln!("[bwoc-harness] error: --task is required (or use --resume <run-id>)");
+                std::process::exit(1);
+            });
+            let run_id = bwoc_harness::checkpoint::new_run_id();
+            println!("  run id   : {run_id}");
+            (
+                Some(bwoc_harness::checkpoint::CheckpointConfig::new(run_id)),
+                vec![ChatMessage::user(&task)],
+            )
+        }
+    };
+
     // ── Loop config ───────────────────────────────────────────────────────
     let config = LoopConfig {
         model: args.model.clone(),
@@ -155,6 +192,7 @@ async fn run() -> HarnessResult<()> {
         context_limit: 0, // no compaction by default; operator sets via config
         model_context_limits: std::collections::HashMap::new(),
         token_pressure_models: Vec::new(),
+        checkpoint,
     };
 
     // ── Telemetry ─────────────────────────────────────────────────────────
@@ -168,7 +206,10 @@ async fn run() -> HarnessResult<()> {
     let mut telemetry = bwoc_harness::telemetry::Telemetry::new(session_id, "bwoc-harness");
 
     // ── Run ───────────────────────────────────────────────────────────────
-    println!("\ntask: {}", args.task);
+    println!(
+        "\ntask: {}",
+        args.task.as_deref().unwrap_or("(resumed run)")
+    );
     println!("─────────────────────────────────────────────");
 
     let result = run_loop(
@@ -177,7 +218,7 @@ async fn run() -> HarnessResult<()> {
         ctx,
         config,
         system_prompt,
-        vec![ChatMessage::user(&args.task)],
+        initial_messages,
         &mut telemetry,
     )
     .await?;

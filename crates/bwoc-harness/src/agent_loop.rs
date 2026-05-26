@@ -79,9 +79,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::checkpoint::{CheckpointConfig, RunState};
 use crate::error::{HarnessError, HarnessResult};
 use crate::policy::{Policy, PolicyOutcome, run_pipeline};
-use crate::provider::{ChatMessage, ProviderClient, ToolCall};
+use crate::provider::{ChatMessage, ProviderClient, Role, ToolCall};
 use crate::sandbox::{self, make_os_sandbox};
 use crate::telemetry::{Telemetry, TurnBuilder};
 use crate::tools::registry::dispatch;
@@ -234,6 +235,10 @@ pub struct LoopConfig {
     ///
     /// Empty = token-pressure auto-switch is disabled (compaction only).
     pub token_pressure_models: Vec<String>,
+    /// Durable-run wiring (HV2-2).  `None` disables checkpointing (default);
+    /// `Some` persists [`RunState`] after each turn and, when its `resume`
+    /// field is set, seeds the loop from a prior run.
+    pub checkpoint: Option<CheckpointConfig>,
 }
 
 impl Default for LoopConfig {
@@ -250,6 +255,7 @@ impl Default for LoopConfig {
             context_limit: 0,
             model_context_limits: HashMap::new(),
             token_pressure_models: Vec::new(),
+            checkpoint: None,
         }
     }
 }
@@ -326,6 +332,14 @@ pub async fn run_loop(
 
     let tools = registry.tool_schemas();
 
+    // Capture the originating task (first user message) for the checkpoint
+    // record before `initial_messages` is consumed into history.
+    let mut task = initial_messages
+        .iter()
+        .find(|m| matches!(m.role, Role::User))
+        .and_then(|m| m.content.clone())
+        .unwrap_or_default();
+
     // Build the initial message history.
     let mut history: Vec<ChatMessage> = Vec::new();
     history.push(ChatMessage::system(&system_prompt));
@@ -354,6 +368,20 @@ pub async fn run_loop(
 
     // Consecutive malformed-tool-call counter for the current model.
     let mut consecutive_malformed = 0u32;
+
+    // ── Durable-run resume (HV2-2) ────────────────────────────────────────────
+    // If a checkpoint with prior state is present, replace the freshly-built
+    // locals with the checkpointed values.  The worktree already persists on
+    // disk, so this is reload + re-attach — there is NO replay of past turns
+    // (the resumed `history` carries everything the model needs).
+    if let Some(state) = config.checkpoint.as_ref().and_then(|c| c.resume.as_ref()) {
+        history = state.history.clone();
+        turns = state.turns;
+        compactions = state.compactions;
+        token_pressure_switches = state.token_pressure_switches;
+        active_model = state.active_model.clone();
+        task = state.task.clone();
+    }
 
     loop {
         turns += 1;
@@ -515,6 +543,15 @@ pub async fn run_loop(
                 let m = tb.finish();
                 telemetry.record_turn(m);
                 turns -= 1; // Don't count the bad turn toward max_iterations.
+                persist_checkpoint(
+                    config.checkpoint.as_ref(),
+                    &task,
+                    &history,
+                    turns,
+                    compactions,
+                    token_pressure_switches,
+                    &active_model,
+                );
                 continue;
             }
             // Under the threshold: fall through to normal processing.
@@ -535,6 +572,15 @@ pub async fn run_loop(
 
             let m = tb.finish();
             telemetry.record_turn(m);
+
+            // Run completed successfully — drop its checkpoint (Anattā: nothing
+            // left to resume).  Best-effort; a failed cleanup must not fail the
+            // run that just succeeded.
+            if let Some(cfg) = config.checkpoint.as_ref() {
+                if let Err(e) = cfg.delete() {
+                    eprintln!("[bwoc-harness] warning: checkpoint cleanup failed: {e}");
+                }
+            }
 
             return Ok(LoopResult {
                 final_response,
@@ -568,7 +614,49 @@ pub async fn run_loop(
 
         let m = tb.finish();
         telemetry.record_turn(m);
+
+        // Turn boundary: reply + tool results are applied to history — the only
+        // consistent seam to snapshot (HV2-2).
+        persist_checkpoint(
+            config.checkpoint.as_ref(),
+            &task,
+            &history,
+            turns,
+            compactions,
+            token_pressure_switches,
+            &active_model,
+        );
         // Continue to next turn.
+    }
+}
+
+/// Persist a [`RunState`] snapshot if durability is enabled (HV2-2).
+///
+/// Called at each turn boundary — after the turn's reply and tool results are
+/// applied to `history`.  Best-effort: a failed write warns but never aborts a
+/// run that is otherwise progressing.
+fn persist_checkpoint(
+    checkpoint: Option<&CheckpointConfig>,
+    task: &str,
+    history: &[ChatMessage],
+    turns: u32,
+    compactions: u32,
+    token_pressure_switches: u32,
+    active_model: &str,
+) {
+    let Some(cfg) = checkpoint else { return };
+    let state = RunState {
+        run_id: cfg.run_id.clone(),
+        task: task.to_string(),
+        history: history.to_vec(),
+        turns,
+        compactions,
+        token_pressure_switches,
+        active_model: active_model.to_string(),
+        telemetry_cursor: turns,
+    };
+    if let Err(e) = cfg.save(&state) {
+        eprintln!("[bwoc-harness] warning: checkpoint save failed: {e}");
     }
 }
 
@@ -1126,6 +1214,7 @@ mod tests {
             context_limit: 0,
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
+            checkpoint: None,
         }
     }
 
@@ -1458,6 +1547,7 @@ mod tests {
             context_limit: 0,
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
+            checkpoint: None,
         };
 
         let result = run_loop(
@@ -1505,6 +1595,7 @@ mod tests {
             context_limit: 0,
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
+            checkpoint: None,
         };
 
         let err = run_loop(
@@ -1807,6 +1898,7 @@ mod tests {
             context_limit: 0,
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
+            checkpoint: None,
         };
 
         let result = run_loop(
@@ -2466,5 +2558,118 @@ mod tests {
         );
         assert!("invalid".parse::<VettedMode>().is_err());
         assert!("Warn".parse::<VettedMode>().is_err()); // case-sensitive
+    }
+
+    // ── Durability / resume (HV2-2) ───────────────────────────────────────────
+
+    /// Resuming seeds the loop from the checkpoint and continues the turn count
+    /// without replaying past turns; a successful finish drops the checkpoint.
+    #[tokio::test]
+    async fn resume_continues_turn_count_no_replay() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+
+        // A prior run that had reached turn 3 with its own history + state.
+        let prior_history = vec![
+            ChatMessage::system("resumed-system-prompt"),
+            ChatMessage::user("original task"),
+            ChatMessage::assistant(Some("partial progress".to_string()), None),
+        ];
+        let state = RunState {
+            run_id: "resume-1".to_string(),
+            task: "original task".to_string(),
+            history: prior_history.clone(),
+            turns: 3,
+            compactions: 1,
+            token_pressure_switches: 2,
+            active_model: "mock".to_string(),
+            telemetry_cursor: 3,
+        };
+        let ckpt = CheckpointConfig {
+            run_id: "resume-1".to_string(),
+            root: tmp.path().join("runs"),
+            resume: Some(state),
+        };
+
+        // The provider returns a final answer immediately → exactly one more turn.
+        let provider = Arc::new(MockProvider::new(vec![make_final_response(
+            "resumed answer",
+        )]));
+        let registry = Arc::new(default_registry());
+        let mut telem = noop_telemetry();
+        let mut config = test_config(20);
+        config.checkpoint = Some(ckpt);
+
+        // A *fresh* system prompt + empty initial messages: if the loop replayed
+        // or rebuilt, history[0] would be "fresh-system", not the resumed one.
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "fresh-system".to_string(),
+            vec![],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.turns, 4, "continues 3 → 4 (one new turn, no replay)");
+        assert_eq!(result.compactions, 1, "carried over from checkpoint");
+        assert_eq!(
+            result.token_pressure_switches, 2,
+            "carried over from checkpoint"
+        );
+        assert_eq!(
+            result.history[0].content.as_deref(),
+            Some("resumed-system-prompt"),
+            "used resumed history, not the fresh system prompt"
+        );
+        // Success drops the checkpoint dir (Anattā: nothing left to resume).
+        assert!(!tmp.path().join("runs").join("resume-1").exists());
+    }
+
+    /// State is persisted at each turn boundary; a run that ends in error keeps
+    /// its checkpoint, and the loaded snapshot reflects the completed turns.
+    #[tokio::test]
+    async fn checkpoint_persisted_per_turn_and_kept_on_error() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let root = tmp.path().join("runs");
+
+        // Always returns a tool call → the loop never reaches a final answer and
+        // hits MaxIterations(2), which returns Err without deleting the checkpoint.
+        let provider = Arc::new(MockProvider::new(vec![
+            make_tool_call_response("list_dir", "{}"),
+            make_tool_call_response("list_dir", "{}"),
+        ]));
+        let registry = Arc::new(default_registry());
+        let mut telem = noop_telemetry();
+        let mut config = test_config(2);
+        config.checkpoint = Some(CheckpointConfig {
+            run_id: "crash-1".to_string(),
+            root: root.clone(),
+            resume: None,
+        });
+
+        let err = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("keep going")],
+            &mut telem,
+        )
+        .await;
+        assert!(matches!(err, Err(HarnessError::MaxIterations(2))));
+
+        // Checkpoint survives the error and reflects the two completed turns.
+        let path = root.join("crash-1").join("checkpoint.json");
+        assert!(path.exists(), "checkpoint kept on error (resumable)");
+        let loaded = RunState::load_from(&path).unwrap();
+        assert_eq!(loaded.turns, 2);
+        assert_eq!(loaded.task, "keep going");
+        assert_eq!(loaded.run_id, "crash-1");
     }
 }
