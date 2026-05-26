@@ -235,9 +235,14 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     // so an unverifiable identity is refused before its declared qualities are
     // even consulted (§5: verify, then authorize).
     if !signing_off {
-        if let Some(outcome) =
-            verify_signature(ctx, &env, &from, &envelope_ts, envelope_offset, &sender_manifest)
-        {
+        if let Some(outcome) = verify_signature(
+            ctx,
+            &env,
+            &from,
+            &envelope_ts,
+            envelope_offset,
+            &sender_manifest,
+        ) {
             return outcome;
         }
     }
@@ -247,7 +252,10 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
         // Signature accepted (or signing off) and no quality requirements.
         return TrustOutcome::Pass;
     }
-    let declared = sender_manifest.trust.map(|t| t.declared).unwrap_or_default();
+    let declared = sender_manifest
+        .trust
+        .map(|t| t.declared)
+        .unwrap_or_default();
 
     let missing: Vec<String> = ctx
         .required
@@ -323,7 +331,7 @@ fn verify_signature(
             );
             match bwoc_signing::load_verifying_key(pubkey) {
                 Ok(vk) => match bwoc_signing::verify(&vk, &canonical, sig) {
-                    Ok(()) => None, // identity proven → proceed
+                    Ok(()) => None,                    // identity proven → proceed
                     Err(_) => refuse("bad_signature"), // tampered — refuse in all modes
                 },
                 Err(_) if enforce => refuse("bad_pubkey"),
@@ -624,7 +632,8 @@ mod tests {
         let key = bwoc_signing::load_signing_key(&bwoc).unwrap().unwrap();
         let sm = manifest_with_pubkey(&pubkey);
 
-        let (from, to, ts, mid, body) = ("agent-x", "agent-me", "2026-05-27T00:00:00Z", "msg-1", "hi");
+        let (from, to, ts, mid, body) =
+            ("agent-x", "agent-me", "2026-05-27T00:00:00Z", "msg-1", "hi");
         let nonce = bwoc_signing::new_nonce();
         let canonical = bwoc_signing::canonical_bytes(from, to, ts, mid, body, &nonce);
         let sig = bwoc_signing::sign(&key, &canonical);
@@ -658,13 +667,27 @@ mod tests {
         let env = serde_json::json!({
             "from": "agent-x", "to": "agent-me", "ts": "t", "message": "hi",
         });
-        match verify_signature(&ctx_with_signing(SigningMode::Enforce), &env, "agent-x", "t", 0, &sm) {
+        match verify_signature(
+            &ctx_with_signing(SigningMode::Enforce),
+            &env,
+            "agent-x",
+            "t",
+            0,
+            &sm,
+        ) {
             Some(TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "unsigned"),
             other => panic!("expected unsigned refuse, got {other:?}"),
         }
         assert!(
-            verify_signature(&ctx_with_signing(SigningMode::Warn), &env, "agent-x", "t", 0, &sm)
-                .is_none(),
+            verify_signature(
+                &ctx_with_signing(SigningMode::Warn),
+                &env,
+                "agent-x",
+                "t",
+                0,
+                &sm
+            )
+            .is_none(),
             "warn mode proceeds on unsigned"
         );
     }

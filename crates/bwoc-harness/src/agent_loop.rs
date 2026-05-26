@@ -2760,10 +2760,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            format!("{err}").contains("workdir mismatch"),
-            "got: {err}"
-        );
+        assert!(format!("{err}").contains("workdir mismatch"), "got: {err}");
     }
 
     /// State is persisted at each turn boundary; a run that ends in error keeps

@@ -48,7 +48,13 @@ pub fn run(args: TrustArgs) -> i32 {
 
     // ── keygen path (HV2-4) ───────────────────────────────────────────────
     if args.keygen {
-        return keygen(&workspace, &registry, args.agent.as_deref(), args.all, args.force);
+        return keygen(
+            &workspace,
+            &registry,
+            args.agent.as_deref(),
+            args.all,
+            args.force,
+        );
     }
 
     // ── read path (Kalyāṇamitta-7 profile) ────────────────────────────────
@@ -134,7 +140,10 @@ fn keygen(
                 }
             }
             Err(bwoc_signing::SigningError::KeyExists(_)) => {
-                println!("· {} — key already exists (use --force to rotate)", entry.id);
+                println!(
+                    "· {} — key already exists (use --force to rotate)",
+                    entry.id
+                );
                 skipped += 1;
             }
             Err(e) => {
