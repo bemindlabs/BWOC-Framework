@@ -77,6 +77,12 @@ struct Args {
     #[arg(long)]
     cost_per_1m: Option<f64>,
 
+    /// Launch an external MCP tool server and register its tools (HV2-5).
+    /// Value is the server command line, e.g. `--mcp "my-mcp-server --flag"`.
+    /// Repeatable.  Tools are exposed as `mcp__<server>__<tool>`.
+    #[arg(long)]
+    mcp: Vec<String>,
+
     /// Working directory (worktree root).  All file operations are confined
     /// to this directory.  Defaults to the current directory.
     #[arg(long, short = 'd', default_value = ".")]
@@ -165,7 +171,30 @@ async fn run() -> HarnessResult<()> {
     }
 
     // ── Tool registry ─────────────────────────────────────────────────────
-    let registry = Arc::new(default_registry());
+    let mut registry = default_registry();
+    // ── MCP tool servers (HV2-5) ──────────────────────────────────────────
+    // Each --mcp launches an external MCP server and registers its tools.
+    // Failures are warned, not fatal — the run proceeds with the built-in set.
+    for spec in &args.mcp {
+        let parts: Vec<String> = spec.split_whitespace().map(String::from).collect();
+        let Some((program, prog_args)) = parts.split_first() else {
+            continue;
+        };
+        let label = std::path::Path::new(program)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(program);
+        match bwoc_harness::mcp::McpClient::connect_stdio(program, prog_args).await {
+            Ok(client) => match client.register_tools(&mut registry, label).await {
+                Ok(n) => println!("  mcp      : {n} tool(s) from `{program}`"),
+                Err(e) => {
+                    eprintln!("[bwoc-harness] warning: MCP `tools/list` from `{program}`: {e}")
+                }
+            },
+            Err(e) => eprintln!("[bwoc-harness] warning: MCP connect `{program}`: {e}"),
+        }
+    }
+    let registry = Arc::new(registry);
 
     // ── Context ───────────────────────────────────────────────────────────
     let ctx = ToolContext::new(&workdir);
