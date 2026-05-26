@@ -251,6 +251,11 @@ mod tests {
         assert!(NoopRunner.run(&spec(tmp.path())).await.is_ok());
     }
 
+    // These two pin the exit-code → Ok/Err mapping using the `/usr/bin/true`
+    // and `/usr/bin/false` stubs; unix-only because there is no portable
+    // Windows binary that ignores the bwoc-style args and exits 0/1. The
+    // mapping logic itself is platform-agnostic.
+    #[cfg(unix)]
     #[tokio::test]
     async fn subprocess_runner_maps_exit_zero_to_ok() {
         // `/usr/bin/true` ignores args and exits 0 — a trivial child process.
@@ -259,6 +264,7 @@ mod tests {
         assert!(runner.run(&spec(tmp.path())).await.is_ok());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn subprocess_runner_maps_nonzero_exit_to_err() {
         let tmp = TempDir::new().unwrap();
