@@ -256,28 +256,28 @@ impl TaskQueue {
             return Err(QueueError::Shutdown);
         }
 
-        // One-in-flight per worktree check.
+        // Capacity + one-in-flight-per-worktree CHECK and the reservation
+        // INSERT happen under a single lock acquisition — no TOCTOU window, so
+        // two concurrent submits can't both pass the capacity gate.
         {
-            let guard = self.in_flight.lock().unwrap();
+            let mut guard = self.in_flight.lock().unwrap();
             if guard.contains(&item.worktree_path) {
                 return Err(QueueError::Busy(item.worktree_path.clone()));
             }
             if guard.len() >= self.capacity {
                 return Err(QueueError::AtCapacity(self.capacity));
             }
+            guard.insert(item.worktree_path.clone());
         }
 
-        // Register the worktree as in-flight before sending so there's no
-        // window between the check and the send.
-        self.in_flight
-            .lock()
-            .unwrap()
-            .insert(item.worktree_path.clone());
-
-        self.sender
-            .send(item)
-            .await
-            .map_err(|e| QueueError::Send(e.to_string()))
+        // If the send fails the worker loop will never see this item, so
+        // release the slot we just reserved rather than leaking it.
+        let worktree = item.worktree_path.clone();
+        if let Err(e) = self.sender.send(item).await {
+            self.in_flight.lock().unwrap().remove(&worktree);
+            return Err(QueueError::Send(e.to_string()));
+        }
+        Ok(())
     }
 
     /// Cancel the queue — signals the worker loop to stop processing new items.
@@ -326,8 +326,17 @@ async fn run_worker(
                     None => break, // all senders dropped
                     Some(item) => {
                         let worktree = item.worktree_path.clone();
-                        // Spawn the worker for this item via the injected runner.
-                        let result = execute_item(&item, &ctx).await;
+                        // Race the worker against cancellation so an in-flight
+                        // worker is interrupted, not merely stopped between
+                        // items.  `kill_on_drop` on the subprocess runner reaps
+                        // the child when its future is dropped here.
+                        let result = tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => {
+                                Err(HarnessError::Other("queue cancelled".to_string()))
+                            }
+                            r = execute_item(&item, &ctx) => r,
+                        };
                         // Release the worktree slot.
                         in_flight.lock().unwrap().remove(&worktree);
                         // Send outcome (ignore if the receiver has already dropped).
@@ -363,79 +372,6 @@ async fn execute_item(item: &WorkItem, ctx: &RunnerCtx) -> Result<(), HarnessErr
         skip_model_check: ctx.config.skip_model_check,
     };
     ctx.runner.run(&spec).await
-}
-
-// ---------------------------------------------------------------------------
-// Saṅgha poll helper — drain claimable tasks into the queue
-// ---------------------------------------------------------------------------
-
-/// Scan `source` for pending, unblocked tasks and submit each claimable task
-/// to `queue` as `agent_id`.
-///
-/// Returns the number of tasks successfully submitted.  Tasks that are already
-/// in-flight, blocked, or non-pending are silently skipped.
-pub async fn poll_sangha(
-    source: &dyn TaskSource,
-    queue: &TaskQueue,
-    agent_id: &str,
-    worktree_base: &std::path::Path,
-) -> usize {
-    let tasks = source.list_tasks();
-    let mut submitted = 0usize;
-
-    for task in tasks {
-        if task.state != TaskState::Pending {
-            continue;
-        }
-        // Skip tasks that have unmet dependencies (blocked).
-        // Dependency resolution is performed by bwoc_core::team::claim_task;
-        // if claim fails with BlockedByDependency we just skip.
-
-        // Claim the task.
-        if source.claim(&task.id, agent_id).is_err() {
-            continue; // not claimable (blocked, already in-progress, etc.)
-        }
-
-        let worktree_path = worktree_base.join(&task.id);
-        let (result_tx, _result_rx) = oneshot::channel();
-
-        let item = WorkItem {
-            task: task.clone(),
-            worktree_path,
-            result_tx,
-        };
-
-        match queue.submit(item).await {
-            Ok(()) => {
-                submitted += 1;
-            }
-            Err(QueueError::Busy(_) | QueueError::AtCapacity(_)) => {
-                // P4 rollback: the queue rejected a task we already claimed.
-                // Revert the task to `pending` so it isn't stranded as
-                // `in_progress` with no worker.  We use complete_task to
-                // move it — but complete_task sets it to Completed, not
-                // Pending.  Instead, we call a dedicated unclaim path via
-                // TaskSource::unclaim if available, or fall back to re-
-                // inserting a fresh pending task in the in-memory source.
-                //
-                // For the TaskSource trait (which hides the backing store)
-                // we add an `unclaim` method that reverts InProgress → Pending.
-                // If the source doesn't support it (returns Err), we log a
-                // warning — the operator will need to re-triage manually.
-                if let Err(e) = source.unclaim(&task.id, agent_id) {
-                    eprintln!(
-                        "[bwoc-harness] WARNING: failed to unclaim task `{}` after \
-                         queue rejection — task may be stranded as in_progress: {e}",
-                        task.id
-                    );
-                }
-                break;
-            }
-            Err(_) => break,
-        }
-    }
-
-    submitted
 }
 
 // ---------------------------------------------------------------------------
@@ -616,72 +552,6 @@ mod tests {
         );
     }
 
-    // ── Saṅgha poll helper ───────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn poll_sangha_claims_pending_tasks() {
-        let tmp = TempDir::new().unwrap();
-        // Three pending tasks.
-        let source = InMemoryTaskSource::new(vec![
-            pending_task("p1"),
-            pending_task("p2"),
-            pending_task("p3"),
-        ]);
-        let (queue, _cancel) = make_queue(4);
-
-        let submitted = poll_sangha(&source, &queue, "agent-oracle", tmp.path()).await;
-        assert_eq!(submitted, 3, "all three pending tasks should be submitted");
-
-        // All three must now be InProgress in the source.
-        for t in source.list_tasks() {
-            assert_eq!(
-                t.state,
-                TaskState::InProgress,
-                "task {} should be InProgress",
-                t.id
-            );
-        }
-    }
-
-    // ── poll_sangha rollback ──────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn poll_sangha_rollback_on_queue_full() {
-        let tmp = TempDir::new().unwrap();
-
-        // Queue capacity = 1 so the second task is rejected.
-        // After rejection, the second task must be rolled back to Pending.
-        let source = InMemoryTaskSource::new(vec![pending_task("first"), pending_task("second")]);
-
-        // Create distinct worktrees so both tasks pass the busy check.
-        let wt1 = tmp.path().join("first");
-        std::fs::create_dir_all(&wt1).unwrap();
-        let wt2 = tmp.path().join("second");
-        std::fs::create_dir_all(&wt2).unwrap();
-
-        let (queue, _cancel) = make_queue(1);
-
-        let submitted = poll_sangha(&source, &queue, "agent-oracle", tmp.path()).await;
-        // Only 1 can be submitted (capacity = 1).
-        assert_eq!(submitted, 1, "only 1 task should be admitted");
-
-        // The first task is InProgress; the second must be back to Pending.
-        let tasks = source.list_tasks();
-        let first = tasks.iter().find(|t| t.id == "first").unwrap();
-        let second = tasks.iter().find(|t| t.id == "second").unwrap();
-
-        assert_eq!(
-            first.state,
-            TaskState::InProgress,
-            "first task should be in_progress"
-        );
-        assert_eq!(
-            second.state,
-            TaskState::Pending,
-            "second task should be rolled back to pending"
-        );
-    }
-
     #[test]
     fn unclaim_reverts_task_to_pending() {
         let source = InMemoryTaskSource::new(vec![pending_task("t1")]);
@@ -703,21 +573,6 @@ mod tests {
         source.claim("t1", "agent-oracle").unwrap();
         let err = source.unclaim("t1", "agent-pi").unwrap_err();
         assert!(matches!(err, HarnessError::Other(_)));
-    }
-
-    #[tokio::test]
-    async fn poll_sangha_skips_non_pending_tasks() {
-        let tmp = TempDir::new().unwrap();
-        let mut task_in_progress = pending_task("ip1");
-        task_in_progress.state = TaskState::InProgress;
-        task_in_progress.claimed_by = Some("agent-pi".to_string());
-
-        let source = InMemoryTaskSource::new(vec![task_in_progress, pending_task("p1")]);
-        let (queue, _cancel) = make_queue(4);
-
-        let submitted = poll_sangha(&source, &queue, "agent-oracle", tmp.path()).await;
-        // Only the pending task should be submitted.
-        assert_eq!(submitted, 1);
     }
 
     // ── Runner integration (HV2-1) ────────────────────────────────────────────

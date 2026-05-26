@@ -13,6 +13,7 @@
 //! [`crate::lead`] drives them; the queue in [`crate::queue`] schedules them.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -77,24 +78,46 @@ impl SpawnRunner for NoopRunner {
     }
 }
 
+/// Default per-worker wall-clock limit.  Bounded so one hung worker (stuck
+/// network, runaway loop) can't block the (currently serial) lead drain
+/// indefinitely; generous enough not to kill legitimate long tasks.
+pub const DEFAULT_WORKER_TIMEOUT: Duration = Duration::from_secs(1800);
+
 /// Spawns a real `bwoc-harness` subprocess per worker.
 pub struct SubprocessRunner {
     /// Path to the `bwoc-harness` binary.  Defaults to the current executable
     /// (the lead is itself a `bwoc-harness`); overridable for tests.
     exe: PathBuf,
+    /// Max wall-clock time a worker may run before it's killed and reaped.
+    /// `None` = no limit (tests pointing at instant stubs).
+    timeout: Option<Duration>,
 }
 
 impl SubprocessRunner {
-    /// Spawn copies of the currently-running executable.
+    /// Spawn copies of the currently-running executable, bounded by
+    /// [`DEFAULT_WORKER_TIMEOUT`].
     pub fn new() -> HarnessResult<Self> {
         let exe = std::env::current_exe()
             .map_err(|e| HarnessError::Other(format!("cannot resolve current exe: {e}")))?;
-        Ok(Self { exe })
+        Ok(Self {
+            exe,
+            timeout: Some(DEFAULT_WORKER_TIMEOUT),
+        })
     }
 
     /// Spawn a specific binary (tests point this at a stub like `/usr/bin/true`).
+    /// No timeout by default — set one with [`with_timeout`](Self::with_timeout).
     pub fn with_exe(exe: impl Into<PathBuf>) -> Self {
-        Self { exe: exe.into() }
+        Self {
+            exe: exe.into(),
+            timeout: None,
+        }
+    }
+
+    /// Override the per-worker timeout (`None` disables it).
+    pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -113,10 +136,33 @@ impl SpawnRunner for SubprocessRunner {
         if spec.skip_model_check {
             cmd.arg("--skip-model-check");
         }
+        // Reap the child if this future is dropped (e.g. queue cancellation)
+        // so a cancelled or abandoned worker never becomes an orphan.
+        cmd.kill_on_drop(true);
 
-        let status = cmd.status().await.map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             HarnessError::Other(format!("spawn failed for `{}`: {e}", spec.task_id))
         })?;
+
+        let wait_err = |e: std::io::Error| {
+            HarnessError::Other(format!("wait failed for `{}`: {e}", spec.task_id))
+        };
+        let status = match self.timeout {
+            Some(dur) => match tokio::time::timeout(dur, child.wait()).await {
+                Ok(res) => res.map_err(wait_err)?,
+                Err(_) => {
+                    // Timed out — kill and reap so the child doesn't leak.
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Err(HarnessError::Other(format!(
+                        "worker for task `{}` timed out after {}s",
+                        spec.task_id,
+                        dur.as_secs()
+                    )));
+                }
+            },
+            None => child.wait().await.map_err(wait_err)?,
+        };
 
         if status.success() {
             Ok(())
@@ -141,6 +187,14 @@ impl SpawnRunner for SubprocessRunner {
 pub fn git_worktree_add(repo_root: &Path, worktree: &Path) -> HarnessResult<()> {
     if let Some(parent) = worktree.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    // Self-heal: a worktree left behind by a prior failed run (kept for
+    // inspection) would make `add` fail with "already exists" and strand the
+    // re-claimed task forever.  Prune stale registrations and force-remove any
+    // leftover at this path so a retry starts clean.  Both are best-effort.
+    let _ = run_git(repo_root, &["worktree", "prune"]);
+    if worktree.exists() {
+        let _ = git_worktree_remove(repo_root, worktree);
     }
     run_git(
         repo_root,
@@ -218,6 +272,26 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let runner = SubprocessRunner::with_exe("/no/such/binary-xyz");
         assert!(runner.run(&spec(tmp.path())).await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subprocess_runner_kills_on_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+        // A child that ignores its args and sleeps far past the timeout.
+        let tmp = TempDir::new().unwrap();
+        let script = tmp.path().join("sleeper.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let runner =
+            SubprocessRunner::with_exe(&script).with_timeout(Some(Duration::from_millis(150)));
+        let start = std::time::Instant::now();
+        let err = runner.run(&spec(tmp.path())).await.unwrap_err();
+
+        assert!(format!("{err}").contains("timed out"), "got: {err}");
+        // Returned promptly — did not block for the full 30s sleep.
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

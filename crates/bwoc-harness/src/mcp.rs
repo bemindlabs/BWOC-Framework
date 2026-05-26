@@ -15,6 +15,7 @@
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -39,11 +40,22 @@ pub trait RpcTransport: Send + Sync {
 // stdio transport
 // ---------------------------------------------------------------------------
 
+/// Per-request response timeout — bounds a hung or misbehaving server (one
+/// that never answers, or echoes a malformed id) so a `tools/call` can't block
+/// the agent loop forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Line-delimited JSON-RPC 2.0 over a subprocess's stdio.
 pub struct StdioTransport {
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     next_id: AtomicU64,
+    // Serializes a whole request/response cycle (write → read-until-our-id).
+    // The line protocol has no per-request response routing — a concurrent
+    // request would write while we read and we'd consume (and discard) ITS
+    // response line.  One in-flight `request` per transport keeps each cycle
+    // matched to its own reply.  `notify` (no response) need not take this.
+    req_lock: Mutex<()>,
     // Keep the child alive for the transport's lifetime; killed on drop.
     _child: tokio::process::Child,
 }
@@ -70,6 +82,7 @@ impl StdioTransport {
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
             next_id: AtomicU64::new(1),
+            req_lock: Mutex::new(()),
             _child: child,
         })
     }
@@ -87,37 +100,50 @@ impl StdioTransport {
 #[async_trait]
 impl RpcTransport for StdioTransport {
     async fn request(&self, method: &str, params: Value) -> Result<Value, HarnessError> {
+        // Hold the cycle lock across write+read: no other request may write
+        // until we've consumed our own response (see `req_lock`).
+        let _cycle = self.req_lock.lock().await;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let req = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         self.write_message(&req).await?;
 
         // Read lines until the response with our id arrives, skipping
-        // notifications / server log lines that lack a matching id.
-        let mut reader = self.stdout.lock().await;
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                return Err(HarnessError::Other(format!(
-                    "MCP server closed stdout before answering `{method}`"
-                )));
+        // notifications / server log lines that lack a matching id.  Bounded by
+        // REQUEST_TIMEOUT so a server that never answers can't hang the caller.
+        let read = async {
+            let mut reader = self.stdout.lock().await;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let n = reader.read_line(&mut line).await?;
+                if n == 0 {
+                    return Err(HarnessError::Other(format!(
+                        "MCP server closed stdout before answering `{method}`"
+                    )));
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let msg: Value = match serde_json::from_str(trimmed) {
+                    Ok(v) => v,
+                    Err(_) => continue, // non-JSON server chatter
+                };
+                if msg.get("id").and_then(|v| v.as_u64()) != Some(id) {
+                    continue; // not our response
+                }
+                if let Some(err) = msg.get("error") {
+                    return Err(HarnessError::Other(format!("MCP `{method}` error: {err}")));
+                }
+                return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
             }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let msg: Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue, // non-JSON server chatter
-            };
-            if msg.get("id").and_then(|v| v.as_u64()) != Some(id) {
-                continue; // not our response
-            }
-            if let Some(err) = msg.get("error") {
-                return Err(HarnessError::Other(format!("MCP `{method}` error: {err}")));
-            }
-            return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
+        };
+        match tokio::time::timeout(REQUEST_TIMEOUT, read).await {
+            Ok(res) => res,
+            Err(_) => Err(HarnessError::Other(format!(
+                "MCP `{method}` timed out after {}s",
+                REQUEST_TIMEOUT.as_secs()
+            ))),
         }
     }
 

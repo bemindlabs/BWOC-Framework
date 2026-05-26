@@ -340,6 +340,15 @@ fn export_otel_span(record: &SessionRecord) {
     use opentelemetry::KeyValue;
     use opentelemetry::trace::{Span, Tracer, TracerProvider as _};
 
+    // The OTLP/tonic exporter and batch processor schedule on the Tokio
+    // runtime; with no reactor in context (e.g. a synchronous caller) building
+    // them would panic.  The local JSONL append in `finish` has already
+    // succeeded, so skip the network export rather than take down the caller.
+    if tokio::runtime::Handle::try_current().is_err() {
+        eprintln!("[otel] no Tokio runtime in context — skipping span export");
+        return;
+    }
+
     let exporter = match opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .build()
@@ -382,6 +391,11 @@ fn export_otel_span(record: &SessionRecord) {
         if let Err(e) = result {
             eprintln!("[otel] flush error: {e}");
         }
+    }
+    // Explicit shutdown is the documented-safe close — a drop-without-shutdown
+    // can discard the just-flushed batch on the Tokio batch runtime.
+    if let Err(e) = provider.shutdown() {
+        eprintln!("[otel] shutdown error: {e}");
     }
 }
 

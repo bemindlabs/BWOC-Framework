@@ -41,10 +41,13 @@ pub struct RunState {
     /// Model active at checkpoint time (may differ from the configured primary
     /// after a fallback or token-pressure switch).
     pub active_model: String,
-    /// Number of turns already recorded to telemetry at checkpoint time.  A
-    /// resumed run starts a fresh telemetry accumulator; this marks the
-    /// baseline so the run-end retrospective (HV2-3) can account for the split.
-    pub telemetry_cursor: u32,
+    /// Canonical worktree path this run executed in.  Validated on resume — the
+    /// re-attached `--workdir` must match, or the replayed `history` would
+    /// describe files in a directory the resumed run isn't pointed at.  Empty
+    /// (the `serde(default)`) on checkpoints written before this field existed,
+    /// in which case the resume guard is skipped.
+    #[serde(default)]
+    pub workdir: PathBuf,
 }
 
 impl RunState {
@@ -197,7 +200,7 @@ mod tests {
             compactions: 1,
             token_pressure_switches: 0,
             active_model: "mock".to_string(),
-            telemetry_cursor: 3,
+            workdir: PathBuf::from("/tmp/bwoc-wt"),
         }
     }
 

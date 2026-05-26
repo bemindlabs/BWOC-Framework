@@ -4,7 +4,7 @@
 //! git worktree, and spawns a `bwoc-harness` subprocess worker (via the
 //! injected [`SpawnRunner`]) to do the work.  On success the task is completed
 //! and its worktree removed; on failure the claim is rolled back and the
-//! worktree is left in place for inspection.
+//! worktree is left in place for inspection (a later re-claim self-heals it).
 //!
 //! ## Coordination, not control
 //!
@@ -206,7 +206,8 @@ pub async fn run_lead(
             Ok(Err(e)) => {
                 eprintln!("[bwoc-harness] lead: worker for `{}` failed: {e}", task.id);
                 let _ = source.unclaim(&task.id, &cfg.agent_id);
-                // Leave the worktree in place for post-mortem inspection.
+                // Leave the worktree in place for post-mortem inspection; a
+                // later re-claim self-heals it (see `git_worktree_add`).
                 summary.failed += 1;
             }
             Err(_) => {

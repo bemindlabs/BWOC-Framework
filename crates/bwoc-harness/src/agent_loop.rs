@@ -359,6 +359,9 @@ pub async fn run_loop(
     // Cumulative tokens (prompt + completion) across the run, for the budget
     // hard gate (HV2-6).
     let mut total_tokens = 0u64;
+    // Warn at most once if a budget is configured but the provider never
+    // returns usage — the gate would otherwise silently never trip.
+    let mut budget_usage_warned = false;
 
     // Per-session cache of provider-queried context limits.
     // Key = model id; Value = result of one `model_context_limit` call.
@@ -386,6 +389,22 @@ pub async fn run_loop(
     // disk, so this is reload + re-attach — there is NO replay of past turns
     // (the resumed `history` carries everything the model needs).
     if let Some(state) = config.checkpoint.as_ref().and_then(|c| c.resume.as_ref()) {
+        // Guard: the replayed `history` describes work done in `state.workdir`.
+        // Re-attaching to a different `--workdir` would silently disagree with
+        // what's on disk, so refuse the mismatch.  (Empty workdir = a legacy
+        // checkpoint from before this field; skip the check.)
+        if !state.workdir.as_os_str().is_empty() {
+            let current =
+                std::fs::canonicalize(&ctx.workdir).unwrap_or_else(|_| ctx.workdir.clone());
+            if current != state.workdir {
+                return Err(HarnessError::Other(format!(
+                    "resume workdir mismatch: checkpoint ran in `{}` but --workdir resolves \
+                     to `{}` — resume from the original worktree",
+                    state.workdir.display(),
+                    current.display()
+                )));
+            }
+        }
         history = state.history.clone();
         turns = state.turns;
         compactions = state.compactions;
@@ -497,6 +516,12 @@ pub async fn run_loop(
             tb.tokens_in = usage.prompt_tokens;
             tb.tokens_out = usage.completion_tokens;
             total_tokens += u64::from(usage.prompt_tokens) + u64::from(usage.completion_tokens);
+        } else if !config.budget.is_unlimited() && !budget_usage_warned {
+            eprintln!(
+                "[bwoc-harness] WARNING: a budget is configured but the provider returned no \
+                 usage data — the budget gate cannot account for spend and will not trip."
+            );
+            budget_usage_warned = true;
         }
 
         // ── Budget hard gate (HV2-6) ─────────────────────────────────────────
@@ -515,6 +540,7 @@ pub async fn run_loop(
                     compactions,
                     token_pressure_switches,
                     &active_model,
+                    &ctx.workdir,
                 );
                 return Err(e);
             }
@@ -584,6 +610,7 @@ pub async fn run_loop(
                     compactions,
                     token_pressure_switches,
                     &active_model,
+                    &ctx.workdir,
                 );
                 continue;
             }
@@ -658,6 +685,7 @@ pub async fn run_loop(
             compactions,
             token_pressure_switches,
             &active_model,
+            &ctx.workdir,
         );
         // Continue to next turn.
     }
@@ -668,6 +696,9 @@ pub async fn run_loop(
 /// Called at each turn boundary — after the turn's reply and tool results are
 /// applied to `history`.  Best-effort: a failed write warns but never aborts a
 /// run that is otherwise progressing.
+// The parameters are exactly the durable loop locals; bundling them into a
+// struct would only move the same fields behind one more name.
+#[allow(clippy::too_many_arguments)]
 fn persist_checkpoint(
     checkpoint: Option<&CheckpointConfig>,
     task: &str,
@@ -676,6 +707,7 @@ fn persist_checkpoint(
     compactions: u32,
     token_pressure_switches: u32,
     active_model: &str,
+    workdir: &std::path::Path,
 ) {
     let Some(cfg) = checkpoint else { return };
     let state = RunState {
@@ -686,7 +718,8 @@ fn persist_checkpoint(
         compactions,
         token_pressure_switches,
         active_model: active_model.to_string(),
-        telemetry_cursor: turns,
+        // Canonical so the resume guard compares stable absolute paths.
+        workdir: std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf()),
     };
     if let Err(e) = cfg.save(&state) {
         eprintln!("[bwoc-harness] warning: checkpoint save failed: {e}");
@@ -899,8 +932,14 @@ fn find_larger_vetted_model(
     None
 }
 
-/// Dispatch all tool calls in a turn sequentially, passing each through the
-/// full safety pipeline: GUARDRAILS → PERMISSION → SANDBOX → execute.
+/// Dispatch all tool calls in a turn, passing each through the full safety
+/// pipeline: GUARDRAILS → PERMISSION → SANDBOX → execute.
+///
+/// Two phases: the guardrails→permission *decision* runs SEQUENTIALLY (the
+/// permission layer may prompt the operator on a TTY in `ask` mode, and
+/// concurrent prompts on one terminal would interleave and could misattribute
+/// an approval to the wrong call); the approved calls then SANDBOX→execute
+/// CONCURRENTLY (the HV2-7 win — the expensive step parallelises).
 ///
 /// A blocked call returns the blocking reason as the tool result content so
 /// the model can adapt.  It is NOT a hard error that stops the loop.
@@ -910,25 +949,32 @@ async fn execute_tool_calls(
     ctx: &ToolContext,
     config: &LoopConfig,
 ) -> Vec<ToolCallResult> {
-    // HV2-7: independent tool calls run concurrently.  Each call still flows
-    // through guardrails → permission → sandbox on its own; `join_all`
-    // preserves input order so results line up with `calls`.
     let os_sandbox = make_os_sandbox(&ctx.workdir);
 
-    let futures = calls.iter().map(|call| {
+    // ── Phase 1: Guardrails → Permission, SEQUENTIALLY ──────────────────────
+    // Decide every call in order before any execution so an interactive `ask`
+    // prompt can't race another call's prompt for the same stdin/terminal.
+    let decisions: Vec<PolicyOutcome> = calls
+        .iter()
+        .map(|call| {
+            run_pipeline(
+                &call.function.name,
+                &call.function.arguments,
+                &ctx.workdir,
+                &config.policy,
+                config.is_tty,
+            )
+        })
+        .collect();
+
+    // ── Phase 2: Sandbox → execute, CONCURRENTLY ────────────────────────────
+    // `join_all` preserves input order so results line up with `calls`; each
+    // call carries the decision already made for it in phase 1.
+    let futures = calls.iter().zip(decisions).map(|(call, outcome)| {
         let os_sandbox = &*os_sandbox;
         async move {
             let tool_name = &call.function.name;
             let args_json = &call.function.arguments;
-
-            // ── Layer 1 + 2: Guardrails → Permission ────────────────────────────
-            let outcome = run_pipeline(
-                tool_name,
-                args_json,
-                &ctx.workdir,
-                &config.policy,
-                config.is_tty,
-            );
 
             let (content, denied) = match outcome {
                 PolicyOutcome::Proceed => {
@@ -2633,7 +2679,7 @@ mod tests {
             compactions: 1,
             token_pressure_switches: 2,
             active_model: "mock".to_string(),
-            telemetry_cursor: 3,
+            workdir: std::path::PathBuf::new(), // empty → resume guard skipped
         };
         let ckpt = CheckpointConfig {
             run_id: "resume-1".to_string(),
@@ -2677,6 +2723,47 @@ mod tests {
         );
         // Success drops the checkpoint dir (Anattā: nothing left to resume).
         assert!(!tmp.path().join("runs").join("resume-1").exists());
+    }
+
+    /// Resuming with a `--workdir` that differs from the checkpoint's worktree
+    /// is refused rather than silently re-attaching to the wrong directory.
+    #[tokio::test]
+    async fn resume_workdir_mismatch_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path()); // current run points here
+        let state = RunState {
+            run_id: "resume-mm".to_string(),
+            task: "t".to_string(),
+            history: vec![ChatMessage::system("s")],
+            turns: 1,
+            compactions: 0,
+            token_pressure_switches: 0,
+            active_model: "mock".to_string(),
+            // A different worktree than `ctx` → must be refused.
+            workdir: tmp.path().join("some-other-worktree"),
+        };
+        let mut config = test_config(20);
+        config.checkpoint = Some(CheckpointConfig {
+            run_id: "resume-mm".to_string(),
+            root: tmp.path().join("runs"),
+            resume: Some(state),
+        });
+
+        let err = run_loop(
+            Arc::new(MockProvider::new(vec![make_final_response("x")])),
+            Arc::new(default_registry()),
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![],
+            &mut noop_telemetry(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("workdir mismatch"),
+            "got: {err}"
+        );
     }
 
     /// State is persisted at each turn boundary; a run that ends in error keeps

@@ -289,7 +289,7 @@ async fn run() -> HarnessResult<()> {
     );
     println!("─────────────────────────────────────────────");
 
-    let result = run_loop(
+    let outcome = run_loop(
         provider,
         registry,
         ctx,
@@ -298,13 +298,17 @@ async fn run() -> HarnessResult<()> {
         initial_messages,
         &mut telemetry,
     )
-    .await?;
+    .await;
 
-    // Reaching here means `run_loop` returned Ok — the run produced a final
-    // answer.  Record the run as one attempted-and-completed task so the
-    // §8b completion-rate trigger has a denominator.
+    // Record the run for the §8b retrospective regardless of how it ended.
+    // One attempted task always; one completed only on success — an aborted
+    // run (budget / max-iterations / models-exhausted) must surface as a
+    // sub-100% completion rate, not be skipped.  Those are exactly the runs
+    // §8b is meant to learn from.
     telemetry.agent.tasks_attempted += 1;
-    telemetry.agent.tasks_completed += 1;
+    if outcome.is_ok() {
+        telemetry.agent.tasks_completed += 1;
+    }
 
     // Persist session metrics (best-effort; non-fatal if it fails).
     let metrics_path = args.workdir.join("session-metrics.jsonl");
@@ -313,13 +317,17 @@ async fn run() -> HarnessResult<()> {
     }
 
     // ── Run-end retrospective (HV2-3) ─────────────────────────────────────
-    // Read the just-built record back into this run and surface any §8b
-    // self-improvement triggers.  Observe-don't-drive: printed, never applied.
+    // Surface any §8b self-improvement triggers.  Runs on success AND failure.
+    // Observe-don't-drive: printed, never applied.
     let retro = bwoc_harness::retrospective::Retrospective::analyze(
         &telemetry.build_record(),
         &bwoc_harness::retrospective::RetroThresholds::default(),
     );
     eprint!("{}", retro.render());
+
+    // Propagate an aborted run as an error — after the retrospective has been
+    // recorded and printed.
+    let result = outcome?;
 
     println!("─────────────────────────────────────────────");
     println!("done in {} turn(s).\n", result.turns);
