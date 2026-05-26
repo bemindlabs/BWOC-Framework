@@ -146,16 +146,16 @@ On receipt, before the Kalyāṇamitta-7 authorization check, the recipient:
 
 ## 9. Open decisions for maintainer ratification
 
-The gate. Each must be confirmed before any crate code:
+The gate. Each carries a recommendation; ratify (✓) or override before any crate code.
 
-1. **Filename / name.** Keep `TRUST-V2` (with §0 layering) or rename to `SIGNING` / `MESSAGE-AUTH` to avoid the Kalyāṇamitta-7 "Trust v2" collision?
-2. **Canonical public-key home.** Agent manifest (`config.manifest.json`), the `interconnect/trust.md` descriptor, or both (one canonical, one mirror)?
-3. **Signing crate + version** under dep-quarantine (`ed25519-dalek`?).
-4. **Canonical serialization** for the signed bytes (sorted-key JSON vs binary concat).
-5. **Replay window**: skew bound (default ±5 min?) and nonce-window eviction policy.
-6. **Rollout**: confirm warn→enforce staging and the mode enum's default.
-7. **Refusal/audit log**: confirm the new `inbox.refusals.jsonl` artifact + its schema.
-8. **Key rotation/revocation**: in-scope for HV2-4 or a follow-up?
+1. **Filename / name.** → **Recommend: rename to `SIGNING.{en,th}.md`.** This doc is about message *authentication*; "Trust v2" is already the Kalyāṇamitta-7 *authorization* feature in `interconnect/trust.md`. `SIGNING` names the mechanism precisely and ends the collision permanently. (Alt: keep `TRUST-V2` with the §0 layering note.)
+2. **Canonical public-key home.** → **Recommend: agent manifest (`config.manifest.json`) is canonical; `interconnect/trust.md` references it.** The manifest is the machine-readable identity record `bwoc check` already validates; the descriptor stays the human-facing doc. One validated source of truth, no sync drift.
+3. **Signing crate.** → **Recommend: `ed25519-dalek` v2** (audited, pure-Rust, no network), plus `rand_core` for keygen. **Not** feature-gated — signing is core to the trust path, not optional. Dep-quarantine holds: it lives in `bwoc-harness` only (never `bwoc-core`), like `keyring`/`landlock`.
+4. **Canonical serialization.** → **Recommend: RFC 8785 (JCS) canonical JSON** over the signed fields — sorted keys, UTF-8, no insignificant whitespace. Human-debuggable and language-agnostic (cross-workspace peers may not be Rust); avoids a bespoke binary format's footguns.
+5. **Replay window.** → **Recommend: ±5 min `ts` skew; retain seen `(sender, nonce)` for `2×skew` (10 min) then evict.** Reject `ts` outside ±5 min and any nonce still in the window. Tolerates clock drift with a bounded replay surface; memory ≈ skew × message-rate.
+6. **Rollout.** → **Recommend: mode enum `off | warn | enforce`, default `warn`** (mirrors `vetted_mode`). Ship warn-first; flip to `enforce` once agents have published keys. Backward-compatible, matches how Kalyāṇamitta-7 and `vetted_mode` both shipped.
+7. **Refusal/audit log.** → **Recommend: yes — append-only `inbox.refusals.jsonl`**, schema `{ts, sender, recipient, reason, mode}`, one object per line, **no payload/secrets**. Matches the `session-metrics.jsonl` convention and feeds the HV2-3 retrospective.
+8. **Key rotation/revocation.** → **Recommend: defer to a follow-up.** HV2-4 ships generate → publish → sign → verify → warn/enforce rollout. Rotation (republish + retire) and revocation lists are a larger design; scope HV2-4 to the core mechanism (Mattaññutā).
 
 ---
 
