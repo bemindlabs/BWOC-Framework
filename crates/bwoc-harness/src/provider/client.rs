@@ -328,6 +328,12 @@ fn build_request_body(
         body["tools"] = serde_json::to_value(tools).unwrap_or(Value::Array(vec![]));
     }
 
+    // Ask for token usage on the streaming path (HV2-7).  Providers that don't
+    // support it ignore the field; those that do emit a final usage-only chunk.
+    if stream {
+        body["stream_options"] = json!({ "include_usage": true });
+    }
+
     body
 }
 

@@ -670,8 +670,8 @@ async fn call_provider_once(
     stream: bool,
 ) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
     if stream {
-        let msg = stream_and_accumulate(provider, messages, tools, model).await?;
-        Ok((msg, None)) // streaming path doesn't expose usage counts
+        // Streaming now exposes usage via stream_options.include_usage (HV2-7).
+        stream_and_accumulate(provider, messages, tools, model).await
     } else {
         let completion = provider.complete(messages, tools, model).await?;
         let usage = completion.usage.clone();
@@ -877,69 +877,75 @@ async fn execute_tool_calls(
     ctx: &ToolContext,
     config: &LoopConfig,
 ) -> Vec<ToolCallResult> {
-    // P2: sequential execution (concurrent tool execution is P3).
-    let mut results = Vec::with_capacity(calls.len());
+    // HV2-7: independent tool calls run concurrently.  Each call still flows
+    // through guardrails → permission → sandbox on its own; `join_all`
+    // preserves input order so results line up with `calls`.
     let os_sandbox = make_os_sandbox(&ctx.workdir);
 
-    for call in calls {
-        let tool_name = &call.function.name;
-        let args_json = &call.function.arguments;
+    let futures = calls.iter().map(|call| {
+        let os_sandbox = &*os_sandbox;
+        async move {
+            let tool_name = &call.function.name;
+            let args_json = &call.function.arguments;
 
-        // ── Layer 1 + 2: Guardrails → Permission ────────────────────────────
-        let outcome = run_pipeline(
-            tool_name,
-            args_json,
-            &ctx.workdir,
-            &config.policy,
-            config.is_tty,
-        );
+            // ── Layer 1 + 2: Guardrails → Permission ────────────────────────────
+            let outcome = run_pipeline(
+                tool_name,
+                args_json,
+                &ctx.workdir,
+                &config.policy,
+                config.is_tty,
+            );
 
-        let (content, denied) = match outcome {
-            PolicyOutcome::Proceed => {
-                // ── Layer 3: Sandbox ─────────────────────────────────────────
-                // For run_command: use the sandboxed runner (env scrub + arg scan + cwd lock).
-                // For all other tools: the sandbox path-confinement is already enforced
-                // by ToolContext::resolve_path; run through dispatch as before.
-                let result = if tool_name == "run_command" {
-                    // Extract the command string from the JSON args.
-                    match serde_json::from_str::<serde_json::Value>(args_json)
-                        .ok()
-                        .and_then(|v| v["command"].as_str().map(|s| s.to_string()))
-                    {
-                        Some(cmd) => {
-                            match sandbox::run_sandboxed(&cmd, &ctx.workdir, &*os_sandbox).await {
-                                Ok(output) => output.into_tool_result(),
-                                Err(e) => format!("error: {e}"),
+            let (content, denied) = match outcome {
+                PolicyOutcome::Proceed => {
+                    // ── Layer 3: Sandbox ─────────────────────────────────────────
+                    // For run_command: use the sandboxed runner (env scrub + arg scan + cwd lock).
+                    // For all other tools: the sandbox path-confinement is already enforced
+                    // by ToolContext::resolve_path; run through dispatch as before.
+                    let result = if tool_name == "run_command" {
+                        // Extract the command string from the JSON args.
+                        match serde_json::from_str::<serde_json::Value>(args_json)
+                            .ok()
+                            .and_then(|v| v["command"].as_str().map(|s| s.to_string()))
+                        {
+                            Some(cmd) => {
+                                match sandbox::run_sandboxed(&cmd, &ctx.workdir, &*os_sandbox).await
+                                {
+                                    Ok(output) => output.into_tool_result(),
+                                    Err(e) => format!("error: {e}"),
+                                }
+                            }
+                            None => {
+                                // Malformed args: fall through to dispatch which will
+                                // return a proper "missing command argument" error.
+                                dispatch(registry, tool_name, args_json, ctx).await
                             }
                         }
-                        None => {
-                            // Malformed args: fall through to dispatch which will
-                            // return a proper "missing command argument" error.
-                            dispatch(registry, tool_name, args_json, ctx).await
-                        }
-                    }
-                } else {
-                    dispatch(registry, tool_name, args_json, ctx).await
-                };
-                (result, false)
-            }
-            blocked => {
-                // Feed the denial back to the model as the tool result.
-                let msg = blocked
-                    .into_tool_result()
-                    .unwrap_or_else(|| "blocked".to_string());
-                (msg, true)
-            }
-        };
+                    } else {
+                        dispatch(registry, tool_name, args_json, ctx).await
+                    };
+                    (result, false)
+                }
+                blocked => {
+                    // Feed the denial back to the model as the tool result.
+                    let msg = blocked
+                        .into_tool_result()
+                        .unwrap_or_else(|| "blocked".to_string());
+                    (msg, true)
+                }
+            };
 
-        results.push(ToolCallResult {
-            call_id: call.id.clone(),
-            tool_name: call.function.name.clone(),
-            content,
-            denied,
-        });
-    }
-    results
+            ToolCallResult {
+                call_id: call.id.clone(),
+                tool_name: call.function.name.clone(),
+                content,
+                denied,
+            }
+        }
+    });
+
+    futures_util::future::join_all(futures).await
 }
 
 struct ToolCallResult {
@@ -957,7 +963,7 @@ async fn stream_and_accumulate(
     messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::Tool>,
     model: &str,
-) -> HarnessResult<ChatMessage> {
+) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
     use futures_util::StreamExt;
 
     let mut stream = provider.stream(messages, tools, model).await?;
@@ -966,9 +972,15 @@ async fn stream_and_accumulate(
     // tool_calls accumulation: index → (id, type, name, args_buf)
     let mut tool_calls_acc: std::collections::HashMap<u32, ToolCallAccumulator> =
         std::collections::HashMap::new();
+    // Usage arrives on the final chunk (stream_options.include_usage); keep the
+    // last non-empty one (HV2-7 — closes the streaming-usage gap).
+    let mut usage: Option<crate::provider::Usage> = None;
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result?;
+        if chunk.usage.is_some() {
+            usage = chunk.usage;
+        }
         for delta_choice in chunk.choices {
             let delta = delta_choice.delta;
 
@@ -1017,7 +1029,7 @@ async fn stream_and_accumulate(
             .collect()
     };
 
-    Ok(ChatMessage::assistant(
+    let message = ChatMessage::assistant(
         if content_buf.is_empty() {
             None
         } else {
@@ -1028,7 +1040,8 @@ async fn stream_and_accumulate(
         } else {
             Some(tool_calls)
         },
-    ))
+    );
+    Ok((message, usage))
 }
 
 #[derive(Default)]
@@ -1050,8 +1063,8 @@ mod tests {
     use crate::policy::{Mode, Policy};
     use crate::provider::types::FunctionCall;
     use crate::provider::{
-        ChatCompletion, ChatMessage, Choice, FinishReason, ProviderClient, StreamChunk, Tool,
-        ToolCall, Usage,
+        ChatCompletion, ChatMessage, Choice, Delta, FinishReason, ProviderClient, StreamChunk,
+        StreamDelta, Tool, ToolCall, Usage,
     };
     use crate::telemetry::Telemetry;
     use crate::tools::registry::default_registry;
@@ -2671,5 +2684,151 @@ mod tests {
         assert_eq!(loaded.turns, 2);
         assert_eq!(loaded.task, "keep going");
         assert_eq!(loaded.run_id, "crash-1");
+    }
+
+    // ── Streaming usage (HV2-7) ───────────────────────────────────────────────
+
+    /// A provider whose `stream()` replays a fixed list of chunks — including a
+    /// final usage-only chunk, as an OpenAI-compatible endpoint emits when
+    /// `stream_options.include_usage` is set.
+    struct StreamingMockProvider {
+        chunks: Vec<StreamChunk>,
+    }
+
+    #[async_trait]
+    impl ProviderClient for StreamingMockProvider {
+        async fn complete(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<Tool>,
+            _model: &str,
+        ) -> Result<ChatCompletion, HarnessError> {
+            unimplemented!("streaming-only mock")
+        }
+
+        async fn stream(
+            &self,
+            _m: Vec<ChatMessage>,
+            _t: Vec<Tool>,
+            _model: &str,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>>,
+            HarnessError,
+        > {
+            let items: Vec<Result<StreamChunk, HarnessError>> =
+                self.chunks.iter().cloned().map(Ok).collect();
+            Ok(Box::pin(futures_util::stream::iter(items)))
+        }
+
+        async fn validate_model(&self, _model: &str) -> Result<(), HarnessError> {
+            Ok(())
+        }
+    }
+
+    fn content_chunk(text: &str) -> StreamChunk {
+        StreamChunk {
+            id: "c".to_string(),
+            choices: vec![StreamDelta {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: Some(text.to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_path_exposes_usage() {
+        let provider = StreamingMockProvider {
+            chunks: vec![
+                content_chunk("hello "),
+                content_chunk("world"),
+                // Final usage-only chunk: empty choices, usage present.
+                StreamChunk {
+                    id: "final".to_string(),
+                    choices: vec![],
+                    usage: Some(Usage {
+                        prompt_tokens: 12,
+                        completion_tokens: 7,
+                        total_tokens: 19,
+                    }),
+                },
+            ],
+        };
+
+        let (msg, usage) = stream_and_accumulate(&provider, vec![], vec![], "mock")
+            .await
+            .unwrap();
+
+        assert_eq!(msg.content.as_deref(), Some("hello world"));
+        let usage = usage.expect("streaming path must surface usage (HV2-7)");
+        assert_eq!(usage.prompt_tokens, 12);
+        assert_eq!(usage.completion_tokens, 7);
+    }
+
+    #[tokio::test]
+    async fn streaming_without_usage_chunk_returns_none() {
+        let provider = StreamingMockProvider {
+            chunks: vec![content_chunk("no usage here")],
+        };
+        let (_msg, usage) = stream_and_accumulate(&provider, vec![], vec![], "mock")
+            .await
+            .unwrap();
+        assert!(
+            usage.is_none(),
+            "no usage chunk → None, not a fabricated zero"
+        );
+    }
+
+    // ── Concurrent tool execution (HV2-7) ─────────────────────────────────────
+
+    /// Multiple independent tool calls in one turn all execute and come back in
+    /// input order (join_all preserves order).
+    #[tokio::test]
+    async fn independent_tool_calls_all_execute_in_order() {
+        let tmp = TempDir::new().unwrap();
+        let registry = default_registry();
+        let ctx = ToolContext::new(tmp.path());
+        let config = test_config(5);
+
+        let calls = vec![
+            ToolCall {
+                id: "call-0".to_string(),
+                kind: "function".to_string(),
+                function: FunctionCall {
+                    name: "list_dir".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            },
+            ToolCall {
+                id: "call-1".to_string(),
+                kind: "function".to_string(),
+                function: FunctionCall {
+                    name: "list_dir".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            },
+            ToolCall {
+                id: "call-2".to_string(),
+                kind: "function".to_string(),
+                function: FunctionCall {
+                    name: "list_dir".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            },
+        ];
+
+        let results = execute_tool_calls(&calls, &registry, &ctx, &config).await;
+
+        assert_eq!(results.len(), 3);
+        // Order preserved: result[i] corresponds to calls[i].
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(r.call_id, format!("call-{i}"));
+            assert!(!r.denied, "allow-all policy → not denied");
+        }
     }
 }

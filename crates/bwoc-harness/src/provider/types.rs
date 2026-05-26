@@ -161,7 +161,16 @@ pub enum FinishReason {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamChunk {
     pub id: String,
+    /// Content/tool-call deltas.  Empty on the final usage-only chunk that
+    /// OpenAI-compatible providers emit when `stream_options.include_usage` is
+    /// set, so it defaults rather than failing to parse.
+    #[serde(default)]
     pub choices: Vec<StreamDelta>,
+    /// Token usage — present only on the final chunk when the provider supports
+    /// usage in streams (`stream_options.include_usage`); `None` on content
+    /// chunks.
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 /// One streaming choice delta.
