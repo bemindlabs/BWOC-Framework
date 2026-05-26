@@ -63,6 +63,20 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     concurrency: usize,
 
+    /// Per-run hard token budget (prompt + completion). The run aborts with
+    /// `BudgetExceeded` once cumulative usage crosses it.  Unset = no limit.
+    #[arg(long)]
+    token_budget: Option<u64>,
+
+    /// Per-run hard cost budget (e.g. USD).  Only enforced together with
+    /// `--cost-per-1m`.  Unset = no limit.
+    #[arg(long)]
+    cost_limit: Option<f64>,
+
+    /// Price per 1,000,000 tokens, used to derive cost for `--cost-limit`.
+    #[arg(long)]
+    cost_per_1m: Option<f64>,
+
     /// Working directory (worktree root).  All file operations are confined
     /// to this directory.  Defaults to the current directory.
     #[arg(long, short = 'd', default_value = ".")]
@@ -222,6 +236,11 @@ async fn run() -> HarnessResult<()> {
         model_context_limits: std::collections::HashMap::new(),
         token_pressure_models: Vec::new(),
         checkpoint,
+        budget: bwoc_harness::budget::BudgetConfig {
+            max_tokens: args.token_budget,
+            max_cost: args.cost_limit,
+            cost_per_1m_tokens: args.cost_per_1m,
+        },
     };
 
     // ── Telemetry ─────────────────────────────────────────────────────────

@@ -239,6 +239,10 @@ pub struct LoopConfig {
     /// `Some` persists [`RunState`] after each turn and, when its `resume`
     /// field is set, seeds the loop from a prior run.
     pub checkpoint: Option<CheckpointConfig>,
+    /// Per-run budget hard gate (HV2-6).  Default (all-`None`) = no limit; a
+    /// configured limit aborts the run with `BudgetExceeded` once cumulative
+    /// token/cost usage crosses it.
+    pub budget: crate::budget::BudgetConfig,
 }
 
 impl Default for LoopConfig {
@@ -256,6 +260,7 @@ impl Default for LoopConfig {
             model_context_limits: HashMap::new(),
             token_pressure_models: Vec::new(),
             checkpoint: None,
+            budget: crate::budget::BudgetConfig::default(),
         }
     }
 }
@@ -348,6 +353,9 @@ pub async fn run_loop(
     let mut turns = 0u32;
     let mut compactions = 0u32;
     let mut token_pressure_switches = 0u32;
+    // Cumulative tokens (prompt + completion) across the run, for the budget
+    // hard gate (HV2-6).
+    let mut total_tokens = 0u64;
 
     // Per-session cache of provider-queried context limits.
     // Key = model id; Value = result of one `model_context_limit` call.
@@ -485,6 +493,28 @@ pub async fn run_loop(
         if let Some(usage) = &usage_opt {
             tb.tokens_in = usage.prompt_tokens;
             tb.tokens_out = usage.completion_tokens;
+            total_tokens += u64::from(usage.prompt_tokens) + u64::from(usage.completion_tokens);
+        }
+
+        // ── Budget hard gate (HV2-6) ─────────────────────────────────────────
+        // The model call is already paid for; if cumulative usage crosses a
+        // configured token/cost budget, record this turn and abort the run
+        // rather than spending on further turns or tool dispatch.
+        if !config.budget.is_unlimited() {
+            if let Err(e) = config.budget.check(total_tokens) {
+                let m = tb.finish();
+                telemetry.record_turn(m);
+                persist_checkpoint(
+                    config.checkpoint.as_ref(),
+                    &task,
+                    &history,
+                    turns,
+                    compactions,
+                    token_pressure_switches,
+                    &active_model,
+                );
+                return Err(e);
+            }
         }
 
         // ── Check for malformed tool calls ───────────────────────────────────
@@ -1228,6 +1258,7 @@ mod tests {
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
             checkpoint: None,
+            budget: crate::budget::BudgetConfig::default(),
         }
     }
 
@@ -1561,6 +1592,7 @@ mod tests {
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
             checkpoint: None,
+            budget: crate::budget::BudgetConfig::default(),
         };
 
         let result = run_loop(
@@ -1609,6 +1641,7 @@ mod tests {
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
             checkpoint: None,
+            budget: crate::budget::BudgetConfig::default(),
         };
 
         let err = run_loop(
@@ -1912,6 +1945,7 @@ mod tests {
             model_context_limits: std::collections::HashMap::new(),
             token_pressure_models: Vec::new(),
             checkpoint: None,
+            budget: crate::budget::BudgetConfig::default(),
         };
 
         let result = run_loop(
@@ -2830,5 +2864,70 @@ mod tests {
             assert_eq!(r.call_id, format!("call-{i}"));
             assert!(!r.denied, "allow-all policy → not denied");
         }
+    }
+
+    // ── Budget hard gate (HV2-6) ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn token_budget_aborts_run_when_exceeded() {
+        let tmp = TempDir::new().unwrap();
+        // One response reporting 8+5 = 13 tokens; budget is 10.
+        let provider = Arc::new(MockProvider::new(vec![make_final_response_with_usage(
+            "done", 8, 5,
+        )]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+        let mut config = test_config(5);
+        config.budget = crate::budget::BudgetConfig {
+            max_tokens: Some(10),
+            ..Default::default()
+        };
+
+        let err = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("go")],
+            &mut telem,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, HarnessError::BudgetExceeded { kind: "token", .. }),
+            "expected token BudgetExceeded, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_within_token_budget_completes() {
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![make_final_response_with_usage(
+            "done", 8, 5,
+        )]));
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = noop_telemetry();
+        let mut config = test_config(5);
+        config.budget = crate::budget::BudgetConfig {
+            max_tokens: Some(100), // 13 ≤ 100
+            ..Default::default()
+        };
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("go")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.final_response, "done");
     }
 }

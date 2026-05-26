@@ -54,6 +54,14 @@ pub enum HarnessError {
     #[error("agent loop exceeded max iterations ({0})")]
     MaxIterations(u32),
 
+    /// A per-run budget (token or cost) was exhausted — the hard gate (HV2-6).
+    #[error("budget exceeded: {kind} usage {used} > limit {limit}")]
+    BudgetExceeded {
+        kind: &'static str,
+        used: f64,
+        limit: f64,
+    },
+
     /// I/O error from the filesystem tools or config loading.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

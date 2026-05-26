@@ -28,6 +28,7 @@
 //! design rationale and phasing decisions.
 
 pub mod agent_loop;
+pub mod budget;
 pub mod checkpoint;
 pub mod error;
 pub mod eval;
