@@ -656,7 +656,7 @@ mod tests {
 
     #[tokio::test]
     async fn push_config_crud_round_trip() {
-        let (state, _d) = test_state_with_team(); // task t1 exists
+        let (state, dir) = test_state_with_team(); // task t1 exists
         // Create a push config for t1.
         let created = body_json(
             app(state.clone())
@@ -673,6 +673,17 @@ mod tests {
             created["result"]["pushNotificationConfig"]["url"],
             "https://hook.example/a"
         );
+        // The registrant's token must NOT be echoed over the wire…
+        assert!(
+            created["result"]["pushNotificationConfig"]
+                .get("token")
+                .is_none()
+        );
+        // …but it IS persisted on disk for the (auth-phase) delivery path.
+        let store =
+            std::fs::read_to_string(dir.path().join("teams/team-security/push-configs.json"))
+                .unwrap();
+        assert!(store.contains("secret"));
         let cfg_id = created["result"]["pushNotificationConfig"]["id"]
             .as_str()
             .unwrap()

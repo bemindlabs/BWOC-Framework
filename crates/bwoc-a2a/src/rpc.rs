@@ -198,14 +198,16 @@ fn config_id_param(req: &JsonRpcRequest) -> Option<String> {
     None
 }
 
-/// `{ "taskId", "pushNotificationConfig": { "id", "url", "token"? } }` — the A2A
-/// `TaskPushNotificationConfig` shape.
+/// `{ "taskId", "pushNotificationConfig": { "id", "url" } }` — the A2A
+/// `TaskPushNotificationConfig` shape. The registrant's `token` is intentionally
+/// **not** echoed: it's a stored secret, and under P1's no-auth listener any
+/// local caller could `List` and read tokens another caller registered. It's
+/// persisted for the (auth-phase) delivery path, never returned over the wire.
 fn push_config_json(c: &crate::push::PushConfig) -> serde_json::Value {
-    let mut inner = serde_json::json!({ "id": c.config_id, "url": c.url });
-    if let Some(token) = &c.token {
-        inner["token"] = serde_json::Value::String(token.clone());
-    }
-    serde_json::json!({ "taskId": c.task_id, "pushNotificationConfig": inner })
+    serde_json::json!({
+        "taskId": c.task_id,
+        "pushNotificationConfig": { "id": c.config_id, "url": c.url },
+    })
 }
 
 /// Resolve the team's push-configs path, or an error response if no team task
