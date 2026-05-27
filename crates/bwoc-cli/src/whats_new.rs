@@ -20,17 +20,16 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — installable plugins & skills + ISO audits"
+    " — cross-workspace peer feedback"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Installable plugins — `bwoc plugin install/list` (git/tarball, SHA-256 gate)",
-    "Installable skills — `bwoc skill` (verify gates opt-in via `--run-gates`)",
-    "ISO-compliance audit plugins — `bwoc audit` (9001 · 27001 · 20000-1 · 29110)",
-    "Signed-attestation evidence model for audit findings",
-    "Prior 2.6.0: ed25519 signed messages + durable Saṅgha harness-v2",
+    "`bwoc peer feedback <agent> \"…\" --from <agent>` — signed cross-workspace review (#20)",
+    "Trust gate verifies a cross-workspace sender via routes.toml + published key",
+    "Read-vs-write split: peer writes require a provable signature",
+    "Prior 2.7.0: installable plugins & skills + ISO-compliance audits",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

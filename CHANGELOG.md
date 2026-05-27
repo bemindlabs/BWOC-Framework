@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.27-2] — 2026-05-27 — 2.8.0
+
+**Minor release.** Cross-workspace give-feedback — the write path of #20. Cargo SemVer `2.7.0` → `2.8.0`.
+
+### Added
+
+- **`bwoc peer feedback <agent> "<review>" --from <local-agent>` (#20 / #67)** — deliver a signed `kind: feedback` envelope into a peer agent's inbox across the interconnect mesh (local-FS). Peer-routed (skips the local fast path), **signature-required** (fails at the source if the sender has no key), and no spurious local tmux wakeup. Completes the three peer verbs (view + learn shipped in 2.3.0).
+
+### Changed
+
+- **Trust gate verifies cross-workspace senders (#66).** On a local-registry miss, the `bwoc-agent` trust gate resolves the sender via the recipient's `routes.toml` + the peer's published `signingPublicKey` and verifies the signature, instead of refusing every peer as `unknown_sender`. Read-vs-write split: a cross-workspace write requires a provable signature in `warn` as much as `enforce` (unsigned ⇒ `unsigned_cross_workspace`); `BWOC_SIGNING_MODE=off` remains the global escape hatch.
+
 ## [v2026.5.27-1] — 2026-05-27 — 2.7.0
 
 **Minor release.** Installable plugins & skills + ISO-compliance audit plugins. Cargo SemVer `2.6.0` → `2.7.0`.

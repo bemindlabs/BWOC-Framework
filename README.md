@@ -431,18 +431,16 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 ## Status
 
-**Current phase:** Phase 3 DoD met; the harness-v2 epic and the installable plugin/skill cycle are complete (**2.7.0**). Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
+**Current phase:** Phase 3 DoD met; the interconnect mesh now spans workspaces — cross-workspace **view · learn · give-feedback** all ship (**2.8.0**). Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
 
-**Latest release:** [`v2026.5.27-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.27-1) (2.7.0) shipped 2026-05-27 — installable plugins & skills + ISO-compliance audits. Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23).
+**Latest release:** [`v2026.5.27-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.27-2) (2.8.0) shipped 2026-05-27 — cross-workspace give-feedback. Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23).
 
-**Shipped in v2.7.0 — installable plugins & skills:**
+**Shipped in v2.8.0 — cross-workspace give-feedback (#20):**
 
-- **Installable plugins** — `bwoc plugin install` (git URL or tarball, `--allow-new-source` ack on first install) + `bwoc plugin list`. Remote installs gated by a SHA-256 sidecar; a missing sidecar on a git source is refused, not silently passed.
-- **Installable skills** — `bwoc skill` install/list/verify. A skill's `[gates].verify` shell command is **never run by default** (static check + printed for inspection); opt in with `--run-gates`.
-- **ISO-compliance audit plugins** — `bwoc audit run` with a strict findings schema (exit code = fail count). Ships ISO **9001** (attestation runtime), **27001 · 20000-1** (honest stubs), **29110** (filesystem-evidence), with a signed-attestation evidence model.
-- **Plugin/skill safety** — `entry` validated against path-traversal before spawn; tarball-slip + git-ref injection hardened.
+- **`bwoc peer feedback <agent> "<review>" --from <local-agent>`** — deliver a signed `kind: feedback` envelope into a peer agent's inbox (local-FS mesh). Peer-routed, **signature-required**, no spurious local wakeup. Completes the three peer verbs (view + learn shipped in 2.3.0).
+- **Cross-workspace identity in the trust gate** — on a local-registry miss, the daemon resolves the sender via `routes.toml` + the peer's published `signingPublicKey` and verifies the signature, instead of refusing every peer as `unknown_sender`. Read-vs-write split: a cross-workspace write requires a provable signature. See [`SIGNING.en.md`](docs/en/SIGNING.en.md).
 
-**Recent — v2.6.0 (harness-v2 + signing):** durable/resumable runs, Saṅgha subprocess workers, run-end retrospective, MCP client, per-run budget gate, streaming usage + concurrent tools, and **ed25519 signed messages** (`bwoc trust --keygen`, enforce-by-default verify). See [`SIGNING.en.md`](docs/en/SIGNING.en.md). **v2.5.0:** live fleet ops (`dashboard`, `inbox --all --watch`) + startup update-check.
+**Recent — v2.7.0:** installable plugins & skills (`bwoc plugin/skill install`) + ISO-compliance audit plugins (`bwoc audit`). **v2.6.0:** harness-v2 (durable runs, Saṅgha workers, MCP, budget, streaming) + ed25519 signed messages. **v2.5.0:** live fleet ops + startup update-check.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full list and [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) for binaries.
 
