@@ -248,6 +248,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "bwoc-a2a"
+version = "2.8.0"
+dependencies = [
+ "bwoc-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bwoc-agent"
 version = "2.8.0"
 dependencies = [

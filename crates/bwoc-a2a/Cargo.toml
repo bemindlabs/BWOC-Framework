@@ -1,0 +1,22 @@
+[package]
+name = "bwoc-a2a"
+description = "A2A (Agent2Agent) protocol interop for BWOC — Agent Card, JSON-RPC message/task handlers, and (later) an axum HTTP listener. Pinned to A2A spec v1.0.0. HTTP/network deps live here, never in bwoc-core (#48)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Shared BWOC types: manifest → Agent Card, team (Saṅgha) → A2A tasks.
+bwoc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# NOTE: the HTTP server (axum) + outbound client (reqwest) land with the
+# `serve`/client phases (P1 listener, P4). The protocol core — types, Agent
+# Card, JSON-RPC dispatch — is transport-agnostic and dep-light by design so
+# it is unit-testable without spinning a server.
+
+[dev-dependencies]
+tempfile = "3"
