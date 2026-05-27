@@ -3,11 +3,11 @@
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
 **Software-Version:** `2.7.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.2.0`   *(canonical here — bumped on `.md` edits)*
+**Document-Version:** `1.3.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
 **Latest release:** [`v2026.5.27-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.27-1) *(2026-05-27 — **2.7.0**; installable plugins & skills + ISO-compliance audit plugins. Prior: `v2026.5.27-0` 2.6.0 — harness-v2 + ed25519 signing)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-26T16:30:00Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-27T03:40:00Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
