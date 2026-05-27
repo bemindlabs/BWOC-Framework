@@ -26,7 +26,7 @@ pub const HEADLINE: &str = concat!(
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc peer feedback <agent> \"…\" --from <agent>` — signed cross-workspace review (#20)",
+    "`bwoc peer feedback <agent> \"…\" --from <local-agent>` — signed cross-workspace review (#20)",
     "Trust gate verifies a cross-workspace sender via routes.toml + published key",
     "Read-vs-write split: peer writes require a provable signature",
     "Prior 2.7.0: installable plugins & skills + ISO-compliance audits",

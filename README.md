@@ -431,7 +431,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 ## Status
 
-**Current phase:** Phase 3 DoD met; the interconnect mesh now spans workspaces — cross-workspace **view · learn · give-feedback** all ship (**2.8.0**). Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
+**Current phase:** Phase 3 DoD met; the interconnect mesh now spans workspaces — **2.8.0** adds the cross-workspace **give-feedback** write path, completing the view · learn · give-feedback trio (view + learn shipped 2.3.0). Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
 
 **Latest release:** [`v2026.5.27-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.27-2) (2.8.0) shipped 2026-05-27 — cross-workspace give-feedback. Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23).
 
