@@ -218,6 +218,12 @@ pub mod method {
     pub const LIST_TASKS: &str = "ListTasks";
     pub const CANCEL_TASK: &str = "CancelTask";
     pub const SUBSCRIBE_TO_TASK: &str = "SubscribeToTask";
+    // Push notification config management (P5). Delivery is deferred to the
+    // auth phase; these manage the per-task webhook configs.
+    pub const CREATE_TASK_PUSH_CONFIG: &str = "CreateTaskPushNotificationConfig";
+    pub const GET_TASK_PUSH_CONFIG: &str = "GetTaskPushNotificationConfig";
+    pub const LIST_TASK_PUSH_CONFIGS: &str = "ListTaskPushNotificationConfigs";
+    pub const DELETE_TASK_PUSH_CONFIG: &str = "DeleteTaskPushNotificationConfig";
 }
 
 #[cfg(test)]

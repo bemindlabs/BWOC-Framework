@@ -655,6 +655,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn push_config_crud_round_trip() {
+        let (state, _d) = test_state_with_team(); // task t1 exists
+        // Create a push config for t1.
+        let created = body_json(
+            app(state.clone())
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":1,"method":method::CREATE_TASK_PUSH_CONFIG,
+                    "params":{"taskId":"t1","pushNotificationConfig":{"url":"https://hook.example/a","token":"secret"}}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(created["result"]["taskId"], "t1");
+        assert_eq!(
+            created["result"]["pushNotificationConfig"]["url"],
+            "https://hook.example/a"
+        );
+        let cfg_id = created["result"]["pushNotificationConfig"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // List → contains it.
+        let listed = body_json(
+            app(state.clone())
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":2,"method":method::LIST_TASK_PUSH_CONFIGS,"params":{"taskId":"t1"}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(listed["result"]["configs"].as_array().unwrap().len(), 1);
+
+        // Get by id → the config.
+        let got = body_json(
+            app(state.clone())
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":3,"method":method::GET_TASK_PUSH_CONFIG,
+                    "params":{"pushNotificationConfigId":cfg_id}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(got["result"]["pushNotificationConfig"]["id"], cfg_id);
+
+        // Delete → then Get is -32001.
+        let deleted = body_json(
+            app(state.clone())
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":4,"method":method::DELETE_TASK_PUSH_CONFIG,
+                    "params":{"pushNotificationConfigId":cfg_id}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(deleted["result"]["deleted"], cfg_id);
+        let gone = body_json(
+            app(state)
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":5,"method":method::GET_TASK_PUSH_CONFIG,
+                    "params":{"pushNotificationConfigId":cfg_id}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(gone["error"]["code"], -32001);
+    }
+
+    #[tokio::test]
+    async fn push_create_rejects_unknown_task_and_no_team() {
+        // Unknown task → -32001.
+        let (state, _d) = test_state_with_team();
+        let bad_task = body_json(
+            app(state)
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":1,"method":method::CREATE_TASK_PUSH_CONFIG,
+                    "params":{"taskId":"ghost","pushNotificationConfig":{"url":"https://h/x"}}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_task["error"]["code"], -32001);
+        // No team exposed → -32001.
+        let (no_team, _d2) = test_state();
+        let resp = body_json(
+            app(no_team)
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":2,"method":method::CREATE_TASK_PUSH_CONFIG,
+                    "params":{"taskId":"t1","pushNotificationConfig":{"url":"https://h/x"}}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp["error"]["code"], -32001);
+    }
+
+    #[tokio::test]
     async fn oversize_body_returns_413_not_parse_error() {
         let (state, _d) = test_state();
         let big = "x".repeat(MAX_REQUEST_BYTES + 1);

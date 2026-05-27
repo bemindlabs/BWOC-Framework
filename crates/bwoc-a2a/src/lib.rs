@@ -16,13 +16,16 @@
 //! - **P4** (here) — outbound [`client`]: BWOC initiates A2A calls to an
 //!   external endpoint (fetch its Agent Card, `SendMessage`). Driven by
 //!   `bwoc a2a fetch-card`/`send`.
-//! - **P5** — push notifications + remaining task states.
+//! - **P5** (here) — [`push`] notification **config** management
+//!   (`CreateTaskPushNotificationConfig` + Get/List/Delete). Webhook *delivery*
+//!   is deferred to the auth phase (an SSRF/exfil egress under no-auth).
 //!
 //! HTTP deps (axum listener, reqwest client) stay isolated to this crate —
 //! `bwoc-core` keeps the dep-quarantine (no HTTP).
 
 pub mod card;
 pub mod client;
+pub mod push;
 pub mod rpc;
 pub mod serve;
 pub mod tasks;

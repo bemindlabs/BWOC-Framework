@@ -66,6 +66,10 @@ fn handle(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
         method::GET_TASK => handle_get_task(req, ctx),
         method::LIST_TASKS => handle_list_tasks(req, ctx),
         method::CANCEL_TASK => handle_cancel_task(req, ctx),
+        method::CREATE_TASK_PUSH_CONFIG => handle_create_push_config(req, ctx),
+        method::GET_TASK_PUSH_CONFIG => handle_get_push_config(req, ctx),
+        method::LIST_TASK_PUSH_CONFIGS => handle_list_push_configs(req, ctx),
+        method::DELETE_TASK_PUSH_CONFIG => handle_delete_push_config(req, ctx),
         method::SEND_STREAMING_MESSAGE | method::SUBSCRIBE_TO_TASK => JsonRpcResponse::err(
             resolved_id(req),
             METHOD_NOT_FOUND,
@@ -175,6 +179,219 @@ fn handle_cancel_task(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespon
         TASK_NOT_CANCELABLE,
         "BWOC tasks cannot be canceled over A2A — the team lead manages task \
          lifecycle (`bwoc task`)",
+    )
+}
+
+// ── Push notification config management (P5) ────────────────────────────────
+//
+// CRUD only — delivery (POSTing task updates to the webhook) is deferred to the
+// auth phase, since it's an SSRF/exfil egress under P1's no-auth posture. See
+// `crate::push`.
+
+/// The push-config id from a `*PushNotificationConfig` request's params.
+fn config_id_param(req: &JsonRpcRequest) -> Option<String> {
+    for key in ["pushNotificationConfigId", "configId", "id"] {
+        if let Some(v) = req.params.get(key).and_then(|v| v.as_str()) {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// `{ "taskId", "pushNotificationConfig": { "id", "url", "token"? } }` — the A2A
+/// `TaskPushNotificationConfig` shape.
+fn push_config_json(c: &crate::push::PushConfig) -> serde_json::Value {
+    let mut inner = serde_json::json!({ "id": c.config_id, "url": c.url });
+    if let Some(token) = &c.token {
+        inner["token"] = serde_json::Value::String(token.clone());
+    }
+    serde_json::json!({ "taskId": c.task_id, "pushNotificationConfig": inner })
+}
+
+/// Resolve the team's push-configs path, or an error response if no team task
+/// list is exposed (push configs are task-scoped, and tasks need a team).
+fn push_path<'a>(
+    req: &JsonRpcRequest,
+    ctx: &'a ServeContext,
+) -> Result<(&'a TasksContext<'a>, std::path::PathBuf), JsonRpcResponse> {
+    match &ctx.tasks {
+        Some(tasks) => Ok((tasks, crate::push::configs_path(tasks.tasks_path))),
+        None => Err(JsonRpcResponse::err(
+            resolved_id(req),
+            TASK_NOT_FOUND,
+            "no team task list is exposed (start with `--team <id>`)",
+        )),
+    }
+}
+
+fn load_configs_or_err(
+    req: &JsonRpcRequest,
+    path: &std::path::Path,
+) -> Result<Vec<crate::push::PushConfig>, JsonRpcResponse> {
+    crate::push::load(path).map_err(|e| {
+        JsonRpcResponse::err(
+            resolved_id(req),
+            INTERNAL_ERROR,
+            format!("push config: {e}"),
+        )
+    })
+}
+
+/// `CreateTaskPushNotificationConfig` — register a webhook config for a task.
+fn handle_create_push_config(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    let (tasks, path) = match push_path(req, ctx) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let Some(task_id) = task_id_param(req) else {
+        return JsonRpcResponse::err(resolved_id(req), INVALID_PARAMS, "missing `taskId`");
+    };
+    // The task must exist in the team list (consistent with GetTask).
+    let team_tasks = match crate::tasks::load_team_tasks(tasks.tasks_path) {
+        Ok(t) => t,
+        Err(e) => {
+            return JsonRpcResponse::err(
+                resolved_id(req),
+                INTERNAL_ERROR,
+                format!("task list read failed: {e}"),
+            );
+        }
+    };
+    if !team_tasks.iter().any(|t| t.id == task_id) {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            TASK_NOT_FOUND,
+            format!("task `{task_id}` not found in team `{}`", tasks.team_id),
+        );
+    }
+    // Pull the config out of `pushNotificationConfig` (or `config`).
+    let cfg = req
+        .params
+        .get("pushNotificationConfig")
+        .or_else(|| req.params.get("config"));
+    let Some(url) = cfg.and_then(|c| c.get("url")).and_then(|u| u.as_str()) else {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            INVALID_PARAMS,
+            "missing `pushNotificationConfig.url`",
+        );
+    };
+    let token = cfg
+        .and_then(|c| c.get("token"))
+        .and_then(|t| t.as_str())
+        .map(str::to_string);
+    let config_id = format!(
+        "pnc-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let new = crate::push::PushConfig {
+        task_id,
+        config_id,
+        url: url.to_string(),
+        token,
+    };
+    let mut configs = match load_configs_or_err(req, &path) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    configs.push(new.clone());
+    if let Err(e) = crate::push::save(&path, &configs) {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            INTERNAL_ERROR,
+            format!("push config write failed: {e}"),
+        );
+    }
+    JsonRpcResponse::ok(resolved_id(req), push_config_json(&new))
+}
+
+/// `GetTaskPushNotificationConfig` — fetch one config by (taskId, configId).
+fn handle_get_push_config(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    let (_tasks, path) = match push_path(req, ctx) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let Some(config_id) = config_id_param(req) else {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            INVALID_PARAMS,
+            "missing `pushNotificationConfigId`",
+        );
+    };
+    let configs = match load_configs_or_err(req, &path) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    match configs.iter().find(|c| c.config_id == config_id) {
+        Some(c) => JsonRpcResponse::ok(resolved_id(req), push_config_json(c)),
+        None => JsonRpcResponse::err(
+            resolved_id(req),
+            TASK_NOT_FOUND,
+            format!("push config `{config_id}` not found"),
+        ),
+    }
+}
+
+/// `ListTaskPushNotificationConfigs` — all configs for a task.
+fn handle_list_push_configs(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    let (_tasks, path) = match push_path(req, ctx) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let Some(task_id) = task_id_param(req) else {
+        return JsonRpcResponse::err(resolved_id(req), INVALID_PARAMS, "missing `taskId`");
+    };
+    let configs = match load_configs_or_err(req, &path) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let mapped: Vec<_> = configs
+        .iter()
+        .filter(|c| c.task_id == task_id)
+        .map(push_config_json)
+        .collect();
+    JsonRpcResponse::ok(resolved_id(req), serde_json::json!({ "configs": mapped }))
+}
+
+/// `DeleteTaskPushNotificationConfig` — remove one config by id.
+fn handle_delete_push_config(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    let (_tasks, path) = match push_path(req, ctx) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let Some(config_id) = config_id_param(req) else {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            INVALID_PARAMS,
+            "missing `pushNotificationConfigId`",
+        );
+    };
+    let mut configs = match load_configs_or_err(req, &path) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let before = configs.len();
+    configs.retain(|c| c.config_id != config_id);
+    if configs.len() == before {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            TASK_NOT_FOUND,
+            format!("push config `{config_id}` not found"),
+        );
+    }
+    if let Err(e) = crate::push::save(&path, &configs) {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            INTERNAL_ERROR,
+            format!("push config write failed: {e}"),
+        );
+    }
+    JsonRpcResponse::ok(
+        resolved_id(req),
+        serde_json::json!({ "deleted": config_id }),
     )
 }
 
