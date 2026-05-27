@@ -164,8 +164,12 @@ pub struct JsonRpcRequest {
     pub method: String,
     #[serde(default)]
     pub params: serde_json::Value,
+    /// `None` ⇒ a JSON-RPC **notification** (the server must not reply).
+    /// `Some(Null)` ⇒ an explicit `"id": null`. Conflating the two would let a
+    /// notification draw a response, so they stay distinct (`Option`, not a
+    /// defaulted `Value`).
     #[serde(default)]
-    pub id: serde_json::Value,
+    pub id: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]

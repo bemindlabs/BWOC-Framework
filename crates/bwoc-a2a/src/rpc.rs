@@ -22,9 +22,17 @@ pub struct ServeContext<'a> {
     pub inbox_path: &'a Path,
 }
 
-/// Dispatch a single A2A JSON-RPC request. Unknown methods return a JSON-RPC
+/// Dispatch a single A2A JSON-RPC request. Returns `None` for a **notification**
+/// (a request with no `id`): per JSON-RPC 2.0 the server emits no reply, though
+/// the side effect (e.g. the inbox write) still runs. Unknown methods return a
 /// `method not found` error (the task methods are wired in P2–P5).
-pub fn dispatch(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+pub fn dispatch(req: &JsonRpcRequest, ctx: &ServeContext) -> Option<JsonRpcResponse> {
+    let resp = handle(req, ctx);
+    // Suppress the response for notifications; the work above already happened.
+    req.id.as_ref().map(|_| resp)
+}
+
+fn handle(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
     match req.method.as_str() {
         method::SEND_MESSAGE => handle_send_message(req, ctx),
         method::GET_TASK
@@ -32,7 +40,7 @@ pub fn dispatch(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
         | method::CANCEL_TASK
         | method::SEND_STREAMING_MESSAGE
         | method::SUBSCRIBE_TO_TASK => JsonRpcResponse::err(
-            req.id.clone(),
+            resolved_id(req),
             METHOD_NOT_FOUND,
             format!(
                 "`{}` is not implemented yet (lands in a later #48 phase)",
@@ -40,11 +48,18 @@ pub fn dispatch(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
             ),
         ),
         other => JsonRpcResponse::err(
-            req.id.clone(),
+            resolved_id(req),
             METHOD_NOT_FOUND,
             format!("unknown A2A method `{other}`"),
         ),
     }
+}
+
+/// The id to echo back on a response. A notification's reply is dropped by
+/// [`dispatch`], so the `Null` fallback only ever surfaces for an explicit
+/// `"id": null`.
+fn resolved_id(req: &JsonRpcRequest) -> serde_json::Value {
+    req.id.clone().unwrap_or(serde_json::Value::Null)
 }
 
 /// `SendMessage` → append a BWOC envelope to the recipient's inbox.
@@ -58,7 +73,7 @@ fn handle_send_message(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespo
             Ok(m) => m,
             Err(e) => {
                 return JsonRpcResponse::err(
-                    req.id.clone(),
+                    resolved_id(req),
                     INVALID_PARAMS,
                     format!("invalid `message`: {e}"),
                 );
@@ -83,7 +98,7 @@ fn handle_send_message(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespo
 
     if let Err(e) = append_line(ctx.inbox_path, &envelope.to_string()) {
         return JsonRpcResponse::err(
-            req.id.clone(),
+            resolved_id(req),
             INTERNAL_ERROR,
             format!("inbox write failed: {e}"),
         );
@@ -96,7 +111,7 @@ fn handle_send_message(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespo
         "messageId": format!("ack-{}", message.message_id),
         "contextId": message.context_id,
     });
-    JsonRpcResponse::ok(req.id.clone(), ack)
+    JsonRpcResponse::ok(resolved_id(req), ack)
 }
 
 // NOTE (track for the network-exposed phase, P1-serve/P4): this append is
@@ -123,6 +138,14 @@ mod tests {
         .unwrap()
     }
 
+    /// A notification: same shape as [`req`] but with no `id` field.
+    fn notification(method: &str, params: serde_json::Value) -> JsonRpcRequest {
+        serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0", "method": method, "params": params
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn send_message_appends_envelope_and_acks() {
         let dir = tempfile::tempdir().unwrap();
@@ -137,7 +160,8 @@ mod tests {
                 serde_json::json!({"message":{"role":"ROLE_USER","parts":[{"text":"review my design"}],"messageId":"m1"}}),
             ),
             &ctx,
-        );
+        )
+        .expect("a request with an id gets a response");
         assert!(resp.error.is_none(), "ok response");
         // Inbox got a BWOC envelope with the text body + a2a markers.
         let line = std::fs::read_to_string(&inbox).unwrap();
@@ -176,9 +200,33 @@ mod tests {
             inbox_path: &dir.path().join("i.jsonl"),
         };
         for m in [method::GET_TASK, "Frobnicate"] {
-            let r = dispatch(&req(m, serde_json::json!({})), &ctx);
+            let r = dispatch(&req(m, serde_json::json!({})), &ctx)
+                .expect("a request with an id gets a response");
             assert_eq!(r.error.as_ref().unwrap().code, METHOD_NOT_FOUND);
         }
+    }
+
+    #[test]
+    fn notification_runs_side_effect_but_emits_no_response() {
+        // A request with no `id` is a JSON-RPC notification: per spec the server
+        // must not reply, but the inbox write (the side effect) still happens.
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox.jsonl");
+        let ctx = ServeContext {
+            agent_id: "a",
+            inbox_path: &inbox,
+        };
+        let resp = dispatch(
+            &notification(
+                method::SEND_MESSAGE,
+                serde_json::json!({"message":{"role":"ROLE_USER","parts":[{"text":"hi"}],"messageId":"n1"}}),
+            ),
+            &ctx,
+        );
+        assert!(resp.is_none(), "notifications get no response");
+        // …yet the message was still delivered.
+        let line = std::fs::read_to_string(&inbox).unwrap();
+        assert!(line.contains("\"messageId\":\"n1\""));
     }
 
     #[test]
@@ -195,7 +243,8 @@ mod tests {
                 serde_json::json!({"message":{"role":"ROLE_USER"}}),
             ),
             &ctx,
-        );
+        )
+        .expect("a request with an id gets a response");
         assert_eq!(r.error.as_ref().unwrap().code, INVALID_PARAMS);
     }
 }
