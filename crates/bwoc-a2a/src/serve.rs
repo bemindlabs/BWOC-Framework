@@ -92,9 +92,19 @@ async fn json_rpc(
 ) -> Response {
     let raw = match body {
         Ok(Json(v)) => v,
-        // Body wasn't valid JSON (or exceeded the size limit) — id is unknown.
-        Err(_) => {
-            return rpc_error(serde_json::Value::Null, PARSE_ERROR, "parse error");
+        Err(rej) => {
+            // The body-size limit surfaces as a 413 rejection. Report that as a
+            // clear "too large" rather than a misleading JSON-RPC parse error;
+            // genuinely malformed JSON stays `-32700` (id unknown).
+            return if rej.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("request body exceeds the {MAX_REQUEST_BYTES}-byte limit"),
+                )
+                    .into_response()
+            } else {
+                rpc_error(serde_json::Value::Null, PARSE_ERROR, "parse error")
+            };
         }
     };
     let req: JsonRpcRequest = match serde_json::from_value(raw.clone()) {
@@ -227,5 +237,23 @@ mod tests {
         let bytes = to_bytes(resp.into_body(), MAX_REQUEST_BYTES).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error"]["code"], PARSE_ERROR);
+    }
+
+    #[tokio::test]
+    async fn oversize_body_returns_413_not_parse_error() {
+        let (state, _d) = test_state();
+        let big = "x".repeat(MAX_REQUEST_BYTES + 1);
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(big))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }

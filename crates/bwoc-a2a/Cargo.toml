@@ -14,9 +14,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # HTTP transport (P1-serve). The protocol core (types/card/rpc) stays
 # transport-agnostic and unit-testable without these; only `serve` uses them.
-# The outbound client (reqwest) lands in P4.
+# The outbound client (reqwest) lands in P4. These live here and are linked
+# ONLY by the `bwoc-a2a` binary — `bwoc-cli` execs that binary as a subprocess
+# (like `bwoc-harness`) so tokio/hyper never enter the CLI's dependency tree
+# (the dep-quarantine invariant in `bwoc-cli/src/spawn.rs`).
 axum = { workspace = true }
 tokio = { workspace = true }
+clap = { workspace = true }
+
+# The serve listener runs in its own binary, exec'd by `bwoc a2a` in the CLI.
+[[bin]]
+name = "bwoc-a2a"
+path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = "3"

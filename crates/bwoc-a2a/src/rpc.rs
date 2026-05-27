@@ -142,10 +142,15 @@ fn append_line_capped(path: &Path, line: &str, cap: u64) -> std::io::Result<()> 
         std::fs::create_dir_all(dir)?;
     }
     if let Ok(meta) = std::fs::metadata(path) {
-        if meta.len() >= cap {
+        // Reject when the *projected* post-append size (line + newline) would
+        // exceed the cap, so the cap is a real ceiling rather than one that can
+        // be overshot by an admitted final write.
+        let projected = meta.len().saturating_add(line.len() as u64 + 1);
+        if projected > cap {
             return Err(std::io::Error::other(format!(
-                "inbox full: {} bytes ≥ {cap} byte cap",
-                meta.len()
+                "inbox full: {} + {} bytes would exceed {cap} byte cap",
+                meta.len(),
+                line.len() + 1
             )));
         }
     }
