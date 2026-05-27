@@ -250,7 +250,16 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     // sender follows the configured signing mode.
     if cross_workspace {
         if env.get("sig").and_then(|v| v.as_str()).is_none() {
-            return cant_verify!("unsigned_cross_workspace");
+            // A signature/identity failure, not a missing-quality one — keep
+            // `missing` empty (consistent with the other signature refusals)
+            // so the refusal log isn't misread as a Kalyāṇamitta gap.
+            return TrustOutcome::Refuse(Refusal {
+                envelope_offset,
+                envelope_ts: envelope_ts.clone(),
+                envelope_from: from.clone(),
+                reason: "unsigned_cross_workspace",
+                missing: vec![],
+            });
         }
         if let Some(outcome) = verify_signature(
             true,
@@ -379,6 +388,11 @@ fn verify_signature(
 /// against). `None` when there is no route to the sender or the peer manifest
 /// can't be read — the caller then refuses as `unknown_sender`.
 fn resolve_peer_manifest(local_ws: &Path, sender_id: &str) -> Option<Manifest> {
+    // v1 reads routes.toml + the peer's agents.toml + manifest per cross-
+    // workspace envelope. That's only the cross-workspace path (local senders
+    // never reach here), and a give-feedback message is rare relative to local
+    // traffic, so the per-envelope I/O is acceptable for now; caching routes +
+    // resolved peer keys for the daemon's lifetime is a follow-up.
     let routes = Routes::load(local_ws).ok()?;
     let peer_ws = routes.resolve(sender_id)?;
     let registry = AgentsRegistry::load(peer_ws).ok()?;
