@@ -82,7 +82,9 @@ A PR is mergeable only when **all** of these hold:
 
 - The four required CI checks pass: **fmt + clippy** and **build + test** on
   macOS, Linux, and Windows.
-- The branch is **up to date with `main`** (no conflicts).
+- The branch is **up to date with `main`** — strict protection requires it to
+  contain the latest `main`, so a conflict-free but stale branch must still be
+  updated (`gh pr update-branch <pr>`) before it can merge.
 - **Every review conversation is resolved** — a requested change or open thread
   blocks the merge until it's addressed.
 
