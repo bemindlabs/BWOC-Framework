@@ -99,6 +99,10 @@ fn handle_send_message(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespo
     JsonRpcResponse::ok(req.id.clone(), ack)
 }
 
+// NOTE (track for the network-exposed phase, P1-serve/P4): this append is
+// uncapped. Once an HTTP listener accepts remote A2A peers, add a per-peer
+// rate/size limit so an unauthenticated peer can't grow `inbox.jsonl`
+// unboundedly. No listener is wired in P1, so it isn't reachable yet.
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

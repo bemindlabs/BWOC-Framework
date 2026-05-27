@@ -80,9 +80,12 @@ impl Part {
             other: serde_json::Map::new(),
         }
     }
-    /// Join the text parts of a message; non-text parts are ignored (v1 limit).
+    /// A pure text Part: has `text` and carries no other (file/data) fields.
+    /// A part that mixes `text` with non-text fields is treated as non-text so
+    /// its extra content is flagged (not silently dropped) — even though the
+    /// 1.0.0 spec's Part is a strict oneOf and a conformant peer won't send one.
     pub fn is_text(&self) -> bool {
-        self.text.is_some()
+        self.text.is_some() && self.other.is_empty()
     }
 }
 
@@ -236,6 +239,16 @@ mod tests {
         let m: Message = serde_json::from_str(json).unwrap();
         assert_eq!(m.text_body(), "hi"); // text extracted
         assert!(m.has_non_text_parts()); // and the file part is visible to warn on
+    }
+
+    #[test]
+    fn mixed_text_and_nontext_part_counts_as_non_text() {
+        // A part carrying both text and a non-text field is flagged (so its
+        // extra content isn't silently dropped) while its text still extracts.
+        let json = r#"{"role":"ROLE_USER","parts":[{"text":"hi","url":"http://x/y"}],"messageId":"m3"}"#;
+        let m: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(m.text_body(), "hi");
+        assert!(m.has_non_text_parts());
     }
 
     #[test]
