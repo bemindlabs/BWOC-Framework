@@ -23,8 +23,8 @@ pub enum ClientError {
     },
     #[error("agent at {url} returned HTTP {status}")]
     Status { url: String, status: u16 },
-    #[error("could not parse the agent's response: {0}")]
-    Decode(String),
+    #[error("could not parse the response from {url}: {message}")]
+    Decode { url: String, message: String },
     #[error("agent returned a JSON-RPC error {code}: {message}")]
     Rpc { code: i64, message: String },
 }
@@ -69,7 +69,10 @@ pub async fn fetch_card(base: &str) -> Result<AgentCard, ClientError> {
     }
     resp.json::<AgentCard>()
         .await
-        .map_err(|e| ClientError::Decode(e.to_string()))
+        .map_err(|e| ClientError::Decode {
+            url,
+            message: e.to_string(),
+        })
 }
 
 /// Send a text message to a remote A2A endpoint via `SendMessage`. Returns the
@@ -111,26 +114,50 @@ pub async fn send_message(
             status: resp.status().as_u16(),
         });
     }
-    let parsed: JsonRpcResponseOwned = resp
-        .json()
-        .await
-        .map_err(|e| ClientError::Decode(e.to_string()))?;
+    let parsed: JsonRpcResponseOwned = resp.json().await.map_err(|e| ClientError::Decode {
+        url: endpoint.to_string(),
+        message: e.to_string(),
+    })?;
+    let decode = |message: String| ClientError::Decode {
+        url: endpoint.to_string(),
+        message,
+    };
+    // Validate the JSON-RPC envelope: version must be "2.0" (when present), and
+    // the response `id` must echo our request `id` so we can't accept a
+    // mismatched/replayed reply.
+    if let Some(v) = &parsed.jsonrpc {
+        if v != "2.0" {
+            return Err(decode(format!("unexpected jsonrpc version `{v}`")));
+        }
+    }
+    if let Some(id) = &parsed.id {
+        if id != &Value::String(message_id.to_string()) {
+            return Err(decode(format!(
+                "response id {id} does not match request id `{message_id}`"
+            )));
+        }
+    }
     match (parsed.result, parsed.error) {
-        (Some(result), _) => Ok(result),
+        // result XOR error — a response carrying both is malformed.
+        (Some(_), Some(_)) => Err(decode(
+            "response contains both `result` and `error`".to_string(),
+        )),
+        (Some(result), None) => Ok(result),
         (None, Some(err)) => Err(ClientError::Rpc {
             code: err.code,
             message: err.message,
         }),
-        (None, None) => Err(ClientError::Decode(
-            "response had neither result nor error".to_string(),
-        )),
+        (None, None) => Err(decode("response had neither result nor error".to_string())),
     }
 }
 
 /// A deserializable mirror of the server-side `JsonRpcResponse` (which is
-/// serialize-only) — just the fields the client reads back.
+/// serialize-only) — just the fields the client reads back + the envelope
+/// fields it validates.
 #[derive(serde::Deserialize)]
 struct JsonRpcResponseOwned {
+    jsonrpc: Option<String>,
+    id: Option<Value>,
     result: Option<Value>,
     error: Option<RpcErrorOwned>,
 }
@@ -248,6 +275,39 @@ mod tests {
             ClientError::Rpc { code, .. } => assert_eq!(code, -32602),
             other => panic!("expected Rpc error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_response_with_mismatched_id() {
+        let server = MockServer::start().await;
+        Mock::given(http_method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": "WRONG", "result": { "ok": true }
+            })))
+            .mount(&server)
+            .await;
+        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClientError::Decode { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn rejects_response_with_both_result_and_error() {
+        let server = MockServer::start().await;
+        Mock::given(http_method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": "m1",
+                "result": { "ok": true }, "error": { "code": -1, "message": "x" }
+            })))
+            .mount(&server)
+            .await;
+        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClientError::Decode { .. }), "got {err:?}");
     }
 
     #[tokio::test]
