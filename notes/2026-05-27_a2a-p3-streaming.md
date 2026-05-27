@@ -32,6 +32,14 @@ P2 #73/#74).
 - **Bounded stream lifetime.** `SUBSCRIBE_MAX` (300 s) caps an open subscription
   so a never-completing task can't pin a connection forever — the streaming
   analogue of the inbox/body-size caps. Network-exposed resource guard.
+- **Poll read runs off the executor (`spawn_blocking`).** The subscription's
+  per-second `tasks.jsonl` read is a blocking syscall; run inline on the
+  current-thread runtime it would stall the listener and every other live stream
+  during each read (surfaced in review). `tokio::task::spawn_blocking` moves it
+  to the blocking pool so the executor stays free. A read/parse error is treated
+  as terminal (stream closes as Completed) — deliberate, since BWOC never
+  synthesizes Failed/Canceled and an unreadable task is indistinguishable from
+  completion-then-deletion. Per-peer concurrency caps wait for the auth phase.
 - **Streaming stays at the transport layer.** `rpc::dispatch` (transport-agnostic,
   JSON-only) still returns `-32601` for the streaming methods with a message to
   use the SSE transport; only `serve` produces SSE. Keeps `rpc` axum-free.

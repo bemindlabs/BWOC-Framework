@@ -40,9 +40,11 @@ const INVALID_REQUEST: i64 = -32600;
 const INVALID_PARAMS: i64 = -32602;
 const TASK_NOT_FOUND: i64 = -32001;
 
-/// `SubscribeToTask` SSE poll interval + max lifetime. The cap bounds the
+/// `SubscribeToTask` SSE poll interval + max lifetime. The cap bounds each
 /// stream so a never-completing task can't hold a connection open forever
-/// (a network-exposed resource guard, like the inbox cap).
+/// (a network-exposed resource guard, like the inbox cap). A *concurrency* cap
+/// (limit on simultaneous subscriptions per peer) waits for the auth phase,
+/// alongside per-peer rate limiting — P1 has no peer identity.
 const SUBSCRIBE_POLL: Duration = Duration::from_secs(1);
 const SUBSCRIBE_MAX: Duration = Duration::from_secs(300);
 
@@ -226,14 +228,30 @@ fn subscribe_task(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
         let start = Instant::now();
         let mut last: Option<crate::types::TaskState> = None;
         loop {
-            let tasks = crate::tasks::load_team_tasks(&tasks_path).unwrap_or_default();
+            // Read the task file off the executor: this is a blocking syscall
+            // run once per poll for the connection's whole lifetime, so doing it
+            // inline would stall the (current-thread) runtime — the listener and
+            // every other live stream — during each read.
+            let path = tasks_path.clone();
+            let tasks = match tokio::task::spawn_blocking(move || {
+                crate::tasks::load_team_tasks(&path)
+            })
+            .await
+            {
+                Ok(Ok(t)) => t,
+                // A read/parse error (or join error) is treated as the task
+                // being gone → close the stream as terminal, deliberately, since
+                // BWOC never synthesizes Failed/Canceled and a vanished task is
+                // indistinguishable from completion-then-deletion.
+                _ => Vec::new(),
+            };
             let found = tasks.iter().find(|t| t.id == task_id);
             let (cur, terminal) = match found {
                 Some(t) => (
                     crate::tasks::a2a_state(t.state),
                     matches!(t.state, bwoc_core::team::TaskState::Completed),
                 ),
-                // Task vanished mid-subscription — close out.
+                // Task vanished (or unreadable) mid-subscription — close out.
                 None => (crate::types::TaskState::Completed, true),
             };
             let timed_out = start.elapsed() >= SUBSCRIBE_MAX;
