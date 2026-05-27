@@ -1,7 +1,9 @@
-//! A2A JSON-RPC dispatch (1.0.0). P1 handles `SendMessage` by dropping the
-//! inbound message into the recipient agent's BWOC `inbox.jsonl`; the other
-//! task methods land in P2–P5. Transport-agnostic + testable: the HTTP
-//! (axum) listener calls [`dispatch`] with the parsed request.
+//! A2A JSON-RPC dispatch (1.0.0). `SendMessage` (P1) drops the inbound message
+//! into the recipient agent's BWOC `inbox.jsonl`; `GetTask`/`ListTasks` (P2)
+//! bridge a team's Saṅgha task list and `CancelTask` reports it isn't
+//! A2A-cancelable; streaming (`SendStreamingMessage`/`SubscribeToTask`) lands in
+//! P3. Transport-agnostic + testable: the HTTP (axum) listener calls
+//! [`dispatch`] with the parsed request.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -14,6 +16,18 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
+/// A2A-specific error codes (spec §"A2A-Specific Errors").
+const TASK_NOT_FOUND: i64 = -32001;
+const TASK_NOT_CANCELABLE: i64 = -32002;
+
+/// The team task list an A2A server exposes via `tasks/*` (P2). Set with
+/// `bwoc a2a serve --team <id>`; absent when no team is selected.
+pub struct TasksContext<'a> {
+    /// Team id — becomes the A2A `contextId` of each task.
+    pub team_id: &'a str,
+    /// Path to that team's `tasks.jsonl`.
+    pub tasks_path: &'a Path,
+}
 
 /// Context the dispatcher needs to serve one local agent over A2A.
 pub struct ServeContext<'a> {
@@ -21,6 +35,8 @@ pub struct ServeContext<'a> {
     pub agent_id: &'a str,
     /// Path to that agent's `inbox.jsonl`.
     pub inbox_path: &'a Path,
+    /// The team task list to expose over `tasks/*`, if one was selected.
+    pub tasks: Option<TasksContext<'a>>,
 }
 
 /// Dispatch a single A2A JSON-RPC request. Returns `None` for a **notification**
@@ -47,15 +63,14 @@ fn handle(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
     }
     match req.method.as_str() {
         method::SEND_MESSAGE => handle_send_message(req, ctx),
-        method::GET_TASK
-        | method::LIST_TASKS
-        | method::CANCEL_TASK
-        | method::SEND_STREAMING_MESSAGE
-        | method::SUBSCRIBE_TO_TASK => JsonRpcResponse::err(
+        method::GET_TASK => handle_get_task(req, ctx),
+        method::LIST_TASKS => handle_list_tasks(req, ctx),
+        method::CANCEL_TASK => handle_cancel_task(req, ctx),
+        method::SEND_STREAMING_MESSAGE | method::SUBSCRIBE_TO_TASK => JsonRpcResponse::err(
             resolved_id(req),
             METHOD_NOT_FOUND,
             format!(
-                "`{}` is not implemented yet (lands in a later #48 phase)",
+                "`{}` is not implemented yet (streaming lands in #48 P3)",
                 req.method
             ),
         ),
@@ -65,6 +80,99 @@ fn handle(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
             format!("unknown A2A method `{other}`"),
         ),
     }
+}
+
+/// Pull the task id out of a `tasks/*` request's params, accepting the field
+/// aliases the proto/JSON-RPC bindings use (`id`, `taskId`, `name`).
+fn task_id_param(req: &JsonRpcRequest) -> Option<String> {
+    for key in ["id", "taskId", "name"] {
+        if let Some(v) = req.params.get(key).and_then(|v| v.as_str()) {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// `GetTask` → the matching team task as an A2A `Task`, or `TaskNotFound`.
+fn handle_get_task(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    let Some(id) = task_id_param(req) else {
+        return JsonRpcResponse::err(resolved_id(req), INVALID_PARAMS, "missing task `id`");
+    };
+    let Some(tasks) = &ctx.tasks else {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            TASK_NOT_FOUND,
+            format!("task `{id}` not found (this server exposes no team task list)"),
+        );
+    };
+    let team_tasks = match crate::tasks::load_team_tasks(tasks.tasks_path) {
+        Ok(t) => t,
+        Err(e) => {
+            return JsonRpcResponse::err(
+                resolved_id(req),
+                INTERNAL_ERROR,
+                format!("task list read failed: {e}"),
+            );
+        }
+    };
+    match team_tasks.iter().find(|t| t.id == id) {
+        Some(t) => JsonRpcResponse::ok(
+            resolved_id(req),
+            serde_json::to_value(crate::tasks::to_a2a_task(t, tasks.team_id))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        None => JsonRpcResponse::err(
+            resolved_id(req),
+            TASK_NOT_FOUND,
+            format!("task `{id}` not found in team `{}`", tasks.team_id),
+        ),
+    }
+}
+
+/// `ListTasks` → `{ "tasks": [...] }` for the exposed team (empty if none).
+fn handle_list_tasks(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    let mapped: Vec<_> = match &ctx.tasks {
+        None => Vec::new(),
+        Some(tasks) => match crate::tasks::load_team_tasks(tasks.tasks_path) {
+            Ok(team_tasks) => team_tasks
+                .iter()
+                .map(|t| crate::tasks::to_a2a_task(t, tasks.team_id))
+                .collect(),
+            Err(e) => {
+                return JsonRpcResponse::err(
+                    resolved_id(req),
+                    INTERNAL_ERROR,
+                    format!("task list read failed: {e}"),
+                );
+            }
+        },
+    };
+    JsonRpcResponse::ok(resolved_id(req), serde_json::json!({ "tasks": mapped }))
+}
+
+/// `CancelTask` → BWOC tasks aren't A2A-cancelable; the human lead owns the
+/// lifecycle. Report `TaskNotCancelable` rather than faking a cancel.
+fn handle_cancel_task(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    let id = task_id_param(req).unwrap_or_default();
+    // If the task genuinely doesn't exist, TaskNotFound is the more precise
+    // answer; otherwise it exists but can't be canceled over A2A.
+    if let Some(tasks) = &ctx.tasks {
+        if let Ok(team_tasks) = crate::tasks::load_team_tasks(tasks.tasks_path) {
+            if !id.is_empty() && !team_tasks.iter().any(|t| t.id == id) {
+                return JsonRpcResponse::err(
+                    resolved_id(req),
+                    TASK_NOT_FOUND,
+                    format!("task `{id}` not found in team `{}`", tasks.team_id),
+                );
+            }
+        }
+    }
+    JsonRpcResponse::err(
+        resolved_id(req),
+        TASK_NOT_CANCELABLE,
+        "BWOC tasks cannot be canceled over A2A — the team lead manages task \
+         lifecycle (`bwoc task`)",
+    )
 }
 
 /// The id to echo back on a response. A notification's reply is dropped by
@@ -185,6 +293,7 @@ mod tests {
         let ctx = ServeContext {
             agent_id: "agent-me",
             inbox_path: &inbox,
+            tasks: None,
         };
         let resp = dispatch(
             &req(
@@ -212,6 +321,7 @@ mod tests {
         let ctx = ServeContext {
             agent_id: "a",
             inbox_path: &inbox,
+            tasks: None,
         };
         dispatch(
             &req(
@@ -230,12 +340,45 @@ mod tests {
         let ctx = ServeContext {
             agent_id: "a",
             inbox_path: &dir.path().join("i.jsonl"),
+            tasks: None,
         };
-        for m in [method::GET_TASK, "Frobnicate"] {
+        // Streaming (P3) is not implemented yet; an unknown method is unknown.
+        for m in [
+            method::SEND_STREAMING_MESSAGE,
+            method::SUBSCRIBE_TO_TASK,
+            "Frobnicate",
+        ] {
             let r = dispatch(&req(m, serde_json::json!({})), &ctx)
                 .expect("a request with an id gets a response");
             assert_eq!(r.error.as_ref().unwrap().code, METHOD_NOT_FOUND);
         }
+    }
+
+    #[test]
+    fn task_methods_without_a_team_are_not_found_or_not_cancelable() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ServeContext {
+            agent_id: "a",
+            inbox_path: &dir.path().join("i.jsonl"),
+            tasks: None,
+        };
+        // GetTask with no team list → TaskNotFound (-32001).
+        let g = dispatch(
+            &req(method::GET_TASK, serde_json::json!({"id": "t1"})),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(g.error.as_ref().unwrap().code, TASK_NOT_FOUND);
+        // ListTasks → empty result, not an error.
+        let l = dispatch(&req(method::LIST_TASKS, serde_json::json!({})), &ctx).unwrap();
+        assert_eq!(l.result.unwrap()["tasks"].as_array().unwrap().len(), 0);
+        // CancelTask → TaskNotCancelable (-32002).
+        let c = dispatch(
+            &req(method::CANCEL_TASK, serde_json::json!({"id": "t1"})),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(c.error.as_ref().unwrap().code, TASK_NOT_CANCELABLE);
     }
 
     #[test]
@@ -247,6 +390,7 @@ mod tests {
         let ctx = ServeContext {
             agent_id: "a",
             inbox_path: &inbox,
+            tasks: None,
         };
         let resp = dispatch(
             &notification(
@@ -267,6 +411,7 @@ mod tests {
         let ctx = ServeContext {
             agent_id: "a",
             inbox_path: &dir.path().join("i.jsonl"),
+            tasks: None,
         };
         // message missing required fields → invalid params.
         let r = dispatch(
@@ -286,6 +431,7 @@ mod tests {
         let ctx = ServeContext {
             agent_id: "a",
             inbox_path: &dir.path().join("i.jsonl"),
+            tasks: None,
         };
         let bad: JsonRpcRequest = serde_json::from_value(serde_json::json!({
             "jsonrpc": "1.0", "method": method::SEND_MESSAGE, "params": {}, "id": 1

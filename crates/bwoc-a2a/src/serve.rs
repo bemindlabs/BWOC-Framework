@@ -41,12 +41,16 @@ pub struct ServeConfig {
     pub card: AgentCard,
     /// Address to bind. Callers default this to loopback.
     pub addr: SocketAddr,
+    /// Team task list to expose over `tasks/*` (P2): `(team_id, tasks.jsonl)`.
+    /// `None` when no `--team` was selected.
+    pub team: Option<(String, PathBuf)>,
 }
 
 struct ServeState {
     agent_id: String,
     inbox_path: PathBuf,
     card: AgentCard,
+    team: Option<(String, PathBuf)>,
 }
 
 /// Run the A2A listener, blocking until shutdown. Creates its own current-thread
@@ -64,6 +68,7 @@ async fn run(cfg: ServeConfig) -> std::io::Result<()> {
         agent_id: cfg.agent_id,
         inbox_path: cfg.inbox_path,
         card: cfg.card,
+        team: cfg.team,
     });
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     axum::serve(listener, app(state)).await
@@ -119,6 +124,13 @@ async fn json_rpc(
     let ctx = ServeContext {
         agent_id: &state.agent_id,
         inbox_path: &state.inbox_path,
+        tasks: state
+            .team
+            .as_ref()
+            .map(|(team_id, path)| crate::rpc::TasksContext {
+                team_id,
+                tasks_path: path,
+            }),
     };
     match dispatch(&req, &ctx) {
         Some(resp) => Json(resp).into_response(),
@@ -156,6 +168,27 @@ mod tests {
             agent_id: "agent-yudi".into(),
             inbox_path: dir.path().join(".bwoc/inbox.jsonl"),
             card,
+            team: None,
+        });
+        (state, dir)
+    }
+
+    /// State exposing a team whose `tasks.jsonl` holds one pending task `t1`.
+    fn test_state_with_team() -> (Arc<ServeState>, tempfile::TempDir) {
+        use bwoc_core::team::{Task, render_tasks};
+        let (base, dir) = test_state();
+        let tasks_path = dir.path().join("teams/team-security/tasks.jsonl");
+        std::fs::create_dir_all(tasks_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &tasks_path,
+            render_tasks(&[Task::new("t1", "harden listener", vec![])]).unwrap(),
+        )
+        .unwrap();
+        let state = Arc::new(ServeState {
+            agent_id: base.agent_id.clone(),
+            inbox_path: base.inbox_path.clone(),
+            card: base.card.clone(),
+            team: Some(("team-security".into(), tasks_path)),
         });
         (state, dir)
     }
@@ -237,6 +270,66 @@ mod tests {
         let bytes = to_bytes(resp.into_body(), MAX_REQUEST_BYTES).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error"]["code"], PARSE_ERROR);
+    }
+
+    #[tokio::test]
+    async fn list_and_get_tasks_bridge_the_team_list() {
+        let (state, _d) = test_state_with_team();
+        // ListTasks → one task mapped to TASK_STATE_SUBMITTED (pending).
+        let resp = app(state.clone())
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","id":1,"method":method::LIST_TASKS,"params":{}
+            })))
+            .await
+            .unwrap();
+        let v = body_json(resp).await;
+        assert_eq!(v["result"]["tasks"][0]["id"], "t1");
+        assert_eq!(v["result"]["tasks"][0]["contextId"], "team-security");
+        assert_eq!(
+            v["result"]["tasks"][0]["status"]["state"],
+            "TASK_STATE_SUBMITTED"
+        );
+        // GetTask t1 → the task; an unknown id → TASK_NOT_FOUND (-32001).
+        let got = app(state.clone())
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","id":2,"method":method::GET_TASK,"params":{"id":"t1"}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(body_json(got).await["result"]["id"], "t1");
+        let missing = app(state.clone())
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","id":3,"method":method::GET_TASK,"params":{"id":"nope"}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(body_json(missing).await["error"]["code"], -32001);
+        // CancelTask → TASK_NOT_CANCELABLE (-32002), never a fake cancel.
+        let cancel = app(state)
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","id":4,"method":method::CANCEL_TASK,"params":{"id":"t1"}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(body_json(cancel).await["error"]["code"], -32002);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_is_empty_when_no_team_selected() {
+        let (state, _d) = test_state(); // team: None
+        let resp = app(state)
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","id":1,"method":method::LIST_TASKS,"params":{}
+            })))
+            .await
+            .unwrap();
+        let v = body_json(resp).await;
+        assert_eq!(v["result"]["tasks"].as_array().unwrap().len(), 0);
+    }
+
+    async fn body_json(resp: Response) -> serde_json::Value {
+        let bytes = to_bytes(resp.into_body(), MAX_REQUEST_BYTES).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]

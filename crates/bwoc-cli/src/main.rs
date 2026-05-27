@@ -236,6 +236,9 @@ struct A2aServeArgs {
     /// TCP port to listen on.
     #[arg(long, default_value_t = 41241)]
     port: u16,
+    /// Expose this team's shared task list over A2A `tasks/*` (GetTask/ListTasks).
+    #[arg(long)]
+    team: Option<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -2337,6 +2340,7 @@ fn main() -> ExitCode {
                     workspace: args.workspace,
                     bind: args.bind,
                     port: args.port,
+                    team: args.team,
                 }),
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))

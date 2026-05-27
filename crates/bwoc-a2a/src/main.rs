@@ -59,6 +59,10 @@ enum Command {
         bind: IpAddr,
         #[arg(long, default_value_t = 41241)]
         port: u16,
+        /// Expose this team's shared task list over A2A `tasks/*` (`GetTask`/
+        /// `ListTasks`). Resolves `.bwoc/teams/<team>/tasks.jsonl`.
+        #[arg(long)]
+        team: Option<String>,
     },
 }
 
@@ -77,7 +81,8 @@ fn main() -> ExitCode {
             workspace,
             bind,
             port,
-        } => run_serve(&agent, workspace, bind, port),
+            team,
+        } => run_serve(&agent, workspace, bind, port, team),
     };
     ExitCode::from(code)
 }
@@ -89,7 +94,7 @@ fn run_card(
     bind: IpAddr,
     port: u16,
 ) -> u8 {
-    let (manifest, _) = match resolve_agent(agent, workspace) {
+    let (manifest, _, _) = match resolve_agent(agent, workspace) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -107,11 +112,21 @@ fn run_card(
     }
 }
 
-fn run_serve(agent: &str, workspace: Option<PathBuf>, bind: IpAddr, port: u16) -> u8 {
-    let (manifest, inbox_path) = match resolve_agent(agent, workspace) {
+fn run_serve(
+    agent: &str,
+    workspace: Option<PathBuf>,
+    bind: IpAddr,
+    port: u16,
+    team: Option<String>,
+) -> u8 {
+    let (manifest, inbox_path, workspace_root) = match resolve_agent(agent, workspace) {
         Ok(v) => v,
         Err(code) => return code,
     };
+    let team = team.map(|id| {
+        let path = workspace_root.join(format!(".bwoc/teams/{id}/tasks.jsonl"));
+        (id, path)
+    });
     let addr = SocketAddr::new(bind, port);
     if !bind.is_loopback() {
         eprintln!(
@@ -132,6 +147,7 @@ fn run_serve(agent: &str, workspace: Option<PathBuf>, bind: IpAddr, port: u16) -
         inbox_path,
         card,
         addr,
+        team,
     }) {
         Ok(()) => 0,
         Err(e) => {
@@ -141,9 +157,12 @@ fn run_serve(agent: &str, workspace: Option<PathBuf>, bind: IpAddr, port: u16) -
     }
 }
 
-/// Resolve an agent's manifest + inbox path from the workspace registry.
-/// `Err(code)` carries the process exit code after printing to stderr.
-fn resolve_agent(agent: &str, workspace: Option<PathBuf>) -> Result<(Manifest, PathBuf), u8> {
+/// Resolve an agent's manifest + inbox path + the workspace root from the
+/// registry. `Err(code)` carries the process exit code after printing to stderr.
+fn resolve_agent(
+    agent: &str,
+    workspace: Option<PathBuf>,
+) -> Result<(Manifest, PathBuf, PathBuf), u8> {
     let Some(workspace) = resolve_workspace(workspace) else {
         eprintln!(
             "bwoc-a2a: no workspace found. Pass --workspace, set BWOC_WORKSPACE, \
@@ -173,7 +192,8 @@ fn resolve_agent(agent: &str, workspace: Option<PathBuf>) -> Result<(Manifest, P
             eprintln!("bwoc-a2a: failed to read manifest for '{agent}': {e}");
             1u8
         })?;
-    Ok((manifest, agent_dir.join(".bwoc/inbox.jsonl")))
+    let inbox = agent_dir.join(".bwoc/inbox.jsonl");
+    Ok((manifest, inbox, workspace))
 }
 
 fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {

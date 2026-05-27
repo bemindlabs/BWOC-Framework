@@ -27,6 +27,7 @@ pub struct ServeArgs {
     pub workspace: Option<PathBuf>,
     pub bind: IpAddr,
     pub port: u16,
+    pub team: Option<String>,
 }
 
 pub fn run_card(args: CardArgs) -> i32 {
@@ -42,6 +43,10 @@ pub fn run_serve(args: ServeArgs) -> i32 {
     argv.push(args.bind.to_string().into());
     argv.push("--port".into());
     argv.push(args.port.to_string().into());
+    if let Some(team) = args.team {
+        argv.push("--team".into());
+        argv.push(team.into());
+    }
     exec_sibling(argv)
 }
 

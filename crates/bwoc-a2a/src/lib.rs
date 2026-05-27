@@ -9,7 +9,9 @@
 //! - **P1-serve** (here) — the [`serve`] axum listener: Agent Card at the
 //!   well-known path + a JSON-RPC endpoint, bound loopback-only by default
 //!   (no auth yet). Driven by `bwoc a2a card` / `bwoc a2a serve`.
-//! - **P2** — `tasks/*` ↔ Saṅgha task states (`bwoc-core::team`).
+//! - **P2** (here) — [`tasks`] bridges A2A `GetTask`/`ListTasks` to a team's
+//!   Saṅgha task list; `CancelTask` honestly reports BWOC tasks aren't
+//!   A2A-cancelable. Selected with `bwoc a2a serve --team <id>`.
 //! - **P3** — streaming (`SendStreamingMessage`, SSE).
 //! - **P4** — outbound client (BWOC → external A2A endpoint).
 //! - **P5** — push notifications + remaining task states.
@@ -20,4 +22,5 @@
 pub mod card;
 pub mod rpc;
 pub mod serve;
+pub mod tasks;
 pub mod types;
