@@ -1206,6 +1206,8 @@ impl SendArgs {
             no_wakeup: self.no_wakeup,
             workspace: self.workspace,
             kind: None,
+            force_peer_route: false,
+            require_signed: false,
         })
     }
 }
@@ -2084,9 +2086,15 @@ fn main() -> ExitCode {
                     message,
                     from: Some(from),
                     reply_to: None,
-                    no_wakeup: false,
+                    // Local tmux wakeup is meaningless for a cross-workspace
+                    // recipient (and could ping an unrelated local session).
+                    no_wakeup: true,
                     workspace,
                     kind: Some("feedback".to_string()),
+                    // Route to the peer (not a same-named local agent), and
+                    // require a signature — feedback must be verifiable.
+                    force_peer_route: true,
+                    require_signed: true,
                 }),
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
