@@ -189,7 +189,7 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     // signature covers the canonical form of {from,to,ts,messageId,message,
     // nonce}; `nonce` + `sig` are added to the wire envelope.  A sender with no
     // key sends unsigned (a warning) — recipients in enforce mode will refuse
-    // it, which is the operator's cue to run `bwoc trust keygen`.
+    // it, which is the operator's cue to run `bwoc trust --keygen`.
     if let Some(dir) = &sender_bwoc_dir {
         match bwoc_signing::load_signing_key(dir) {
             Ok(Some(key)) => {
@@ -209,7 +209,7 @@ fn send(args: SendArgs) -> Result<(), SendError> {
             Ok(None) => {
                 eprintln!(
                     "[bwoc send] warning: agent `{from}` has no signing key — sending \
-                     UNSIGNED. Run `bwoc trust keygen {from}`; enforce-mode recipients \
+                     UNSIGNED. Run `bwoc trust --keygen {from}`; enforce-mode recipients \
                      will refuse unsigned messages."
                 );
             }
