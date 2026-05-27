@@ -64,6 +64,22 @@ enum Command {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Fetch and print an external agent's A2A Agent Card.
+    FetchCard {
+        /// Base URL of the remote A2A agent (the well-known path is appended).
+        url: String,
+    },
+    /// Send a text message to an external A2A agent via `SendMessage`, printing
+    /// the JSON-RPC result (a Task or Message).
+    Send {
+        /// The remote agent's JSON-RPC endpoint URL.
+        url: String,
+        /// Message text to send.
+        message: String,
+        /// Optional A2A `contextId` to associate the message with.
+        #[arg(long)]
+        context: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -83,8 +99,87 @@ fn main() -> ExitCode {
             port,
             team,
         } => run_serve(&agent, workspace, bind, port, team),
+        Command::FetchCard { url } => run_fetch_card(&url),
+        Command::Send {
+            url,
+            message,
+            context,
+        } => run_send(&url, &message, context.as_deref()),
     };
     ExitCode::from(code)
+}
+
+/// Run an async client call to completion on a one-off current-thread runtime,
+/// so the binary's command handlers stay synchronous.
+fn block_on<F: std::future::Future>(fut: F) -> std::io::Result<F::Output> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(fut))
+}
+
+fn run_fetch_card(url: &str) -> u8 {
+    let result = match block_on(bwoc_a2a::client::fetch_card(url)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("bwoc-a2a fetch-card: runtime error: {e}");
+            return 1;
+        }
+    };
+    match result {
+        Ok(card) => match serde_json::to_string_pretty(&card) {
+            Ok(s) => {
+                println!("{s}");
+                0
+            }
+            Err(e) => {
+                eprintln!("bwoc-a2a fetch-card: {e}");
+                1
+            }
+        },
+        Err(e) => {
+            eprintln!("bwoc-a2a fetch-card: {e}");
+            1
+        }
+    }
+}
+
+fn run_send(url: &str, message: &str, context: Option<&str>) -> u8 {
+    let message_id = format!(
+        "bwoc-a2a-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let result = match block_on(bwoc_a2a::client::send_message(
+        url,
+        message,
+        context,
+        &message_id,
+    )) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("bwoc-a2a send: runtime error: {e}");
+            return 1;
+        }
+    };
+    match result {
+        Ok(value) => match serde_json::to_string_pretty(&value) {
+            Ok(s) => {
+                println!("{s}");
+                0
+            }
+            Err(e) => {
+                eprintln!("bwoc-a2a send: {e}");
+                1
+            }
+        },
+        Err(e) => {
+            eprintln!("bwoc-a2a send: {e}");
+            1
+        }
+    }
 }
 
 fn run_card(

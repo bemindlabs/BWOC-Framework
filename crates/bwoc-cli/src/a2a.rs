@@ -36,6 +36,31 @@ pub fn run_card(args: CardArgs) -> i32 {
     exec_sibling(argv)
 }
 
+/// Args for `bwoc a2a fetch-card`.
+pub struct FetchCardArgs {
+    pub url: String,
+}
+
+pub fn run_fetch_card(args: FetchCardArgs) -> i32 {
+    exec_sibling(vec!["fetch-card".into(), args.url.into()])
+}
+
+/// Args for `bwoc a2a send`.
+pub struct SendOutboundArgs {
+    pub url: String,
+    pub message: String,
+    pub context: Option<String>,
+}
+
+pub fn run_send_outbound(args: SendOutboundArgs) -> i32 {
+    let mut argv: Vec<OsString> = vec!["send".into(), args.url.into(), args.message.into()];
+    if let Some(ctx) = args.context {
+        argv.push("--context".into());
+        argv.push(ctx.into());
+    }
+    exec_sibling(argv)
+}
+
 pub fn run_serve(args: ServeArgs) -> i32 {
     let mut argv: Vec<OsString> = vec!["serve".into(), args.agent.into()];
     push_workspace(&mut argv, args.workspace);

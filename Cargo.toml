@@ -42,6 +42,8 @@ tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
 # SSE streaming (#48 P3) — `async_stream::stream!` builds the event stream.
 async-stream = "0.3"
 futures-core = "0.3"
+# Outbound A2A client (#48 P4) — rustls so there's no system OpenSSL dependency.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [profile.release]
 lto = "thin"

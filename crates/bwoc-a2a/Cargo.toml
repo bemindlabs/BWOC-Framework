@@ -22,6 +22,8 @@ axum = { workspace = true }
 tokio = { workspace = true }
 async-stream = { workspace = true }
 futures-core = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
 clap = { workspace = true }
 
 # The serve listener runs in its own binary, exec'd by `bwoc a2a` in the CLI.
@@ -33,3 +35,5 @@ path = "src/main.rs"
 tempfile = "3"
 # `oneshot` the axum Router in tests without binding a real socket.
 tower = { version = "0.5", features = ["util"] }
+# Mock an external A2A endpoint to test the outbound client (P4).
+wiremock = "0.6"

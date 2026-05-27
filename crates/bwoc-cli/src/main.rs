@@ -211,6 +211,27 @@ enum A2aCommand {
     /// Run the A2A HTTP listener: Agent Card at the well-known path + a
     /// JSON-RPC endpoint that drops inbound messages into the agent's inbox.
     Serve(A2aServeArgs),
+    /// Fetch and print an external agent's A2A Agent Card (discovery).
+    FetchCard(A2aFetchCardArgs),
+    /// Send a text message to an external A2A agent via SendMessage.
+    Send(A2aSendArgs),
+}
+
+#[derive(Args, Debug)]
+struct A2aFetchCardArgs {
+    /// Base URL of the remote A2A agent (the well-known path is appended).
+    url: String,
+}
+
+#[derive(Args, Debug)]
+struct A2aSendArgs {
+    /// The remote agent's JSON-RPC endpoint URL.
+    url: String,
+    /// Message text to send.
+    message: String,
+    /// Optional A2A `contextId` to associate the message with.
+    #[arg(long)]
+    context: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -2341,6 +2362,14 @@ fn main() -> ExitCode {
                     bind: args.bind,
                     port: args.port,
                     team: args.team,
+                }),
+                A2aCommand::FetchCard(args) => {
+                    a2a::run_fetch_card(a2a::FetchCardArgs { url: args.url })
+                }
+                A2aCommand::Send(args) => a2a::run_send_outbound(a2a::SendOutboundArgs {
+                    url: args.url,
+                    message: args.message,
+                    context: args.context,
                 }),
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))

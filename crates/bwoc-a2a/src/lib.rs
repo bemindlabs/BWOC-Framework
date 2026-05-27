@@ -13,13 +13,16 @@
 //!   Saṅgha task list; `CancelTask` honestly reports BWOC tasks aren't
 //!   A2A-cancelable. Selected with `bwoc a2a serve --team <id>`.
 //! - **P3** — streaming (`SendStreamingMessage`, SSE).
-//! - **P4** — outbound client (BWOC → external A2A endpoint).
+//! - **P4** (here) — outbound [`client`]: BWOC initiates A2A calls to an
+//!   external endpoint (fetch its Agent Card, `SendMessage`). Driven by
+//!   `bwoc a2a fetch-card`/`send`.
 //! - **P5** — push notifications + remaining task states.
 //!
-//! HTTP deps (axum here; reqwest in P4) stay isolated to this crate —
+//! HTTP deps (axum listener, reqwest client) stay isolated to this crate —
 //! `bwoc-core` keeps the dep-quarantine (no HTTP).
 
 pub mod card;
+pub mod client;
 pub mod rpc;
 pub mod serve;
 pub mod tasks;
