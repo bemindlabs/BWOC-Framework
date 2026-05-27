@@ -85,6 +85,11 @@ struct SkillSection {
 struct ContractSection {
     #[serde(default)]
     requires: Vec<String>,
+    /// Plugin KINDS this skill needs enabled in the workspace (BWOC-44/45).
+    /// Distinct from `requires` (skill names): resolved against the plugin-kind
+    /// enum, not skill names. See SKILLS.en.md §"Skill-on-plugin dependency".
+    #[serde(default)]
+    requires_plugins: Vec<String>,
     #[serde(default)]
     exposes: Vec<String>,
 }
@@ -297,6 +302,7 @@ fn skill_summary_json(s: &DiscoveredSkill, enabled: Option<bool>) -> serde_json:
         "description": s.manifest.skill.description,
         "maturity": s.manifest.skill.maturity,
         "requires": s.manifest.contract.requires,
+        "requires_plugins": s.manifest.contract.requires_plugins,
         "exposes": s.manifest.contract.exposes,
         "verify": s.manifest.gates.verify,
         "path": s.path.display().to_string(),
@@ -505,6 +511,14 @@ pub fn run_show(args: ShowArgs) -> i32 {
             s.manifest.contract.requires.join(", ")
         }
     );
+    println!(
+        "Req. plugins  {}",
+        if s.manifest.contract.requires_plugins.is_empty() {
+            "(none)".to_string()
+        } else {
+            s.manifest.contract.requires_plugins.join(", ")
+        }
+    );
     println!("Exposes       {}", s.manifest.contract.exposes.join(", "));
     println!(
         "Verify gate   {}",
@@ -574,6 +588,13 @@ pub fn run_verify(args: VerifyArgs) -> i32 {
         vec![s]
     };
 
+    // BWOC-45: skill-on-plugin dependency resolution substrate. The set of
+    // plugin kinds with an enabled plugin in this workspace — resolved once,
+    // reused for every target. `bwoc skill verify` runs the SAME check agent
+    // spawn does (SKILLS.en.md §"Skill-on-plugin dependency", line 195) so the
+    // gap surfaces in pre-flight, not at runtime.
+    let available_kinds = crate::plugin::enabled_plugin_kinds(&root);
+
     let mut results: Vec<serde_json::Value> = Vec::with_capacity(targets.len());
     let mut overall_ok = true;
     // Tracks whether any skill declared a gate that was printed but not run, so
@@ -627,16 +648,34 @@ pub fn run_verify(args: VerifyArgs) -> i32 {
         if !ok {
             overall_ok = false;
         }
+        // BWOC-45: resolve [contract].requires_plugins against the enabled
+        // plugin kinds. A required kind with no enabled plugin is unmet — the
+        // agent would be half-wired at spawn — so the skill fails verify.
+        let missing_kinds: Vec<String> = s
+            .manifest
+            .contract
+            .requires_plugins
+            .iter()
+            .filter(|k| !available_kinds.contains(k.as_str()))
+            .cloned()
+            .collect();
+        let deps_ok = missing_kinds.is_empty();
+        if !deps_ok {
+            overall_ok = false;
+        }
         let elapsed_ms = started.elapsed().as_millis() as u64;
         if args.json {
             results.push(serde_json::json!({
                 "skill": s.manifest.skill.name,
                 "verify_command": s.manifest.gates.verify,
                 "exit_code": exit_code,
-                "ok": ok,
+                "ok": ok && deps_ok,
                 "executed": executed,
                 "skipped": !command_present,
                 "duration_ms": elapsed_ms,
+                "requires_plugins": s.manifest.contract.requires_plugins,
+                "missing_plugin_kinds": missing_kinds,
+                "deps_ok": deps_ok,
             }));
         } else if !command_present {
             println!("- {}  (skipped — no [gates].verify)", s.manifest.skill.name);
@@ -651,6 +690,14 @@ pub fn run_verify(args: VerifyArgs) -> i32 {
         } else {
             let tag = if ok { "OK" } else { "FAIL" };
             println!("{tag:<5} {}  ({elapsed_ms} ms)", s.manifest.skill.name);
+        }
+        // BWOC-45: surface an unmet plugin dependency on its own line so it is
+        // visible even when the gate itself was skipped or not run.
+        if !args.json && !missing_kinds.is_empty() {
+            println!(
+                "      ✗ unmet plugin dependency — no enabled plugin of kind(s): {}",
+                missing_kinds.join(", ")
+            );
         }
     }
 
@@ -2256,5 +2303,99 @@ mod tests {
         assert_ne!(run_verify(verify_args(root, true)), 0);
         // Without the flag, the failing gate never runs → success.
         assert_eq!(run_verify(verify_args(root, false)), 0);
+    }
+
+    // ---- BWOC-45: skill-on-plugin dependency resolution --------------------
+
+    /// Write a skill that declares `requires_plugins = ["jira"]` and no gate,
+    /// so verify's result is driven purely by dependency resolution.
+    fn write_jira_dep_skill(root: &Path) {
+        let dir = root.join("modules/skills/scrum-via-jira");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.toml"),
+            "[skill]\nname = \"scrum-via-jira\"\nversion = \"0.1.0\"\n\
+             description = \"scrum via a jira-kind plugin\"\nmaturity = \"L1\"\n\n\
+             [contract]\nrequires = []\nrequires_plugins = [\"jira\"]\n\
+             exposes = [\"propose-sprint\"]\n",
+        )
+        .unwrap();
+    }
+
+    /// Install a jira-kind plugin AND enable it in `workspace.toml`, so the
+    /// `requires_plugins = ["jira"]` dependency resolves.
+    fn install_and_enable_jira_plugin(root: &Path) {
+        let dir = root.join("modules/plugins/jira-cloud-rest");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.toml"),
+            "[plugin]\nname = \"jira-cloud-rest\"\nkind = \"jira\"\nversion = \"0.1.0\"\n\
+             description = \"jira adapter\"\ncompat = \">=2.7.0\"\nentry = \"jira.sh\"\n",
+        )
+        .unwrap();
+        let bwoc = root.join(".bwoc");
+        std::fs::create_dir_all(&bwoc).unwrap();
+        std::fs::write(
+            bwoc.join("workspace.toml"),
+            "[plugins.jira-cloud-rest]\nenabled = true\n",
+        )
+        .unwrap();
+    }
+
+    fn jira_dep_verify_args(root: &Path) -> VerifyArgs {
+        VerifyArgs {
+            common: CommonArgs {
+                workspace: Some(root.to_path_buf()),
+            },
+            name: Some("scrum-via-jira".to_string()),
+            all: false,
+            run_gates: false,
+            json: false,
+        }
+    }
+
+    #[test]
+    fn verify_resolves_satisfied_plugin_dependency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_jira_dep_skill(root);
+        install_and_enable_jira_plugin(root);
+        assert_eq!(
+            run_verify(jira_dep_verify_args(root)),
+            0,
+            "an enabled jira-kind plugin should satisfy requires_plugins = [\"jira\"]"
+        );
+    }
+
+    #[test]
+    fn verify_fails_on_missing_plugin_dependency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_jira_dep_skill(root);
+        // No jira-kind plugin installed/enabled → the dependency is unmet.
+        assert_ne!(
+            run_verify(jira_dep_verify_args(root)),
+            0,
+            "an unmet plugin dependency must fail verify"
+        );
+    }
+
+    #[test]
+    fn verify_fails_when_required_plugin_installed_but_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_jira_dep_skill(root);
+        install_and_enable_jira_plugin(root);
+        // Flip the plugin off — installed is not enough; spawn needs ENABLED.
+        std::fs::write(
+            root.join(".bwoc/workspace.toml"),
+            "[plugins.jira-cloud-rest]\nenabled = false\n",
+        )
+        .unwrap();
+        assert_ne!(
+            run_verify(jira_dep_verify_args(root)),
+            0,
+            "a disabled plugin must not satisfy the dependency"
+        );
     }
 }

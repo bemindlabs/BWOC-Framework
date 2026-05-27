@@ -52,10 +52,11 @@ description = "Create, isolate, cleanup worktrees per Anatta."   # required — 
 maturity    = "L1"                              # required — see "Maturity" below
 
 [contract]
-requires    = []                                # optional (default []) — other framework skills this depends on
-exposes     = ["claim_task", "release_task"]    # required — named operations the skill makes available
-                                                #   (must be a non-empty array; empty means the skill exposes nothing
-                                                #    and should not exist — see Field reference)
+requires         = []                              # optional (default []) — other framework skills this depends on
+requires_plugins = []                              # optional (default []) — plugin KINDS this skill needs enabled
+exposes          = ["claim_task", "release_task"]  # required — named operations the skill makes available
+                                                   #   (must be a non-empty array; empty means the skill exposes nothing
+                                                   #    and should not exist — see Field reference)
 
 [gates]
 verify      = "bwoc skill verify worktree-discipline"   # optional — shell command; exits 0 iff the skill works here
@@ -69,7 +70,8 @@ verify      = "bwoc skill verify worktree-discipline"   # optional — shell com
 | `[skill]` | `version` | yes | string (semver) | Semver of the skill itself, separate from the framework version |
 | `[skill]` | `description` | yes | string | One-sentence summary; shown by `bwoc skill list` |
 | `[skill]` | `maturity` | yes | enum `L1`..`L7` | Current maturity level (see [Maturity](#maturity-levels)); honest declaration enforced by `bwoc check` |
-| `[contract]` | `requires` | no (default `[]`) | array of strings | Names of other installed skills this skill depends on; resolved at agent spawn |
+| `[contract]` | `requires` | no (default `[]`) | array of strings | Names of other installed framework **skills** this skill depends on; resolved at agent spawn |
+| `[contract]` | `requires_plugins` | no (default `[]`) | array of strings | Plugin **kinds** this skill needs enabled in the workspace; resolved at agent spawn (see [Skill-on-plugin dependency](#skill-on-plugin-dependency)) |
 | `[contract]` | `exposes` | yes (non-empty) | array of strings | Named operations the skill makes available to its caller; an empty array fails `bwoc check` |
 | `[gates]` | `verify` | no | string (shell command) | Command run by `bwoc skill verify <name>`; exits 0 iff the skill works in this environment |
 
@@ -160,10 +162,38 @@ At agent spawn the framework:
 1. Reads the `skills.framework` list from the agent's manifest.
 2. Filters to entries where `enabled` is `true`. Entries with `enabled = false` are kept in the manifest (as documented intent) but skipped at load.
 3. Resolves each entry against the workspace's `modules/skills/<name>/` directory.
-4. Loads each skill's manifest and runs `init`.
-5. Refuses to spawn if any required skill is missing or fails its verify gate.
+4. Resolves each skill's `[contract] requires` (other skills) and `[contract] requires_plugins` (plugin **kinds**) against the workspace — every named skill must be installed-and-enabled and every named kind must have an enabled `workspace.toml [plugins.<name>]` of that kind (see [Skill-on-plugin dependency](#skill-on-plugin-dependency)).
+5. Loads each skill's manifest and runs `init`.
+6. Refuses to spawn if any required skill is missing, any required plugin kind is not enabled, or any verify gate fails.
 
 No central index. A workspace knows about a skill only because it lives under `modules/skills/`. Sources can be remote (git / tarball / local path — see [Sources & Installation](#sources--installation)) but **the resolution lookup is always local to the workspace** — no runtime network calls during agent spawn. **Anattā** preserved.
+
+---
+
+## Skill-on-plugin dependency
+
+A skill may depend not only on other **skills** (`[contract] requires`) but on a **plugin** (`[contract] requires_plugins`). A skill is an agent capability; a plugin is a framework integration ([`PLUGINS.en.md`](PLUGINS.en.md#skill-vs-plugin)). When a skill is a thin scrum/agent-vocabulary wrapper over an integration the workspace already loads, it declares that integration as a dependency rather than reimplementing it. The first such skill is [`scrum-via-jira`](../../modules/skills/scrum-via-jira/SPEC.md), which wraps a `jira`-kind plugin's `bwoc jira` verbs.
+
+```toml
+[contract]
+requires         = ["worktree-discipline"]   # framework SKILL names
+requires_plugins = ["jira"]                   # plugin KINDS — not plugin names
+exposes          = ["transition-story", "..."]
+```
+
+### Kinds, not names
+
+`requires_plugins` names plugin **kinds** (the [`PLUGINS.en.md` §Plugin Kinds](PLUGINS.en.md#plugin-kinds) enum: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, …), never a specific plugin's `name`. A skill that needs Jira depends on *any* enabled `jira`-kind adapter, not on `jira-cloud-rest` specifically — so the adapter can be swapped without touching the skill, and the skill stays neutral. This is also why a dedicated field is used rather than overloading `requires`: `requires` resolves against skill names, `requires_plugins` against the kind enum, and conflating the two namespaces would make a bare `"jira"` ambiguous (a skill named `jira`? a kind `jira`?).
+
+### Direction is one-way: skill → plugin
+
+The skill calls the plugin's verbs; the plugin has no knowledge of the skill and is fully usable without it (the operator runs the plugin's CLI directly). A plugin therefore never declares a skill dependency — the dependency arrow only ever points skill → plugin.
+
+### Resolution
+
+- **At agent spawn** — for every kind in `requires_plugins`, the framework checks the workspace has an **enabled** plugin of that kind (`workspace.toml [plugins.<name>]` with matching `kind`). If none is enabled, spawn fails fast with a diagnostic naming the missing kind; the agent is never half-wired (Discovery step 4).
+- **Earlier, via `bwoc skill verify <name>`** — runs the same check before spawn time so the gap surfaces in CI / pre-flight, not at runtime.
+- **Statically, via `bwoc check`** — validates that every `requires_plugins` value is a valid kind enum (see [Verification](#verification)). It does not require the plugin to be enabled at check time — enablement is a per-agent spawn concern, kind-validity is a manifest concern.
 
 ---
 
@@ -346,6 +376,7 @@ A skill bumps maturity in its own `version` change; the `version` and `maturity`
 | Neutrality | No vendor names / model IDs / backend CLIs in manifest values |
 | `SPEC.md` present | A `SPEC.md` file exists alongside the manifest |
 | Required fields | `name`, `version`, `description`, `maturity`, `[contract] exposes` all present |
+| `requires_plugins` kinds valid | every value in `[contract] requires_plugins` (if present) is a valid plugin-kind enum (does not require the plugin to be enabled — that is a spawn-time check) |
 | Source registry parseable | `.bwoc/installed-sources.toml` is valid TOML if present |
 | No orphan source records | every entry where `kind = "skill"` in the registry has a matching `modules/skills/<name>/` directory |
 | No orphan installations | every `modules/skills/<name>/` either has a registry entry OR contains an `.authored-in-place` marker file (authored-in-place skills opt out of registry tracking) |

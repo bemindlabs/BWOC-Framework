@@ -33,7 +33,7 @@ Skill กับ plugin ใช้ substrate ร่วมกัน (TOML manifest,
 
 ## ประเภทของปลั๊กอิน
 
-ปลั๊กอินทุกตัวประกาศ `kind` Kind กำหนด lifecycle hook ที่เฟรมเวิร์กจะเรียก spec นี้ส่งสี่ประเภท:
+ปลั๊กอินทุกตัวประกาศ `kind` Kind กำหนด lifecycle hook ที่เฟรมเวิร์กจะเรียก spec นี้ส่งห้าประเภท:
 
 | Kind | สิ่งที่ขยาย | ผู้รับ lifecycle |
 |---|---|---|
@@ -41,10 +41,13 @@ Skill กับ plugin ใช้ substrate ร่วมกัน (TOML manifest,
 | `llm-backend` | Backend นอกเหนือจากห้าตัวที่ประกาศ (`claude`, `antigravity`, `codex`, `kimi`, `ollama`) | `bwoc spawn` |
 | `workflow` | Integration กับระบบภายนอก (issue tracker, code review, CI) | โค้ดของ agent ที่เรียกออก |
 | `audit` | การตรวจสอบ workspace ตามมาตรฐานภายนอก (ISO/IEC 29110, ISO 9001, ISO 20000-1, ISO 27001) หรือ audit ที่ operator เขียนเอง (license header, doc parity, secret scan) | `bwoc audit` CLI |
+| `jira` | Sync สองทิศทางกับ issue tracker ภายนอก (Jira Cloud) — อ่าน issue ผ่าน JQL และ **เขียน** status transition, การแก้ field, และการ assign sprint กลับไปยัง tracker | `bwoc jira` CLI |
 
 ปลั๊กอินตั้ง `kind` ครั้งเดียว ปลั๊กอินข้าม kind ไม่รองรับ — แยกออกเป็นหลายตัว
 
 ประเภท `audit` เพิ่มเข้ามาใน `BWOC-EPIC-2`; เหตุผล (ทำไมเลือก `audit` ไม่ใช่ `compliance` หรือ `policy`) และโรดแมป ISO ที่เป็นแรงจูงใจ ดู [BWOC-19 design note](../../notes/2026-05-26_iso-compliance-plugins.md)
+
+ประเภท `jira` เพิ่มเข้ามาใน `BWOC-EPIC-6` เป็น **plugin kind ตัวแรกที่เขียนได้ (write-capable)** ของเฟรมเวิร์ก — เป็น *integration adapter* ไม่ใช่ reporting kind ทุก kind เหนือมัน (`audit` รวมถึง reporting kind ที่วางแผนไว้) เพียง **อ่าน** workspace แล้วส่งรายงานออก; `jira` ทั้ง **อ่านและเขียน** external system of record คุณสมบัติเดียวนี้ — side-effect ภายนอกที่ durable และย้อนกลับยากตอน `invoke` — คือสิ่งที่ทำให้มันต่าง: มันเก็บ sync ledger (`.scrum/jira-sync.json`), gate write verb ไว้หลัง operator confirmation, และพก [สคีมา Jira Issue Mapping](#สคีมา-jira-issue-mapping) ที่เป็น normative เหตุผลว่าทำไมเป็น kind แยกแทนที่จะเป็น `workflow` plugin, auth model, ขอบเขต JQL/rate-limit, และนโยบาย conflict สองทิศทาง ดู [BWOC-40 design note](../../notes/2026-05-27_jira-plugin-architecture.md) — spec นี้ประกาศ kind และ mapping schema เท่านั้น ไม่ทำซ้ำ rationale นั้น
 
 ### สิ่งที่ Plugin ไม่ใช่
 
@@ -178,6 +181,64 @@ Process exit code เป็น normative และคงรูปข้ามเ
 
 ---
 
+## สคีมา Jira Issue Mapping
+
+ปลั๊กอินประเภท `jira` map scrum story ไปยัง Jira issue ผ่าน **mapping entry** สคีมาด้านล่างเป็น normative — ทั้ง reference plugin และ sync ledger (`.scrum/jira-sync.json`) ต้อง persist mapping entry ตามรูปนี้ และ resolution plan ของ `bwoc jira sync` (ตาม `BWOC-42`) คำนวณบนสคีมานี้โดยตรง เฟรมเวิร์ก validate ฟิลด์ที่บังคับที่ขอบเขตของ `invoke` ทุกครั้งที่อ่านหรือเขียน mapping; ฟิลด์บังคับที่หายไปคือ bug ของปลั๊กอินที่ทำให้ sync run fail ไม่ใช่สถานะที่ operator ต้องมานั่ง reconcile เอง
+
+นี่คือ contract ของ kind `jira` เป็น analogue ฝั่งเขียนของ [สคีมา Findings สำหรับ Audit](#สคีมา-findings-สำหรับ-audit) ที่ kind `audit` พกไว้ Auth model, ขอบเขต JQL/rate-limit, และนโยบาย conflict สองทิศทางที่ใช้ฟิลด์เหล่านี้อยู่ใน [BWOC-40 design note](../../notes/2026-05-27_jira-plugin-architecture.md) และไม่ทำซ้ำที่นี่
+
+### ฟิลด์
+
+| ฟิลด์ | ชนิดข้อมูล | บังคับ | ความหมาย |
+|---|---|---|---|
+| `issue_key` | string | ใช่ | Jira issue key (เช่น `BWOC-123`) **external key ที่คงที่** — ฟิลด์ที่ mapping ใช้เป็น key คู่กับ scrum story id การเปลี่ยนที่นี่คือ mapping drift (การย้าย project ใน Jira ทำให้ key เปลี่ยน) ไม่ใช่การแก้ field (ดู [Field stability](#field-stability)) |
+| `project` | string | ใช่ | Project key ของ Jira ที่ issue อยู่ (เช่น `BWOC`) ทุกการอ่าน project-scoped; mapping ที่ `project` หลุดจาก project ที่ตั้งไว้จะถูก reject |
+| `summary` | string | ใช่ | ชื่อ issue เป็น projection ของ Jira state ที่เปลี่ยนได้ refresh ทุก sync |
+| `status` | string | ใช่ | Workflow status ของ issue (เช่น `In Progress`) map ไปยัง scrum status เปลี่ยนได้; เทียบ field-by-field กับ watermark `last_synced` เพื่อตรวจ conflict |
+| `assignee` | string | ไม่ | Account identifier ของผู้รับงาน (Atlassian `accountId` หรือ email) ตัดออกเมื่อ issue ไม่มีผู้รับงาน |
+| `story_points` | number | ไม่ | คะแนนประมาณการ ตัดออกเมื่อ issue ยังไม่ได้ประเมิน |
+| `parent_epic` | string | ไม่ | `issue_key` ของ epic แม่ ตัดออกสำหรับ issue ที่ไม่อยู่ใน epic ใด |
+| `sprint` | string | ไม่ | ชื่อหรือ identifier ของ sprint ที่ issue ถูก assign ตัดออกเมื่อ issue อยู่ใน backlog (ไม่มี sprint) |
+| `last_synced` | string (ISO 8601 datetime) | ใช่ | Watermark ของการ sync สำเร็จครั้งล่าสุดของ issue นี้ ขับเคลื่อนการตรวจ conflict แบบ per-field last-writer-wins; เป็นอิสระจาก credential ดังนั้นการ rotate API token จึงไม่ทำให้มัน invalid |
+
+ฟิลด์ที่ไม่บังคับจะถูก **ตัดออกจาก entry** เมื่อ issue ไม่มีค่า — issue ที่ไม่มีผู้รับงานจะไม่มี key `assignee` — ไม่ serialize เป็น `null` เหมือนกับที่ audit finding ที่ผ่านตัด `remedy` ออกแทนที่จะส่งค่าว่าง
+
+### Field stability
+
+`issue_key` คือ external key ที่คงที่ Mapping ใช้ `issue_key` เป็น key (คู่กับ scrum story id); เป็นฟิลด์ **เดียว** ที่ consumer — sync ledger, เครื่องมือ diff, dashboard — ถือเป็น identifier ถาวรได้ อีกแปดฟิลด์เป็น projection ของ Jira state ที่เปลี่ยนได้ refresh ทุก sync และเทียบ field-by-field กับ watermark `last_synced`; อย่าใช้ `summary`, `status`, `assignee`, `story_points`, `parent_epic`, หรือ `sprint` เป็น key การเปลี่ยน `issue_key` เอง (การย้าย project ใน Jira ที่ re-key issue) คือ **mapping drift** ไม่ใช่การแก้ field — surface ให้ operator ไม่เขียนทับเงียบ ๆ ตามการจัดการ `404 → mapping drift` ใน [BWOC-40 design note](../../notes/2026-05-27_jira-plugin-architecture.md)
+
+### ตัวอย่าง
+
+Mapping entry ของ story ที่ข้อมูลครบและอยู่ใน sprint:
+
+```json
+{
+  "issue_key":    "BWOC-123",
+  "project":      "BWOC",
+  "summary":      "ประกาศ jira plugin kind ใน PLUGINS spec",
+  "status":       "In Progress",
+  "assignee":     "agent-jisoo@bwoc.local",
+  "story_points": 5,
+  "parent_epic":  "BWOC-100",
+  "sprint":       "Sprint 6",
+  "last_synced":  "2026-05-27T10:00:00Z"
+}
+```
+
+Entry ของ issue ใน backlog ที่ไม่มีผู้รับงาน ตัดฟิลด์ไม่บังคับที่ไม่มีค่าออก:
+
+```json
+{
+  "issue_key":   "BWOC-200",
+  "project":     "BWOC",
+  "summary":     "ร่าง scrum-via-jira skill",
+  "status":      "To Do",
+  "last_synced": "2026-05-27T10:00:00Z"
+}
+```
+
+---
+
 ## โครงสร้างไดเรกทอรี
 
 ```
@@ -197,7 +258,7 @@ modules/plugins/
 ```toml
 [plugin]
 name        = "memory-tier2-noop"               # บังคับ — ต้องตรงกับชื่อไดเรกทอรี
-kind        = "memory-backend"                  # บังคับ — หนึ่งใน: memory-backend | llm-backend | workflow | audit
+kind        = "memory-backend"                  # บังคับ — หนึ่งใน: memory-backend | llm-backend | workflow | audit | jira
 version     = "0.1.0"                           # บังคับ — semver
 description = "No-op Tier 2 memory backend that forwards to Tier 1."   # บังคับ — สรุปหนึ่งประโยค
 compat      = ">=2.5.0"                         # บังคับ — semver range; เวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้
@@ -216,7 +277,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # บังคับ — binary 
 | Section | Field | บังคับ | ชนิดข้อมูล | ความหมาย |
 |---|---|---|---|---|
 | `[plugin]` | `name` | ใช่ | string (kebab-case) | ชื่อปลั๊กอิน; ต้องตรงกับชื่อไดเรกทอรีใต้ `modules/plugins/` |
-| `[plugin]` | `kind` | ใช่ | enum | หนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`; เปลี่ยนไม่ได้หลัง `init` |
+| `[plugin]` | `kind` | ใช่ | enum | หนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; เปลี่ยนไม่ได้หลัง `init` |
 | `[plugin]` | `version` | ใช่ | string (semver) | Semver ของปลั๊กอินเอง แยกจากเวอร์ชันเฟรมเวิร์ก |
 | `[plugin]` | `description` | ใช่ | string | สรุปหนึ่งประโยค; เป็นค่า **ที่เดียว** ใน manifest ที่ยอมให้มีชื่อ vendor |
 | `[plugin]` | `compat` | ใช่ | string (semver range) | ช่วงเวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้; ถ้าไม่ตรงเฟรมเวิร์กปฏิเสธการ load |
@@ -446,7 +507,7 @@ modules/plugin-template/
 
 Placeholder ใช้รูปแบบ `{{camelCase}}` เดียวกับ `modules/agent-template/` และ `modules/skill-template/` รายการ substitute ที่บังคับอยู่ใน [`SPEC.md`](../../modules/plugin-template/SPEC.md) ของ template เอง
 
-flag `--kind` บังคับ — ไม่มี default ค่าที่ถูกต้อง: `memory-backend`, `llm-backend`, `workflow`, `audit` Kind ในอนาคตขยาย enum นี้โดยไม่เปลี่ยนโครงสร้าง template flag นี้ทำให้ operator ต้องระบุเจตนาตั้งแต่ต้น และเลี่ยง manifest ที่มี `kind` field หาย/ผิด
+flag `--kind` บังคับ — ไม่มี default ค่าที่ถูกต้อง: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` Kind ในอนาคตขยาย enum นี้โดยไม่เปลี่ยนโครงสร้าง template flag นี้ทำให้ operator ต้องระบุเจตนาตั้งแต่ต้น และเลี่ยง manifest ที่มี `kind` field หาย/ผิด
 
 `bwoc plugin init` เป็นวิธีที่แนะนำสำหรับเริ่มปลั๊กอินใหม่ — สร้างเองด้วยมือทำได้แต่ข้าม consistency ของ placeholder
 
@@ -483,7 +544,7 @@ Source ที่ถูกลบไม่ถูก auto-uninstall จาก `.bwo
 |---|---|
 | Manifest parseable | `manifest.toml` เป็น TOML ที่ valid และตรง schema ด้านบน |
 | ชื่อตรงกับไดเรกทอรี | `[plugin].name == basename(directory)` |
-| Kind valid | `[plugin].kind` เป็นหนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit` (หรือ kind ในอนาคตที่เพิ่มเข้า enum) |
+| Kind valid | `[plugin].kind` เป็นหนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` (หรือ kind ในอนาคตที่เพิ่มเข้า enum) |
 | Neutrality | ชื่อ vendor ปรากฏเฉพาะใน `description`; ที่อื่นไม่ได้ |
 | มี `SPEC.md` | ไฟล์ `SPEC.md` อยู่ข้าง manifest |
 | ฟิลด์บังคับครบ | `name`, `kind`, `version`, `description`, `compat`, `entry` ครบ |

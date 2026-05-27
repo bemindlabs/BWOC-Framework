@@ -33,7 +33,7 @@ Pick the layer that matches *who turns it on*. If an individual agent's logic ca
 
 ## Plugin Kinds
 
-Every plugin declares a `kind`. Kinds define the lifecycle hooks the framework will call. Four kinds ship with this spec:
+Every plugin declares a `kind`. Kinds define the lifecycle hooks the framework will call. Five kinds ship with this spec:
 
 | Kind | What it extends | Lifecycle owner |
 |---|---|---|
@@ -41,10 +41,13 @@ Every plugin declares a `kind`. Kinds define the lifecycle hooks the framework w
 | `llm-backend` | Backends beyond the five declared (`claude`, `antigravity`, `codex`, `kimi`, `ollama`) | `bwoc spawn` |
 | `workflow` | External system integrations (issue trackers, code review, CI) | The agent calling out |
 | `audit` | Inspection of the workspace against external standards (ISO/IEC 29110, ISO 9001, ISO 20000-1, ISO 27001) or operator-authored audits (license headers, doc parity, secret scans) | `bwoc audit` CLI |
+| `jira` | Bidirectional sync with an external issue tracker (Jira Cloud) — reads issues via JQL and **writes** status transitions, field updates, and sprint assignment back to the tracker | `bwoc jira` CLI |
 
 A plugin sets `kind` once. Cross-kind plugins are not supported — split them.
 
 The `audit` kind was added in `BWOC-EPIC-2`; for the rationale (why `audit`, not `compliance` or `policy`) and the ISO standards roadmap that motivates it, see the [BWOC-19 design note](../../notes/2026-05-26_iso-compliance-plugins.md).
+
+The `jira` kind was added in `BWOC-EPIC-6` as the framework's **first write-capable plugin kind** — an *integration adapter*, not a reporting kind. Every kind above it (`audit`, plus the planned reporting kinds) only **reads** the workspace and emits a report; `jira` reads **and writes** an external system of record. That single property — durable, hard-to-reverse external side-effects on `invoke` — is what sets it apart: it persists a sync ledger (`.scrum/jira-sync.json`), gates its write verbs behind operator confirmation, and carries a normative [Jira Issue Mapping Schema](#jira-issue-mapping-schema). For why it is a distinct kind rather than a `workflow` plugin, the auth model, JQL and rate-limit bounds, and the bidirectional conflict policy, see the [BWOC-40 design note](../../notes/2026-05-27_jira-plugin-architecture.md) — this spec declares the kind and the mapping schema and does not duplicate that rationale.
 
 ### What plugins are NOT
 
@@ -178,6 +181,64 @@ The process exit code is normative and stable across releases. Operators and CI 
 
 ---
 
+## Jira Issue Mapping Schema
+
+A `jira` plugin maps a scrum story to a Jira issue through a **mapping entry**. The schema below is normative — the reference plugin and the sync ledger (`.scrum/jira-sync.json`) alike MUST persist mapping entries conforming to this shape, and the `bwoc jira sync` resolution plan (per `BWOC-42`) is computed directly over it. The framework validates the required fields at every `invoke` boundary that reads or writes a mapping; a missing required field is a plugin bug that fails the sync run, not a state the operator must reconcile by hand.
+
+This is the `jira` kind's contract, the write-side analogue of the [Audit Findings Schema](#audit-findings-schema) the `audit` kind carries. The auth model, JQL/rate-limit bounds, and the bidirectional conflict policy that consume these fields live in the [BWOC-40 design note](../../notes/2026-05-27_jira-plugin-architecture.md) and are not duplicated here.
+
+### Fields
+
+| Field | Type | Required | Semantics |
+|---|---|---|---|
+| `issue_key` | string | yes | The Jira issue key (e.g. `BWOC-123`). **The stable external key** — the field the mapping is keyed on, paired with the scrum story id. A change here is mapping drift (a Jira project move re-keys the issue), not a field update (see [Field stability](#field-stability)). |
+| `project` | string | yes | The Jira project key the issue lives under (e.g. `BWOC`). Every read is project-scoped; a mapping whose `project` escapes the configured project(s) is rejected. |
+| `summary` | string | yes | The issue title. A mutable projection of Jira state, refreshed each sync. |
+| `status` | string | yes | The issue's workflow status (e.g. `In Progress`), mapped to the scrum status. Mutable; compared field-by-field against the `last_synced` watermark for conflict detection. |
+| `assignee` | string | no | Account identifier of the assignee (Atlassian `accountId` or email). Omitted when the issue is unassigned. |
+| `story_points` | number | no | Estimation points. Omitted when the issue is unestimated. |
+| `parent_epic` | string | no | The `issue_key` of the parent epic. Omitted for issues that belong to no epic. |
+| `sprint` | string | no | The sprint name or identifier the issue is assigned to. Omitted when the issue sits in the backlog (no sprint). |
+| `last_synced` | string (ISO 8601 datetime) | yes | Watermark of the last successful sync for this issue. Drives the per-field last-writer-wins conflict detection; independent of credentials, so rotating the API token never invalidates it. |
+
+Optional fields are **omitted from the entry** when the issue has no value — an unassigned issue carries no `assignee` key — never serialized as `null`. This mirrors how a passing audit finding omits `remedy` rather than emitting an empty one.
+
+### Field stability
+
+`issue_key` is the stable external key. The mapping is keyed on `issue_key` (paired with the scrum story id); it is the **one** field a consumer — the sync ledger, diff tooling, a dashboard — may treat as a durable identifier. The other eight fields are mutable projections of Jira state, refreshed on every sync and compared field-by-field against the `last_synced` watermark; never key on `summary`, `status`, `assignee`, `story_points`, `parent_epic`, or `sprint`. A change to `issue_key` itself (a Jira project move that re-keys the issue) is **mapping drift**, not a field update — surfaced to the operator, never silently rewritten, per the `404 → mapping drift` handling in the [BWOC-40 design note](../../notes/2026-05-27_jira-plugin-architecture.md).
+
+### Example
+
+A mapping entry for a fully populated, in-sprint story:
+
+```json
+{
+  "issue_key":    "BWOC-123",
+  "project":      "BWOC",
+  "summary":      "Declare jira plugin kind in PLUGINS spec",
+  "status":       "In Progress",
+  "assignee":     "agent-jisoo@bwoc.local",
+  "story_points": 5,
+  "parent_epic":  "BWOC-100",
+  "sprint":       "Sprint 6",
+  "last_synced":  "2026-05-27T10:00:00Z"
+}
+```
+
+An entry for an unassigned backlog issue omits the optional fields it has no value for:
+
+```json
+{
+  "issue_key":   "BWOC-200",
+  "project":     "BWOC",
+  "summary":     "Draft scrum-via-jira skill",
+  "status":      "To Do",
+  "last_synced": "2026-05-27T10:00:00Z"
+}
+```
+
+---
+
 ## Directory Layout
 
 ```
@@ -197,7 +258,7 @@ modules/plugins/
 ```toml
 [plugin]
 name        = "memory-tier2-noop"               # required — must match the directory name
-kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit
+kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira
 version     = "0.1.0"                           # required — semver
 description = "No-op Tier 2 memory backend that forwards to Tier 1."   # required — one-sentence summary
 compat      = ">=2.5.0"                         # required — semver range; framework versions this plugin works with
@@ -216,7 +277,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # required — binary on PATH (p
 | Section | Field | Required | Type | Meaning |
 |---|---|---|---|---|
 | `[plugin]` | `name` | yes | string (kebab-case) | Plugin identifier; must equal the directory name under `modules/plugins/` |
-| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`; immutable after `init` |
+| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; immutable after `init` |
 | `[plugin]` | `version` | yes | string (semver) | Semver of the plugin itself, separate from the framework version |
 | `[plugin]` | `description` | yes | string | One-sentence summary; the **only** manifest value where a vendor name is tolerated |
 | `[plugin]` | `compat` | yes | string (semver range) | Framework versions this plugin is compatible with; framework refuses to load on mismatch |
@@ -446,7 +507,7 @@ modules/plugin-template/
 
 Placeholders use the same `{{camelCase}}` convention as `modules/agent-template/` and `modules/skill-template/`. Required substitutions are listed in the template's own [`SPEC.md`](../../modules/plugin-template/SPEC.md).
 
-The `--kind` flag is required — there is no default. Valid values: `memory-backend`, `llm-backend`, `workflow`, `audit`. Future kinds extend this enum without changing the template layout. The flag forces the operator to declare intent up front and avoids producing a manifest with a missing or wrong `kind` field.
+The `--kind` flag is required — there is no default. Valid values: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`. Future kinds extend this enum without changing the template layout. The flag forces the operator to declare intent up front and avoids producing a manifest with a missing or wrong `kind` field.
 
 `bwoc plugin init` is the recommended way to start a new plugin — manual creation is supported but bypasses placeholder consistency.
 
@@ -483,7 +544,7 @@ A removed source is not auto-uninstalled from `.bwoc/installed-sources.toml`. Pa
 |---|---|
 | Manifest parseable | `manifest.toml` is valid TOML and matches the schema above |
 | Name matches directory | `[plugin].name == basename(directory)` |
-| Kind valid | `[plugin].kind` is one of `memory-backend`, `llm-backend`, `workflow`, `audit` (or a future kind added to the enum) |
+| Kind valid | `[plugin].kind` is one of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` (or a future kind added to the enum) |
 | Neutrality | Vendor names only inside `description`; nowhere else |
 | `SPEC.md` present | A `SPEC.md` file exists alongside the manifest |
 | Required fields | `name`, `kind`, `version`, `description`, `compat`, `entry` all present |

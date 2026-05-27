@@ -1,0 +1,34 @@
+# auth.toml — Jira Cloud authentication CONTRACT. Declares the SHAPE only.
+#
+# ============================================================================
+#  NEVER COMMIT REAL CREDENTIALS TO THIS FILE.
+#
+#  The three values below are EMPTY placeholders that document the contract.
+#  Real values are resolved at runtime — they never live in any tracked file:
+#
+#    1. Environment variables (preferred — nothing touches disk):
+#         BWOC_JIRA_EMAIL     account email (HTTP Basic username half)
+#         BWOC_JIRA_TOKEN     API token     (HTTP Basic password half — SECRET)
+#         BWOC_JIRA_BASE_URL  site URL, e.g. https://<site>.atlassian.net
+#
+#    2. A gitignored, owner-only secrets file (chmod 600):
+#         .bwoc/secrets.toml   →   [jira] email = … / token = … / base_url = …
+#
+#  The token is the secret. It is never written here, never logged, and never
+#  serialized into .scrum/jira-sync.json (that file is sync STATE, not secrets).
+#  Rotating a token is config-only: update the env var / secrets file — no code
+#  change, and the sync ledger's last_synced watermarks stay valid.
+# ============================================================================
+
+[jira.auth]
+# Placeholders ONLY — leave empty here; set the matching BWOC_JIRA_* env var.
+email    = ""   # ← never commit a value; set BWOC_JIRA_EMAIL
+token    = ""   # ← never commit a value; set BWOC_JIRA_TOKEN  (THE SECRET)
+base_url = ""   # ← never commit a value; set BWOC_JIRA_BASE_URL
+
+# Declarative env-var binding (what jira.sh reads at runtime). This is the
+# authoritative resolution map; the empty keys above only show the shape.
+[jira.auth.env]
+email    = { var = "BWOC_JIRA_EMAIL",    required = true }
+token    = { var = "BWOC_JIRA_TOKEN",    required = true, secret = true }
+base_url = { var = "BWOC_JIRA_BASE_URL", required = true }

@@ -982,7 +982,11 @@ const BACKEND_NAMES: &[&str] = &["claude", "antigravity", "codex", "kimi", "olla
 /// Plugin kinds accepted by the framework. The task brief enumerates
 /// `audit (future)` as a forward-compatible value — accept it now so
 /// the EPIC-2 ISO compliance plugins land without a v2 audit bump.
-const PLUGIN_KINDS: &[&str] = &["memory-backend", "llm-backend", "workflow", "audit"];
+/// `jira` (BWOC-43) is the first write-capable integration kind; it is
+/// already declared in the PLUGINS.en.md enum (BWOC-41), so the validator
+/// recognizes it here too — otherwise the reference jira plugin would fail
+/// its own `bwoc check`.
+const PLUGIN_KINDS: &[&str] = &["memory-backend", "llm-backend", "workflow", "audit", "jira"];
 
 /// Closed severity enum for declared criteria. Source of truth:
 /// PLUGINS.en.md §"Audit Findings Schema" — five-level scale matching
@@ -1164,6 +1168,35 @@ pub fn audit_skill_manifest(skill_dir: &Path) -> AuditReport {
         }
     }
 
+    // [contract].requires_plugins (optional, BWOC-44/45) — plugin KINDS this
+    // skill needs enabled. STATIC check only, per SKILLS.en.md §Verification
+    // (line 379): every value must be a valid plugin-kind enum. Whether a
+    // matching plugin is actually enabled is a spawn-time / `bwoc skill verify`
+    // concern (see skill::run_verify), NOT a manifest-shape concern — kind
+    // validity is the manifest's job, enablement is the workspace's.
+    if let Some(req) = contract.and_then(|c| c.get("requires_plugins")) {
+        match req {
+            toml::Value::Array(arr) if arr.iter().all(|v| v.is_str()) => {
+                for kind in arr.iter().filter_map(|v| v.as_str()) {
+                    if PLUGIN_KINDS.contains(&kind) {
+                        report.passes.push(format!(
+                            "[contract].requires_plugins '{kind}' is a valid plugin kind"
+                        ));
+                    } else {
+                        report.violations.push(format!(
+                            "[contract].requires_plugins '{kind}' is not a valid plugin kind \
+                             (expected one of {{memory-backend, llm-backend, workflow, audit, jira}})"
+                        ));
+                    }
+                }
+            }
+            _ => report.violations.push(
+                "[contract].requires_plugins has wrong type — expected array of strings"
+                    .to_string(),
+            ),
+        }
+    }
+
     // Neutrality — no backend / model names anywhere in manifest values.
     check_manifest_neutrality_skill(&raw, &mut report);
 
@@ -1261,7 +1294,7 @@ pub fn audit_plugin_manifest(plugin_dir: &Path) -> AuditReport {
         }
     }
 
-    // Kind ∈ {memory-backend, llm-backend, workflow, audit}.
+    // Kind ∈ {memory-backend, llm-backend, workflow, audit, jira}.
     if let Some(kind) = plugin_table.get("kind").and_then(|v| v.as_str()) {
         if PLUGIN_KINDS.contains(&kind) {
             report
@@ -1269,7 +1302,7 @@ pub fn audit_plugin_manifest(plugin_dir: &Path) -> AuditReport {
                 .push(format!("[plugin].kind '{kind}' in supported set"));
         } else {
             report.violations.push(format!(
-                "[plugin].kind '{kind}' not in {{memory-backend, llm-backend, workflow, audit}}"
+                "[plugin].kind '{kind}' not in {{memory-backend, llm-backend, workflow, audit, jira}}"
             ));
         }
     }
@@ -1284,7 +1317,130 @@ pub fn audit_plugin_manifest(plugin_dir: &Path) -> AuditReport {
         audit_audit_criteria(plugin_dir, &mut report);
     }
 
+    // Auth contract audit (BWOC-45). Jira-kind plugins carry credentials; the
+    // sibling `auth.toml` declares the credential SHAPE and must never hold a
+    // real value. Validate it here so a leaked secret is caught statically.
+    if plugin_table.get("kind").and_then(|v| v.as_str()) == Some("jira") {
+        audit_jira_auth(plugin_dir, &mut report);
+    }
+
     report
+}
+
+/// Validate the `auth.toml` credential CONTRACT shipped next to a `jira`-kind
+/// plugin's manifest (BWOC-45). Source of truth: the jira-cloud-rest SPEC.md
+/// §Authentication + the `auth.toml` header — the file declares the SHAPE only.
+/// Real credentials resolve at runtime from `BWOC_JIRA_*` env (or a gitignored
+/// secrets file) and MUST NEVER appear in this tracked file.
+///
+/// Two concerns, in order of severity:
+///   1. SECURITY (fail-closed) — the `[jira.auth]` placeholders `email` /
+///      `token` / `base_url` must be EMPTY strings. A non-empty value is a
+///      committed credential, the single worst outcome this check exists to
+///      prevent, so it is a hard violation. The value is NEVER echoed back.
+///   2. SHAPE — `[jira.auth]` declares the three placeholder keys, and
+///      `[jira.auth.env]` binds each to a non-empty `var`, so the runtime
+///      resolution map is present and well-formed.
+///
+/// An absent `auth.toml` is not audited (the contract is validated only when
+/// the file exists, per the BWOC-45 scope "when a jira/* plugin has auth.toml").
+fn audit_jira_auth(plugin_dir: &Path, report: &mut AuditReport) {
+    let auth_path = plugin_dir.join("auth.toml");
+    let body = match fs::read_to_string(&auth_path) {
+        Ok(s) => {
+            report.passes.push("auth.toml present".to_string());
+            s
+        }
+        // No auth.toml → nothing to validate here.
+        Err(_) => return,
+    };
+    let raw: toml::Value = match toml::from_str(&body) {
+        Ok(v) => {
+            report.passes.push("auth.toml is valid TOML".to_string());
+            v
+        }
+        Err(e) => {
+            report
+                .violations
+                .push(format!("auth.toml is not valid TOML: {e}"));
+            return;
+        }
+    };
+
+    // [jira.auth] — the placeholder contract table.
+    let auth = match raw
+        .get("jira")
+        .and_then(|j| j.get("auth"))
+        .and_then(|a| a.as_table())
+    {
+        Some(t) => {
+            report.passes.push("[jira.auth] table present".to_string());
+            t
+        }
+        None => {
+            report.violations.push(
+                "[jira.auth] table missing — auth.toml must declare the credential contract"
+                    .to_string(),
+            );
+            return;
+        }
+    };
+
+    // Each of email/token/base_url: present, a string, and EMPTY. A non-empty
+    // value is a committed secret — fail closed, and never echo the value.
+    for field in &["email", "token", "base_url"] {
+        match auth.get(*field) {
+            Some(toml::Value::String(s)) if s.is_empty() => report
+                .passes
+                .push(format!("[jira.auth].{field} is an empty placeholder")),
+            Some(toml::Value::String(_)) => report.violations.push(format!(
+                "[jira.auth].{field} has a non-empty value — a credential MUST NOT be committed; \
+                 leave it empty and set the matching BWOC_JIRA_* env var (value redacted)"
+            )),
+            Some(_) => report.violations.push(format!(
+                "[jira.auth].{field} has wrong type — expected an (empty) string placeholder"
+            )),
+            None => report.violations.push(format!(
+                "[jira.auth].{field} missing — required placeholder key"
+            )),
+        }
+    }
+
+    // [jira.auth.env] — the runtime env-var binding map. Each credential must
+    // name the environment variable it resolves from.
+    let env = match auth.get("env").and_then(|e| e.as_table()) {
+        Some(t) => {
+            report
+                .passes
+                .push("[jira.auth.env] binding map present".to_string());
+            t
+        }
+        None => {
+            report.violations.push(
+                "[jira.auth.env] binding map missing — auth.toml must declare how each \
+                 credential resolves from the environment"
+                    .to_string(),
+            );
+            return;
+        }
+    };
+    for field in &["email", "token", "base_url"] {
+        match env.get(*field).and_then(|v| v.as_table()) {
+            Some(binding) => match binding.get("var").and_then(|v| v.as_str()) {
+                Some(var) if !var.is_empty() => report
+                    .passes
+                    .push(format!("[jira.auth.env].{field} binds to ${var}")),
+                _ => report.violations.push(format!(
+                    "[jira.auth.env].{field} missing a non-empty 'var' — each binding must name \
+                     its environment variable"
+                )),
+            },
+            None => report.violations.push(format!(
+                "[jira.auth.env].{field} missing or not a table — expected \
+                 {{ var = \"BWOC_JIRA_…\", required = true }}"
+            )),
+        }
+    }
 }
 
 /// Validate the `criteria.toml` declaration that ships next to an
@@ -2157,6 +2313,240 @@ description = "Minimal smoke criterion for the test fixture."
             report.violations
         );
         let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn audit_plugin_manifest_jira_kind_accepted() {
+        // BWOC-43: the 'jira' kind is declared in the PLUGINS.en.md enum
+        // (BWOC-41); the validator must accept it so the reference jira plugin
+        // passes its own `bwoc check`. 'jira' takes no criteria.toml (that is
+        // audit-kind-specific), so the bare manifest must pass clean.
+        let dir = write_plugin_manifest(
+            "jira-kind",
+            "jira-cloud-rest",
+            r#"[plugin]
+name        = "jira-cloud-rest"
+kind        = "jira"
+version     = "0.1.0"
+description = "Jira Cloud REST v3 integration adapter."
+compat      = ">=2.7.0"
+entry       = "jira.sh"
+"#,
+        );
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "expected 'jira' kind to be accepted, got: {:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn audit_plugin_manifest_real_jira_reference_passes() {
+        // End-to-end: audit the actual shipped reference plugin
+        // (modules/plugins/jira-cloud-rest/), not a fixture — this is the file
+        // `bwoc check --all` will validate in an operator workspace.
+        let dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules/plugins/jira-cloud-rest");
+        if !dir.join("manifest.toml").is_file() {
+            return; // partial checkout without the plugin — nothing to assert.
+        }
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "real jira-cloud-rest manifest must pass bwoc check, got: {:?}",
+            report.violations
+        );
+    }
+
+    #[test]
+    fn audit_skill_manifest_real_scrum_via_jira_reference_passes() {
+        // End-to-end (BWOC-45): audit the actual shipped scrum-via-jira skill —
+        // the framework's first skill-on-plugin dependency — exactly as
+        // `bwoc check --all` does per-skill. Its requires_plugins = ["jira"]
+        // must validate as a real kind enum and the manifest must pass clean.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules/skills/scrum-via-jira");
+        if !dir.join("manifest.toml").is_file() {
+            return; // partial checkout without the skill — nothing to assert.
+        }
+        let report = audit_skill_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "real scrum-via-jira manifest must pass bwoc check, got: {:?}",
+            report.violations
+        );
+    }
+
+    // ---- BWOC-45: jira auth.toml contract validation -----------------------
+
+    /// Body of a minimal valid jira-kind plugin manifest, reused by the
+    /// auth.toml fixtures below.
+    const JIRA_MANIFEST: &str = r#"[plugin]
+name        = "jira-cloud-rest"
+kind        = "jira"
+version     = "0.1.0"
+description = "Jira Cloud REST v3 integration adapter."
+compat      = ">=2.7.0"
+entry       = "jira.sh"
+"#;
+
+    #[test]
+    fn audit_jira_auth_empty_placeholders_passes() {
+        // A jira plugin whose auth.toml holds only EMPTY placeholders plus a
+        // complete env binding map is the shipped contract shape — passes clean.
+        let dir = write_plugin_manifest("jira-auth-ok", "jira-cloud-rest", JIRA_MANIFEST);
+        fs::write(
+            dir.join("auth.toml"),
+            r#"[jira.auth]
+email    = ""
+token    = ""
+base_url = ""
+
+[jira.auth.env]
+email    = { var = "BWOC_JIRA_EMAIL",    required = true }
+token    = { var = "BWOC_JIRA_TOKEN",    required = true, secret = true }
+base_url = { var = "BWOC_JIRA_BASE_URL", required = true }
+"#,
+        )
+        .unwrap();
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "empty-placeholder auth.toml must pass, got: {:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn audit_jira_auth_real_token_fails_and_redacts() {
+        // SECURITY: a committed credential is the worst outcome this check
+        // exists to prevent. A non-empty token MUST be a hard violation, and
+        // the leaked value MUST NOT be echoed into the report (that would
+        // re-leak the secret into whatever consumes `bwoc check` output).
+        let leaked = "ATATT-super-secret-token-value";
+        let dir = write_plugin_manifest("jira-auth-leak", "jira-cloud-rest", JIRA_MANIFEST);
+        fs::write(
+            dir.join("auth.toml"),
+            format!(
+                r#"[jira.auth]
+email    = ""
+token    = "{leaked}"
+base_url = ""
+
+[jira.auth.env]
+email    = {{ var = "BWOC_JIRA_EMAIL",    required = true }}
+token    = {{ var = "BWOC_JIRA_TOKEN",    required = true, secret = true }}
+base_url = {{ var = "BWOC_JIRA_BASE_URL", required = true }}
+"#
+            ),
+        )
+        .unwrap();
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.contains("[jira.auth].token") && v.contains("MUST NOT be committed")),
+            "a committed token must be a violation, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report.violations.iter().all(|v| !v.contains(leaked)),
+            "the secret value must be redacted from the report, got: {:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn audit_jira_auth_missing_env_binding_fails() {
+        // The placeholders alone are not enough — the [jira.auth.env] map is
+        // how each credential resolves at runtime. A missing map is a shape
+        // violation, not a security leak.
+        let dir = write_plugin_manifest("jira-auth-noenv", "jira-cloud-rest", JIRA_MANIFEST);
+        fs::write(
+            dir.join("auth.toml"),
+            r#"[jira.auth]
+email    = ""
+token    = ""
+base_url = ""
+"#,
+        )
+        .unwrap();
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.contains("[jira.auth.env] binding map missing")),
+            "missing env binding map must be a violation, got: {:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn audit_skill_requires_plugins_valid_kind_passes() {
+        // BWOC-45: `bwoc check` validates that requires_plugins names a valid
+        // plugin KIND enum ("jira"). It does NOT require the plugin to be
+        // enabled — that is a spawn-time / `bwoc skill verify` concern.
+        let dir = write_skill_manifest(
+            "reqplug-ok",
+            "scrum-via-jira",
+            r#"[skill]
+name        = "scrum-via-jira"
+version     = "0.1.0"
+description = "Scrum operations over a jira-kind plugin."
+maturity    = "L1"
+
+[contract]
+requires         = []
+requires_plugins = ["jira"]
+exposes          = ["propose-sprint"]
+"#,
+        );
+        let report = audit_skill_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "requires_plugins with a valid kind must pass, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report
+                .passes
+                .iter()
+                .any(|p| p.contains("requires_plugins 'jira' is a valid plugin kind")),
+            "expected a pass note for the valid kind, got: {:?}",
+            report.passes
+        );
+    }
+
+    #[test]
+    fn audit_skill_requires_plugins_invalid_kind_fails() {
+        let dir = write_skill_manifest(
+            "reqplug-bad",
+            "bogus-dep",
+            r#"[skill]
+name        = "bogus-dep"
+version     = "0.1.0"
+description = "Skill depending on a kind that does not exist."
+maturity    = "L1"
+
+[contract]
+requires_plugins = ["not-a-real-kind"]
+exposes          = ["do-thing"]
+"#,
+        );
+        let report = audit_skill_manifest(&dir);
+        assert!(
+            report.violations.iter().any(
+                |v| v.contains("requires_plugins 'not-a-real-kind' is not a valid plugin kind")
+            ),
+            "invalid requires_plugins kind must be a violation, got: {:?}",
+            report.violations
+        );
     }
 
     #[test]

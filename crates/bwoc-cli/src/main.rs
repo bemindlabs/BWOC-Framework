@@ -25,6 +25,7 @@ mod help;
 mod i18n;
 mod inbox;
 mod init;
+mod jira;
 mod livecheck;
 mod log;
 mod memory;
@@ -196,6 +197,16 @@ enum Commands {
     /// signals a framework/plugin error.
     #[command(name = "audit", subcommand)]
     Audit(AuditCommand),
+    /// Operate the `jira` plugin kind: sync the scrum backlog with Jira, run
+    /// project-scoped JQL, transition issues, and link/unlink story ↔ issue
+    /// mappings in `.scrum/jira-sync.json`. Reads + writes an external tracker,
+    /// so write verbs are gated behind confirmation. Credentials come from
+    /// `BWOC_JIRA_{EMAIL,TOKEN,BASE_URL}` env (never committed); a missing one
+    /// exits 2. The live REST path is provided by an enabled `jira`-kind plugin
+    /// (see PLUGINS.en.md §jira); without one, live verbs stub-error (exit 4).
+    /// Every verb has a `--json` twin. See `docs/en/PLUGINS.en.md`.
+    #[command(name = "jira", subcommand)]
+    Jira(jira::JiraCommand),
 
     /// Expose a local agent over the A2A (Agent2Agent) protocol — print its
     /// Agent Card or run the JSON-RPC HTTP listener (loopback-only by default;
@@ -2348,6 +2359,13 @@ fn main() -> ExitCode {
             // audit::run uses 255 for framework error; clap's ExitCode is u8,
             // so any code we hand out fits — `as u8` would also be fine but
             // u8::try_from + unwrap_or(1) matches sibling dispatch arms.
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Jira(sub)) => {
+            // jira owns its own clap arg structs (jira.rs) so arg parsing is
+            // unit-testable; dispatch is a thin hand-off. Exit-code convention
+            // is documented in jira.rs (0/1/2/3/4/255).
+            let code = jira::run(sub);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::A2a(sub)) => {

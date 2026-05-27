@@ -1,0 +1,16 @@
+[plugin]
+name        = "jira-cloud-rest"
+kind        = "jira"
+version     = "0.1.0"
+description = "Jira Cloud REST v3 integration adapter — project-scoped JQL reads plus gated status transitions for bidirectional scrum sync."
+compat      = ">=2.7.0"
+entry       = "jira.sh"
+
+# [config.schema] — validates the operator's workspace.toml [plugins.jira-cloud-rest] block.
+# Credentials are NOT config: email/token/base_url resolve at runtime from the
+# BWOC_JIRA_* environment (or a gitignored .bwoc/secrets.toml) per auth.toml.
+# Only non-secret operational config lives here. See SPEC.md §Configuration.
+[config.schema]
+# The Jira project key every read is scoped to (e.g. "BWOC"). A query that
+# escapes this project is rejected/augmented by jira.sh (SPEC.md §JQL).
+project = { type = "string", required = true }

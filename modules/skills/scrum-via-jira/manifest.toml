@@ -1,0 +1,20 @@
+[skill]
+name        = "scrum-via-jira"
+version     = "0.1.0"
+description = "Agent-facing scrum operations driven through a jira-kind plugin via the bwoc jira CLI."
+maturity    = "L1"
+
+[contract]
+requires         = []                  # other framework skills this depends on
+requires_plugins = ["jira"]            # plugin KINDS this skill needs enabled (skill-on-plugin dependency)
+exposes          = [
+  "propose-sprint",
+  "open-sprint",
+  "transition-story",
+  "sync-backlog",
+  "close-sprint",
+  "list-active-sprints",
+]
+
+[gates]
+verify      = "bwoc skill verify scrum-via-jira"

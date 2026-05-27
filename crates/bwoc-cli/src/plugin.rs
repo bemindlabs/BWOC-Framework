@@ -286,6 +286,28 @@ fn workspace_plugins(
     Ok(out)
 }
 
+/// Set of plugin KINDS that have at least one installed-and-enabled plugin in
+/// this workspace. This is the resolution substrate for the skill-on-plugin
+/// dependency check (SKILLS.en.md §"Skill-on-plugin dependency", lines 194–195):
+/// a kind is satisfied iff some `modules/plugins/<name>/` of that kind has an
+/// `[plugins.<name>] enabled = true` entry in `.bwoc/workspace.toml`.
+///
+/// Fails closed: any error discovering plugins or reading `workspace.toml`
+/// collapses to an empty set, so a dependency resolves as UNMET rather than
+/// being silently assumed satisfied — the safe direction for a pre-flight gate.
+pub fn enabled_plugin_kinds(root: &Path) -> std::collections::BTreeSet<String> {
+    let installed = match discover(root) {
+        Ok(v) => v,
+        Err(_) => return std::collections::BTreeSet::new(),
+    };
+    let ws = workspace_plugins(root).unwrap_or_default();
+    installed
+        .into_iter()
+        .filter(|p| ws.get(&p.dir_name).map(|e| e.enabled).unwrap_or(false))
+        .map(|p| p.manifest.plugin.kind)
+        .collect()
+}
+
 fn toml_to_json(v: &toml::Value) -> serde_json::Value {
     match v {
         toml::Value::String(s) => serde_json::Value::String(s.clone()),
