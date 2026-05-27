@@ -20,6 +20,8 @@ serde_json = { workspace = true }
 # (the dep-quarantine invariant in `bwoc-cli/src/spawn.rs`).
 axum = { workspace = true }
 tokio = { workspace = true }
+async-stream = { workspace = true }
+futures-core = { workspace = true }
 clap = { workspace = true }
 
 # The serve listener runs in its own binary, exec'd by `bwoc a2a` in the CLI.

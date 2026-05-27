@@ -10,8 +10,8 @@ pub const A2A_PROTOCOL_VERSION: &str = "1.0.0";
 
 /// Build an [`AgentCard`] from an agent's manifest + the base `url` its A2A
 /// endpoint is served at. v1 advertises a single skill derived from the
-/// agent's role/scope, JSON-RPC (text) modes, and no streaming/push yet (those
-/// flip true as P3/P5 land).
+/// agent's role/scope, JSON-RPC (text) modes, streaming via SSE (P3), and no
+/// push yet (that flips true as P5 lands).
 pub fn card_from_manifest(m: &Manifest, url: &str) -> AgentCard {
     let skill = AgentSkill {
         id: m.agent_id.clone(),
@@ -29,7 +29,7 @@ pub fn card_from_manifest(m: &Manifest, url: &str) -> AgentCard {
         version: m.version.clone(),
         protocol_version: A2A_PROTOCOL_VERSION.to_string(),
         capabilities: AgentCapabilities {
-            streaming: false,          // P3
+            streaming: true,           // P3: SendStreamingMessage + SubscribeToTask (SSE)
             push_notifications: false, // P5
         },
         default_input_modes: vec!["text/plain".to_string()],
@@ -62,7 +62,8 @@ mod tests {
         assert_eq!(c.skills.len(), 1);
         assert_eq!(c.skills[0].id, "agent-oracle");
         assert_eq!(c.skills[0].description, "reviews designs");
-        assert!(!c.capabilities.streaming);
+        assert!(c.capabilities.streaming); // P3: SSE streaming advertised
+        assert!(!c.capabilities.push_notifications); // P5
         // Serializes with A2A camelCase field names.
         let j = serde_json::to_string(&c).unwrap();
         assert!(j.contains("\"protocolVersion\":\"1.0.0\""));

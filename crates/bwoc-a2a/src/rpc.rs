@@ -70,7 +70,8 @@ fn handle(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
             resolved_id(req),
             METHOD_NOT_FOUND,
             format!(
-                "`{}` is not implemented yet (streaming lands in #48 P3)",
+                "`{}` is a streaming method — call it over the SSE transport, \
+                 not unary JSON-RPC (#48 P3)",
                 req.method
             ),
         ),
@@ -84,7 +85,7 @@ fn handle(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
 
 /// Pull the task id out of a `tasks/*` request's params, accepting the field
 /// aliases the proto/JSON-RPC bindings use (`id`, `taskId`, `name`).
-fn task_id_param(req: &JsonRpcRequest) -> Option<String> {
+pub(crate) fn task_id_param(req: &JsonRpcRequest) -> Option<String> {
     for key in ["id", "taskId", "name"] {
         if let Some(v) = req.params.get(key).and_then(|v| v.as_str()) {
             return Some(v.to_string());
