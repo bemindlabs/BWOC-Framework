@@ -80,7 +80,15 @@ pub fn save(path: &Path, configs: &[PushConfig]) -> Result<(), PushError> {
     })?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, body).map_err(io_err)?;
-    std::fs::rename(&tmp, path).map_err(io_err)
+    std::fs::rename(&tmp, path).map_err(io_err)?;
+    // The file can hold a registrant's bearer token — lock it to the owner,
+    // matching how the signing key (`.bwoc/agent.key`) is protected.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(io_err)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -115,6 +123,17 @@ mod tests {
     fn configs_path_sits_beside_tasks_jsonl() {
         let p = configs_path(Path::new("/ws/.bwoc/teams/sec/tasks.jsonl"));
         assert_eq!(p, Path::new("/ws/.bwoc/teams/sec/push-configs.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_file_is_owner_only_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("push-configs.json");
+        save(&p, &[cfg("t1", "c1", "https://h/1")]).unwrap();
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "push-configs.json must be owner-only");
     }
 
     #[test]

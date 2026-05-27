@@ -382,12 +382,17 @@ fn handle_delete_push_config(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRp
             "missing `pushNotificationConfigId`",
         );
     };
+    // Same (taskId, configId) keying as Get: with a taskId given, only a config
+    // belonging to it is removed.
+    let task_id = task_id_param(req);
     let mut configs = match load_configs_or_err(req, &path) {
         Ok(c) => c,
         Err(e) => return e,
     };
     let before = configs.len();
-    configs.retain(|c| c.config_id != config_id);
+    configs.retain(|c| {
+        !(c.config_id == config_id && task_id.as_deref().is_none_or(|t| c.task_id == t))
+    });
     if configs.len() == before {
         return JsonRpcResponse::err(
             resolved_id(req),
