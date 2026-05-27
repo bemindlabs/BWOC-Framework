@@ -20,16 +20,17 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — cross-workspace peer feedback"
+    " — A2A protocol interop"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc peer feedback <agent> \"…\" --from <local-agent>` — signed cross-workspace review (#20)",
-    "Trust gate verifies a cross-workspace sender via routes.toml + published key",
-    "Read-vs-write split: peer writes require a provable signature",
-    "Prior 2.7.0: installable plugins & skills + ISO-compliance audits",
+    "`bwoc a2a serve <agent>` — expose an agent over the A2A protocol (#48)",
+    "`bwoc a2a card / fetch-card / send` — Agent Card + talk to external A2A agents",
+    "A2A `tasks/*` bridge the Saṅgha team list; SSE streaming via `SubscribeToTask`",
+    "Push-notification config CRUD; HTTP stays quarantined to the `bwoc-a2a` binary",
+    "Prior 2.8.0: signed cross-workspace peer feedback (#20)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

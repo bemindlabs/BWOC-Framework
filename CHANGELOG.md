@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.27-3] — 2026-05-27 — 2.9.0
+
+**Minor release.** A2A (Agent2Agent) protocol interop — v1 (#48, PRs #71–#77). BWOC agents can now talk to non-BWOC agents over the open A2A 1.0.0 protocol. Cargo SemVer `2.8.0` → `2.9.0`.
+
+### Added
+
+- **`bwoc a2a serve <agent>` (#48)** — run an A2A HTTP listener for a local agent: the Agent Card at `/.well-known/agent-card.json` and a JSON-RPC endpoint. `SendMessage` drops the inbound message into the agent's `inbox.jsonl`. **Loopback-only by default** (no auth yet); a non-loopback `--bind` warns. Per-request body + inbox size caps guard growth.
+- **`bwoc a2a card <agent>`** — print the agent's manifest-derived Agent Card.
+- **`bwoc a2a fetch-card <url>` / `bwoc a2a send <url> "<text>"`** — outbound client: fetch a remote agent's card, or send it a `SendMessage` (reqwest, `rustls-tls`).
+- **A2A `tasks/*`** — `GetTask`/`ListTasks` bridge a team's Saṅgha task list (`bwoc a2a serve --team <id>`); `CancelTask` honestly returns `TaskNotCancelable` (the lead owns task lifecycle).
+- **A2A SSE streaming** — `SubscribeToTask` streams a team task's state transitions; `SendStreamingMessage` is an honest single-event stream (BWOC processes asynchronously).
+- **A2A push-notification config** — `Create`/`Get`/`List`/`DeleteTaskPushNotificationConfig` manage per-task webhook configs (persisted, `0600`). Webhook *delivery* is deferred to the auth phase (an SSRF/exfil egress under no-auth).
+- **New `bwoc-a2a` crate + binary** — the A2A protocol core, listener, client, and config CRUD. `bwoc a2a` execs the `bwoc-a2a` sibling binary so the **HTTP/async stack (axum, tokio, reqwest) never enters `bwoc-cli`'s dependency tree** (the `bwoc-harness` subprocess pattern); `bwoc-core` stays HTTP-free.
+
+### Notes
+
+- A2A v1 is loopback-only and unauthenticated by design. The **auth phase** (authenticated peers, non-loopback bind, per-peer rate + subscription-concurrency caps, push webhook delivery + SSRF guard, outbound signing) is a separate future milestone.
+
 ## [v2026.5.27-2] — 2026-05-27 — 2.8.0
 
 **Minor release.** Cross-workspace give-feedback — the write path of #20. Cargo SemVer `2.7.0` → `2.8.0`.
