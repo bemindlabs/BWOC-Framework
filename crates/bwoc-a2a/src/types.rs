@@ -245,7 +245,8 @@ mod tests {
     fn mixed_text_and_nontext_part_counts_as_non_text() {
         // A part carrying both text and a non-text field is flagged (so its
         // extra content isn't silently dropped) while its text still extracts.
-        let json = r#"{"role":"ROLE_USER","parts":[{"text":"hi","url":"http://x/y"}],"messageId":"m3"}"#;
+        let json =
+            r#"{"role":"ROLE_USER","parts":[{"text":"hi","url":"http://x/y"}],"messageId":"m3"}"#;
         let m: Message = serde_json::from_str(json).unwrap();
         assert_eq!(m.text_body(), "hi");
         assert!(m.has_non_text_parts());
