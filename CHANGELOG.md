@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.27-1] — 2026-05-27 — 2.7.0
+
+**Minor release.** Installable plugins & skills + ISO-compliance audit plugins. Cargo SemVer `2.6.0` → `2.7.0`.
+
+### Added
+
+- **Installable plugins (#58)** — `bwoc plugin install` (git URL or tarball; first install acknowledged via `--allow-new-source`) + `bwoc plugin list --kind`. Remote installs are gated by a SHA-256 sidecar; a missing sidecar on a git source is **refused** (publish a `.sha256` or pass `--no-verify`) rather than silently passing the gate (BWOC-38).
+- **Installable skills (#58)** — `bwoc skill` install/list/verify. The `[gates].verify` command is arbitrary shell from an untrusted manifest, so it is **never executed by default** — static checks only, command printed for inspection; opt in with `--run-gates` (BWOC-37).
+- **ISO-compliance audit plugins (#58)** — `bwoc audit run` dispatches `audit`-kind plugins through a strict findings schema (severity/status/evidence enums; exit code = fail count). Ships **ISO 9001** (signed-attestation runtime), **27001 · 20000-1** (honest `not_implemented` stubs), and **29110** (filesystem-evidence runtime), plus a signed-attestation evidence model (`attestation` / `sample` evidence kinds).
+- Plugin/skill templates, the `worktree-discipline` skill, and the `memory-tier2-noop` plugin.
+
+### Security
+
+- Plugin/skill `entry` is validated against path traversal before spawn — a manifest cannot point `entry` at an arbitrary host binary (`..`/absolute rejected, BWOC-36).
+- Git installs no longer treat a missing checksum sidecar as a verified install (BWOC-38); tarball-slip and git-ref option injection hardened.
+
+## [v2026.5.27-0] — 2026-05-27 — 2.6.0
+
+**Minor release.** `bwoc-harness` v2 (the #39 epic) + ed25519 message authentication. Cargo SemVer `2.5.0` → `2.6.0`.
+
+### Added
+
+- **harness-v2 (#39 / #57)** — durable/resumable runs (per-turn checkpoint + `--resume`, HV2-2), Saṅgha runtime (a lead spawns sandboxed subprocess workers, HV2-1), run-end retrospective (HV2-3), MCP client (HV2-5), per-run budget hard gate (HV2-6), streaming usage + concurrent tool execution (HV2-7).
+- **ed25519 message signing (HV2-4)** — new lean `bwoc-signing` crate (RFC 8785 JCS canonical form); `bwoc send` signs envelopes; `bwoc trust --keygen [--all]` generates/backfills keypairs (private key 0600 in `.bwoc/agent.key`, public key in the manifest); the `bwoc-agent` trust gate verifies the signature before the Kalyāṇamitta check — **enforce by default** (`BWOC_SIGNING_MODE`), bad/tampered signatures refused in every mode. Spec: [`SIGNING.en.md`](docs/en/SIGNING.en.md).
+
 ## [v2026.5.25-1] — 2026-05-25 — 2.5.0
 
 **Minor release.** Live fleet operations + a self-updating toolchain. Cargo SemVer `2.4.0` → `2.5.0`. CalVer per [VERSION.md policy](VERSION.md#versioning-policy--dual-namespaces).

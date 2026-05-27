@@ -20,17 +20,17 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — signed messages + durable Saṅgha harness"
+    " — installable plugins & skills + ISO audits"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Signed messages — ed25519 envelopes; `bwoc trust --keygen` (HV2-4)",
-    "Durable runs — per-turn checkpoint + `--resume` (HV2-2)",
-    "Saṅgha runtime — a lead spawns sandboxed subprocess workers (HV2-1)",
-    "Run-end retrospective + per-run budget gate + MCP client (HV2-3/5/6)",
-    "Streaming usage + concurrent tool execution (HV2-7)",
+    "Installable plugins — `bwoc plugin install/list` (git/tarball, SHA-256 gate)",
+    "Installable skills — `bwoc skill` (verify gates opt-in via `--run-gates`)",
+    "ISO-compliance audit plugins — `bwoc audit` (9001 · 27001 · 20000-1 · 29110)",
+    "Signed-attestation evidence model for audit findings",
+    "Prior 2.6.0: ed25519 signed messages + durable Saṅgha harness-v2",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
