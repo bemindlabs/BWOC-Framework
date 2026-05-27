@@ -25,7 +25,8 @@ on:
       - 'v[0-9][0-9][0-9][0-9].*'
 
 permissions:
-  contents: write  # required to create / upload to GitHub Release
+  contents: write # create / upload to the GitHub Release; push the formula branch
+  pull-requests: write # the formula-bump step opens an auto-merging PR (main is protected)
 
 # Forward-compat for the Node 24 cutover (2026-06-02). `actions/checkout@v6`
 # runs on Node 24 natively; `softprops/action-gh-release@v2` still defaults to
