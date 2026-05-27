@@ -883,6 +883,21 @@ enum PeerCommand {
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
     },
+    /// Give a peer agent signed cross-workspace feedback (#20). The review is
+    /// delivered as a signed envelope (`kind: feedback`) into the peer agent's
+    /// inbox; the recipient verifies the sender's signature before accepting.
+    Feedback {
+        /// Recipient peer agent id (resolved via routes.toml), e.g. "agent-oracle".
+        agent: String,
+        /// The feedback / review text.
+        message: String,
+        /// Sender agent (required — feedback must be signed by a local agent).
+        #[arg(long = "from")]
+        from: String,
+        /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
 }
 
 impl MemoryAction {
@@ -1190,6 +1205,7 @@ impl SendArgs {
             reply_to: self.reply_to,
             no_wakeup: self.no_wakeup,
             workspace: self.workspace,
+            kind: None,
         })
     }
 }
@@ -2054,6 +2070,23 @@ fn main() -> ExitCode {
                 } => peer::run(peer::PeerArgs {
                     action: peer::PeerAction::Learn { key, doc },
                     workspace,
+                }),
+                // Give-feedback (#20) is a signed cross-workspace send with a
+                // `feedback` kind — reuse the send path (routing + signing +
+                // delivery) rather than duplicating it.
+                PeerCommand::Feedback {
+                    agent,
+                    message,
+                    from,
+                    workspace,
+                } => send::run(send::SendArgs {
+                    to: agent,
+                    message,
+                    from: Some(from),
+                    reply_to: None,
+                    no_wakeup: false,
+                    workspace,
+                    kind: Some("feedback".to_string()),
                 }),
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))

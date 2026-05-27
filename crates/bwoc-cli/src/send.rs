@@ -41,6 +41,10 @@ pub struct SendArgs {
     /// so non-interactive callers don't side-effect into a TUI session.
     pub no_wakeup: bool,
     pub workspace: Option<PathBuf>,
+    /// Optional envelope `kind` (e.g. `"feedback"` from `bwoc peer feedback`).
+    /// Plain metadata — not part of the signed canonical bytes. `None` writes
+    /// no `kind` field (an ordinary message).
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -176,6 +180,9 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     envelope.insert("message".into(), args.message.clone().into());
     if let Some(rt) = args.reply_to.as_deref() {
         envelope.insert("replyTo".into(), rt.into());
+    }
+    if let Some(k) = args.kind.as_deref() {
+        envelope.insert("kind".into(), k.into());
     }
 
     // HV2-4: sign the envelope when the sender is an agent with a key.  The
@@ -373,6 +380,28 @@ mod tests {
     }
 
     #[test]
+    fn feedback_kind_is_stamped_in_envelope() {
+        // `bwoc peer feedback` sets kind=Some("feedback"); it must appear on the
+        // wire envelope (plain metadata, not part of the signed canonical bytes).
+        let root = setup("kind");
+        send(SendArgs {
+            to: "alpha".into(),
+            message: "review: solid".into(),
+            from: None,
+            reply_to: None,
+            no_wakeup: true,
+            kind: Some("feedback".into()),
+            workspace: Some(root.clone()),
+        })
+        .unwrap();
+        let line =
+            std::fs::read_to_string(root.join("agents/agent-alpha/.bwoc/inbox.jsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(v["kind"], "feedback");
+        assert_eq!(v["message"], "review: solid");
+    }
+
+    #[test]
     fn send_appends_a_jsonl_envelope() {
         let root = setup("ok");
         send(SendArgs {
@@ -381,6 +410,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         })
         .unwrap();
@@ -404,6 +434,7 @@ mod tests {
                 from: None,
                 reply_to: None,
                 no_wakeup: true,
+                kind: None,
                 workspace: Some(root.clone()),
             })
             .unwrap();
@@ -423,6 +454,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         });
         assert!(matches!(err, Err(SendError::EmptyMessage)));
@@ -438,6 +470,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         });
         assert!(matches!(err, Err(SendError::NotFound { .. })));
@@ -485,6 +518,7 @@ mod tests {
             from: Some("beta".into()),
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         })
         .unwrap();
@@ -506,6 +540,7 @@ mod tests {
             from: Some("agent-beta".into()),
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         })
         .unwrap();
@@ -525,6 +560,7 @@ mod tests {
             from: Some("ghost".into()),
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         });
         assert!(
@@ -543,6 +579,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         })
         .unwrap();
@@ -572,6 +609,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         })
         .unwrap();
@@ -598,6 +636,7 @@ mod tests {
             from: None,
             reply_to: Some("msg-20260523T000000Z-deadb".into()),
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         })
         .unwrap();
@@ -713,6 +752,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(local.clone()),
         })
         .unwrap();
@@ -756,6 +796,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(local.clone()),
         })
         .unwrap();
@@ -794,6 +835,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(local.clone()),
         })
         .unwrap();
@@ -838,6 +880,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(local.clone()),
         })
         .unwrap_err();
@@ -878,6 +921,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(local.clone()),
         })
         .unwrap_err();
@@ -899,6 +943,7 @@ mod tests {
             from: None,
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(root.clone()),
         })
         .unwrap_err();
@@ -940,6 +985,7 @@ mod tests {
             from: Some("alpha".into()), // local sender
             reply_to: None,
             no_wakeup: true,
+            kind: None,
             workspace: Some(local.clone()),
         })
         .unwrap();
