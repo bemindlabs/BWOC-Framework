@@ -153,12 +153,14 @@ fn handle_list_tasks(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespons
 /// `CancelTask` → BWOC tasks aren't A2A-cancelable; the human lead owns the
 /// lifecycle. Report `TaskNotCancelable` rather than faking a cancel.
 fn handle_cancel_task(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
-    let id = task_id_param(req).unwrap_or_default();
+    let Some(id) = task_id_param(req) else {
+        return JsonRpcResponse::err(resolved_id(req), INVALID_PARAMS, "missing task `id`");
+    };
     // If the task genuinely doesn't exist, TaskNotFound is the more precise
     // answer; otherwise it exists but can't be canceled over A2A.
     if let Some(tasks) = &ctx.tasks {
         if let Ok(team_tasks) = crate::tasks::load_team_tasks(tasks.tasks_path) {
-            if !id.is_empty() && !team_tasks.iter().any(|t| t.id == id) {
+            if !team_tasks.iter().any(|t| t.id == id) {
                 return JsonRpcResponse::err(
                     resolved_id(req),
                     TASK_NOT_FOUND,

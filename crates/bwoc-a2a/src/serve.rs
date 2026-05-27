@@ -296,7 +296,14 @@ mod tests {
             })))
             .await
             .unwrap();
-        assert_eq!(body_json(got).await["result"]["id"], "t1");
+        let task = body_json(got).await;
+        assert_eq!(task["result"]["id"], "t1");
+        // No-leak contract: the A2A Task must expose only id/contextId/status —
+        // never the BWOC task's title, claimant, plan, or deps.
+        let obj = task["result"].as_object().unwrap();
+        for leaked in ["title", "claimed_by", "claimedBy", "plan", "deps"] {
+            assert!(!obj.contains_key(leaked), "{leaked} must not be exposed");
+        }
         let missing = app(state.clone())
             .oneshot(post_json(serde_json::json!({
                 "jsonrpc":"2.0","id":3,"method":method::GET_TASK,"params":{"id":"nope"}

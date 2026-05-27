@@ -119,6 +119,17 @@ fn run_serve(
     port: u16,
     team: Option<String>,
 ) -> u8 {
+    // Reject a team id that could escape `.bwoc/teams/` — defence in depth even
+    // though the id is operator-supplied (it still ends up in a path join).
+    if let Some(id) = &team {
+        if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+            eprintln!(
+                "bwoc-a2a serve: invalid --team '{id}' — a team id must be a single \
+                 path segment (no '/', '\\', or '..')."
+            );
+            return 2;
+        }
+    }
     let (manifest, inbox_path, workspace_root) = match resolve_agent(agent, workspace) {
         Ok(v) => v,
         Err(code) => return code,
