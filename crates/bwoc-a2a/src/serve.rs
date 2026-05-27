@@ -38,6 +38,7 @@ pub const MAX_REQUEST_BYTES: usize = 1 << 20;
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const INVALID_PARAMS: i64 = -32602;
+const INTERNAL_ERROR: i64 = -32603;
 const TASK_NOT_FOUND: i64 = -32001;
 
 /// `SubscribeToTask` SSE poll interval + max lifetime. The cap bounds each
@@ -177,20 +178,27 @@ fn rpc_error(id: serde_json::Value, code: i64, message: impl Into<String>) -> Re
 /// emitted and the stream closes. Honest about the async model rather than
 /// faking progress events.
 fn stream_send_message(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
-    let id = req.id.clone().unwrap_or(serde_json::Value::Null);
     // Reuse the unary SendMessage path for the inbox write + ack.
     let unary = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: method::SEND_MESSAGE.to_string(),
         params: req.params.clone(),
-        id: Some(id),
+        id: req.id.clone(),
     };
-    let ack = dispatch(&unary, &make_ctx(state)).expect("unary request carries an id");
-    let data = serde_json::to_string(&ack).unwrap_or_default();
-    let stream = async_stream::stream! {
-        yield Ok::<_, Infallible>(Event::default().data(data));
-    };
-    Sse::new(stream).into_response()
+    let outcome = dispatch(&unary, &make_ctx(state));
+    match outcome {
+        // Normal request: stream the single ack event, then close.
+        Some(ack) => {
+            let data = serde_json::to_string(&ack).unwrap_or_default();
+            let stream = async_stream::stream! {
+                yield Ok::<_, Infallible>(Event::default().data(data));
+            };
+            Sse::new(stream).into_response()
+        }
+        // Notification (no `id`): the inbox write already happened inside
+        // `dispatch`; per JSON-RPC 2.0 emit no body — no SSE response.
+        None => StatusCode::NO_CONTENT.into_response(),
+    }
 }
 
 /// `SubscribeToTask` (SSE). Tails a team task's state: emits a
@@ -199,7 +207,15 @@ fn stream_send_message(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Respons
 /// after [`SUBSCRIBE_MAX`]. Pre-flight failures (no team, unknown task) answer
 /// with a unary JSON-RPC error instead of an empty stream.
 fn subscribe_task(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
-    let id = req.id.clone().unwrap_or(serde_json::Value::Null);
+    // A subscription's events are correlated by request `id`, so a notification
+    // (no `id`) can't be served — reject it rather than stream `null`-id events.
+    let Some(id) = req.id.clone() else {
+        return rpc_error(
+            serde_json::Value::Null,
+            INVALID_REQUEST,
+            "SubscribeToTask requires a request `id` (cannot stream to a notification)",
+        );
+    };
     let Some((team_id, tasks_path)) = state.team.as_ref() else {
         return rpc_error(
             id,
@@ -210,16 +226,19 @@ fn subscribe_task(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
     let Some(task_id) = crate::rpc::task_id_param(req) else {
         return rpc_error(id, INVALID_PARAMS, "missing task `id`");
     };
-    // Pre-flight: the task must exist before we open a stream for it.
-    let exists = crate::tasks::load_team_tasks(tasks_path)
-        .map(|tasks| tasks.iter().any(|t| t.id == task_id))
-        .unwrap_or(false);
-    if !exists {
-        return rpc_error(
-            id,
-            TASK_NOT_FOUND,
-            format!("task `{task_id}` not found in team `{team_id}`"),
-        );
+    // Pre-flight: distinguish "task absent" (-32001) from a real read/parse
+    // failure (-32603) — masking the latter as not-found would hide a server
+    // fault, and diverge from the unary task handlers.
+    match crate::tasks::load_team_tasks(tasks_path) {
+        Ok(tasks) if tasks.iter().any(|t| t.id == task_id) => {}
+        Ok(_) => {
+            return rpc_error(
+                id,
+                TASK_NOT_FOUND,
+                format!("task `{task_id}` not found in team `{team_id}`"),
+            );
+        }
+        Err(e) => return rpc_error(id, INTERNAL_ERROR, format!("task list read failed: {e}")),
     }
 
     let team_id = team_id.clone();
@@ -233,34 +252,38 @@ fn subscribe_task(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
             // inline would stall the (current-thread) runtime — the listener and
             // every other live stream — during each read.
             let path = tasks_path.clone();
-            let tasks = match tokio::task::spawn_blocking(move || {
-                crate::tasks::load_team_tasks(&path)
-            })
-            .await
-            {
+            let load = tokio::task::spawn_blocking(move || crate::tasks::load_team_tasks(&path)).await;
+            let tasks = match load {
                 Ok(Ok(t)) => t,
-                // A read/parse error (or join error) is treated as the task
-                // being gone → close the stream as terminal, deliberately, since
-                // BWOC never synthesizes Failed/Canceled and a vanished task is
-                // indistinguishable from completion-then-deletion.
-                _ => Vec::new(),
-            };
-            let found = tasks.iter().find(|t| t.id == task_id);
-            let (cur, terminal) = match found {
-                Some(t) => (
-                    crate::tasks::a2a_state(t.state),
-                    matches!(t.state, bwoc_core::team::TaskState::Completed),
-                ),
-                // Task vanished (or unreadable) mid-subscription — close out.
-                None => (crate::types::TaskState::Completed, true),
+                // A read/parse error (or join error) is a real fault — surface
+                // it as an error event and close, rather than a misleading
+                // "Completed" terminal state.
+                _ => {
+                    let data = error_event(&id, INTERNAL_ERROR, "task list read failed");
+                    yield Ok::<_, Infallible>(Event::default().data(data));
+                    break;
+                }
             };
             let timed_out = start.elapsed() >= SUBSCRIBE_MAX;
-            if last != Some(cur) || terminal || timed_out {
-                let is_final = terminal || timed_out;
-                let data = status_update(&id, &task_id, &team_id, cur, is_final);
-                yield Ok::<_, Infallible>(Event::default().data(data));
-                last = Some(cur);
-                if is_final {
+            match tasks.iter().find(|t| t.id == task_id) {
+                Some(t) => {
+                    let cur = crate::tasks::a2a_state(t.state);
+                    let terminal =
+                        matches!(t.state, bwoc_core::team::TaskState::Completed) || timed_out;
+                    if last != Some(cur) || terminal {
+                        let data = status_update(&id, &task_id, &team_id, cur, terminal);
+                        yield Ok::<_, Infallible>(Event::default().data(data));
+                        last = Some(cur);
+                        if terminal {
+                            break;
+                        }
+                    }
+                }
+                // Task deleted mid-subscription: report it honestly as gone
+                // (TaskNotFound) and close — not a fabricated "Completed".
+                None => {
+                    let data = error_event(&id, TASK_NOT_FOUND, "task no longer exists");
+                    yield Ok::<_, Infallible>(Event::default().data(data));
                     break;
                 }
             }
@@ -270,6 +293,12 @@ fn subscribe_task(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+/// Serialize a JSON-RPC **error** response to an SSE `data:` payload (used to
+/// close a subscription on a fault rather than fake a terminal task state).
+fn error_event(id: &serde_json::Value, code: i64, message: &str) -> String {
+    serde_json::to_string(&JsonRpcResponse::err(id.clone(), code, message)).unwrap_or_default()
 }
 
 /// Serialize one `TaskStatusUpdateEvent`, wrapped as the `result` of a JSON-RPC
@@ -569,6 +598,38 @@ mod tests {
         assert_eq!(ev["kind"], "status-update");
         assert_eq!(ev["status"]["state"], "TASK_STATE_COMPLETED");
         assert_eq!(ev["final"], true);
+    }
+
+    #[tokio::test]
+    async fn streaming_send_notification_delivers_but_returns_204() {
+        // No `id` ⇒ JSON-RPC notification: inbox the message, emit no SSE body.
+        let (state, _d) = test_state();
+        let inbox = state.inbox_path.clone();
+        let resp = app(state)
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","method":method::SEND_STREAMING_MESSAGE,
+                "params":{"message":{"role":"ROLE_USER","parts":[{"text":"notif"}],"messageId":"sn1"}}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(
+            std::fs::read_to_string(&inbox)
+                .unwrap()
+                .contains("\"messageId\":\"sn1\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_notification_is_rejected_invalid_request() {
+        let (state, _d) = test_state_with_team();
+        let resp = app(state)
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","method":method::SUBSCRIBE_TO_TASK,"params":{"id":"t1"}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(body_json(resp).await["error"]["code"], INVALID_REQUEST);
     }
 
     #[tokio::test]
