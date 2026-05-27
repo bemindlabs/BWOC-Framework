@@ -34,6 +34,11 @@ unic-langid = "0.9"
 include_dir = "0.7"
 thiserror = "2"
 sha2 = "0.10"
+# A2A HTTP transport (#48 P1-serve). Isolated to bwoc-a2a — NEVER bwoc-core
+# (dep-quarantine HARD RULE). tokio uses a current-thread runtime created inside
+# bwoc-a2a so the CLI stays synchronous.
+axum = "0.8"
+tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
 
 [profile.release]
 lto = "thin"

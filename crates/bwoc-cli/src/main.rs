@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod a2a;
 mod audit;
 mod banner;
 mod chat;
@@ -195,6 +196,46 @@ enum Commands {
     /// signals a framework/plugin error.
     #[command(name = "audit", subcommand)]
     Audit(AuditCommand),
+
+    /// Expose a local agent over the A2A (Agent2Agent) protocol — print its
+    /// Agent Card or run the JSON-RPC HTTP listener (loopback-only by default;
+    /// no auth yet). See #48.
+    #[command(name = "a2a", subcommand)]
+    A2a(A2aCommand),
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum A2aCommand {
+    /// Print the agent's A2A Agent Card (JSON) derived from its manifest.
+    Card(A2aCardArgs),
+    /// Run the A2A HTTP listener: Agent Card at the well-known path + a
+    /// JSON-RPC endpoint that drops inbound messages into the agent's inbox.
+    Serve(A2aServeArgs),
+}
+
+#[derive(Args, Debug)]
+struct A2aCardArgs {
+    /// Agent name or id (the `agent-` prefix is optional).
+    agent: String,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct A2aServeArgs {
+    /// Agent name or id (the `agent-` prefix is optional).
+    agent: String,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Address to bind. Defaults to loopback (`127.0.0.1`); a non-loopback
+    /// value warns, since the listener has no authentication yet.
+    #[arg(long, default_value = "127.0.0.1")]
+    bind: std::net::IpAddr,
+    /// TCP port to listen on.
+    #[arg(long, default_value_t = 41241)]
+    port: u16,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -2283,6 +2324,21 @@ fn main() -> ExitCode {
             // audit::run uses 255 for framework error; clap's ExitCode is u8,
             // so any code we hand out fits — `as u8` would also be fine but
             // u8::try_from + unwrap_or(1) matches sibling dispatch arms.
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::A2a(sub)) => {
+            let code = match sub {
+                A2aCommand::Card(args) => a2a::run_card(a2a::CardArgs {
+                    agent: args.agent,
+                    workspace: args.workspace,
+                }),
+                A2aCommand::Serve(args) => a2a::run_serve(a2a::ServeArgs {
+                    agent: args.agent,
+                    workspace: args.workspace,
+                    bind: args.bind,
+                    port: args.port,
+                }),
+            };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         None => {

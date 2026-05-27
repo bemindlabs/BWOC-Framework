@@ -114,13 +114,28 @@ fn handle_send_message(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespo
     JsonRpcResponse::ok(resolved_id(req), ack)
 }
 
-// NOTE (track for the network-exposed phase, P1-serve/P4): this append is
-// uncapped. Once an HTTP listener accepts remote A2A peers, add a per-peer
-// rate/size limit so an unauthenticated peer can't grow `inbox.jsonl`
-// unboundedly. No listener is wired in P1, so it isn't reachable yet.
+/// Cap on total `inbox.jsonl` size. Now that the P1-serve listener can accept
+/// inbound A2A messages, an append is refused once the inbox reaches this size
+/// so a peer cannot grow it without bound. Generous — a runaway guard, not a
+/// quota. (Per-peer *rate* limiting waits for the auth phase: P1 has no peer
+/// identity, so every inbound message is `from:"a2a"` and can't be attributed.)
+const MAX_INBOX_BYTES: u64 = 64 << 20; // 64 MiB
+
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    append_line_capped(path, line, MAX_INBOX_BYTES)
+}
+
+fn append_line_capped(path: &Path, line: &str, cap: u64) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+    }
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() >= cap {
+            return Err(std::io::Error::other(format!(
+                "inbox full: {} bytes ≥ {cap} byte cap",
+                meta.len()
+            )));
+        }
     }
     let mut f = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(f, "{line}")
@@ -246,5 +261,16 @@ mod tests {
         )
         .expect("a request with an id gets a response");
         assert_eq!(r.error.as_ref().unwrap().code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn inbox_cap_refuses_append_once_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("inbox.jsonl");
+        std::fs::write(&p, "12345678").unwrap(); // 8 bytes, over the tiny cap
+        let err = append_line_capped(&p, "more", 4).unwrap_err();
+        assert!(err.to_string().contains("inbox full"));
+        // Under-cap append still works.
+        append_line_capped(&dir.path().join("fresh.jsonl"), "ok", 4).unwrap();
     }
 }

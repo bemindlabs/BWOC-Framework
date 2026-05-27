@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 bwoc-core = { workspace = true }
 bwoc-signing = { workspace = true }
+bwoc-a2a = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 ratatui = { workspace = true }

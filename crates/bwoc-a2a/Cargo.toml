@@ -12,10 +12,13 @@ repository.workspace = true
 bwoc-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# NOTE: the HTTP server (axum) + outbound client (reqwest) land with the
-# `serve`/client phases (P1 listener, P4). The protocol core — types, Agent
-# Card, JSON-RPC dispatch — is transport-agnostic and dep-light by design so
-# it is unit-testable without spinning a server.
+# HTTP transport (P1-serve). The protocol core (types/card/rpc) stays
+# transport-agnostic and unit-testable without these; only `serve` uses them.
+# The outbound client (reqwest) lands in P4.
+axum = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# `oneshot` the axum Router in tests without binding a real socket.
+tower = { version = "0.5", features = ["util"] }
