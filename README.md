@@ -41,6 +41,7 @@ Buddhist principles are used here as **engineering thinking aids** — not relig
   - [Repository \& Workspace Layout](#repository--workspace-layout)
     - [A. The BWOC framework repository](#a-the-bwoc-framework-repository)
     - [B. A user workspace (what `bwoc init` creates)](#b-a-user-workspace-what-bwoc-init-creates)
+  - [Architecture (C4 Container View)](#architecture-c4-container-view)
   - [Getting Started](#getting-started)
     - [Install the toolkit](#install-the-toolkit)
     - [As an Agent Author](#as-an-agent-author)
@@ -232,6 +233,48 @@ The CLI operates against a **workspace** the user designates — independent of 
 ```
 
 **Workspace resolution** (first match wins): `--workspace <path>` flag → `BWOC_WORKSPACE` env → nearest ancestor with `.bwoc/` → cwd if it has `.bwoc/` → fail with exit code 2 + `bwoc init` hint.
+
+---
+
+## Architecture (C4 Container View)
+
+A [C4](https://c4model.com/) container view of the reference implementation —
+the native Rust binaries + libraries, the local filesystem state, and the
+external LLM backend. Everything is local: no network ports, no database, no
+container runtime (see [Infrastructure & Datastores](#infrastructure--datastores)).
+
+```mermaid
+C4Container
+    title BWOC Framework — Container view (v2.6.0)
+
+    Person(operator, "Operator", "Human who incarnates and drives agents")
+    System_Ext(llm, "LLM backend", "Claude Code · Codex · Kimi · Ollama · OpenAI-compatible")
+
+    System_Boundary(bwoc, "BWOC Framework — native Rust, no network ports") {
+        Container(cli, "bwoc CLI", "Rust static binary", "Incarnate · lifecycle · send/inbox · trust --keygen · audit · plugins/skills")
+        Container(agent, "bwoc-agent", "Rust daemon", "Control over a Unix socket; trust gate verifies signed envelopes before delivery")
+        Container(harness, "bwoc-harness", "Rust", "Sandboxed run loop (landlock / sandbox-exec); durable checkpoints; Saṅgha subprocess workers")
+        Container(signing, "bwoc-signing", "Rust lib", "ed25519 keygen / sign / verify over RFC 8785 (JCS) canonical bytes")
+        Container(core, "bwoc-core", "Rust lib", "Shared types: manifest, workspace, identity (dep-quarantined / lean)")
+        ContainerDb(fs, "Workspace state", "Local filesystem (.bwoc/)", "workspace.toml · agents.toml · inbox.jsonl · inbox.refusals.jsonl · teams/ · agent.key · config.manifest.json")
+    }
+
+    Rel(operator, cli, "runs commands")
+    Rel(cli, fs, "reads / writes state")
+    Rel(cli, signing, "signs envelopes on send · keygen")
+    Rel(cli, core, "uses shared types")
+    Rel(cli, agent, "spawns via bwoc start")
+    Rel(agent, fs, "reads inbox · logs refusals")
+    Rel(agent, signing, "verifies envelope signature")
+    Rel(agent, harness, "runs the agent's tasks")
+    Rel(harness, llm, "drives as a subprocess")
+    Rel(harness, fs, "tool writes confined to the worktree")
+```
+
+Inter-agent messages are **signed envelopes** appended to the recipient's
+`inbox.jsonl`; the daemon's trust gate verifies the sender's signature (and the
+Kalyāṇamitta-7 quality check) before delivery, logging rejects to
+`inbox.refusals.jsonl`. See [`SIGNING.en.md`](docs/en/SIGNING.en.md).
 
 ---
 
