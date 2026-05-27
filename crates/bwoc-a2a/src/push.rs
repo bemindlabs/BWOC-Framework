@@ -64,7 +64,8 @@ pub fn load(path: &Path) -> Result<Vec<PushConfig>, PushError> {
     }
 }
 
-/// Persist the full config list (create the parent dir if needed).
+/// Persist the full config list (create the parent dir if needed). Writes to a
+/// sibling `.tmp` then renames, so a crash mid-write can't truncate the store.
 pub fn save(path: &Path, configs: &[PushConfig]) -> Result<(), PushError> {
     let io_err = |e: std::io::Error| PushError::Io {
         path: path.display().to_string(),
@@ -77,7 +78,9 @@ pub fn save(path: &Path, configs: &[PushConfig]) -> Result<(), PushError> {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
-    std::fs::write(path, body).map_err(io_err)
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(io_err)?;
+    std::fs::rename(&tmp, path).map_err(io_err)
 }
 
 #[cfg(test)]

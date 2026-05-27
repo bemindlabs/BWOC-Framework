@@ -282,12 +282,16 @@ fn handle_create_push_config(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRp
         .and_then(|c| c.get("token"))
         .and_then(|t| t.as_str())
         .map(str::to_string);
+    // nanos + a per-process counter — unique even for two creates in the same
+    // clock tick (the counter), and across restarts (the nanos).
+    static PUSH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let config_id = format!(
-        "pnc-{}",
+        "pnc-{}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .unwrap_or(0),
+        PUSH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     let new = crate::push::PushConfig {
         task_id,
@@ -323,11 +327,18 @@ fn handle_get_push_config(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRe
             "missing `pushNotificationConfigId`",
         );
     };
+    // A2A keys a config by (taskId, configId). If a taskId is given, require the
+    // config to belong to it, so a caller can't read a config under a task they
+    // didn't name.
+    let task_id = task_id_param(req);
     let configs = match load_configs_or_err(req, &path) {
         Ok(c) => c,
         Err(e) => return e,
     };
-    match configs.iter().find(|c| c.config_id == config_id) {
+    match configs
+        .iter()
+        .find(|c| c.config_id == config_id && task_id.as_deref().is_none_or(|t| c.task_id == t))
+    {
         Some(c) => JsonRpcResponse::ok(resolved_id(req), push_config_json(c)),
         None => JsonRpcResponse::err(
             resolved_id(req),

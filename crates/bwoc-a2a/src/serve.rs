@@ -770,6 +770,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn push_config_error_branches() {
+        let (state, _d) = test_state_with_team();
+        // Create missing url → -32602.
+        let no_url = body_json(
+            app(state.clone())
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":1,"method":method::CREATE_TASK_PUSH_CONFIG,
+                    "params":{"taskId":"t1","pushNotificationConfig":{}}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(no_url["error"]["code"], -32602);
+        // Delete a non-existent config → -32001.
+        let del = body_json(
+            app(state.clone())
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":2,"method":method::DELETE_TASK_PUSH_CONFIG,
+                    "params":{"pushNotificationConfigId":"nope"}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(del["error"]["code"], -32001);
+        // Get with the wrong taskId → not found, even if the config id exists.
+        let created = body_json(
+            app(state.clone())
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":3,"method":method::CREATE_TASK_PUSH_CONFIG,
+                    "params":{"taskId":"t1","pushNotificationConfig":{"url":"https://h/x"}}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let cfg_id = created["result"]["pushNotificationConfig"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let wrong_task = body_json(
+            app(state)
+                .oneshot(post_json(serde_json::json!({
+                    "jsonrpc":"2.0","id":4,"method":method::GET_TASK_PUSH_CONFIG,
+                    "params":{"taskId":"WRONG","pushNotificationConfigId":cfg_id}
+                })))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(wrong_task["error"]["code"], -32001);
+    }
+
+    #[tokio::test]
     async fn oversize_body_returns_413_not_parse_error() {
         let (state, _d) = test_state();
         let big = "x".repeat(MAX_REQUEST_BYTES + 1);
