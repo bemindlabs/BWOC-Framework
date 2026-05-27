@@ -193,6 +193,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_message_emits_context_id_when_provided() {
+        use wiremock::matchers::body_partial_json;
+        let server = MockServer::start().await;
+        // The mock only matches if the request body carries the contextId, so a
+        // successful call proves the client emitted it.
+        Mock::given(http_method("POST"))
+            .and(path("/"))
+            .and(body_partial_json(serde_json::json!({
+                "params": { "message": { "contextId": "ctx-1" } }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": "m1", "result": { "ok": true }
+            })))
+            .mount(&server)
+            .await;
+        let result = send_message(&format!("{}/", server.uri()), "hi", Some("ctx-1"), "m1")
+            .await
+            .unwrap();
+        assert_eq!(result["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn send_message_maps_non_2xx_to_status_error() {
+        let server = MockServer::start().await;
+        Mock::given(http_method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClientError::Status { status: 500, .. }));
+    }
+
+    #[tokio::test]
     async fn send_message_surfaces_a_jsonrpc_error() {
         let server = MockServer::start().await;
         Mock::given(http_method("POST"))
