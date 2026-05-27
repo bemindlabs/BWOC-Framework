@@ -10,6 +10,7 @@ use std::path::Path;
 use crate::types::{JsonRpcRequest, JsonRpcResponse, Message, method};
 
 /// JSON-RPC standard error codes used here.
+const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
@@ -33,6 +34,17 @@ pub fn dispatch(req: &JsonRpcRequest, ctx: &ServeContext) -> Option<JsonRpcRespo
 }
 
 fn handle(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcResponse {
+    // JSON-RPC 2.0 requires `jsonrpc` to be exactly "2.0".
+    if req.jsonrpc != "2.0" {
+        return JsonRpcResponse::err(
+            resolved_id(req),
+            INVALID_REQUEST,
+            format!(
+                "unsupported jsonrpc version `{}` (must be \"2.0\")",
+                req.jsonrpc
+            ),
+        );
+    }
     match req.method.as_str() {
         method::SEND_MESSAGE => handle_send_message(req, ctx),
         method::GET_TASK
@@ -261,6 +273,21 @@ mod tests {
         )
         .expect("a request with an id gets a response");
         assert_eq!(r.error.as_ref().unwrap().code, INVALID_PARAMS);
+    }
+
+    #[test]
+    fn wrong_jsonrpc_version_is_invalid_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ServeContext {
+            agent_id: "a",
+            inbox_path: &dir.path().join("i.jsonl"),
+        };
+        let bad: JsonRpcRequest = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "1.0", "method": method::SEND_MESSAGE, "params": {}, "id": 1
+        }))
+        .unwrap();
+        let r = dispatch(&bad, &ctx).expect("a request with an id gets a response");
+        assert_eq!(r.error.as_ref().unwrap().code, INVALID_REQUEST);
     }
 
     #[test]
