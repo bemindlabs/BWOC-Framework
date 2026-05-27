@@ -71,6 +71,41 @@ Before requesting review, ensure:
 
 ---
 
+## Merging & External PRs
+
+**`main` is a protected branch.** Changes land **only** through a pull request
+that GitHub auto-merges once its gates are green — never by a direct push,
+including automation (the release pipeline's Homebrew-formula bump opens its own
+auto-merged PR rather than pushing to `main`).
+
+A PR is mergeable only when **all** of these hold:
+
+- The four required CI checks pass: **fmt + clippy** and **build + test** on
+  macOS, Linux, and Windows.
+- The branch is **up to date with `main`** (no conflicts).
+- **Every review conversation is resolved** — a requested change or open thread
+  blocks the merge until it's addressed.
+
+Enable native auto-merge with `gh pr merge <pr> --squash --auto`; GitHub merges
+the moment the gates clear.
+
+### External / fork PRs
+
+Cross-repo (fork) PRs carry external code into a security framework, so they get
+a **full review before merge — never a blind merge**:
+
+- Correctness + **security** (any code that executes plugins/skills/scripts, or
+  parses untrusted input, is scrutinized for injection / path-traversal / RCE).
+- **Dep-quarantine** held (`bwoc-core` stays lean; crypto/heavy deps only where
+  the rule allows).
+- **Backend neutrality** of `AGENTS.md` and **EN/TH bilingual parity** intact.
+- Rebased conflict-free, CI green, and **no unresolved blocking findings**.
+
+If a fork PR has security or correctness blockers, request changes (it stays
+blocked by the conversation-resolution gate) rather than merging "to fix later."
+
+---
+
 ## Documentation Principles (BWOC-aligned)
 
 When writing or reviewing docs, apply these principles from the framework itself:
