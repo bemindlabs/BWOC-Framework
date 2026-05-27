@@ -241,10 +241,13 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     };
 
     // ── Step 1: signature verification (HV2-4 / §5: verify, then authorize). ──
-    // A cross-workspace write MUST carry a provable signature regardless of the
-    // local signing mode — an unverifiable peer is exactly the `unknown_sender`
-    // case #20 closes only via cryptographic identity. A local sender follows
-    // the configured signing mode.
+    // A cross-workspace write MUST carry a provable signature — in `warn` as
+    // much as in `enforce` (an unverifiable peer is exactly the
+    // `unknown_sender` case #20 closes only via cryptographic identity). The
+    // sole exception is `BWOC_SIGNING_MODE=off`, the legacy escape hatch that
+    // disables the whole signing/verify layer — handled by the fast-path above
+    // (`signing_off && is_inert`), which returns before this code. A local
+    // sender follows the configured signing mode.
     if cross_workspace {
         if env.get("sig").and_then(|v| v.as_str()).is_none() {
             return cant_verify!("unsigned_cross_workspace");
@@ -808,6 +811,17 @@ mod tests {
         match evaluate(&ctx, &nomatch, 0) {
             TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unknown_sender"),
             other => panic!("unrouted sender must refuse, got {other:?}"),
+        }
+
+        // (d) tampered body under a routed sender's valid-shaped sig →
+        // bad_signature (the anti-forgery arm: a captured sig can't be reused
+        // over different content).
+        let tampered = format!(
+            r#"{{"from":"{from}","to":"{to}","ts":"{ts}","messageId":"{mid}","message":"TAMPERED","nonce":"{nonce}","sig":"{sig}","kind":"feedback"}}"#
+        );
+        match evaluate(&ctx, &tampered, 0) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "bad_signature"),
+            other => panic!("tampered cross-ws must refuse, got {other:?}"),
         }
     }
 
