@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 
 use bwoc_core::manifest::{Manifest, RefusalMode};
+use bwoc_core::routing::Routes;
 use bwoc_core::workspace::AgentsRegistry;
 
 /// Signature-enforcement posture (HV2-4 / `docs/en/SIGNING.en.md` §6).
@@ -221,22 +222,46 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
         Err(_) => return cant_verify!("registry_unreadable"),
     };
 
-    let Some(entry) = registry.agents.iter().find(|a| a.id == from) else {
-        return cant_verify!("unknown_sender");
+    // Resolve the sender's manifest. Local registry first; on a miss, fall
+    // back to a cross-workspace peer via routes.toml (#20 give-feedback). A
+    // cross-workspace sender is flagged so the write path can demand a
+    // provable signature (read-vs-write trust split).
+    let (sender_manifest, cross_workspace) = match registry.agents.iter().find(|a| a.id == from) {
+        Some(entry) => {
+            let manifest_path = ws.join(&entry.path).join("config.manifest.json");
+            match Manifest::load_from_path(&manifest_path) {
+                Ok(m) => (m, false),
+                Err(_) => return cant_verify!("sender_manifest_unreadable"),
+            }
+        }
+        None => match resolve_peer_manifest(ws, &from) {
+            Some(m) => (m, true),
+            None => return cant_verify!("unknown_sender"),
+        },
     };
 
-    let manifest_path = ws.join(&entry.path).join("config.manifest.json");
-    let sender_manifest = match Manifest::load_from_path(&manifest_path) {
-        Ok(m) => m,
-        Err(_) => return cant_verify!("sender_manifest_unreadable"),
-    };
-
-    // ── Step 1: signature verification (HV2-4) — runs before the quality gate
-    // so an unverifiable identity is refused before its declared qualities are
-    // even consulted (§5: verify, then authorize).
-    if !signing_off {
+    // ── Step 1: signature verification (HV2-4 / §5: verify, then authorize). ──
+    // A cross-workspace write MUST carry a provable signature regardless of the
+    // local signing mode — an unverifiable peer is exactly the `unknown_sender`
+    // case #20 closes only via cryptographic identity. A local sender follows
+    // the configured signing mode.
+    if cross_workspace {
+        if env.get("sig").and_then(|v| v.as_str()).is_none() {
+            return cant_verify!("unsigned_cross_workspace");
+        }
         if let Some(outcome) = verify_signature(
-            ctx,
+            true,
+            &env,
+            &from,
+            &envelope_ts,
+            envelope_offset,
+            &sender_manifest,
+        ) {
+            return outcome;
+        }
+    } else if !signing_off {
+        if let Some(outcome) = verify_signature(
+            matches!(ctx.signing_mode, SigningMode::Enforce),
             &env,
             &from,
             &envelope_ts,
@@ -294,14 +319,13 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
 ///
 /// In Warn mode the unverifiable-but-not-tampered cases proceed (`None`).
 fn verify_signature(
-    ctx: &TrustContext,
+    enforce: bool,
     env: &serde_json::Value,
     from: &str,
     envelope_ts: &str,
     envelope_offset: u64,
     sender_manifest: &Manifest,
 ) -> Option<TrustOutcome> {
-    let enforce = matches!(ctx.signing_mode, SigningMode::Enforce);
     let refuse = |reason: &'static str| {
         Some(TrustOutcome::Refuse(Refusal {
             envelope_offset,
@@ -343,6 +367,20 @@ fn verify_signature(
         // Warn / unverifiable-but-not-tampered → proceed.
         _ => None,
     }
+}
+
+/// Resolve a cross-workspace sender's manifest via the recipient's
+/// `routes.toml` (#20 give-feedback). The recipient looks the sender id up in
+/// its own routes, loads the peer workspace's agent registry, and returns the
+/// sender agent's manifest (whose `signingPublicKey` the caller verifies
+/// against). `None` when there is no route to the sender or the peer manifest
+/// can't be read — the caller then refuses as `unknown_sender`.
+fn resolve_peer_manifest(local_ws: &Path, sender_id: &str) -> Option<Manifest> {
+    let routes = Routes::load(local_ws).ok()?;
+    let peer_ws = routes.resolve(sender_id)?;
+    let registry = AgentsRegistry::load(peer_ws).ok()?;
+    let entry = registry.agents.iter().find(|a| a.id == sender_id)?;
+    Manifest::load_from_path(&peer_ws.join(&entry.path).join("config.manifest.json")).ok()
 }
 
 /// Walk up from `start` looking for `.bwoc/workspace.toml`. Same chain as
@@ -388,18 +426,6 @@ mod tests {
             gating_enabled: gating,
             // Existing Kalyāṇamitta tests exercise the quality gate, not signing.
             signing_mode: SigningMode::Off,
-        }
-    }
-
-    /// Build a context with only the signing mode set (no workspace / quality
-    /// gating) for `verify_signature` unit tests.
-    fn ctx_with_signing(mode: SigningMode) -> TrustContext {
-        TrustContext {
-            required: vec![],
-            mode: RefusalMode::Off,
-            workspace_root: None,
-            gating_enabled: false,
-            signing_mode: mode,
         }
     }
 
@@ -645,7 +671,8 @@ mod tests {
         // Valid signature → proceed (None) in any signing mode.
         for mode in [SigningMode::Enforce, SigningMode::Warn] {
             assert!(
-                verify_signature(&ctx_with_signing(mode), &env, from, ts, 0, &sm).is_none(),
+                verify_signature(matches!(mode, SigningMode::Enforce), &env, from, ts, 0, &sm)
+                    .is_none(),
                 "valid sig must proceed in {mode:?}"
             );
         }
@@ -654,7 +681,7 @@ mod tests {
         let mut bad = env.clone();
         bad["message"] = "tampered".into();
         for mode in [SigningMode::Enforce, SigningMode::Warn] {
-            match verify_signature(&ctx_with_signing(mode), &bad, from, ts, 0, &sm) {
+            match verify_signature(matches!(mode, SigningMode::Enforce), &bad, from, ts, 0, &sm) {
                 Some(TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "bad_signature"),
                 other => panic!("tampered must refuse in {mode:?}, got {other:?}"),
             }
@@ -667,27 +694,12 @@ mod tests {
         let env = serde_json::json!({
             "from": "agent-x", "to": "agent-me", "ts": "t", "message": "hi",
         });
-        match verify_signature(
-            &ctx_with_signing(SigningMode::Enforce),
-            &env,
-            "agent-x",
-            "t",
-            0,
-            &sm,
-        ) {
+        match verify_signature(true, &env, "agent-x", "t", 0, &sm) {
             Some(TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "unsigned"),
             other => panic!("expected unsigned refuse, got {other:?}"),
         }
         assert!(
-            verify_signature(
-                &ctx_with_signing(SigningMode::Warn),
-                &env,
-                "agent-x",
-                "t",
-                0,
-                &sm
-            )
-            .is_none(),
+            verify_signature(false, &env, "agent-x", "t", 0, &sm).is_none(),
             "warn mode proceeds on unsigned"
         );
     }
@@ -705,6 +717,97 @@ mod tests {
         assert_eq!(SigningMode::from_env(), SigningMode::Off);
         unsafe {
             std::env::remove_var("BWOC_SIGNING_MODE");
+        }
+    }
+
+    // ── cross-workspace give-feedback (#20) ─────────────────────────────────
+
+    #[test]
+    fn cross_workspace_signed_sender_verifies_via_routes() {
+        use std::fs;
+        let peer = tempfile::tempdir().unwrap();
+        let recip = tempfile::tempdir().unwrap();
+
+        // Peer workspace: agent-peer with a keypair + published public key.
+        let peer_agent_dir = peer.path().join("agents/agent-peer");
+        let pubkey = bwoc_signing::generate_keypair(&peer_agent_dir.join(".bwoc"), false).unwrap();
+        let key = bwoc_signing::load_signing_key(&peer_agent_dir.join(".bwoc"))
+            .unwrap()
+            .unwrap();
+        let mut pm = sample_manifest();
+        pm.trust = Some(TrustBlock {
+            schema_version: 1,
+            declared: TrustDeclared::default(),
+            required_trust: vec![],
+            mode: None,
+            signing_public_key: Some(pubkey),
+        });
+        pm.save_to_path(&peer_agent_dir.join("config.manifest.json"))
+            .unwrap();
+        fs::create_dir_all(peer.path().join(".bwoc")).unwrap();
+        fs::write(
+            peer.path().join(".bwoc/agents.toml"),
+            "[[agent]]\nid = \"agent-peer\"\npath = \"agents/agent-peer\"\n\
+             backend = \"claude\"\nincarnated = \"2026-05-27\"\nstatus = \"active\"\n",
+        )
+        .unwrap();
+
+        // Recipient workspace: a route mapping agent-peer → the peer workspace.
+        fs::create_dir_all(recip.path().join(".bwoc/interconnect")).unwrap();
+        fs::write(
+            recip.path().join(".bwoc/interconnect/routes.toml"),
+            format!(
+                "[[route]]\nagent = \"agent-peer\"\nworkspace = \"{}\"\n",
+                peer.path().display()
+            ),
+        )
+        .unwrap();
+
+        // Enforce mode (production default) so the fast-path doesn't short-cut.
+        let ctx = TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            workspace_root: Some(recip.path().to_path_buf()),
+            gating_enabled: false,
+            signing_mode: SigningMode::Enforce,
+        };
+
+        let (from, to, ts, mid, body) = (
+            "agent-peer",
+            "agent-me",
+            "2026-05-27T00:00:00Z",
+            "msg-fb",
+            "review ok",
+        );
+        let nonce = bwoc_signing::new_nonce();
+        let sig = bwoc_signing::sign(
+            &key,
+            &bwoc_signing::canonical_bytes(from, to, ts, mid, body, &nonce),
+        );
+
+        // (a) valid signed cross-workspace sender → Pass (identity proven via routes).
+        let signed = format!(
+            r#"{{"from":"{from}","to":"{to}","ts":"{ts}","messageId":"{mid}","message":"{body}","nonce":"{nonce}","sig":"{sig}","kind":"feedback"}}"#
+        );
+        assert!(
+            matches!(evaluate(&ctx, &signed, 0), TrustOutcome::Pass),
+            "a valid cross-workspace signature must pass"
+        );
+
+        // (b) unsigned cross-workspace write → refused (read-vs-write split).
+        let unsigned = format!(r#"{{"from":"{from}","to":"{to}","ts":"{ts}","message":"{body}"}}"#);
+        match evaluate(&ctx, &unsigned, 0) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unsigned_cross_workspace"),
+            other => panic!("unsigned cross-ws must refuse, got {other:?}"),
+        }
+
+        // (c) a sender with no route at all → unknown_sender.
+        let nomatch = format!(
+            r#"{{"from":"agent-nobody","to":"{to}","ts":"{ts}","message":"hi","nonce":"00","sig":"00"}}"#
+        );
+        match evaluate(&ctx, &nomatch, 0) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unknown_sender"),
+            other => panic!("unrouted sender must refuse, got {other:?}"),
         }
     }
 
