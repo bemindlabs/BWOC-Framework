@@ -1,11 +1,9 @@
-# 2026-05-28 — gcloud compute slice (EPIC-9 framing) — DRAFT for sign-off
+# 2026-05-28 — gcloud compute slice (EPIC-9 framing)
 
-> **Status: DRAFT.** This sets the spec frame for `BWOC-EPIC-9` (the first
-> write-capable GCP slice) before any code lands — mirroring how the EPIC-8
-> foundation note framed its decisions. Decisions 1–2 and 5 follow established
-> precedent; **decisions 3–4 (the write-verb risk matrix + the gating model)
-> are the load-bearing new surface and carry open questions for the architect**
-> (see "Open questions"). Nothing here is frozen until those are answered.
+> **Status: FROZEN (architect sign-off 2026-05-28) + implemented.** Sets the
+> spec frame for `BWOC-EPIC-9` (the first write-capable GCP slice). The three
+> open questions on decisions 3–4 were resolved with the recommended answers
+> (see "Resolved"); the slice is implemented in this change.
 
 This is the slice the [EPIC-8 note §6](2026-05-28_gcloud-workflow-plugin-architecture.md)
 deferred the **write-verb risk matrix** to: *"when the first GCP write-capable
@@ -104,18 +102,16 @@ should never autonomously stop a VM. A future read-only `compute-inventory`
 addition to `gcloud-ops` (`list`/`describe`) is fine; the write verbs remain
 behind the operator-run `bwoc gcloud compute` CLI with their T1/T2 gates.
 
-## Open questions (for architect sign-off before code)
+## Resolved (architect sign-off 2026-05-28)
 
-1. **`stop` confirmation strength** — T2 (confirm + echo target) as proposed, or
-   escalate to **T3 (type the instance name)** given a stop interrupts a live
-   workload? (Proposed: T2 — `stop` is reversible, so T3 feels like over-prompting
-   / Mattaññutā; but it is the highest-impact verb in v1.)
-2. **Scope of v1** — `start`/`stop` only as proposed, or also include
-   `instances.reset`? (Proposed: exclude — reset is a hard power-cycle with
-   in-flight data-loss risk, closer to T3.)
-3. **Default project for writes** — require `--project` explicitly too, or allow
-   the `gcloud config` default as long as the prompt echoes it? (Proposed: allow
-   the config default but **always echo it**; require `--instance`/`--zone`.)
+1. **`stop` confirmation strength** → **T2** (confirm + echo resolved target).
+   `stop` is reversible via `start`, so typed-name T3 would over-prompt
+   (Mattaññutā); the dominant risk is wrong-target, which T2's echoed
+   `project/zone/instance` addresses.
+2. **Scope of v1** → **`start`/`stop` only.** `instances.reset` excluded (hard
+   power-cycle, in-flight data-loss risk — its own future slice).
+3. **Default project for writes** → **allow the `gcloud config` default, always
+   echoed** in the confirmation; `--instance` and `--zone` are required.
 
 ## Alternatives considered
 
@@ -134,7 +130,7 @@ behind the operator-run `bwoc gcloud compute` CLI with their T1/T2 gates.
 ## Status / deferred
 
 - Decisions 1, 2, 5 follow EPIC-8 / jira precedent and are stable.
-- **Decisions 3–4 await the three open-question answers before freezing.**
+- **Decisions 3–4 frozen** with the resolved answers above; implemented in this change.
 - Live verification is gated on an operator-provided GCP sandbox with at least
   one stoppable test instance (surfacing point: the plugin's smoke-test gate).
 - The risk-matrix tiers T3/T4 are authored here as the **template** for

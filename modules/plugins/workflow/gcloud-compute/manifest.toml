@@ -1,0 +1,18 @@
+[plugin]
+name        = "gcloud-compute"
+kind        = "workflow"
+version     = "0.1.0"
+description = "Google Cloud (gcloud) compute instance lifecycle adapter — list / describe (read) and start / stop (gated writes); sources credential helpers from the sibling gcloud-auth plugin. EPIC-9, the first write-capable GCP slice."
+compat      = ">=2.11.0"
+entry       = "gcloud.sh"
+
+# [config.schema] intentionally omitted.
+#
+# Instance state is read live from `gcloud compute instances {list,describe}`
+# and mutated via `gcloud compute instances {start,stop}` (local credentials,
+# remote API). Credentials are resolved by the sibling `workflow/gcloud-auth`
+# plugin's helpers — see this plugin's `auth.toml` for the shape (no values).
+# The only workspace-level surface is the universal `enabled` key on
+# `[plugins.gcloud-compute]`. Write verbs are gated in the `bwoc gcloud compute`
+# CLI (confirmation + echoed target; `--json` requires `--yes`), never here.
+# See notes/2026-05-28_gcloud-compute-epic9-design.md.

@@ -75,6 +75,7 @@ const EXIT_PLUGIN_ERROR: i32 = 255;
 
 const PLUGIN_AUTH: &str = "gcloud-auth";
 const PLUGIN_PROJECT: &str = "gcloud-project";
+const PLUGIN_COMPUTE: &str = "gcloud-compute";
 const PLUGIN_KIND: &str = "workflow";
 
 const ENV_ACCOUNT: &str = "BWOC_GCLOUD_ACCOUNT";
@@ -97,8 +98,23 @@ pub enum GcloudCommand {
     /// Project context operations (gcloud-project plugin).
     #[command(subcommand)]
     Project(ProjectCommand),
+    /// Compute instance lifecycle (gcloud-compute plugin, EPIC-9).
+    #[command(subcommand)]
+    Compute(ComputeCommand),
     /// Combined auth + project view. Degrades cleanly when plugins are missing.
     Status(StatusArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ComputeCommand {
+    /// List compute instances (optionally scoped to a zone).
+    List(ComputeListArgs),
+    /// Describe one instance.
+    Describe(ComputeTargetArgs),
+    /// Start a stopped instance. WRITE (T1) — gated behind confirmation.
+    Start(ComputeWriteArgs),
+    /// Stop a running instance. WRITE (T2) — gated behind confirmation + target echo.
+    Stop(ComputeWriteArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -195,6 +211,63 @@ pub struct StatusArgs {
     json: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct ComputeListArgs {
+    /// Restrict to one zone (e.g. `us-central1-a`). Default: all zones.
+    #[arg(long)]
+    zone: Option<String>,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ComputeTargetArgs {
+    /// Instance name. Required.
+    #[arg(long)]
+    instance: String,
+    /// Zone the instance is in (e.g. `us-central1-a`). Required.
+    #[arg(long)]
+    zone: String,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ComputeWriteArgs {
+    /// Instance name to start/stop. Required.
+    #[arg(long)]
+    instance: String,
+    /// Zone the instance is in (e.g. `us-central1-a`). Required.
+    #[arg(long)]
+    zone: String,
+    /// Project id. Default: the local `gcloud config` project (echoed in the prompt).
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Acknowledge the write up front (required in --json mode).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
 /// Dispatch a parsed `GcloudCommand`. Returns the process exit code.
 pub fn run(cmd: GcloudCommand) -> i32 {
     match cmd {
@@ -203,6 +276,10 @@ pub fn run(cmd: GcloudCommand) -> i32 {
         GcloudCommand::Project(ProjectCommand::List(a)) => run_project_list(a),
         GcloudCommand::Project(ProjectCommand::Show(a)) => run_project_show(a),
         GcloudCommand::Project(ProjectCommand::SetDefault(a)) => run_project_set_default(a),
+        GcloudCommand::Compute(ComputeCommand::List(a)) => run_compute_list(a),
+        GcloudCommand::Compute(ComputeCommand::Describe(a)) => run_compute_describe(a),
+        GcloudCommand::Compute(ComputeCommand::Start(a)) => run_compute_lifecycle(a, "start"),
+        GcloudCommand::Compute(ComputeCommand::Stop(a)) => run_compute_lifecycle(a, "stop"),
         GcloudCommand::Status(a) => run_combined_status(a),
     }
 }
@@ -565,6 +642,39 @@ fn project_set_default_request(
     })
 }
 
+fn compute_list_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    zone: Option<&str>,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "list",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "zone": zone,
+        "project": project,
+    })
+}
+
+fn compute_target_request(
+    operation: &str,
+    workspace: &Path,
+    plugin_dir: &Path,
+    instance: &str,
+    zone: &str,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": operation,
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "instance": instance,
+        "zone": zone,
+        "project": project,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers.
 // ---------------------------------------------------------------------------
@@ -622,6 +732,25 @@ fn is_valid_project_id(id: &str) -> bool {
     bytes
         .iter()
         .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// GCE resource names (instance, zone): RFC 1035 label — 1–63 chars, lowercase
+/// letter first, then lowercase/digit/hyphen, no trailing hyphen. Rejects any
+/// `-`-leading value before it can reach `gcloud` (the `--` guard in the plugin
+/// is the second layer). Used for `--instance` and `--zone`.
+fn is_valid_gce_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() || b.len() > 63 {
+        return false;
+    }
+    if !b[0].is_ascii_lowercase() {
+        return false;
+    }
+    if *b.last().unwrap() == b'-' {
+        return false;
+    }
+    b.iter()
+        .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
 
 /// Stub-error envelope for the missing-plugin path. Names the exact plugin and
@@ -964,6 +1093,274 @@ fn run_project_set_default(args: ProjectSetDefaultArgs) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Compute (EPIC-9) — instance lifecycle. Reads are T0; start=T1, stop=T2.
+// ---------------------------------------------------------------------------
+
+/// Validate the compute target before dispatch: instance + zone are RFC 1035
+/// labels; an explicit project is a valid project id. Pre-check so the plugin
+/// is never spawned for obviously-bad input (the `--` guard is the second layer).
+fn validate_compute_target(
+    instance: &str,
+    zone: &str,
+    project: Option<&str>,
+) -> Result<(), String> {
+    if !is_valid_gce_name(instance) {
+        return Err(format!(
+            "invalid instance name '{instance}' — expected an RFC 1035 label \
+             (1–63 chars, lowercase letter first, then [a-z0-9-], no trailing hyphen)"
+        ));
+    }
+    if !is_valid_gce_name(zone) {
+        return Err(format!(
+            "invalid zone '{zone}' — expected an RFC 1035 label (e.g. us-central1-a)"
+        ));
+    }
+    if let Some(p) = project {
+        if !is_valid_project_id(p) {
+            return Err(format!(
+                "invalid project id '{p}' — 6–30 chars, lowercase letters/digits/hyphens, \
+                 starting with a letter"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// How the project is shown in a confirmation prompt — the explicit value, or a
+/// clear marker that the local `gcloud config` default will be used.
+fn project_echo(project: Option<&str>) -> String {
+    match project {
+        Some(p) => format!("project '{p}'"),
+        None => "project (gcloud config default)".to_string(),
+    }
+}
+
+fn run_compute_list(args: ComputeListArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud compute list: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Some(z) = &args.zone {
+        if !is_valid_gce_name(z) {
+            let msg =
+                format!("invalid zone '{z}' — expected an RFC 1035 label (e.g. us-central1-a)");
+            if args.json {
+                emit_error_json("compute list", "bad_zone", &msg);
+            } else {
+                eprintln!("bwoc gcloud compute list: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+    if let Some(p) = &args.project {
+        if !is_valid_project_id(p) {
+            let msg = format!("invalid project id '{p}'");
+            if args.json {
+                emit_error_json("compute list", "bad_project_id", &msg);
+            } else {
+                eprintln!("bwoc gcloud compute list: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+    let plugin = match require_plugin(&root, PLUGIN_COMPUTE, "compute list", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = compute_list_request(
+        &root,
+        &plugin.dir,
+        args.zone.as_deref(),
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let total = value.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("bwoc gcloud compute list: {total} instance(s)");
+            if let Some(arr) = value.get("instances").and_then(|v| v.as_array()) {
+                for i in arr {
+                    let name = i.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let zone = i.get("zone").and_then(|v| v.as_str()).unwrap_or("?");
+                    let status = i.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    let mt = i
+                        .get("machine_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    println!("  {name} [{status}] {zone} ({mt})");
+                }
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("compute list", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud compute list: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+fn run_compute_describe(args: ComputeTargetArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud compute describe: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Err(msg) = validate_compute_target(&args.instance, &args.zone, args.project.as_deref()) {
+        if args.json {
+            emit_error_json("compute describe", "bad_target", &msg);
+        } else {
+            eprintln!("bwoc gcloud compute describe: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    let plugin = match require_plugin(&root, PLUGIN_COMPUTE, "compute describe", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = compute_target_request(
+        "describe",
+        &root,
+        &plugin.dir,
+        &args.instance,
+        &args.zone,
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let zone = value.get("zone").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let mt = value
+                .get("machine_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            println!("bwoc gcloud compute describe: {name} [{status}] {zone} ({mt})");
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("compute describe", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud compute describe: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+/// `start` (T1) / `stop` (T2). Both are confirmation-gated (`--json` ⇒ `--yes`);
+/// the prompt echoes the resolved `project / zone / instance` so the operator
+/// confirms *which* resource — the dominant compute footgun is wrong-target.
+fn run_compute_lifecycle(args: ComputeWriteArgs, verb: &str) -> i32 {
+    let label = format!("compute {verb}");
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud {label}: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Err(msg) = validate_compute_target(&args.instance, &args.zone, args.project.as_deref()) {
+        if args.json {
+            emit_error_json(&label, "bad_target", &msg);
+        } else {
+            eprintln!("bwoc gcloud {label}: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+
+    // Write gate (T1/T2): echo the full resolved target in the prompt.
+    if !args.yes {
+        if json_write_blocked(args.json, args.yes) {
+            eprintln!("bwoc gcloud {label}: --json requires --yes (a write needs explicit ack)");
+            return EXIT_USAGE;
+        }
+        let target = format!(
+            "instance '{}' in zone '{}' ({})",
+            args.instance,
+            args.zone,
+            project_echo(args.project.as_deref())
+        );
+        let prompt = if verb == "stop" {
+            format!(
+                "Stop {target}? This interrupts any running workload (reversible with `start`)."
+            )
+        } else {
+            format!("Start {target}?")
+        };
+        if !confirm(&prompt) {
+            eprintln!("bwoc gcloud {label}: aborted (no write performed)");
+            return EXIT_USAGE;
+        }
+    }
+
+    let plugin = match require_plugin(&root, PLUGIN_COMPUTE, &label, args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = compute_target_request(
+        verb,
+        &root,
+        &plugin.dir,
+        &args.instance,
+        &args.zone,
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let inst = value
+                .get("instance")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&args.instance);
+            let zone = value
+                .get("zone")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&args.zone);
+            let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("bwoc gcloud {label}: {inst} in {zone} → status {status}");
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json(&label, "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud {label}: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
 /// `bwoc gcloud status` — combined view. **Degrades when plugins are missing:**
 /// reports the auth shape + project env hints from local state alone, and
 /// notes which plugins are absent. Always exits `0` unless the workspace
@@ -1189,6 +1586,87 @@ mod tests {
         assert!(!is_valid_project_id(""));
         // 31 chars — too long.
         assert!(!is_valid_project_id(&"a".repeat(31)));
+    }
+
+    // --- compute (EPIC-9) --------------------------------------------------
+
+    #[test]
+    fn parses_compute_list_describe() {
+        match parse(&["compute", "list", "--zone", "us-central1-a", "--json"]).unwrap() {
+            GcloudCommand::Compute(ComputeCommand::List(a)) => {
+                assert_eq!(a.zone.as_deref(), Some("us-central1-a"));
+                assert!(a.json);
+            }
+            other => panic!("expected Compute::List, got {other:?}"),
+        }
+        match parse(&[
+            "compute",
+            "describe",
+            "--instance",
+            "web-1",
+            "--zone",
+            "us-central1-a",
+        ])
+        .unwrap()
+        {
+            GcloudCommand::Compute(ComputeCommand::Describe(a)) => {
+                assert_eq!(a.instance, "web-1");
+                assert_eq!(a.zone, "us-central1-a");
+            }
+            other => panic!("expected Compute::Describe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_compute_start_stop() {
+        match parse(&[
+            "compute",
+            "stop",
+            "--instance",
+            "web-1",
+            "--zone",
+            "us-central1-a",
+            "--yes",
+        ])
+        .unwrap()
+        {
+            GcloudCommand::Compute(ComputeCommand::Stop(a)) => {
+                assert_eq!(a.instance, "web-1");
+                assert!(a.yes);
+            }
+            other => panic!("expected Compute::Stop, got {other:?}"),
+        }
+        assert!(matches!(
+            parse(&["compute", "start", "--instance", "web-1", "--zone", "z-a-1"]).unwrap(),
+            GcloudCommand::Compute(ComputeCommand::Start(_))
+        ));
+    }
+
+    #[test]
+    fn compute_write_verbs_require_instance_and_zone() {
+        assert!(parse(&["compute", "stop", "--zone", "us-central1-a"]).is_err());
+        assert!(parse(&["compute", "stop", "--instance", "web-1"]).is_err());
+        assert!(parse(&["compute", "describe", "--instance", "web-1"]).is_err());
+    }
+
+    #[test]
+    fn gce_name_validation() {
+        assert!(is_valid_gce_name("web-1"));
+        assert!(is_valid_gce_name("us-central1-a"));
+        assert!(is_valid_gce_name("a"));
+        assert!(!is_valid_gce_name("")); // empty
+        assert!(!is_valid_gce_name("1web")); // digit first
+        assert!(!is_valid_gce_name("-web")); // hyphen first (option-injection shape)
+        assert!(!is_valid_gce_name("web-")); // trailing hyphen
+        assert!(!is_valid_gce_name("Web")); // uppercase
+        assert!(!is_valid_gce_name("web_1")); // underscore
+        assert!(!is_valid_gce_name(&"a".repeat(64))); // > 63
+    }
+
+    #[test]
+    fn project_echo_marks_config_default() {
+        assert_eq!(project_echo(Some("my-proj-1")), "project 'my-proj-1'");
+        assert_eq!(project_echo(None), "project (gcloud config default)");
     }
 
     // --- auth-shape probe (file + env, no network) -------------------------

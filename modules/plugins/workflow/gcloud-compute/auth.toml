@@ -1,0 +1,37 @@
+# auth.toml — Google Cloud authentication CONTRACT (compute plugin view).
+#
+# ============================================================================
+#  NEVER COMMIT REAL CREDENTIAL VALUES TO THIS FILE.
+#
+#  This plugin RESOLVES credentials via the sibling `workflow/gcloud-auth`
+#  plugin's helpers (`gcloud_active_source`, `gcloud_assert_authenticated`,
+#  …). It declares the same auth contract here so `bwoc check` can validate
+#  the shape independently — and so an operator inspecting this plugin
+#  alone sees the full auth model without having to chase the sibling.
+#
+#  Like the other gcloud plugins, this plugin reads NO credential value. It
+#  asks the local `gcloud` CLI for compute state (`instances list/describe`)
+#  and issues gated lifecycle writes (`instances start/stop`). The token never
+#  enters the plugin's address space.
+#
+#  Source precedence (first source whose state resolves wins; reflected in
+#  `gcloud-auth status.active_source`):
+#
+#    1. Application Default Credentials (ADC):
+#         ~/.config/gcloud/application_default_credentials.json
+#       Written by `gcloud auth application-default login`.
+#
+#    2. Service-account JSON:
+#         <workspace>/.bwoc/secrets/gcloud-sa.json   (chmod 600, gitignored)
+#       Workspace-local; never commit.
+#
+#    3. Environment variables:
+#         BWOC_GCLOUD_ACCOUNT
+#         BWOC_GCLOUD_PROJECT
+#         BWOC_GCLOUD_IMPERSONATE_SERVICE_ACCOUNT   (optional)
+# ============================================================================
+
+[sources]
+adc             = { path = "~/.config/gcloud/application_default_credentials.json", priority = 1 }
+service_account = { path = ".bwoc/secrets/gcloud-sa.json",                          priority = 2 }
+env             = { vars = ["BWOC_GCLOUD_ACCOUNT", "BWOC_GCLOUD_PROJECT", "BWOC_GCLOUD_IMPERSONATE_SERVICE_ACCOUNT"], priority = 3 }
