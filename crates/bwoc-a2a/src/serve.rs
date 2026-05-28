@@ -931,6 +931,30 @@ mod tests {
         assert_eq!(stream_no_auth.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[test]
+    fn ct_eq_matches_only_equal_bytes() {
+        assert!(ct_eq(b"s3cr3t", b"s3cr3t"));
+        assert!(!ct_eq(b"s3cr3t", b"s3cr3T")); // one byte differs
+        assert!(!ct_eq(b"s3cr3t", b"s3cr3")); // length differs
+        assert!(ct_eq(b"", b""));
+    }
+
+    #[tokio::test]
+    async fn lowercase_bearer_scheme_is_rejected() {
+        // The scheme prefix is case-sensitive ("Bearer "); a lowercase `bearer`
+        // fails closed (more restrictive than RFC 7235, not a bypass).
+        let (state, _d) = test_state_authed();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, "bearer s3cr3t")
+            .body(Body::from(send_msg_body().to_string()))
+            .unwrap();
+        let resp = app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn auth_accepts_correct_token_and_card_stays_public() {
         let (state, _d) = test_state_authed();

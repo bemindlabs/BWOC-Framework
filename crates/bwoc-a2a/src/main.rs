@@ -236,17 +236,10 @@ fn run_serve(
     let addr = SocketAddr::new(bind, port);
     // AP1: a Bearer token from `BWOC_A2A_TOKEN` (env, wins) or the agent's
     // `.bwoc/a2a.token` file enables auth on the JSON-RPC + SSE endpoints.
-    let auth_token = std::env::var("BWOC_A2A_TOKEN")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let f = inbox_path.parent()?.join("a2a.token");
-            std::fs::read_to_string(f)
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
+    let auth_token = normalize_token(std::env::var("BWOC_A2A_TOKEN").ok()).or_else(|| {
+        let f = inbox_path.parent()?.join("a2a.token");
+        normalize_token(std::fs::read_to_string(f).ok())
+    });
     if !bind.is_loopback() && auth_token.is_none() {
         eprintln!(
             "bwoc-a2a serve: WARNING — binding {addr} is NOT loopback and NO auth \
@@ -341,5 +334,35 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
         if !cur.pop() {
             return None;
         }
+    }
+}
+
+/// Normalize a raw token source (env value or file contents): trim surrounding
+/// whitespace, and treat empty / whitespace-only as **absent** — so an empty
+/// `BWOC_A2A_TOKEN` or `.bwoc/a2a.token` never enables auth-with-an-empty-token
+/// (which would accept `Authorization: Bearer ` from anyone).
+fn normalize_token(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_token;
+
+    #[test]
+    fn empty_or_whitespace_token_is_absent() {
+        assert_eq!(normalize_token(None), None);
+        assert_eq!(normalize_token(Some(String::new())), None);
+        assert_eq!(normalize_token(Some("   \n\t ".into())), None);
+    }
+
+    #[test]
+    fn real_token_is_trimmed_but_interior_preserved() {
+        assert_eq!(
+            normalize_token(Some("  s3cr3t\n".into())).as_deref(),
+            Some("s3cr3t")
+        );
+        // Interior spaces survive (only the edges are trimmed).
+        assert_eq!(normalize_token(Some("a b".into())).as_deref(), Some("a b"));
     }
 }
