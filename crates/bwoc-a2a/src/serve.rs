@@ -147,7 +147,6 @@ async fn push_delivery_loop(team_id: String, tasks_path: PathBuf) {
         // Load configs once per tick, and only when something changed.
         let configs = crate::push::load(&configs_path).unwrap_or_default();
         for (task_id, cur, terminal) in changes {
-            last.insert(task_id.clone(), cur);
             let event = crate::push::status_event(&task_id, &team_id, cur, terminal);
             for c in configs.iter().filter(|c| c.task_id == task_id) {
                 if let Err(e) =
