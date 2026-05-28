@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.9.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `2.10.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.4.1`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.5.27-3`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.27-3) *(2026-05-27 — **2.9.0**; A2A (Agent2Agent) protocol interop v1 — `bwoc a2a serve/card/fetch-card/send`, tasks bridge, SSE streaming, push-config (#48). Prior: `v2026.5.27-2` 2.8.0 — cross-workspace give-feedback)*
+**Latest release:** [`v2026.5.28-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.28-0) *(2026-05-28 — **2.10.0**; A2A auth phase — inbound Bearer auth, non-loopback-bind refusal, SSRF-guarded webhook delivery, rate + concurrency caps, outbound client auth (#80). Prior: `v2026.5.27-3` 2.9.0 — A2A protocol interop v1)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-27T16:57:40Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-28T12:09:42Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 

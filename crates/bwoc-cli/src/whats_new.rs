@@ -20,17 +20,17 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — A2A protocol interop"
+    " — A2A auth phase"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc a2a serve <agent>` — expose an agent over the A2A protocol (#48)",
-    "`bwoc a2a card / fetch-card / send` — Agent Card + talk to external A2A agents",
-    "A2A `tasks/*` bridge the Saṅgha team list; SSE streaming via `SubscribeToTask`",
-    "Push-notification config CRUD; HTTP stays quarantined to the `bwoc-a2a` binary",
-    "Prior 2.8.0: signed cross-workspace peer feedback (#20)",
+    "`bwoc a2a serve` now needs a Bearer token to bind beyond loopback (#80)",
+    "Webhook delivery fires (auth-gated) behind an SSRF guard with IP pinning",
+    "Request rate limit (429) + `SubscribeToTask` concurrency cap",
+    "`bwoc a2a send`/`fetch-card` authenticate to peers (`.bwoc/a2a-credentials.json`)",
+    "Prior 2.9.0: A2A protocol interop v1 (#48)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

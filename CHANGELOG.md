@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
-**A2A auth phase (#80, PRs #81–#84, #87).** The follow-up to A2A v1 (#48): the listener is now safe to expose beyond loopback, and the outbound client authenticates to peers. Closes the security deferrals the v1 notes flagged.
+## [v2026.5.28-0] — 2026-05-28 — 2.10.0
+
+**Minor release.** A2A auth phase (#80, PRs #81–#84, #87) — the follow-up to A2A v1 (#48): the listener is now safe to expose beyond loopback, and the outbound client authenticates to peers. Closes the security deferrals the v1 notes flagged. Cargo SemVer `2.9.0` → `2.10.0`.
 
 ### Added
 
