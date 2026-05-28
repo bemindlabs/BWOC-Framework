@@ -134,14 +134,14 @@ EPIC-8 **reuses all five** patterns. The only divergence is **scope**: foundatio
 
 The decisions above intentionally bound the foundation. Concrete deferrals:
 
-| Future slice | Plugin(s) | First write verb |
-|---|---|---|
-| **Compute lifecycle** | `workflow/gcloud-compute` | `instances.{start,stop}` |
-| **Storage** | `workflow/gcloud-storage` | `objects.{put,delete}` |
-| **Serverless deploy** | `workflow/gcloud-run` (+ `gcloud-build` if separable) | `services.deploy`, `builds.submit` |
-| **IAM mutations** | `workflow/gcloud-iam` | `bindings.{add,remove}` — **highest blast radius, latest** |
+| Future slice | Plugin(s) | First write verb | Tracking |
+|---|---|---|---|
+| **Compute lifecycle** | `workflow/gcloud-compute` | `instances.{start,stop}` | EPIC-9 — [#96](https://github.com/bemindlabs/BWOC-Framework/issues/96) |
+| **Storage** | `workflow/gcloud-storage` | `objects.{put,delete}` | EPIC-10 — [#97](https://github.com/bemindlabs/BWOC-Framework/issues/97) |
+| **Serverless deploy** | `workflow/gcloud-run` (+ `gcloud-build` if separable) | `services.deploy`, `builds.submit` | EPIC-11 — [#98](https://github.com/bemindlabs/BWOC-Framework/issues/98) |
+| **IAM mutations** | `workflow/gcloud-iam` | `bindings.{add,remove}` — **highest blast radius, latest** | EPIC-12 — [#99](https://github.com/bemindlabs/BWOC-Framework/issues/99) |
 
-Each of these is its own future epic (EPIC-9 onward). They build on the auth surface this foundation establishes. **None** are pulled into Sprint 8.
+Each of these is its own future epic (EPIC-9 onward, tracked in [#96](https://github.com/bemindlabs/BWOC-Framework/issues/96)–[#99](https://github.com/bemindlabs/BWOC-Framework/issues/99)). They build on the auth surface this foundation establishes. **None** are pulled into Sprint 8.
 
 The deferral order is roughly **lowest blast radius first** when those epics are eventually planned. Compute and storage have user-visible costs; IAM has security-visible consequences. The most dangerous slice — IAM bindings — must be last, after the patterns are well-exercised on the safer slices.
 
