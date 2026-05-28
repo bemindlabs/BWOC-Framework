@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
-## [v2026.5.28-2] — 2026-05-28 — 2.12.0
+## [v2026.5.29-0] — 2026-05-29 — 2.12.0
 
 **Minor release.** gcloud compute lifecycle (#96) — the first write-capable GCP slice (EPIC-9), on the EPIC-8 foundation. Cargo SemVer `2.11.0` → `2.12.0`.
 
