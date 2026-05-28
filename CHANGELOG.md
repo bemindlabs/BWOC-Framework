@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.28-1] — 2026-05-28 — 2.11.0
+
+**Minor release.** GCP `gcloud` workflow plugin foundation (#86) — the framework's second `workflow`-kind integration (after `jira`), designed read-mostly-first. Cargo SemVer `2.10.0` → `2.11.0`.
+
+### Added
+
+- **`bwoc gcloud {auth, project, status}` (#86)** — dispatches the `workflow/gcloud-*` reference plugins (no new plugin kind). `auth status`/`login`, `project list`/`show`/`set-default`, and an aggregate `status`. `--json` twins on every verb.
+- **Two reference plugins** — `gcloud-auth` (credential **state** only: active source + account email, never the token) and `gcloud-project` (`list`/`show`/`set-default`). Auth precedence ADC → service-account JSON (`.bwoc/secrets/gcloud-sa.json`, gitignored) → `BWOC_GCLOUD_*` env; `auth.toml` declares **shape only, no values**.
+- **`gcloud-ops` skill** — the first skill spanning multiple plugins (`whoami`/`current-project`/`switch-project`); `login` excluded (browser-driven). EN/TH SPEC pairs for both plugins + the skill.
+- **`bwoc check` audits `workflow/gcloud-*`** — manifest entry path-traversal + an `auth.toml` secret-leak guard (fail-closed, value redacted) + `bwoc skill verify gcloud-ops` resolution.
+
+### Security
+
+- **`auth.toml` carries no credential values** — the plugins never read a secret; `bwoc check` fails closed on any value-looking field (mirrors the jira guard).
+- **Write verbs are confirmation-gated** — `project set-default` (local `gcloud` config only) and `auth login` prompt; `--json` requires `--yes`. Project ids are validated (`6–30`, `[a-z0-9-]`, lowercase-first) before dispatch.
+- **Option-injection hardening (#92)** — plugin shell-outs pass operator-supplied values to `gcloud` after a `--` end-of-options separator, so a `-`-leading id can never be parsed as a flag.
+
 ## [v2026.5.28-0] — 2026-05-28 — 2.10.0
 
 **Minor release.** A2A auth phase (#80, PRs #81–#84, #87) — the follow-up to A2A v1 (#48): the listener is now safe to expose beyond loopback, and the outbound client authenticates to peers. Closes the security deferrals the v1 notes flagged. Cargo SemVer `2.9.0` → `2.10.0`.

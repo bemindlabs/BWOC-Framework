@@ -20,17 +20,17 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — A2A auth phase"
+    " — GCP gcloud workflow plugin"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc a2a serve` refuses a non-loopback bind without a token (or `--allow-unauthenticated`) (#80)",
-    "Webhook delivery fires (auth-gated) behind an SSRF guard with IP pinning",
-    "Request rate limit (429) + `SubscribeToTask` concurrency cap",
-    "`bwoc a2a send`/`fetch-card` authenticate to peers (`.bwoc/a2a-credentials.json`)",
-    "Prior 2.9.0: A2A protocol interop v1 (#48)",
+    "`bwoc gcloud {auth, project, status}` — GCP context via the workflow plugins (#86)",
+    "Read-mostly: `project set-default` is the one write verb, confirmation-gated",
+    "`auth.toml` declares credential SHAPE only; `bwoc check` fails closed on a value",
+    "`gcloud-ops` — first skill spanning multiple plugins; EN/TH SPEC pairs",
+    "Prior 2.10.0: A2A auth phase (#80)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
