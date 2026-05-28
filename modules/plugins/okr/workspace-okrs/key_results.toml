@@ -1,0 +1,60 @@
+# key_results.toml — the Key Results (the "KR" in OKR). Operator-authored;
+# the `current` value (+ `evidence`, `as_of`) is updated by the `track` verb.
+#
+# Shape per notes/2026-05-28_okr-plugin-architecture.md §Decision 2 + the
+# OKR Progress Schema (docs/en/PLUGINS.en.md §OKR Progress Schema):
+#   key_result_id  string   stable id; unique within the plugin
+#   objective_id   string   referential — MUST resolve to an objectives.toml id
+#   description    string   what the key result measures
+#   target         number   the goal value
+#   current        number   latest tracked value (written by `track`)
+#   unit           enum     count | percent | currency | ratio | boolean
+#   confidence     enum     high | medium | low (qualitative trajectory read)
+#   evidence       table    { kind, value } — reuses the audit Evidence kinds:
+#                           kind ∈ file | content | command | attestation | sample | none
+#   as_of          string   optional ISO-8601 date `current` was last tracked;
+#                           omit the line when never tracked.
+#
+# Seed example: the four EPIC-4 stories as measurable key results of O1.
+
+[[key_result]]
+key_result_id = "O1-KR1"
+objective_id  = "O1"
+description   = "PLUGINS spec declares the okr kind + OKR Progress Schema (BWOC-47)"
+target        = 1
+current       = 1
+unit          = "count"
+confidence    = "high"
+evidence      = { kind = "file", value = "docs/en/PLUGINS.en.md" }
+as_of         = "2026-05-28"
+
+[[key_result]]
+key_result_id = "O1-KR2"
+objective_id  = "O1"
+description   = "bwoc okr CLI surface ships {list, show, track, report} (BWOC-48)"
+target        = 4
+current       = 0
+unit          = "count"
+confidence    = "medium"
+evidence      = { kind = "none", value = "" }
+
+[[key_result]]
+key_result_id = "O1-KR3"
+objective_id  = "O1"
+description   = "workspace-okrs reference plugin ships + verbs runnable (BWOC-49)"
+target        = 1
+current       = 1
+unit          = "count"
+confidence    = "high"
+evidence      = { kind = "file", value = "modules/plugins/okr/workspace-okrs/okr.sh" }
+as_of         = "2026-05-28"
+
+[[key_result]]
+key_result_id = "O1-KR4"
+objective_id  = "O1"
+description   = "bwoc check validates okr/* manifests + Progress Schema (BWOC-50)"
+target        = 1
+current       = 0
+unit          = "count"
+confidence    = "medium"
+evidence      = { kind = "none", value = "" }

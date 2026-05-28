@@ -207,6 +207,14 @@ agents/*/.bwoc/inbox.cursor
 .bwoc/secrets/
 .bwoc/secrets/gcloud-sa.json
 
+# Figma export cache (BWOC-64)
+#
+# The figma/figma-rest plugin renders Figma nodes into a content-addressable
+# cache keyed on SHA-256(file_key + node_id + version + format). The renders
+# are reproducible (re-export regenerates them) and binary, so they are never
+# committed — committing them would bloat the repo for no durable benefit.
+figma/exports/
+
 # Generic local state — match the framework repo's own .gitignore.
 .DS_Store
 *.swp

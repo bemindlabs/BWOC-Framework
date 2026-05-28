@@ -1,0 +1,36 @@
+[plugin]
+name        = "council-sangha-7"
+kind        = "council"
+version     = "0.1.0"
+description = "Reference council plugin — records fleet decisions through a propose/discuss/vote/resolve protocol under the sangha voting model (unanimous assent of the quorum, dissent preserved), seeded with the Aparihaniya-dhamma 7 issue templates. Local/fleet-only; no network, no credentials. Records decisions, never executes them."
+compat      = ">=2.9.0"
+entry       = "protocol.sh"
+
+# [council] — council-kind configuration.
+#
+# voting_model + quorum are council-specific declarations (notes/2026-05-28_
+# council-plugin-architecture.md §3/§4). `bwoc check` (BWOC-59) accepts the
+# `council` kind at basic well-formedness; the deep validation of this table
+# (voting_model ∈ the four models, quorum is int-or-fraction) lands in BWOC-60.
+[council]
+# One of: simple-majority | consensus | weighted | sangha (design note §3).
+# This reference plugin is the canonical `sangha` council: a decision passes
+# only by unanimous assent of the quorum (abstentions allowed, dissent
+# recorded). No tie is possible — lack of concord re-opens a discuss round.
+voting_model = "sangha"
+
+# Minimum participation for a resolvable decision — an integer (an exact count)
+# or a fraction of the referenced team roster (design note §4). Computed against
+# the decision's `participants` (the team-roster snapshot frozen at propose
+# time), never the whole fleet. "2/3" of a 4-member team rounds up to 3.
+quorum       = "2/3"
+
+# [config.schema] intentionally omitted.
+#
+# v1 reads its issue templates from the sibling `decisions.toml` and persists
+# decision records as JSON under the workspace (`.bwoc/council/`, resolved from
+# BWOC_WORKSPACE) or a plugin-local `records/` fallback for hand-invocation.
+# There is no network, no credential, and no external system of record — the
+# only workspace-level surface is the universal `enabled` key on
+# `[plugins.council-sangha-7]`. A future version may add a `records_dir` key;
+# declare it here when it does.

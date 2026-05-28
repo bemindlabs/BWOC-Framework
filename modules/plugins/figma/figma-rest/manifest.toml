@@ -1,0 +1,20 @@
+[plugin]
+name        = "figma-rest"
+kind        = "figma"
+version     = "0.1.0"
+description = "Reference figma plugin — read-mostly Figma REST adapter: fetches node metadata, exports node images into a content-addressable local cache, and extracts design tokens from node styles. Never writes back to Figma. Auth is an operator-provided personal access token (X-Figma-Token), resolved at runtime, never committed."
+compat      = ">=2.10.0"
+entry       = "figma.sh"
+
+# [config.schema] — validates the operator's workspace.toml [plugins.figma-rest] block.
+#
+# Credentials are NOT config: the personal access token resolves at runtime from
+# the BWOC_FIGMA_TOKEN environment (or a gitignored .bwoc/secrets.toml [figma]
+# table) per auth.toml — it never lives in any tracked file. Only non-secret
+# operational config lives here. See SPEC.md §Configuration.
+[config.schema]
+# Workspace-relative directory the content-addressable export cache lives under.
+# Reproducible + gitignored (figma/exports/ is added to the init GITIGNORE
+# template by BWOC-64), so it is safe to wipe and re-export. Defaults to
+# "figma/exports" when omitted.
+export_dir = { type = "string", required = false, default = "figma/exports" }

@@ -1,0 +1,17 @@
+[plugin]
+name        = "workspace-okrs"
+kind        = "okr"
+version     = "0.1.0"
+description = "Reference okr plugin — tracks operator-authored Objectives + Key Results from local objectives.toml / key_results.toml and emits a normative OKR Progress report. Local-file-only; no network, no credentials."
+compat      = ">=2.9.0"
+entry       = "okr.sh"
+
+# [config.schema] intentionally omitted.
+#
+# v1 reads its Objectives + Key Results from the sibling `objectives.toml` and
+# `key_results.toml` (operator-authored; the `track` verb writes `current` back
+# to `key_results.toml`). There is no network, no credential, and no external
+# system of record — the only workspace-level surface is the universal `enabled`
+# key on `[plugins.workspace-okrs]`. A future version may add a `data_dir` key
+# (point the plugin at OKR files outside its own directory) — when it does,
+# declare it here. See notes/2026-05-28_okr-plugin-architecture.md §Decision 2.

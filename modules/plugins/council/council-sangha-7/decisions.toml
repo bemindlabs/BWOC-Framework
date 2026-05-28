@@ -1,0 +1,71 @@
+# decisions.toml — issue templates for the council-sangha-7 reference plugin.
+#
+# These are TEMPLATES, not live decision records. `propose --template <id>`
+# seeds a new decision's `question` + `options` from one of these entries; the
+# live record (status, participants, rounds, votes, outcome, dissent) is then
+# persisted separately as JSON under the records directory (see SPEC.md §How it
+# runs). The seven templates mirror the Aparihaniya-dhamma 7 — the seven
+# conditions of non-decline the Buddha gave the Vajjī — already surfaced as
+# fleet-governance signals by `bwoc fleet` (crates/bwoc-cli/src/fleet.rs). This
+# plugin formalizes those same seven concerns into recorded council decisions.
+#
+# Shape per notes/2026-05-28_council-plugin-architecture.md §6 + the Council
+# Decision Schema (docs/en/PLUGINS.en.md §Council Decision Schema):
+#   template_id  string         stable id; passed to `propose --template`
+#   condition    integer        which Aparihaniya-dhamma condition (1..7)
+#   name         string         the condition's name (+ Pali), matching fleet.rs
+#   question     string         the proposal question (seeds the decision)
+#   options      array<string>  the choices to decide among (>=2)
+#
+# The sangha model values concord over speed: a decision passes only by
+# unanimous assent of the quorum. Options are framed so concord is meaningful —
+# typically affirm-vs-revise or adopt-vs-defer, never a forced either/or.
+
+[[template]]
+template_id = "ap1-regular-meetings"
+condition   = 1
+name        = "Regular meetings (abhinha-sannipata)"
+question    = "Shall the fleet hold standups on a fixed, frequent cadence and treat that cadence as established?"
+options     = ["affirm-cadence", "revise-cadence"]
+
+[[template]]
+template_id = "ap2-coordinated-start-end"
+condition   = 2
+name        = "Coordinated start/end (samagga sannipatanti)"
+question    = "Shall the fleet begin and end sprints in concord — opening and closing together, not piecemeal?"
+options     = ["affirm-concord", "revise-concord"]
+
+[[template]]
+template_id = "ap3-process-bound-convention"
+condition   = 3
+name        = "Process-bound convention change (appannattam na pannapenti)"
+question    = "Shall this convention change proceed only through the established process, neither inventing the unestablished nor abolishing the established by fiat?"
+options     = ["adopt-via-process", "defer-to-process"]
+
+[[template]]
+template_id = "ap4-honor-template-version"
+condition   = 4
+name        = "Honor template version (vuddha vuddhatarava)"
+question    = "Shall the fleet adopt the proposed AGENTS.md template version as the honored baseline all agents track?"
+options     = ["adopt-version", "defer-version"]
+
+[[template]]
+template_id = "ap5-protect-vulnerable"
+condition   = 5
+name        = "Protect vulnerable (parihara)"
+question    = "Shall the fleet extend the proposed protection to at-risk or in-flight agent state (handover, checkpoint, resume) without coercion?"
+options     = ["affirm-protection", "revise-protection"]
+
+[[template]]
+template_id = "ap6-honor-shared-resources"
+condition   = 6
+name        = "Honor shared resources (cetiya)"
+question    = "Shall the fleet honor and maintain this shared resource (the workspace, its history, its conventions) as a commons rather than neglect it?"
+options     = ["affirm-stewardship", "revise-stewardship"]
+
+[[template]]
+template_id = "ap7-protect-senior-agents"
+condition   = 7
+name        = "Protect senior agents (arahantesu rakkhavarana-gutti)"
+question    = "Shall the fleet protect and defer to the experience of senior/long-lived agents when their lane is in question?"
+options     = ["affirm-deference", "revise-deference"]

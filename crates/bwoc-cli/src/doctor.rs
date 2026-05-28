@@ -54,6 +54,13 @@ pub fn run(args: DoctorArgs) -> i32 {
     // 2. Backend CLIs on PATH (informational).
     results.push(check_backends());
 
+    // 2a. Rust toolchain (rustup + cargo) — informational. Needed for the
+    // four mandatory gates (`cargo build/test/clippy/fmt`) and for
+    // `cargo install --path crates/bwoc-harness` (the ollama harness).
+    for r in check_rust_toolchain() {
+        results.push(r);
+    }
+
     // 2b. Ollama-specific: bwoc-harness binary + endpoint reachability.
     for r in check_ollama() {
         results.push(r);
@@ -285,6 +292,83 @@ fn check_ollama() -> Vec<CheckResult> {
     out.push(endpoint_result);
 
     out
+}
+
+/// Probe the Rust toolchain: `rustup` and `cargo`. Contributors need both
+/// for the four mandatory gates (`cargo build/test/clippy/fmt`) and for
+/// `cargo install --path crates/bwoc-harness` (the ollama harness path
+/// already hinted by `check_ollama`). Both checks are informational
+/// (WARN, never FAIL) — users who only `bwoc spawn` against a vendor
+/// backend (claude/agy/codex/kimi) don't need the Rust toolchain. Mirrors
+/// the WARN policy of `check_backends` and the ollama probes.
+///
+/// Read-only invariant: the only commands issued are `rustup --version`
+/// and `cargo --version`. The probe never installs, updates, sets a
+/// default toolchain, or writes to `~/.rustup/` / `~/.cargo/`.
+fn check_rust_toolchain() -> Vec<CheckResult> {
+    check_rust_toolchain_with(which)
+}
+
+/// Inner form with an injectable presence probe so unit tests can force
+/// the "not on PATH" branch without mutating the global `PATH`.
+fn check_rust_toolchain_with(which_fn: impl Fn(&str) -> Option<PathBuf>) -> Vec<CheckResult> {
+    vec![
+        probe_toolchain(
+            "rustup",
+            &which_fn,
+            "rustup not found on PATH. Contributors need it for \
+             `cargo build/test/clippy/fmt`. Install: https://rustup.rs",
+        ),
+        probe_toolchain(
+            "cargo",
+            &which_fn,
+            "cargo not found on PATH. Required to build BWOC from source \
+             or `cargo install bwoc-harness`. Install: https://rustup.rs",
+        ),
+    ]
+}
+
+/// Single toolchain probe. Absent on PATH → WARN with the install hint.
+/// Present but `--version` fails to spawn or exits non-zero → WARN with a
+/// diagnostic snippet. Present and `--version` succeeds → PASS.
+fn probe_toolchain(
+    tool: &str,
+    which_fn: &impl Fn(&str) -> Option<PathBuf>,
+    missing_detail: &str,
+) -> CheckResult {
+    if which_fn(tool).is_none() {
+        return CheckResult {
+            name: tool.into(),
+            status: Status::Warn(missing_detail.into()),
+        };
+    }
+    // Present on PATH — confirm `--version` runs cleanly. Read-only: the
+    // single arg is always `--version`, never a mutating subcommand.
+    match Command::new(tool).arg("--version").output() {
+        Ok(out) if out.status.success() => CheckResult {
+            name: tool.into(),
+            status: Status::Pass,
+        },
+        Ok(out) => {
+            let raw = if out.stderr.is_empty() {
+                &out.stdout
+            } else {
+                &out.stderr
+            };
+            let snippet = String::from_utf8_lossy(raw);
+            let snippet = snippet.lines().next().unwrap_or("").trim();
+            CheckResult {
+                name: tool.into(),
+                status: Status::Warn(format!(
+                    "{tool} present but `--version` returned non-zero: {snippet}"
+                )),
+            }
+        }
+        Err(e) => CheckResult {
+            name: tool.into(),
+            status: Status::Warn(format!("{tool} present but `--version` could not run: {e}")),
+        },
+    }
 }
 
 fn check_workspace_toml(root: &Path) -> CheckResult {
@@ -910,5 +994,58 @@ mod tests {
         assert!(base.join("projects").is_dir());
         assert!(base.join("notes").is_dir());
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rust_toolchain_probe_returns_two_results() {
+        // Inject an always-absent `which` so the probe never spawns a
+        // process; we only assert the shape (count + names + order).
+        let results = check_rust_toolchain_with(|_| None);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "rustup");
+        assert_eq!(results[1].name, "cargo");
+    }
+
+    #[test]
+    fn rust_toolchain_warns_when_rustup_missing() {
+        let results = check_rust_toolchain_with(|_| None);
+        match &results[0].status {
+            Status::Warn(msg) => {
+                assert!(msg.contains("rustup not found"), "detail: {msg}");
+                assert!(msg.contains("rustup.rs"), "detail: {msg}");
+            }
+            other => panic!("expected Warn for missing rustup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rust_toolchain_warns_when_cargo_missing() {
+        let results = check_rust_toolchain_with(|_| None);
+        match &results[1].status {
+            Status::Warn(msg) => {
+                assert!(msg.contains("cargo not found"), "detail: {msg}");
+                assert!(msg.contains("rustup.rs"), "detail: {msg}");
+            }
+            other => panic!("expected Warn for missing cargo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rust_toolchain_passes_on_dev_host() {
+        // Skip on hosts without the toolchain (e.g. minimal CI images) —
+        // the probe is WARN-not-FAIL there, which other tests cover.
+        if which("rustup").is_none() || which("cargo").is_none() {
+            return;
+        }
+        let results = check_rust_toolchain();
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert!(
+                matches!(r.status, Status::Pass),
+                "{} expected Pass, got {:?}",
+                r.name,
+                r.status
+            );
+        }
     }
 }

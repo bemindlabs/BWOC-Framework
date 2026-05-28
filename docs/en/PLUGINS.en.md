@@ -33,7 +33,7 @@ Pick the layer that matches *who turns it on*. If an individual agent's logic ca
 
 ## Plugin Kinds
 
-Every plugin declares a `kind`. Kinds define the lifecycle hooks the framework will call. Five kinds ship with this spec:
+Every plugin declares a `kind`. Kinds define the lifecycle hooks the framework will call. Eight kinds ship with this spec:
 
 | Kind | What it extends | Lifecycle owner |
 |---|---|---|
@@ -42,12 +42,21 @@ Every plugin declares a `kind`. Kinds define the lifecycle hooks the framework w
 | `workflow` | External system integrations (issue trackers, code review, CI) | The agent calling out |
 | `audit` | Inspection of the workspace against external standards (ISO/IEC 29110, ISO 9001, ISO 20000-1, ISO 27001) or operator-authored audits (license headers, doc parity, secret scans) | `bwoc audit` CLI |
 | `jira` | Bidirectional sync with an external issue tracker (Jira Cloud) — reads issues via JQL and **writes** status transitions, field updates, and sprint assignment back to the tracker | `bwoc jira` CLI |
+| `okr` | Tracking of operator-authored Objectives + Key Results — reads `objectives.toml` / `key_results.toml`, records progress, and emits a normative progress report | `bwoc okr` CLI |
+| `council` | A structured decision protocol among fleet agents — any agent opens a decision, participants discuss in rounds and vote, an outcome is recorded with evidence + dissent | `bwoc council` CLI |
+| `figma` | Read-mostly integration with Figma's REST API — fetches frame/node metadata, exports images, queries component libraries, and surfaces design tokens; bridges design→dev | `bwoc figma` CLI |
 
 A plugin sets `kind` once. Cross-kind plugins are not supported — split them.
 
 The `audit` kind was added in `BWOC-EPIC-2`; for the rationale (why `audit`, not `compliance` or `policy`) and the ISO standards roadmap that motivates it, see the [BWOC-19 design note](../../notes/2026-05-26_iso-compliance-plugins.md).
 
 The `jira` kind was added in `BWOC-EPIC-6` as the framework's **first write-capable plugin kind** — an *integration adapter*, not a reporting kind. Every kind above it (`audit`, plus the planned reporting kinds) only **reads** the workspace and emits a report; `jira` reads **and writes** an external system of record. That single property — durable, hard-to-reverse external side-effects on `invoke` — is what sets it apart: it persists a sync ledger (`.scrum/jira-sync.json`), gates its write verbs behind operator confirmation, and carries a normative [Jira Issue Mapping Schema](#jira-issue-mapping-schema). For why it is a distinct kind rather than a `workflow` plugin, the auth model, JQL and rate-limit bounds, and the bidirectional conflict policy, see the [BWOC-40 design note](../../notes/2026-05-27_jira-plugin-architecture.md) — this spec declares the kind and the mapping schema and does not duplicate that rationale.
+
+The `okr` kind was added in `BWOC-EPIC-4` as the framework's third **reporting** kind, alongside `audit`. Where `audit` checks the *workspace* against an external standard and emits findings, `okr` tracks *operator-authored* Objectives + Key Results (`objectives.toml` / `key_results.toml`) and emits progress. It is **not** a `workflow` kind: it reaches no external system, holds no credential, and its only write — `track`, which updates a key result's `current` value — touches the operator's own local TOML, not a system of record, so it carries **no** operator-confirmation gate. It carries a normative [OKR Progress Schema](#okr-progress-schema) and **reuses the audit [Evidence kinds](#evidence-kinds)** rather than inventing its own — one evidence vocabulary across the framework. For why `okr` is a distinct kind rather than an `audit` or `workflow` plugin, the data shape, the `track` / `check-progress` / `report` verb contracts, and the `confidence`-as-enum decision, see the [BWOC-46 design note](../../notes/2026-05-28_okr-plugin-architecture.md) — this spec declares the kind and the progress schema and does not duplicate that rationale.
+
+The `council` kind was added in `BWOC-EPIC-5` as the framework's first **coordination** kind — it acts neither outward to an external system (like `workflow`/`jira`) nor over the workspace as a report (like `audit`/`okr`), but **among the fleet's own agents**. A council decision follows a multi-step protocol — `propose` → `discuss` (rounds) → `vote` → `resolve` — with a quorum gate and a declared voting model (`simple-majority` / `consensus` / `weighted` / `sangha`); it draws participants from a `bwoc team`, routes discussion turns through `bwoc send`, and persists a normative [Council Decision Schema](#council-decision-schema) with the outcome and any dissent preserved. It **records** decisions, it does not execute them — a `binding` outcome emits a `bwoc task` rather than mutating anything itself. For the protocol detail, the voting models, quorum + tie-break rules, the binding-vs-advisory distinction, and the `council-sangha-7` reference (modelled on Aparihāniya-dhamma 7), see the [BWOC-56 design note](../../notes/2026-05-28_council-plugin-architecture.md) — this spec declares the kind and the decision schema and does not duplicate that rationale.
+
+The `figma` kind was added in `BWOC-EPIC-7` as a **read-mostly** integration with Figma's REST API. Like `jira` (and unlike `gcloud`, which reused `workflow`), it earns its own kind because it carries a normative [Figma Asset Mapping Schema](#figma-asset-mapping-schema) — a durable BWOC-owned relationship tying a Figma node to an exported artifact + design tokens; the rule is **own-kind when BWOC defines a normative schema over the integration, `workflow`-reuse when it is a passthrough with no BWOC-owned shape**. Unlike `jira`, `figma` never writes back to the external system: every verb either reads Figma (`fetch` / `tokens` / `status`) or writes **locally** (`export` drops a content-addressable image under `figma/exports/`), so it carries jira's schema discipline but none of its bidirectional-sync machinery — no ledger, no conflict policy, no operator-confirm gates. Auth is an operator personal access token (`BWOC_FIGMA_TOKEN` env / `.bwoc/secrets.toml`, shape-only in `auth.toml`, never committed). For the auth model, file-vs-team-library scope, REST rate-limit handling, and the export-caching strategy, see the [BWOC-61 design note](../../notes/2026-05-28_figma-plugin-architecture.md) — this spec declares the kind and the asset schema and does not duplicate that rationale.
 
 ### What plugins are NOT
 
@@ -234,6 +243,137 @@ An entry for an unassigned backlog issue omits the optional fields it has no val
   "summary":     "Draft scrum-via-jira skill",
   "status":      "To Do",
   "last_synced": "2026-05-27T10:00:00Z"
+}
+```
+
+---
+
+## OKR Progress Schema
+
+An `okr` plugin tracks operator-authored Objectives + Key Results and emits a **progress entry** per key result. The schema below is normative — the reference plugin's `report` verb (per `BWOC-49`) and the `bwoc okr report` output (per `BWOC-48`) alike MUST emit entries conforming to this shape, and `bwoc check` (per `BWOC-50`) validates it. This is the `okr` kind's contract, the goal-tracking analogue of the [Audit Findings Schema](#audit-findings-schema) the `audit` kind carries.
+
+The objectives and key results themselves are operator-authored in two local TOML files (`objectives.toml`, `key_results.toml`); their authoring shape and the `track` / `check-progress` / `report` verb contracts live in the [BWOC-46 design note](../../notes/2026-05-28_okr-plugin-architecture.md) and are not duplicated here.
+
+### Fields
+
+| Field | Type | Required | Semantics |
+|---|---|---|---|
+| `objective_id` | string | yes | The parent objective. **Referential** — MUST resolve to an `objective_id` declared in `objectives.toml`; a dangling reference is a plugin bug that fails `bwoc check`, not operator state. |
+| `key_result_id` | string | yes | The stable key for this key result, unique within the plugin. The one field a consumer (a dashboard, diff tooling) may treat as a durable identifier. |
+| `target` | number | yes | The goal value the key result aims for. |
+| `current` | number | yes | The latest tracked value. Updated by the `track` verb; never exceeds nor is clamped to `target` — over-attainment (`current > target`) is meaningful and preserved. |
+| `unit` | enum | yes | One of `count` \| `percent` \| `currency` \| `ratio` \| `boolean`. How `target` / `current` are read. |
+| `confidence` | enum | yes | One of `high` \| `medium` \| `low` — the operator's qualitative read of whether the trajectory holds. An enum, not a numeric score, by deliberate choice (BWOC-46 §5): attainment carries the quantitative signal, `confidence` the qualitative one. |
+| `evidence` | object | yes | **Reuses the audit [Evidence kinds](#evidence-kinds)** — `{ kind, value, ...kind-specific fields }` where `kind ∈ { "file", "content", "command", "attestation", "sample", "none" }`. The Musāvāda guard applies: a tracked `current` value should carry a reproducible referent (or `kind = "none"` when none exists). No OKR-specific evidence kinds are introduced. |
+| `as_of` | string (ISO 8601 date) | no | When `current` was last tracked. Omitted when never tracked. |
+
+Optional fields are **omitted from the entry** when they have no value — a never-tracked key result carries no `as_of` key — never serialized as `null`, mirroring the Audit Findings and Jira Issue Mapping conventions.
+
+### Field stability
+
+`key_result_id` is the stable key — the mapping a consumer may key on durably. `objective_id` is a stable reference (it points at an objective by its declared id). The remaining fields (`target`, `current`, `unit`, `confidence`, `evidence`, `as_of`) are mutable projections of tracking state, refreshed as the operator authors targets and the `track` verb records progress; never key on them. `current` and `confidence` in particular change every check-in.
+
+### Example
+
+```json
+{
+  "objective_id":  "O1",
+  "key_result_id": "O1-KR1",
+  "target":        1,
+  "current":       1,
+  "unit":          "count",
+  "confidence":    "high",
+  "evidence":      { "kind": "file", "value": "docs/en/PLUGINS.en.md" },
+  "as_of":         "2026-05-28"
+}
+```
+
+---
+
+## Council Decision Schema
+
+A `council` plugin records a fleet decision as a **decision entry**. The schema below is normative — the reference plugin's verbs (per `BWOC-59`) and the `bwoc council` output (per `BWOC-58`) alike MUST emit entries conforming to this shape, and `bwoc check` (per `BWOC-60`) validates it. This is the `council` kind's contract, the coordination analogue of the [Audit Findings Schema](#audit-findings-schema).
+
+The decision moves through the protocol `proposed → discussing → voting → resolved` (or `abandoned` if quorum fails); the protocol detail, voting models, and quorum/tie-break rules live in the [BWOC-56 design note](../../notes/2026-05-28_council-plugin-architecture.md) and are not duplicated here.
+
+### Fields
+
+| Field | Type | Required | Semantics |
+|---|---|---|---|
+| `decision_id` | string | yes | The stable key for the decision — the one field a consumer may treat as a durable identifier. |
+| `status` | enum | yes | `proposed` \| `discussing` \| `voting` \| `resolved` \| `abandoned`. The protocol state. |
+| `participants` | array of string | yes | Agent ids drawn from the referenced `bwoc team`. A participant outside the team is rejected. |
+| `options` | array of string | yes | The choices being decided among (≥2). |
+| `rounds` | array | yes | Ordered discussion rounds. Each round carries turns `{ participant, message_ref }`, where `message_ref` points at the `bwoc send` envelope that holds the turn — the inbox is the transport, the record references it, never copies it. Append-only. |
+| `votes` | array | yes | One `{ participant, option, abstain }` per voter. Append-only; a re-cast appends, never overwrites (the trail is the point). |
+| `outcome` | string | no | The resolved option. Omitted until `status = resolved`. |
+| `dissent` | array | no | Recorded minority positions `{ participant, option, rationale }`. Preserved, never discarded — recording dissent is a purpose of the council. |
+| `evidence_links` | array | no | **Reuses the audit [Evidence kinds](#evidence-kinds)** — `{ kind, value, ... }` referents backing the decision. No council-specific evidence kinds. |
+| `opened_at` | string (ISO 8601 datetime) | yes | When the decision was proposed. |
+| `closed_at` | string (ISO 8601 datetime) | no | When it resolved or was abandoned. Omitted while open. |
+
+Optional fields are **omitted from the entry** when absent — an unresolved decision carries no `outcome` / `closed_at` key — never serialized as `null`, per the Audit Findings / Jira / OKR conventions.
+
+### Field stability
+
+`decision_id` is the stable key. `status`, `rounds`, `votes`, `outcome`, `dissent`, and `closed_at` are mutable as the protocol advances (rounds + votes accumulate, status transitions, outcome/closed_at fill on resolve); never key on them. `participants` and `options` are fixed at propose time — a change to either is a new decision, not an edit.
+
+### Example
+
+```json
+{
+  "decision_id":  "D1",
+  "status":       "resolved",
+  "participants": ["agent-jisoo", "agent-jennie", "agent-lisa", "agent-rose"],
+  "options":      ["adopt", "defer"],
+  "rounds":       [{ "round": 1, "turns": [{ "participant": "agent-jisoo", "message_ref": "msg-20260528T120000Z-a1b2c" }] }],
+  "votes":        [{ "participant": "agent-jisoo", "option": "adopt", "abstain": false }],
+  "outcome":      "adopt",
+  "dissent":      [],
+  "evidence_links": [{ "kind": "file", "value": "notes/2026-05-28_council-plugin-architecture.md" }],
+  "opened_at":    "2026-05-28T12:00:00Z",
+  "closed_at":    "2026-05-28T12:30:00Z"
+}
+```
+
+---
+
+## Figma Asset Mapping Schema
+
+A `figma` plugin maps a Figma node to an exported artifact + design tokens through an **asset entry**. The schema below is normative — the reference plugin's verbs (per `BWOC-64`) and the `bwoc figma` output (per `BWOC-63`) alike MUST emit entries conforming to this shape, and `bwoc check` (per `BWOC-65`) validates it. This is the `figma` kind's contract, a read-mostly design→dev analogue of the [Jira Issue Mapping Schema](#jira-issue-mapping-schema) — it carries jira's schema discipline but writes nothing back to the external system.
+
+The auth model, file-vs-team-library scope, REST rate-limit handling, and the content-addressable export-caching strategy live in the [BWOC-61 design note](../../notes/2026-05-28_figma-plugin-architecture.md) and are not duplicated here.
+
+### Fields
+
+| Field | Type | Required | Semantics |
+|---|---|---|---|
+| `file_key` | string | yes | The Figma file key (from the file URL). Paired with `node_id`, **the stable external key** the mapping is keyed on. |
+| `node_id` | string | yes | The node within the file (frame / component / instance / …). The second half of the stable key. |
+| `name` | string | yes | The node's name. A mutable projection of Figma state, refreshed each `fetch`. |
+| `type` | string | yes | Node type (`FRAME`, `COMPONENT`, `INSTANCE`, …). |
+| `last_modified` | string (ISO 8601 datetime) | yes | Figma's last-modified timestamp for the file — the cache-invalidation signal for the content-addressable export. |
+| `exported_path` | string | no | Workspace-relative path of the exported image under `figma/exports/`. Omitted until the node is exported. |
+| `image_url` | string | no | The Figma-hosted render URL from an export call. **Non-durable** — Figma's render URLs expire; the durable artifact is `exported_path`, not this. Omitted when not requested. |
+| `design_tokens` | object | no | Extracted design tokens `{ name: value }` (colors, spacing, type) tied to this node — the design→spec bridge. Omitted when none extracted. |
+
+Optional fields are **omitted from the entry** when absent — a never-exported node carries no `exported_path` key — never serialized as `null`, per the Audit Findings / Jira / OKR / Council conventions.
+
+### Field stability
+
+`file_key` + `node_id` is the stable key — the pair a consumer (a dashboard, a spec-doc token reference) may treat as a durable identifier. The other fields are mutable projections of Figma state (`name`, `type`, `last_modified`, `design_tokens`) or local export results (`exported_path`, `image_url`), refreshed on each `fetch`/`export`; never key on them. `image_url` in particular is non-durable (it expires) — persist `exported_path` instead.
+
+### Example
+
+```json
+{
+  "file_key":      "AbC123dEf456",
+  "node_id":       "12:345",
+  "name":          "Primary Button",
+  "type":          "COMPONENT",
+  "last_modified": "2026-05-27T09:00:00Z",
+  "exported_path": "figma/exports/9f86d081884c7d65.png",
+  "design_tokens": { "color/primary": "#2D7FF9", "radius/sm": "4px" }
 }
 ```
 

@@ -1,0 +1,54 @@
+# auth.toml — Figma REST authentication CONTRACT. Declares the SHAPE only.
+#
+# ============================================================================
+#  NEVER COMMIT A REAL TOKEN TO THIS FILE.
+#
+#  The `token` value below is an EMPTY placeholder that documents the contract.
+#  The real personal access token (PAT) is resolved at runtime — it never lives
+#  in any tracked file:
+#
+#    1. Environment variable (preferred — nothing touches disk):
+#         BWOC_FIGMA_TOKEN   the Figma personal access token (THE SECRET)
+#
+#    2. A gitignored, owner-only secrets file (chmod 600):
+#         .bwoc/secrets.toml   →   [figma] token = "…"
+#
+#  Figma authenticates REST calls with the `X-Figma-Token: <PAT>` header. The
+#  token is the secret. figma.sh reads it only to set that header on outbound
+#  requests; it is never echoed, never written to a file, and never serialized
+#  into any JSON output or into an Asset Mapping entry (Sila — Adinnaadana).
+#  Rotating a revoked token is config-only: update the env var / secrets file —
+#  no code change. `bwoc check` (BWOC-65) fails closed on any value-looking
+#  field here, exactly as the jira (BWOC-45) and gcloud (BWOC-55) guards do.
+# ============================================================================
+
+[figma.auth]
+# Placeholder ONLY — leave empty here; set the matching BWOC_FIGMA_TOKEN env var
+# (or the .bwoc/secrets.toml [figma].token key). A non-empty value here is a
+# committed-secret violation.
+token = ""   # ← never commit a value; set BWOC_FIGMA_TOKEN  (THE SECRET)
+
+# Declarative env-var binding (what figma.sh reads at runtime). This is the
+# authoritative resolution map; the empty key above only shows the shape.
+[figma.auth.env]
+token = { var = "BWOC_FIGMA_TOKEN", required = true, secret = true }
+
+# Gitignored, owner-only on-disk fallback (resolved relative to BWOC_WORKSPACE).
+# figma.sh reads [figma].token from this file only when BWOC_FIGMA_TOKEN is
+# unset, and refuses it if the file is group/world-readable.
+[figma.auth.secrets_file]
+path  = ".bwoc/secrets.toml"
+table = "figma"
+key   = "token"
+
+# Required Figma PAT scopes (HTTP header transport carries no scope negotiation;
+# these document which token capability each verb needs). A 403 surfaces as
+# "token lacks <scope> for <resource>", never a bare failure — see SPEC §Scopes.
+#
+#   file_content   — read file + node metadata (fetch, tokens, export version)
+#   file_dev_resources / library_content — team-library reads (future verbs)
+#
+# A PAT scoped to a user's own files cannot read a team library, and vice-versa.
+[figma.auth.scopes]
+required = ["file_content"]
+optional = ["library_content"]

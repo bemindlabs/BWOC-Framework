@@ -1,0 +1,18 @@
+# objectives.toml — the Objectives (the "O" in OKR). Operator-authored.
+#
+# Shape per notes/2026-05-28_okr-plugin-architecture.md §Decision 2:
+#   objective_id  string   stable id; referenced by key_results.objective_id
+#   title         string   one-line statement of the objective
+#   owner         string   who owns it (an agent id or a person)
+#   period        string   the scoping window, e.g. "2026-Q2"
+#   parent        string   optional — parent objective_id for objective trees
+#                          ("" when top-level; multi-level rollup is deferred)
+#
+# Seed example: the EPIC-4 objective this plugin itself was built under.
+
+[[objective]]
+objective_id = "O1"
+title        = "Ship the OKR plugin kind (BWOC-EPIC-4)"
+owner        = "agent-jisoo"
+period       = "2026-Q2"
+parent       = ""

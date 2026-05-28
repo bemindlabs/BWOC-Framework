@@ -15,10 +15,12 @@ mod banner;
 mod chat;
 mod check;
 mod completion;
+mod council;
 mod dashboard;
 mod deep_memory_cmd;
 mod doc_cmd;
 mod doctor;
+mod figma;
 mod fleet;
 mod gcloud;
 mod git_worktree;
@@ -31,6 +33,7 @@ mod livecheck;
 mod log;
 mod memory;
 mod new;
+mod okr;
 mod peer;
 mod ping;
 mod plugin;
@@ -219,6 +222,47 @@ enum Commands {
     /// `notes/2026-05-28_gcloud-workflow-plugin-architecture.md`.
     #[command(name = "gcloud", subcommand)]
     Gcloud(gcloud::GcloudCommand),
+
+    /// Operate the `okr` plugin kind (BWOC-EPIC-4): list installed okr plugins,
+    /// show a plugin's SPEC + objectives summary, `track` a key result's current
+    /// value (a local-file write to the operator's own `key_results.toml`, so
+    /// no confirmation gate), or `report` the OKR Progress Schema JSON for every
+    /// key result. Verbs dispatch to an installed `okr`-kind plugin (e.g.
+    /// `workspace-okrs`, BWOC-49); a missing plugin exits 4 with an install hint.
+    /// Every verb has a `--json` twin. See `docs/en/PLUGINS.en.md` §OKR Progress
+    /// Schema + `notes/2026-05-28_okr-plugin-architecture.md`.
+    #[command(name = "okr", subcommand)]
+    Okr(okr::OkrCommand),
+
+    /// Operate the `council` plugin kind (BWOC-EPIC-5): the framework's first
+    /// *coordination* kind. `propose` opens a decision (question + options,
+    /// participants drawn from a `bwoc team`); `discuss` adds a round turn,
+    /// routing it through the inbox transport (`bwoc send`) and recording the
+    /// envelope ref; `vote` appends an (append-only) vote; `resolve` tallies per
+    /// the plugin's declared voting model, checks quorum, and records the
+    /// outcome + any dissent (or abandons on quorum failure); `list`/`show` read.
+    /// The voting model + quorum come from the named `council`-kind plugin's
+    /// `[council]` manifest table (e.g. `council-sangha-7`, BWOC-59); a missing
+    /// plugin exits 4. Every verb has a `--json` twin. See
+    /// `docs/en/PLUGINS.en.md` §Council Decision Schema +
+    /// `notes/2026-05-28_council-plugin-architecture.md`.
+    #[command(name = "council", subcommand)]
+    Council(council::CouncilCommand),
+
+    /// Operate the `figma` plugin kind (BWOC-EPIC-7): a read-mostly Figma REST
+    /// integration that bridges design→dev. `fetch` pulls frame/node metadata
+    /// (Figma Asset Mapping Schema shape); `export` renders a node image into the
+    /// content-addressable cache under `figma/exports/` and returns its path;
+    /// `tokens` extracts design tokens; `status` reports the auth state (token
+    /// present? which scope?) + rate-limit headroom — never the token value. The
+    /// live REST path is provided by a named `figma`-kind plugin (e.g.
+    /// `figma-rest`, BWOC-64); a missing plugin exits 4. Auth resolves from the
+    /// `BWOC_FIGMA_TOKEN` env (the CLI only checks presence, never logs or
+    /// serializes it); the read verbs exit 2 when it is absent. Every verb has a
+    /// `--json` twin. See `docs/en/PLUGINS.en.md` §Figma Asset Mapping Schema +
+    /// `notes/2026-05-28_figma-plugin-architecture.md`.
+    #[command(name = "figma", subcommand)]
+    Figma(figma::FigmaCommand),
 
     /// Expose a local agent over the A2A (Agent2Agent) protocol — print its
     /// Agent Card or run the JSON-RPC HTTP listener (loopback-only by default;
@@ -2405,6 +2449,24 @@ fn main() -> ExitCode {
             // gcloud mirrors jira's dispatch — own arg structs in gcloud.rs;
             // exit-code convention there (0/1/2/4/255).
             let code = gcloud::run(sub);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Okr(sub)) => {
+            // okr mirrors gcloud's dispatch — own arg structs in okr.rs;
+            // exit-code convention there (0/1/2/4/255).
+            let code = okr::run(sub);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Council(sub)) => {
+            // council owns its arg structs in council.rs; exit-code convention
+            // there (0/1/2/3/4/255 — 3 = resolve reached quorum but no outcome).
+            let code = council::run(sub);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Figma(sub)) => {
+            // figma mirrors okr's dispatch — own arg structs in figma.rs;
+            // exit-code convention there (0/1/2/4/255).
+            let code = figma::run(sub);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::A2a(sub)) => {
