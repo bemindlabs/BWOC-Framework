@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+**A2A auth phase (#80, PRs #81–#84, #87).** The follow-up to A2A v1 (#48): the listener is now safe to expose beyond loopback, and the outbound client authenticates to peers. Closes the security deferrals the v1 notes flagged.
+
+### Added
+
+- **Inbound Bearer auth (AP1, #81)** — when a token is configured (`BWOC_A2A_TOKEN` env or the agent's `.bwoc/a2a.token` file), the JSON-RPC + SSE endpoints require `Authorization: Bearer <token>`; the Agent Card GET stays public and advertises the requirement (`securitySchemes`/`security`). No token ⇒ the unchanged loopback-only posture.
+- **Webhook delivery (AP3, #83)** — the push-notification delivery deferred in v1 now fires: when auth is on, a watcher POSTs `TaskStatusUpdateEvent`s to registered webhooks (bearer-authed from the stored config), gated by an SSRF egress filter.
+- **Outbound client auth (AP5, #87)** — `bwoc a2a send`/`fetch-card` present a per-peer bearer token from `<workspace>/.bwoc/a2a-credentials.json` (origin-keyed, `0600`-gated) or a `--token` override; `send` honors the remote card's declared scheme, presenting the credential only to a peer that declares Bearer.
+- **`bwoc a2a serve --allow-unauthenticated` (AP2, #82)** — opt back into serving a non-loopback bind without a token (loud warning), for trusted networks / a front proxy that adds auth.
+
+### Changed
+
+- **A non-loopback `--bind` now refuses to start without auth (AP2, #82)** — previously it warned and served. A token (or `--allow-unauthenticated`) is required to expose the listener beyond loopback; loopback and auth-on binds are unchanged.
+
+### Security
+
+- **Constant-time token comparison** for the inbound Bearer check (AP1, #81); the scheme is matched case-insensitively (RFC 7235).
+- **`0600` gate** on secret files read by the listener/client — `.bwoc/a2a.token` (AP1) and `.bwoc/a2a-credentials.json` (AP5) are refused if group/world-readable, with a `chmod 600` remediation.
+- **SSRF guard on webhook delivery (AP3, #83)** — webhook URLs resolving to loopback/private/CGNAT/link-local/metadata (`169.254.169.254`)/ULA ranges are rejected; non-loopback must be `https`; the connection is **pinned** to the validated IP so a DNS rebind can't redirect the POST to an internal service.
+- **Rate limit + concurrency cap (AP4, #84)** — a global token-bucket request rate limit (`429` + `Retry-After` when exceeded) and a `SubscribeToTask` concurrent-stream cap, applied unconditionally as resource guards for the exposed endpoint.
+- **No outbound credential leak (AP5, #87)** — the client never sends a bearer token to a peer whose card declares no auth.
+
 ## [v2026.5.27-3] — 2026-05-27 — 2.9.0
 
 **Minor release.** A2A (Agent2Agent) protocol interop — v1 (#48, PRs #71–#77). BWOC agents can now talk to non-BWOC agents over the open A2A 1.0.0 protocol. Cargo SemVer `2.8.0` → `2.9.0`.
