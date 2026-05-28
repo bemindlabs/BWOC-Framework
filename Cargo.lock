@@ -301,7 +301,7 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
 name = "bwoc-a2a"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "async-stream",
  "axum 0.8.9",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-agent"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "bwoc-core",
  "bwoc-signing",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-cli"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "bwoc-core",
  "bwoc-signing",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-core"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-harness"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "async-trait",
  "bwoc-core",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-signing"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "ed25519-dalek",
  "hex",

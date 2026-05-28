@@ -20,17 +20,17 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — GCP gcloud workflow plugin"
+    " — gcloud compute lifecycle"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc gcloud {auth, project, status}` — GCP context via the workflow plugins (#86)",
-    "Read-mostly: `project set-default` is the one write verb, confirmation-gated",
-    "`auth.toml` declares credential SHAPE only; `bwoc check` fails closed on a value",
-    "`gcloud-ops` — first skill spanning multiple plugins; EN/TH SPEC pairs",
-    "Prior 2.10.0: A2A auth phase (#80)",
+    "`bwoc gcloud compute {list, describe, start, stop}` — GCE instance lifecycle (#96)",
+    "First write-capable GCP slice: `start`=confirm, `stop`=confirm + echoed target",
+    "Reusable write-verb risk matrix (T0–T4) for the storage/serverless/IAM slices",
+    "Reads stay unguarded; `--instance`/`--zone` required + validated before dispatch",
+    "Prior 2.11.0: gcloud workflow foundation (#86)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.28-2] — 2026-05-28 — 2.12.0
+
+**Minor release.** gcloud compute lifecycle (#96) — the first write-capable GCP slice (EPIC-9), on the EPIC-8 foundation. Cargo SemVer `2.11.0` → `2.12.0`.
+
+### Added
+
+- **`bwoc gcloud compute {list, describe, start, stop}` (#96)** — instance lifecycle via the new `workflow/gcloud-compute` plugin. Reads (`list`/`describe`) are unguarded; `start` is confirmation-gated (T1), `stop` is gated **with the resolved `project/zone/instance` echoed** (T2). `--json` requires `--yes`; `--instance`/`--zone` are required and validated (RFC 1035) before dispatch. Sources the sibling `gcloud-auth` credential helpers; `auth.toml` is shape-only; `bwoc check` audits the plugin.
+- **Reusable write-verb risk matrix** — the design note authors the T0–T4 confirmation-tier template (read → reversible/cost → reversible/availability → irreversible/typed-name → security/opt-in) that the remaining GCP slices (storage #97, serverless #98, IAM #99) instantiate.
+
+### Security
+
+- Compute writes pass every operator value to `gcloud` as `--flag=value` or after a `--` end-of-options separator (option-injection guard, #92 precedent), and reject `-`-leading instance/zone ids at the CLI before dispatch. `start`/`stop` mutate remote instances but are reversible; `delete`/`reset`/`create` are deliberately out of scope.
+
+### Fixed
+
+- **`release.yml` no longer fails when `RELEASE_PAT` is unset (#101)** — the Homebrew formula-bump step pushed the branch then failed creating the PR (the org blocks `GITHUB_TOKEN` from opening PRs), turning every release run red. It now exits green and prints the one finish command in the job summary; with `RELEASE_PAT` set it opens + auto-merges the formula PR hands-off.
+
 ## [v2026.5.28-1] — 2026-05-28 — 2.11.0
 
 **Minor release.** GCP `gcloud` workflow plugin foundation (#86) — the framework's second `workflow`-kind integration (after `jira`), designed read-mostly-first. Cargo SemVer `2.10.0` → `2.11.0`.

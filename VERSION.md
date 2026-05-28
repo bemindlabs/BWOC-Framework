@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.11.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.4.2`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.12.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.4.3`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.5.28-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.28-1) *(2026-05-28 — **2.11.0**; GCP gcloud workflow plugin — `bwoc gcloud {auth, project, status}`, read-mostly, secret-shape-only auth.toml (#86) + option-injection hardening (#92). Prior: `v2026.5.28-0` 2.10.0 — A2A auth phase)*
+**Latest release:** [`v2026.5.28-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.28-2) *(2026-05-28 — **2.12.0**; gcloud compute lifecycle (EPIC-9) — `bwoc gcloud compute {list, describe, start, stop}`, T0/T1/T2 write gating + reusable write-verb risk matrix (#96). Prior: `v2026.5.28-1` 2.11.0 — gcloud workflow foundation)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-28T13:11:37Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-28T16:56:25Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
