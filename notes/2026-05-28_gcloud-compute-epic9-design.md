@@ -1,3 +1,12 @@
+---
+title: gcloud Compute Lifecycle — architecture framing for EPIC-9
+date: 2026-05-28
+epic: BWOC-EPIC-9
+tracking: "#96"
+related: ["#86 (EPIC-8 foundation)", "#97", "#98", "#99"]
+status: frozen
+---
+
 # 2026-05-28 — gcloud compute slice (EPIC-9 framing)
 
 > **Status: FROZEN (architect sign-off 2026-05-28) + implemented.** Sets the
