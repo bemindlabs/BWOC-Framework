@@ -57,6 +57,33 @@ impl AgentCard {
         self.security = Some(serde_json::json!([{ "bwocBearer": [] }]));
         self
     }
+
+    /// Whether the card declares an HTTP **Bearer** auth requirement: a
+    /// non-empty `security` list plus at least one `securitySchemes` entry of
+    /// `{type:"http", scheme:"bearer"}` (scheme matched case-insensitively).
+    /// The outbound client (AP5) uses this to present a bearer credential only
+    /// to a peer that asked for one — never leaking the token otherwise.
+    pub fn requires_bearer(&self) -> bool {
+        let has_requirement = self
+            .security
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .is_some_and(|a| !a.is_empty());
+        if !has_requirement {
+            return false;
+        }
+        self.security_schemes
+            .as_ref()
+            .and_then(|s| s.as_object())
+            .is_some_and(|schemes| {
+                schemes.values().any(|v| {
+                    v.get("type").and_then(serde_json::Value::as_str) == Some("http")
+                        && v.get("scheme")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|s| s.eq_ignore_ascii_case("bearer"))
+                })
+            })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -297,5 +324,47 @@ mod tests {
     #[test]
     fn well_known_path_is_agent_card_json() {
         assert_eq!(AGENT_CARD_WELL_KNOWN_PATH, "/.well-known/agent-card.json");
+    }
+
+    fn bare_card() -> AgentCard {
+        AgentCard {
+            name: "x".into(),
+            description: "x".into(),
+            url: "http://x/".into(),
+            version: "1".into(),
+            protocol_version: "1.0.0".into(),
+            capabilities: AgentCapabilities::default(),
+            default_input_modes: vec![],
+            default_output_modes: vec![],
+            skills: vec![],
+            security_schemes: None,
+            security: None,
+        }
+    }
+
+    #[test]
+    fn requires_bearer_only_when_card_declares_http_bearer() {
+        // No security block ⇒ unauthenticated peer.
+        assert!(!bare_card().requires_bearer());
+        // The card we advertise declares Bearer.
+        assert!(bare_card().with_bearer_security().requires_bearer());
+        // A non-bearer scheme (apiKey) does not count.
+        let mut apikey = bare_card();
+        apikey.security_schemes = Some(serde_json::json!({
+            "k": { "type": "apiKey", "in": "header", "name": "X-API-Key" }
+        }));
+        apikey.security = Some(serde_json::json!([{ "k": [] }]));
+        assert!(!apikey.requires_bearer());
+        // A declared scheme with an empty `security` list is not a requirement.
+        let mut no_req = bare_card().with_bearer_security();
+        no_req.security = Some(serde_json::json!([]));
+        assert!(!no_req.requires_bearer());
+        // Scheme name is matched case-insensitively.
+        let mut upper = bare_card();
+        upper.security_schemes = Some(serde_json::json!({
+            "b": { "type": "http", "scheme": "Bearer" }
+        }));
+        upper.security = Some(serde_json::json!([{ "b": [] }]));
+        assert!(upper.requires_bearer());
     }
 }

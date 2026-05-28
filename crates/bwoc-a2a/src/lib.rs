@@ -22,12 +22,16 @@
 //! - **AP3** (here) — webhook **delivery**: when auth is on, the [`serve`]
 //!   listener runs a watcher that POSTs `TaskStatusUpdateEvent`s to registered
 //!   webhooks, guarded by the [`ssrf`] egress filter.
+//! - **AP5** (here) — outbound client **auth**: the [`client`] presents a
+//!   per-peer bearer token from [`creds`] when the remote Agent Card declares a
+//!   Bearer scheme.
 //!
 //! HTTP deps (axum listener, reqwest client) stay isolated to this crate —
 //! `bwoc-core` keeps the dep-quarantine (no HTTP).
 
 pub mod card;
 pub mod client;
+pub mod creds;
 pub mod push;
 pub mod rpc;
 pub mod serve;

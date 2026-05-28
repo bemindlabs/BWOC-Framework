@@ -56,17 +56,19 @@ fn card_url(base: &str) -> String {
     format!("{trimmed}{AGENT_CARD_WELL_KNOWN_PATH}")
 }
 
-/// Fetch and parse a remote agent's Agent Card from its base URL.
-pub async fn fetch_card(base: &str) -> Result<AgentCard, ClientError> {
+/// Fetch and parse a remote agent's Agent Card from its base URL. `auth`
+/// presents `Authorization: Bearer` (best-effort — the card GET is public by
+/// the A2A spec, but a peer may protect its own card).
+pub async fn fetch_card(base: &str, auth: Option<&str>) -> Result<AgentCard, ClientError> {
     let url = card_url(base);
-    let resp = http_client()?
-        .get(&url)
-        .send()
-        .await
-        .map_err(|source| ClientError::Http {
-            url: url.clone(),
-            source,
-        })?;
+    let mut request = http_client()?.get(&url);
+    if let Some(token) = auth {
+        request = request.bearer_auth(token);
+    }
+    let resp = request.send().await.map_err(|source| ClientError::Http {
+        url: url.clone(),
+        source,
+    })?;
     if !resp.status().is_success() {
         return Err(ClientError::Status {
             url,
@@ -89,6 +91,7 @@ pub async fn send_message(
     text: &str,
     context_id: Option<&str>,
     message_id: &str,
+    auth: Option<&str>,
 ) -> Result<Value, ClientError> {
     let mut message = serde_json::json!({
         "role": "ROLE_USER",
@@ -105,15 +108,14 @@ pub async fn send_message(
         "params": { "message": message },
     });
 
-    let resp = http_client()?
-        .post(endpoint)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|source| ClientError::Http {
-            url: endpoint.to_string(),
-            source,
-        })?;
+    let mut http_req = http_client()?.post(endpoint).json(&request);
+    if let Some(token) = auth {
+        http_req = http_req.bearer_auth(token);
+    }
+    let resp = http_req.send().await.map_err(|source| ClientError::Http {
+        url: endpoint.to_string(),
+        source,
+    })?;
     if !resp.status().is_success() {
         return Err(ClientError::Status {
             url: endpoint.to_string(),
@@ -243,7 +245,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let got = fetch_card(&server.uri()).await.unwrap();
+        let got = fetch_card(&server.uri(), None).await.unwrap();
         assert_eq!(got.name, "remote-oracle");
         assert_eq!(got.protocol_version, "1.0.0");
         assert!(got.capabilities.streaming);
@@ -262,7 +264,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = send_message(&format!("{}/", server.uri()), "hello", None, "m1")
+        let result = send_message(&format!("{}/", server.uri()), "hello", None, "m1", None)
             .await
             .unwrap();
         assert_eq!(result["parts"][0]["text"], "got it");
@@ -284,9 +286,41 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let result = send_message(&format!("{}/", server.uri()), "hi", Some("ctx-1"), "m1")
-            .await
-            .unwrap();
+        let result = send_message(
+            &format!("{}/", server.uri()),
+            "hi",
+            Some("ctx-1"),
+            "m1",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn send_message_presents_bearer_when_auth_given() {
+        use wiremock::matchers::header;
+        let server = MockServer::start().await;
+        // The mock only matches with the bearer header, so a success proves the
+        // client presented it.
+        Mock::given(http_method("POST"))
+            .and(path("/"))
+            .and(header("authorization", "Bearer out-tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": "m1", "result": { "ok": true }
+            })))
+            .mount(&server)
+            .await;
+        let result = send_message(
+            &format!("{}/", server.uri()),
+            "hi",
+            None,
+            "m1",
+            Some("out-tok"),
+        )
+        .await
+        .unwrap();
         assert_eq!(result["ok"], true);
     }
 
@@ -298,7 +332,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
-        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1")
+        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1", None)
             .await
             .unwrap_err();
         assert!(matches!(err, ClientError::Status { status: 500, .. }));
@@ -317,7 +351,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1")
+        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1", None)
             .await
             .unwrap_err();
         match err {
@@ -336,7 +370,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1")
+        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1", None)
             .await
             .unwrap_err();
         assert!(matches!(err, ClientError::Decode { .. }), "got {err:?}");
@@ -353,7 +387,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1")
+        let err = send_message(&format!("{}/", server.uri()), "hi", None, "m1", None)
             .await
             .unwrap_err();
         assert!(matches!(err, ClientError::Decode { .. }), "got {err:?}");
@@ -367,7 +401,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        let err = fetch_card(&server.uri()).await.unwrap_err();
+        let err = fetch_card(&server.uri(), None).await.unwrap_err();
         assert!(matches!(err, ClientError::Status { status: 404, .. }));
     }
 

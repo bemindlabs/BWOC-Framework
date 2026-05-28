@@ -232,6 +232,13 @@ enum A2aCommand {
 struct A2aFetchCardArgs {
     /// Base URL of the remote A2A agent (the well-known path is appended).
     url: String,
+    /// Bearer token to present (overrides the per-origin entry in
+    /// `<workspace>/.bwoc/a2a-credentials.json`).
+    #[arg(long)]
+    token: Option<String>,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -243,6 +250,14 @@ struct A2aSendArgs {
     /// Optional A2A `contextId` to associate the message with.
     #[arg(long)]
     context: Option<String>,
+    /// Bearer token to present (overrides the per-origin entry in
+    /// `<workspace>/.bwoc/a2a-credentials.json`). Presented only if the peer's
+    /// card declares a Bearer scheme.
+    #[arg(long)]
+    token: Option<String>,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -2388,13 +2403,17 @@ fn main() -> ExitCode {
                     team: args.team,
                     allow_unauthenticated: args.allow_unauthenticated,
                 }),
-                A2aCommand::FetchCard(args) => {
-                    a2a::run_fetch_card(a2a::FetchCardArgs { url: args.url })
-                }
+                A2aCommand::FetchCard(args) => a2a::run_fetch_card(a2a::FetchCardArgs {
+                    url: args.url,
+                    token: args.token,
+                    workspace: args.workspace,
+                }),
                 A2aCommand::Send(args) => a2a::run_send_outbound(a2a::SendOutboundArgs {
                     url: args.url,
                     message: args.message,
                     context: args.context,
+                    token: args.token,
+                    workspace: args.workspace,
                 }),
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))

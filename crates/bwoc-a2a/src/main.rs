@@ -75,6 +75,12 @@ enum Command {
     FetchCard {
         /// Base URL of the remote A2A agent (the well-known path is appended).
         url: String,
+        /// Bearer token to present (overrides any `.bwoc/a2a-credentials.json`
+        /// entry for this origin).
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
     },
     /// Send a text message to an external A2A agent via `SendMessage`, printing
     /// the JSON-RPC result (a Task or Message).
@@ -86,6 +92,13 @@ enum Command {
         /// Optional A2A `contextId` to associate the message with.
         #[arg(long)]
         context: Option<String>,
+        /// Bearer token to present (overrides any `.bwoc/a2a-credentials.json`
+        /// entry for this origin). Presented only if the peer's card declares a
+        /// Bearer scheme.
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
     },
 }
 
@@ -107,12 +120,18 @@ fn main() -> ExitCode {
             team,
             allow_unauthenticated,
         } => run_serve(&agent, workspace, bind, port, team, allow_unauthenticated),
-        Command::FetchCard { url } => run_fetch_card(&url),
+        Command::FetchCard {
+            url,
+            token,
+            workspace,
+        } => run_fetch_card(&url, token, workspace),
         Command::Send {
             url,
             message,
             context,
-        } => run_send(&url, &message, context.as_deref()),
+            token,
+            workspace,
+        } => run_send(&url, &message, context.as_deref(), token, workspace),
     };
     ExitCode::from(code)
 }
@@ -126,8 +145,38 @@ fn block_on<F: std::future::Future>(fut: F) -> std::io::Result<F::Output> {
         .block_on(fut))
 }
 
-fn run_fetch_card(url: &str) -> u8 {
-    let result = match block_on(bwoc_a2a::client::fetch_card(url)) {
+/// Resolve the outbound bearer token for `url` (AP5): an explicit `--token`
+/// wins; otherwise the per-origin entry in
+/// `<workspace>/.bwoc/a2a-credentials.json`. A credentials-file error (e.g. lax
+/// perms) aborts with `Err(code)`; a missing file or no match is `Ok(None)`.
+fn resolve_outbound_token(
+    url: &str,
+    token: Option<String>,
+    workspace: Option<PathBuf>,
+) -> Result<Option<String>, u8> {
+    if let Some(t) = normalize_token(token) {
+        return Ok(Some(t));
+    }
+    let Some(ws) = resolve_workspace(workspace) else {
+        return Ok(None);
+    };
+    match bwoc_a2a::creds::Credentials::load(&ws) {
+        Ok(creds) => Ok(creds.token_for(url).map(str::to_string)),
+        Err(e) => {
+            eprintln!("bwoc-a2a: {e}");
+            Err(1)
+        }
+    }
+}
+
+fn run_fetch_card(url: &str, token: Option<String>, workspace: Option<PathBuf>) -> u8 {
+    // The card GET is public, but a peer may protect its own card; present a
+    // configured token best-effort.
+    let auth = match resolve_outbound_token(url, token, workspace) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    let result = match block_on(bwoc_a2a::client::fetch_card(url, auth.as_deref())) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("bwoc-a2a fetch-card: runtime error: {e}");
@@ -152,7 +201,31 @@ fn run_fetch_card(url: &str) -> u8 {
     }
 }
 
-fn run_send(url: &str, message: &str, context: Option<&str>) -> u8 {
+fn run_send(
+    url: &str,
+    message: &str,
+    context: Option<&str>,
+    token: Option<String>,
+    workspace: Option<PathBuf>,
+) -> u8 {
+    let configured = match resolve_outbound_token(url, token, workspace) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    // AP5: honor the remote card's declared scheme. Present the token only if
+    // the peer's card declares Bearer (don't leak a credential to a peer that
+    // declared no auth); if discovery fails, honor the operator's configured
+    // token rather than silently dropping it.
+    let auth = match configured {
+        None => None,
+        Some(t) => {
+            let declared = match block_on(bwoc_a2a::client::fetch_card(url, None)) {
+                Ok(Ok(card)) => card.requires_bearer(),
+                _ => true,
+            };
+            declared.then_some(t)
+        }
+    };
     let message_id = format!(
         "bwoc-a2a-{}",
         std::time::SystemTime::now()
@@ -165,6 +238,7 @@ fn run_send(url: &str, message: &str, context: Option<&str>) -> u8 {
         message,
         context,
         &message_id,
+        auth.as_deref(),
     )) {
         Ok(r) => r,
         Err(e) => {

@@ -40,10 +40,15 @@ pub fn run_card(args: CardArgs) -> i32 {
 /// Args for `bwoc a2a fetch-card`.
 pub struct FetchCardArgs {
     pub url: String,
+    pub token: Option<String>,
+    pub workspace: Option<PathBuf>,
 }
 
 pub fn run_fetch_card(args: FetchCardArgs) -> i32 {
-    exec_sibling(vec!["fetch-card".into(), args.url.into()])
+    let mut argv: Vec<OsString> = vec!["fetch-card".into(), args.url.into()];
+    push_token(&mut argv, args.token);
+    push_workspace(&mut argv, args.workspace);
+    exec_sibling(argv)
 }
 
 /// Args for `bwoc a2a send`.
@@ -51,6 +56,8 @@ pub struct SendOutboundArgs {
     pub url: String,
     pub message: String,
     pub context: Option<String>,
+    pub token: Option<String>,
+    pub workspace: Option<PathBuf>,
 }
 
 pub fn run_send_outbound(args: SendOutboundArgs) -> i32 {
@@ -59,7 +66,16 @@ pub fn run_send_outbound(args: SendOutboundArgs) -> i32 {
         argv.push("--context".into());
         argv.push(ctx.into());
     }
+    push_token(&mut argv, args.token);
+    push_workspace(&mut argv, args.workspace);
     exec_sibling(argv)
+}
+
+fn push_token(argv: &mut Vec<OsString>, token: Option<String>) {
+    if let Some(t) = token {
+        argv.push("--token".into());
+        argv.push(t.into());
+    }
 }
 
 pub fn run_serve(args: ServeArgs) -> i32 {
