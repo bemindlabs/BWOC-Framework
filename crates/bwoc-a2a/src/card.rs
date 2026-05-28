@@ -35,6 +35,10 @@ pub fn card_from_manifest(m: &Manifest, url: &str) -> AgentCard {
         default_input_modes: vec!["text/plain".to_string()],
         default_output_modes: vec!["text/plain".to_string()],
         skills: vec![skill],
+        // No auth by default; the serve layer calls `with_bearer_security()`
+        // when a token is configured (AP1).
+        security_schemes: None,
+        security: None,
     }
 }
 

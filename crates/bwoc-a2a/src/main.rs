@@ -234,19 +234,40 @@ fn run_serve(
         (id, path)
     });
     let addr = SocketAddr::new(bind, port);
-    if !bind.is_loopback() {
+    // AP1: a Bearer token from `BWOC_A2A_TOKEN` (env, wins) or the agent's
+    // `.bwoc/a2a.token` file enables auth on the JSON-RPC + SSE endpoints.
+    let auth_token = std::env::var("BWOC_A2A_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let f = inbox_path.parent()?.join("a2a.token");
+            std::fs::read_to_string(f)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if !bind.is_loopback() && auth_token.is_none() {
         eprintln!(
-            "bwoc-a2a serve: WARNING — binding {addr} is NOT loopback. The A2A \
-             listener has no authentication yet (auth lands in a later #48 phase); \
-             anyone who can reach this address can write to the agent's inbox. \
-             Use 127.0.0.1 unless you front it with an authenticated proxy."
+            "bwoc-a2a serve: WARNING — binding {addr} is NOT loopback and NO auth \
+             token is set, so anyone who can reach this address can write to the \
+             agent's inbox. Set BWOC_A2A_TOKEN (or .bwoc/a2a.token), or bind \
+             127.0.0.1."
         );
     }
-    let card = card_from_manifest(&manifest, &format!("http://{addr}/"));
+    let mut card = card_from_manifest(&manifest, &format!("http://{addr}/"));
+    if auth_token.is_some() {
+        card = card.with_bearer_security();
+    }
     let agent_id = manifest.agent_id.clone();
     println!(
-        "bwoc-a2a serve: agent '{agent_id}' on http://{addr}/ \
-         (Agent Card at http://{addr}/.well-known/agent-card.json). Ctrl-C to stop."
+        "bwoc-a2a serve: agent '{agent_id}' on http://{addr}/ (Agent Card at \
+         http://{addr}/.well-known/agent-card.json) — auth {}. Ctrl-C to stop.",
+        if auth_token.is_some() {
+            "ON (Bearer)"
+        } else {
+            "OFF"
+        }
     );
     match serve_blocking(ServeConfig {
         agent_id,
@@ -254,6 +275,7 @@ fn run_serve(
         card,
         addr,
         team,
+        auth_token,
     }) {
         Ok(()) => 0,
         Err(e) => {

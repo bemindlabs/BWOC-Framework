@@ -35,6 +35,28 @@ pub struct AgentCard {
     #[serde(rename = "defaultOutputModes")]
     pub default_output_modes: Vec<String>,
     pub skills: Vec<AgentSkill>,
+    /// OpenAPI-style named security schemes (A2A `securitySchemes`). Present
+    /// only when the server requires auth; carried opaquely (the client reads
+    /// it to learn the requirement). `None` ⇒ the endpoint is unauthenticated.
+    #[serde(rename = "securitySchemes", skip_serializing_if = "Option::is_none")]
+    pub security_schemes: Option<serde_json::Value>,
+    /// Which scheme(s) apply (A2A `security`). Paired with `securitySchemes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<serde_json::Value>,
+}
+
+impl AgentCard {
+    /// Advertise a single HTTP **Bearer** scheme as required (AP1). Sets
+    /// `securitySchemes.bwocBearer = {type:"http", scheme:"bearer"}` and
+    /// `security = [{bwocBearer: []}]` — the A2A way to tell a peer "send
+    /// `Authorization: Bearer <token>`".
+    pub fn with_bearer_security(mut self) -> Self {
+        self.security_schemes = Some(serde_json::json!({
+            "bwocBearer": { "type": "http", "scheme": "bearer" }
+        }));
+        self.security = Some(serde_json::json!([{ "bwocBearer": [] }]));
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

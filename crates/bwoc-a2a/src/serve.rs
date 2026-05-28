@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State, rejection::JsonRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -62,6 +62,10 @@ pub struct ServeConfig {
     /// Team task list to expose over `tasks/*` (P2): `(team_id, tasks.jsonl)`.
     /// `None` when no `--team` was selected.
     pub team: Option<(String, PathBuf)>,
+    /// Bearer token required on the JSON-RPC + SSE endpoints (AP1). `None` ⇒
+    /// auth disabled (the loopback-only v1 posture). The Agent Card GET stays
+    /// public regardless so peers can discover the auth requirement.
+    pub auth_token: Option<String>,
 }
 
 struct ServeState {
@@ -69,6 +73,7 @@ struct ServeState {
     inbox_path: PathBuf,
     card: AgentCard,
     team: Option<(String, PathBuf)>,
+    auth_token: Option<String>,
 }
 
 /// Run the A2A listener, blocking until shutdown. Creates its own current-thread
@@ -87,6 +92,7 @@ async fn run(cfg: ServeConfig) -> std::io::Result<()> {
         inbox_path: cfg.inbox_path,
         card: cfg.card,
         team: cfg.team,
+        auth_token: cfg.auth_token,
     });
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     axum::serve(listener, app(state)).await
@@ -111,8 +117,22 @@ async fn agent_card(State(state): State<Arc<ServeState>>) -> Json<AgentCard> {
 /// bare 400. A well-formed notification (no `id`) gets `204 No Content`.
 async fn json_rpc(
     State(state): State<Arc<ServeState>>,
+    headers: HeaderMap,
     body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Response {
+    // AP1: when a token is configured, every JSON-RPC / SSE call must carry a
+    // matching `Authorization: Bearer <token>`. The Agent Card GET is exempt
+    // (public discovery). Checked before the body is even inspected.
+    if let Some(expected) = &state.auth_token {
+        if !bearer_ok(&headers, expected) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer")],
+                "missing or invalid bearer token",
+            )
+                .into_response();
+        }
+    }
     let raw = match body {
         Ok(Json(v)) => v,
         Err(rej) => {
@@ -169,6 +189,33 @@ fn make_ctx(state: &ServeState) -> ServeContext<'_> {
 
 fn rpc_error(id: serde_json::Value, code: i64, message: impl Into<String>) -> Response {
     Json(JsonRpcResponse::err(id, code, message)).into_response()
+}
+
+/// Whether the request carries `Authorization: Bearer <expected>`. The token
+/// comparison is constant-time so a wrong token can't be recovered by timing.
+fn bearer_ok(headers: &HeaderMap, expected: &str) -> bool {
+    let Some(presented) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+    ct_eq(presented.as_bytes(), expected.as_bytes())
+}
+
+/// Constant-time byte equality. Returns early only on a length mismatch (token
+/// length is not the secret); equal-length inputs fold every byte so the
+/// compare time doesn't depend on where the first difference is.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// `SendStreamingMessage` (SSE). BWOC processes messages asynchronously (the
@@ -340,12 +387,15 @@ mod tests {
             default_input_modes: vec!["text/plain".into()],
             default_output_modes: vec!["text/plain".into()],
             skills: vec![],
+            security_schemes: None,
+            security: None,
         };
         let state = Arc::new(ServeState {
             agent_id: "agent-yudi".into(),
             inbox_path: dir.path().join(".bwoc/inbox.jsonl"),
             card,
             team: None,
+            auth_token: None,
         });
         (state, dir)
     }
@@ -366,6 +416,7 @@ mod tests {
             inbox_path: base.inbox_path.clone(),
             card: base.card.clone(),
             team: Some(("team-security".into(), tasks_path)),
+            auth_token: None,
         });
         (state, dir)
     }
@@ -540,6 +591,7 @@ mod tests {
             inbox_path: base.inbox_path.clone(),
             card: base.card.clone(),
             team: Some(("team-security".into(), tasks_path)),
+            auth_token: None,
         });
         (state, dir)
     }
@@ -822,6 +874,86 @@ mod tests {
         )
         .await;
         assert_eq!(wrong_task["error"]["code"], -32001);
+    }
+
+    /// `test_state` with auth enabled (token `s3cr3t`) + the card advertising it.
+    fn test_state_authed() -> (Arc<ServeState>, tempfile::TempDir) {
+        let (base, dir) = test_state();
+        let state = Arc::new(ServeState {
+            agent_id: base.agent_id.clone(),
+            inbox_path: base.inbox_path.clone(),
+            card: base.card.clone().with_bearer_security(),
+            team: None,
+            auth_token: Some("s3cr3t".into()),
+        });
+        (state, dir)
+    }
+
+    fn post_json_auth(body: serde_json::Value, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn send_msg_body() -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":method::SEND_MESSAGE,
+            "params":{"message":{"role":"ROLE_USER","parts":[{"text":"hi"}],"messageId":"a1"}}
+        })
+    }
+
+    #[tokio::test]
+    async fn auth_required_rejects_missing_and_wrong_token() {
+        let (state, _d) = test_state_authed();
+        // No Authorization header → 401.
+        let no_auth = app(state.clone())
+            .oneshot(post_json(send_msg_body()))
+            .await
+            .unwrap();
+        assert_eq!(no_auth.status(), StatusCode::UNAUTHORIZED);
+        // Wrong token → 401.
+        let wrong = app(state.clone())
+            .oneshot(post_json_auth(send_msg_body(), "nope"))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        // A streaming method is gated too.
+        let stream_no_auth = app(state.clone())
+            .oneshot(post_json(serde_json::json!({
+                "jsonrpc":"2.0","id":2,"method":method::SUBSCRIBE_TO_TASK,"params":{"id":"t1"}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(stream_no_auth.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_accepts_correct_token_and_card_stays_public() {
+        let (state, _d) = test_state_authed();
+        // Correct token → processed (200, ok response).
+        let ok = app(state.clone())
+            .oneshot(post_json_auth(send_msg_body(), "s3cr3t"))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        // The Agent Card GET needs NO auth and advertises the scheme.
+        let card = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri(AGENT_CARD_WELL_KNOWN_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(card.status(), StatusCode::OK);
+        let v = body_json(card).await;
+        assert_eq!(v["securitySchemes"]["bwocBearer"]["scheme"], "bearer");
+        assert_eq!(v["security"][0]["bwocBearer"], serde_json::json!([]));
     }
 
     #[tokio::test]
