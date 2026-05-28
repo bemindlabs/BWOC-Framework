@@ -19,6 +19,18 @@ later phases (non-loopback bind, webhook delivery, rate caps) build on.
   fires only when auth is **off** (binding wide open with a token is no longer
   the unguarded footgun it warned about).
 
+### Review hardening (Copilot, PR #81)
+
+- **Case-insensitive Bearer scheme.** `bearer_ok` now splits the scheme from the
+  credential and matches the scheme with `eq_ignore_ascii_case` (RFC 7235 — auth
+  schemes are case-insensitive). `bearer`/`BEARER`/`BeArEr` + correct token are
+  accepted; only the credential remains the secret (still `ct_eq`).
+- **Token-file permission gate (Unix).** `read_token_file` refuses
+  `.bwoc/a2a.token` when `mode & 0o077 != 0` (group/world-accessible) with a
+  `chmod 600` remediation message and a non-zero exit, instead of silently
+  trusting a secret any local user could read. `BWOC_A2A_TOKEN` is the override.
+  A missing file stays `Ok(None)` (auth off). No-op on non-Unix.
+
 ## Decisions
 
 - **Bearer, not OAuth2/mTLS.** The minimal foundation for a local-first
@@ -40,15 +52,18 @@ later phases (non-loopback bind, webhook delivery, rate caps) build on.
 - AP3 — push **webhook delivery** + SSRF guard (#48-P5 deferral).
 - AP4 — per-token request rate + `SubscribeToTask` concurrency caps.
 - AP5 — outbound client auth (`bwoc a2a send`/`fetch-card` present credentials).
-- `.bwoc/a2a.token` perms: the operator creates it; a future `bwoc a2a keygen`
-  could mint it `0600` like the signing key.
+- `.bwoc/a2a.token` perms: the **read** side now enforces `0600` (refuses laxer
+  files); a future `bwoc a2a keygen` could also **mint** it `0600` like the
+  signing key so the operator never has to `chmod` by hand.
 
 ## Verification
 
-- 49 `bwoc-a2a` tests incl. auth: missing/wrong token → `401` (unary + SSE
-  method), correct token → `200`, card public + advertises the scheme. Full
-  workspace + clippy green; `bwoc-cli` still HTTP-free. Live curl: 401/401/200
-  against a real `bwoc a2a serve` with `BWOC_A2A_TOKEN`.
+- `bwoc-a2a` tests incl. auth: missing/wrong token → `401` (unary + SSE
+  method), correct token → `200`, card public + advertises the scheme,
+  case-insensitive scheme accepted, token-file perm gate (private read / lax
+  refused / missing = off). Full workspace + clippy green; `bwoc-cli` still
+  HTTP-free. Live curl: 401/401/200 against a real `bwoc a2a serve` with
+  `BWOC_A2A_TOKEN`.
 
 ## Related
 

@@ -193,14 +193,19 @@ fn rpc_error(id: serde_json::Value, code: i64, message: impl Into<String>) -> Re
 
 /// Whether the request carries `Authorization: Bearer <expected>`. The token
 /// comparison is constant-time so a wrong token can't be recovered by timing.
+/// The scheme is matched case-insensitively per RFC 7235 (`bearer`/`BEARER`
+/// are valid), only the credential is the secret.
 fn bearer_ok(headers: &HeaderMap, expected: &str) -> bool {
-    let Some(presented) = headers
+    let Some((scheme, presented)) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|v| v.split_once(' '))
     else {
         return false;
     };
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return false;
+    }
     ct_eq(presented.as_bytes(), expected.as_bytes())
 }
 
@@ -940,19 +945,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lowercase_bearer_scheme_is_rejected() {
-        // The scheme prefix is case-sensitive ("Bearer "); a lowercase `bearer`
-        // fails closed (more restrictive than RFC 7235, not a bypass).
+    async fn bearer_scheme_is_case_insensitive() {
+        // HTTP auth schemes are case-insensitive (RFC 7235): a lowercase
+        // `bearer` (or any case) with the correct token is accepted.
         let (state, _d) = test_state_authed();
-        let req = Request::builder()
-            .method("POST")
-            .uri("/")
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, "bearer s3cr3t")
-            .body(Body::from(send_msg_body().to_string()))
-            .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        for scheme in ["bearer", "BEARER", "BeArEr"] {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("{scheme} s3cr3t"))
+                .body(Body::from(send_msg_body().to_string()))
+                .unwrap();
+            let resp = app(state.clone()).oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "scheme {scheme:?}");
+        }
     }
 
     #[tokio::test]

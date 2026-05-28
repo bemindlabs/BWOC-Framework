@@ -10,7 +10,7 @@
 //! - `bwoc-a2a serve <agent>` — run the listener (loopback-only by default).
 
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bwoc_core::manifest::Manifest;
@@ -236,10 +236,19 @@ fn run_serve(
     let addr = SocketAddr::new(bind, port);
     // AP1: a Bearer token from `BWOC_A2A_TOKEN` (env, wins) or the agent's
     // `.bwoc/a2a.token` file enables auth on the JSON-RPC + SSE endpoints.
-    let auth_token = normalize_token(std::env::var("BWOC_A2A_TOKEN").ok()).or_else(|| {
-        let f = inbox_path.parent()?.join("a2a.token");
-        normalize_token(std::fs::read_to_string(f).ok())
-    });
+    let auth_token = match normalize_token(std::env::var("BWOC_A2A_TOKEN").ok()) {
+        Some(t) => Some(t),
+        None => match inbox_path.parent().map(|p| p.join("a2a.token")) {
+            Some(path) => match read_token_file(&path) {
+                Ok(tok) => tok,
+                Err(msg) => {
+                    eprintln!("bwoc-a2a serve: {msg}");
+                    return 1;
+                }
+            },
+            None => None,
+        },
+    };
     if !bind.is_loopback() && auth_token.is_none() {
         eprintln!(
             "bwoc-a2a serve: WARNING — binding {addr} is NOT loopback and NO auth \
@@ -345,9 +354,42 @@ fn normalize_token(raw: Option<String>) -> Option<String> {
     raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// Read the agent's `.bwoc/a2a.token`. A missing file ⇒ `Ok(None)` (auth stays
+/// off). On Unix the file must not be group/world-accessible (`mode & 0o077 ==
+/// 0`, i.e. `0600` or stricter); a laxer file is **refused** with `Err` rather
+/// than silently trusted — another local user could read the bearer secret
+/// (issue #80 mandates `0600`). `BWOC_A2A_TOKEN` supplies the token without a
+/// file, so it is the override when the file's perms can't be tightened.
+fn read_token_file(path: &Path) -> Result<Option<String>, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read token file {}: {e}", path.display())),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|e| format!("cannot stat token file {}: {e}", path.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "token file {} is group/world-accessible (mode {:04o}); another \
+                 local user could read the bearer secret. Run `chmod 600 {}` (or \
+                 set BWOC_A2A_TOKEN instead).",
+                path.display(),
+                mode & 0o7777,
+                path.display()
+            ));
+        }
+    }
+    Ok(normalize_token(Some(raw)))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::normalize_token;
+    use super::{normalize_token, read_token_file};
 
     #[test]
     fn empty_or_whitespace_token_is_absent() {
@@ -364,5 +406,40 @@ mod tests {
         );
         // Interior spaces survive (only the edges are trimmed).
         assert_eq!(normalize_token(Some("a b".into())).as_deref(), Some("a b"));
+    }
+
+    #[test]
+    fn missing_token_file_is_absent_not_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a2a.token");
+        assert_eq!(read_token_file(&path), Ok(None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_token_file_is_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a2a.token");
+        std::fs::write(&path, "  s3cr3t\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_token_file(&path).unwrap().as_deref(), Some("s3cr3t"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_or_world_readable_token_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a2a.token");
+        std::fs::write(&path, "s3cr3t").unwrap();
+        for mode in [0o640, 0o644, 0o604, 0o660] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let err = read_token_file(&path).unwrap_err();
+            assert!(
+                err.contains("group/world-accessible"),
+                "mode {mode:o}: {err}"
+            );
+        }
     }
 }
