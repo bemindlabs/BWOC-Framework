@@ -13,6 +13,10 @@ use crate::types::{AGENT_CARD_WELL_KNOWN_PATH, AgentCard, method};
 /// How long an outbound A2A request may take before it's abandoned.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Webhook delivery is best-effort and must not stall the watcher loop, so it
+/// uses a tighter timeout than interactive client calls.
+const WEBHOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("HTTP error talking to {url}: {source}")]
@@ -27,6 +31,8 @@ pub enum ClientError {
     Decode { url: String, message: String },
     #[error("agent returned a JSON-RPC error {code}: {message}")]
     Rpc { code: i64, message: String },
+    #[error("webhook blocked by SSRF guard: {0}")]
+    Ssrf(#[source] crate::ssrf::SsrfError),
 }
 
 fn http_client() -> Result<reqwest::Client, ClientError> {
@@ -149,6 +155,49 @@ pub async fn send_message(
         }),
         (None, None) => Err(decode("response had neither result nor error".to_string())),
     }
+}
+
+/// POST a task-status event to a registered push webhook (AP3 delivery). The
+/// URL is cleared by the [`crate::ssrf`] guard first, and the connection is
+/// **pinned** to the validated address(es) so a DNS rebind can't redirect the
+/// POST to an internal service. The config's token (when set) is presented as
+/// `Authorization: Bearer`. `allow_loopback` is test-only (target a local mock).
+///
+/// Best-effort: any non-2xx is a [`ClientError::Status`]; the caller logs and
+/// moves on (no retry in this phase).
+pub async fn deliver_push(
+    webhook_url: &str,
+    token: Option<&str>,
+    event: &Value,
+    allow_loopback: bool,
+) -> Result<(), ClientError> {
+    let validated = crate::ssrf::validate(webhook_url, allow_loopback)
+        .await
+        .map_err(ClientError::Ssrf)?;
+    let client = reqwest::Client::builder()
+        .timeout(WEBHOOK_TIMEOUT)
+        .user_agent(concat!("bwoc-a2a/", env!("CARGO_PKG_VERSION")))
+        .resolve_to_addrs(&validated.host, &validated.addrs)
+        .build()
+        .map_err(|source| ClientError::Http {
+            url: webhook_url.to_string(),
+            source,
+        })?;
+    let mut req = client.post(webhook_url).json(event);
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let resp = req.send().await.map_err(|source| ClientError::Http {
+        url: webhook_url.to_string(),
+        source,
+    })?;
+    if !resp.status().is_success() {
+        return Err(ClientError::Status {
+            url: webhook_url.to_string(),
+            status: resp.status().as_u16(),
+        });
+    }
+    Ok(())
 }
 
 /// A deserializable mirror of the server-side `JsonRpcResponse` (which is
@@ -320,6 +369,60 @@ mod tests {
             .await;
         let err = fetch_card(&server.uri()).await.unwrap_err();
         assert!(matches!(err, ClientError::Status { status: 404, .. }));
+    }
+
+    #[tokio::test]
+    async fn deliver_push_posts_event_with_bearer_and_pins_loopback() {
+        use wiremock::matchers::{body_partial_json, header};
+        let server = MockServer::start().await;
+        Mock::given(http_method("POST"))
+            .and(path("/hook"))
+            .and(header("authorization", "Bearer s3cr3t"))
+            .and(body_partial_json(serde_json::json!({
+                "taskId": "t1", "kind": "status-update",
+                "status": { "state": "TASK_STATE_COMPLETED" }, "final": true
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let event =
+            crate::push::status_event("t1", "team-sec", crate::types::TaskState::Completed, true);
+        // allow_loopback=true: target the local mock past the SSRF guard.
+        deliver_push(
+            &format!("{}/hook", server.uri()),
+            Some("s3cr3t"),
+            &event,
+            true,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn deliver_push_refuses_private_target_via_ssrf() {
+        let event = serde_json::json!({ "kind": "status-update" });
+        let err = deliver_push("https://10.0.0.1/hook", None, &event, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClientError::Ssrf(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn deliver_push_maps_non_2xx_to_status_error() {
+        let server = MockServer::start().await;
+        Mock::given(http_method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let event = serde_json::json!({ "kind": "status-update" });
+        let err = deliver_push(&format!("{}/hook", server.uri()), None, &event, true)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ClientError::Status { status: 500, .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

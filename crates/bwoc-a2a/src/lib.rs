@@ -19,6 +19,9 @@
 //! - **P5** (here) — [`push`] notification **config** management
 //!   (`CreateTaskPushNotificationConfig` + Get/List/Delete). Webhook *delivery*
 //!   is deferred to the auth phase (an SSRF/exfil egress under no-auth).
+//! - **AP3** (here) — webhook **delivery**: when auth is on, the [`serve`]
+//!   listener runs a watcher that POSTs `TaskStatusUpdateEvent`s to registered
+//!   webhooks, guarded by the [`ssrf`] egress filter.
 //!
 //! HTTP deps (axum listener, reqwest client) stay isolated to this crate —
 //! `bwoc-core` keeps the dep-quarantine (no HTTP).
@@ -28,5 +31,6 @@ pub mod client;
 pub mod push;
 pub mod rpc;
 pub mod serve;
+pub mod ssrf;
 pub mod tasks;
 pub mod types;

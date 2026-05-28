@@ -17,6 +17,26 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::TaskState;
+
+/// Build the bare A2A `TaskStatusUpdateEvent` object. This is both the webhook
+/// POST body (AP3 delivery) and the `result` payload of the SSE event in
+/// [`crate::serve`], so the shape lives in one place.
+pub fn status_event(
+    task_id: &str,
+    context_id: &str,
+    state: TaskState,
+    is_final: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "taskId": task_id,
+        "contextId": context_id,
+        "kind": "status-update",
+        "status": { "state": state },
+        "final": is_final,
+    })
+}
+
 /// One registered push-notification config for a task. A task may have several
 /// (keyed by `config_id`), per the A2A model.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

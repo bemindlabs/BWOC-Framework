@@ -9,6 +9,7 @@
 //! in [`crate::rpc`]. Per-peer rate limiting and auth land in a later phase
 //! (P1 has no peer identity — every inbound message is `from:"a2a"`).
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -48,6 +49,10 @@ const TASK_NOT_FOUND: i64 = -32001;
 /// alongside per-peer rate limiting — P1 has no peer identity.
 const SUBSCRIBE_POLL: Duration = Duration::from_secs(1);
 const SUBSCRIBE_MAX: Duration = Duration::from_secs(300);
+
+/// How often the AP3 push-delivery watcher re-reads the team task file. Coarser
+/// than the SSE poll — webhooks are async fire-and-forget, not an open stream.
+const DELIVER_POLL: Duration = Duration::from_secs(2);
 
 /// Everything the listener needs to represent one local agent over A2A.
 pub struct ServeConfig {
@@ -94,8 +99,88 @@ async fn run(cfg: ServeConfig) -> std::io::Result<()> {
         team: cfg.team,
         auth_token: cfg.auth_token,
     });
+    // AP3: deliver task-status webhooks only when auth is ON — so the webhook's
+    // registrant was an authenticated peer (the exfil concern push.rs deferred
+    // delivery over) — and a team task list is exposed to watch.
+    if state.auth_token.is_some() {
+        if let Some((team_id, tasks_path)) = state.team.clone() {
+            tokio::spawn(push_delivery_loop(team_id, tasks_path));
+        }
+    }
     let listener = tokio::net::TcpListener::bind(cfg.addr).await?;
     axum::serve(listener, app(state)).await
+}
+
+/// AP3 webhook delivery. Polls the team's `tasks.jsonl`; on a per-task state
+/// **change**, POSTs a `TaskStatusUpdateEvent` to every push config registered
+/// for that task (SSRF-guarded + IP-pinned + bearer-authed in
+/// [`crate::client::deliver_push`]). The first successful read seeds the
+/// baseline silently, so only transitions the watcher actually observes fire —
+/// no burst of "current state" notifications at startup. Best-effort: read
+/// faults and delivery failures are logged and the loop continues.
+async fn push_delivery_loop(team_id: String, tasks_path: PathBuf) {
+    let configs_path = crate::push::configs_path(&tasks_path);
+    let mut last: HashMap<String, crate::types::TaskState> = HashMap::new();
+    let mut seeded = false;
+    loop {
+        tokio::time::sleep(DELIVER_POLL).await;
+        // Read off the executor — a blocking syscall inline would stall the
+        // current-thread runtime (the listener and every live SSE stream).
+        let path = tasks_path.clone();
+        let tasks =
+            match tokio::task::spawn_blocking(move || crate::tasks::load_team_tasks(&path)).await {
+                Ok(Ok(t)) => t,
+                _ => continue,
+            };
+        // First successful read seeds the baseline silently (record states,
+        // discard the "changes"), so the watcher only fires on transitions it
+        // actually observes — not a burst of current states at startup.
+        if !seeded {
+            collect_changes(&mut last, &tasks);
+            seeded = true;
+            continue;
+        }
+        let changes = collect_changes(&mut last, &tasks);
+        if changes.is_empty() {
+            continue;
+        }
+        // Load configs once per tick, and only when something changed.
+        let configs = crate::push::load(&configs_path).unwrap_or_default();
+        for (task_id, cur, terminal) in changes {
+            last.insert(task_id.clone(), cur);
+            let event = crate::push::status_event(&task_id, &team_id, cur, terminal);
+            for c in configs.iter().filter(|c| c.task_id == task_id) {
+                if let Err(e) =
+                    crate::client::deliver_push(&c.url, c.token.as_deref(), &event, false).await
+                {
+                    eprintln!(
+                        "bwoc-a2a push: delivery to {} for task {task_id} failed: {e}",
+                        c.url
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Diff observed tasks against the last-seen state map, recording new states
+/// and returning `(task_id, a2a_state, is_terminal)` for each task whose state
+/// **changed**. Pure (mutates only `last`) so the seed/transition logic is
+/// tested without a running watcher.
+fn collect_changes(
+    last: &mut HashMap<String, crate::types::TaskState>,
+    tasks: &[bwoc_core::team::Task],
+) -> Vec<(String, crate::types::TaskState, bool)> {
+    let mut changes = Vec::new();
+    for t in tasks {
+        let cur = crate::tasks::a2a_state(t.state);
+        if last.get(&t.id) != Some(&cur) {
+            last.insert(t.id.clone(), cur);
+            let terminal = matches!(t.state, bwoc_core::team::TaskState::Completed);
+            changes.push((t.id.clone(), cur, terminal));
+        }
+    }
+    changes
 }
 
 /// Build the router for a given agent state. Factored out so tests can drive it
@@ -362,13 +447,7 @@ fn status_update(
     state: crate::types::TaskState,
     is_final: bool,
 ) -> String {
-    let result = serde_json::json!({
-        "taskId": task_id,
-        "contextId": context_id,
-        "kind": "status-update",
-        "status": { "state": state },
-        "final": is_final,
-    });
+    let result = crate::push::status_event(task_id, context_id, state, is_final);
     serde_json::to_string(&JsonRpcResponse::ok(id.clone(), result)).unwrap_or_default()
 }
 
@@ -379,6 +458,34 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, header};
     use tower::ServiceExt; // for `oneshot`
+
+    #[test]
+    fn collect_changes_seeds_then_reports_only_transitions() {
+        use crate::types::TaskState as A2a;
+        use bwoc_core::team::{Task, TaskState as Core};
+        let mut last = HashMap::new();
+        let mut t1 = Task::new("t1", "harden", vec![]);
+
+        // First observation of a task is a change (against an empty baseline).
+        let seed = collect_changes(&mut last, std::slice::from_ref(&t1));
+        assert_eq!(seed.len(), 1);
+        assert_eq!(seed[0].0, "t1");
+        assert!(!seed[0].2, "Submitted is not terminal");
+
+        // Re-observing the same state yields nothing.
+        assert!(collect_changes(&mut last, std::slice::from_ref(&t1)).is_empty());
+
+        // A transition to Completed is one change, flagged terminal.
+        t1.state = Core::Completed;
+        let done = collect_changes(&mut last, std::slice::from_ref(&t1));
+        assert_eq!(done, vec![("t1".to_string(), A2a::Completed, true)]);
+
+        // A second task appears: only it is reported, not the unchanged t1.
+        let t2 = Task::new("t2", "audit", vec![]);
+        let added = collect_changes(&mut last, &[t1.clone(), t2.clone()]);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].0, "t2");
+    }
 
     fn test_state() -> (Arc<ServeState>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
