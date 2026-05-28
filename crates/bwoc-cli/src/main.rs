@@ -261,8 +261,9 @@ struct A2aServeArgs {
     /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
     #[arg(long = "workspace")]
     workspace: Option<PathBuf>,
-    /// Address to bind. Defaults to loopback (`127.0.0.1`); a non-loopback
-    /// value warns, since the listener has no authentication yet.
+    /// Address to bind. Defaults to loopback (`127.0.0.1`). A non-loopback bind
+    /// requires an auth token (`BWOC_A2A_TOKEN` / `.bwoc/a2a.token`) or
+    /// `--allow-unauthenticated`, otherwise the listener refuses to start.
     #[arg(long, default_value = "127.0.0.1")]
     bind: std::net::IpAddr,
     /// TCP port to listen on.
@@ -271,6 +272,11 @@ struct A2aServeArgs {
     /// Expose this team's shared task list over A2A `tasks/*` (GetTask/ListTasks).
     #[arg(long)]
     team: Option<String>,
+    /// Permit a non-loopback bind with NO auth token (serve with a loud warning
+    /// instead of refusing). For trusted networks or a front proxy that adds
+    /// auth; never expose an unauthenticated listener to an untrusted network.
+    #[arg(long)]
+    allow_unauthenticated: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -2380,6 +2386,7 @@ fn main() -> ExitCode {
                     bind: args.bind,
                     port: args.port,
                     team: args.team,
+                    allow_unauthenticated: args.allow_unauthenticated,
                 }),
                 A2aCommand::FetchCard(args) => {
                     a2a::run_fetch_card(a2a::FetchCardArgs { url: args.url })

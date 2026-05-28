@@ -53,8 +53,9 @@ enum Command {
         agent: String,
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
-        /// Address to bind. Defaults to loopback (`127.0.0.1`); a non-loopback
-        /// value warns, since the listener has no authentication yet.
+        /// Address to bind. Defaults to loopback (`127.0.0.1`). A non-loopback
+        /// bind requires an auth token (`BWOC_A2A_TOKEN` / `.bwoc/a2a.token`)
+        /// or `--allow-unauthenticated`, otherwise the listener refuses to start.
         #[arg(long, default_value = "127.0.0.1")]
         bind: IpAddr,
         #[arg(long, default_value_t = 41241)]
@@ -63,6 +64,12 @@ enum Command {
         /// `ListTasks`). Resolves `.bwoc/teams/<team>/tasks.jsonl`.
         #[arg(long)]
         team: Option<String>,
+        /// Permit a non-loopback bind with NO auth token — the listener serves
+        /// with a loud warning instead of refusing. For trusted networks or a
+        /// front proxy that adds auth; never expose an unauthenticated listener
+        /// to an untrusted network.
+        #[arg(long)]
+        allow_unauthenticated: bool,
     },
     /// Fetch and print an external agent's A2A Agent Card.
     FetchCard {
@@ -98,7 +105,8 @@ fn main() -> ExitCode {
             bind,
             port,
             team,
-        } => run_serve(&agent, workspace, bind, port, team),
+            allow_unauthenticated,
+        } => run_serve(&agent, workspace, bind, port, team, allow_unauthenticated),
         Command::FetchCard { url } => run_fetch_card(&url),
         Command::Send {
             url,
@@ -213,6 +221,7 @@ fn run_serve(
     bind: IpAddr,
     port: u16,
     team: Option<String>,
+    allow_unauthenticated: bool,
 ) -> u8 {
     // Reject a team id that could escape `.bwoc/teams/` — defence in depth even
     // though the id is operator-supplied (it still ends up in a path join).
@@ -249,13 +258,31 @@ fn run_serve(
             None => None,
         },
     };
-    if !bind.is_loopback() && auth_token.is_none() {
-        eprintln!(
-            "bwoc-a2a serve: WARNING — binding {addr} is NOT loopback and NO auth \
-             token is set, so anyone who can reach this address can write to the \
-             agent's inbox. Set BWOC_A2A_TOKEN (or .bwoc/a2a.token), or bind \
-             127.0.0.1."
-        );
+    // AP2: a non-loopback bind with no auth is refused by default; serving it
+    // open is a deliberate opt-in (`--allow-unauthenticated`, loud warning).
+    match bind_policy(
+        bind.is_loopback(),
+        auth_token.is_some(),
+        allow_unauthenticated,
+    ) {
+        BindPolicy::Serve => {}
+        BindPolicy::Warn => {
+            eprintln!(
+                "bwoc-a2a serve: WARNING — binding {addr} is NOT loopback and NO \
+                 auth token is set; serving anyway because --allow-unauthenticated \
+                 was passed, so anyone who can reach this address can write to the \
+                 agent's inbox."
+            );
+        }
+        BindPolicy::Refuse => {
+            eprintln!(
+                "bwoc-a2a serve: refusing non-loopback bind {addr} with no auth \
+                 token — anyone who can reach it could write to the agent's inbox. \
+                 Set BWOC_A2A_TOKEN (or .bwoc/a2a.token), bind 127.0.0.1, or pass \
+                 --allow-unauthenticated to override."
+            );
+            return 2;
+        }
     }
     let mut card = card_from_manifest(&manifest, &format!("http://{addr}/"));
     if auth_token.is_some() {
@@ -354,6 +381,27 @@ fn normalize_token(raw: Option<String>) -> Option<String> {
     raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// What to do for a `bind` + auth combination (AP2). Loopback or auth-on ⇒
+/// serve silently. Non-loopback with no auth ⇒ refuse, unless the operator
+/// passed `--allow-unauthenticated`, which downgrades the refusal to a loud
+/// warning (the pre-AP2 escape hatch for trusted-proxy / LAN-test setups).
+#[derive(Debug, PartialEq, Eq)]
+enum BindPolicy {
+    Serve,
+    Warn,
+    Refuse,
+}
+
+fn bind_policy(is_loopback: bool, has_auth: bool, allow_unauthenticated: bool) -> BindPolicy {
+    if is_loopback || has_auth {
+        BindPolicy::Serve
+    } else if allow_unauthenticated {
+        BindPolicy::Warn
+    } else {
+        BindPolicy::Refuse
+    }
+}
+
 /// Read the agent's `.bwoc/a2a.token`. A missing file ⇒ `Ok(None)` (auth stays
 /// off). On Unix the file must not be group/world-accessible (`mode & 0o077 ==
 /// 0`, i.e. `0600` or stricter); a laxer file is **refused** with `Err` rather
@@ -389,7 +437,21 @@ fn read_token_file(path: &Path) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_token, read_token_file};
+    use super::{BindPolicy, bind_policy, normalize_token, read_token_file};
+
+    #[test]
+    fn bind_policy_covers_the_matrix() {
+        // Loopback always serves silently, regardless of auth or the flag.
+        assert_eq!(bind_policy(true, false, false), BindPolicy::Serve);
+        assert_eq!(bind_policy(true, false, true), BindPolicy::Serve);
+        assert_eq!(bind_policy(true, true, false), BindPolicy::Serve);
+        // Non-loopback WITH auth serves silently (AP2: no more warning).
+        assert_eq!(bind_policy(false, true, false), BindPolicy::Serve);
+        assert_eq!(bind_policy(false, true, true), BindPolicy::Serve);
+        // Non-loopback, no auth: refuse by default, warn only with the override.
+        assert_eq!(bind_policy(false, false, false), BindPolicy::Refuse);
+        assert_eq!(bind_policy(false, false, true), BindPolicy::Warn);
+    }
 
     #[test]
     fn empty_or_whitespace_token_is_absent() {

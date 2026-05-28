@@ -28,6 +28,7 @@ pub struct ServeArgs {
     pub bind: IpAddr,
     pub port: u16,
     pub team: Option<String>,
+    pub allow_unauthenticated: bool,
 }
 
 pub fn run_card(args: CardArgs) -> i32 {
@@ -71,6 +72,9 @@ pub fn run_serve(args: ServeArgs) -> i32 {
     if let Some(team) = args.team {
         argv.push("--team".into());
         argv.push(team.into());
+    }
+    if args.allow_unauthenticated {
+        argv.push("--allow-unauthenticated".into());
     }
     exec_sibling(argv)
 }
