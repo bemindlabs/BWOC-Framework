@@ -2,18 +2,21 @@
 //! local BWOC agent over A2A: the Agent Card at the well-known path and a
 //! JSON-RPC endpoint that hands requests to [`crate::rpc::dispatch`].
 //!
-//! **Security posture (P1):** there is no authentication yet, so the listener
-//! is meant to bind **loopback only** — the CLI defaults to `127.0.0.1` and
-//! warns on any non-loopback `--bind`. Bounded-growth guards are in place: a
-//! per-request body-size limit ([`MAX_REQUEST_BYTES`]) and the inbox size cap
-//! in [`crate::rpc`]. Per-peer rate limiting and auth land in a later phase
-//! (P1 has no peer identity — every inbound message is `from:"a2a"`).
+//! **Security posture:** the auth phase (#80) hardened this. A configured
+//! Bearer token is required on the JSON-RPC + SSE endpoints (AP1); a
+//! non-loopback bind refuses to start without auth unless explicitly overridden
+//! (AP2). Resource guards bound growth: a per-request body-size limit
+//! ([`MAX_REQUEST_BYTES`]), the inbox size cap in [`crate::rpc`], a global
+//! request rate limit ([`RATE_CAPACITY`]/[`RATE_REFILL_PER_SEC`]) and a
+//! `SubscribeToTask` concurrency cap ([`MAX_SUBSCRIPTIONS`]) (AP4).
 
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -42,17 +45,32 @@ const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 const TASK_NOT_FOUND: i64 = -32001;
 
-/// `SubscribeToTask` SSE poll interval + max lifetime. The cap bounds each
-/// stream so a never-completing task can't hold a connection open forever
-/// (a network-exposed resource guard, like the inbox cap). A *concurrency* cap
-/// (limit on simultaneous subscriptions per peer) waits for the auth phase,
-/// alongside per-peer rate limiting — P1 has no peer identity.
+/// `SubscribeToTask` SSE poll interval + max lifetime. The lifetime cap bounds
+/// each stream so a never-completing task can't hold a connection open forever
+/// (a network-exposed resource guard, like the inbox cap); a *concurrency* cap
+/// on simultaneous streams is [`MAX_SUBSCRIPTIONS`] (AP4).
 const SUBSCRIBE_POLL: Duration = Duration::from_secs(1);
 const SUBSCRIBE_MAX: Duration = Duration::from_secs(300);
 
 /// How often the AP3 push-delivery watcher re-reads the team task file. Coarser
 /// than the SSE poll — webhooks are async fire-and-forget, not an open stream.
 const DELIVER_POLL: Duration = Duration::from_secs(2);
+
+/// AP4 request rate limit (global token bucket): `RATE_CAPACITY` burst, refilled
+/// at `RATE_REFILL_PER_SEC` tokens/sec. One accepted JSON-RPC/SSE request costs
+/// one token; an empty bucket answers `429`. A resource guard for the exposed
+/// endpoint (a single shared token ⇒ one bucket), complementing the body-size
+/// and subscription caps.
+const RATE_CAPACITY: u32 = 120;
+const RATE_REFILL_PER_SEC: f64 = 60.0;
+
+/// AP4 concurrency cap: the most simultaneous `SubscribeToTask` SSE streams the
+/// listener will hold open (each is already lifetime-bounded by [`SUBSCRIBE_MAX`]).
+const MAX_SUBSCRIPTIONS: usize = 32;
+
+/// JSON-RPC server-error code (the `-32000..` reserved server range) for
+/// "resource exhausted" — returned when the subscription cap is hit.
+const RESOURCE_EXHAUSTED: i64 = -32000;
 
 /// Everything the listener needs to represent one local agent over A2A.
 pub struct ServeConfig {
@@ -79,6 +97,83 @@ struct ServeState {
     card: AgentCard,
     team: Option<(String, PathBuf)>,
     auth_token: Option<String>,
+    /// AP4 global request rate limiter (token bucket).
+    rate: Mutex<RateLimiter>,
+    /// AP4 count of active `SubscribeToTask` streams (vs [`MAX_SUBSCRIPTIONS`]).
+    /// `Arc` so a [`SubGuard`] can outlive the request inside the SSE stream.
+    subs: Arc<AtomicUsize>,
+}
+
+/// Default request rate limiter ([`RATE_CAPACITY`] / [`RATE_REFILL_PER_SEC`]).
+fn default_rate_limiter() -> Mutex<RateLimiter> {
+    Mutex::new(RateLimiter::new(RATE_CAPACITY, RATE_REFILL_PER_SEC))
+}
+
+/// A global token bucket: `capacity` burst, refilled at `refill_per_sec`. One
+/// request costs one token; an empty bucket is rejected. Refill is computed
+/// lazily from elapsed time, so there is no background timer.
+struct RateLimiter {
+    capacity: f64,
+    tokens: f64,
+    refill_per_sec: f64,
+    last: Instant,
+}
+
+impl RateLimiter {
+    fn new(capacity: u32, refill_per_sec: f64) -> Self {
+        Self {
+            capacity: f64::from(capacity),
+            tokens: f64::from(capacity),
+            refill_per_sec,
+            last: Instant::now(),
+        }
+    }
+
+    /// Try to spend one token, refilling for the time since the last call.
+    fn try_acquire(&mut self) -> bool {
+        self.try_acquire_at(Instant::now())
+    }
+
+    /// `try_acquire` with an injected clock, so the refill maths is unit-tested
+    /// deterministically.
+    fn try_acquire_at(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        self.last = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Tracks one active `SubscribeToTask` stream against [`MAX_SUBSCRIPTIONS`].
+/// Acquired before a subscription streams and moved into the SSE stream, so the
+/// slot is released on **any** end — client disconnect, terminal state, the
+/// lifetime cap, or an early pre-flight error (all drop the guard).
+struct SubGuard {
+    subs: Arc<AtomicUsize>,
+}
+
+impl SubGuard {
+    /// Reserve a slot, or `None` if `max` are already active. Claims
+    /// optimistically then yields back on overflow, so the check-and-increment
+    /// is atomic under concurrent subscribers.
+    fn acquire(subs: Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        if subs.fetch_add(1, Ordering::SeqCst) >= max {
+            subs.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Self { subs })
+    }
+}
+
+impl Drop for SubGuard {
+    fn drop(&mut self) {
+        self.subs.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Run the A2A listener, blocking until shutdown. Creates its own current-thread
@@ -98,6 +193,8 @@ async fn run(cfg: ServeConfig) -> std::io::Result<()> {
         card: cfg.card,
         team: cfg.team,
         auth_token: cfg.auth_token,
+        rate: default_rate_limiter(),
+        subs: Arc::new(AtomicUsize::new(0)),
     });
     // AP3: deliver task-status webhooks only when auth is ON — so the webhook's
     // registrant was an authenticated peer (the exfil concern push.rs deferred
@@ -216,6 +313,22 @@ async fn json_rpc(
             )
                 .into_response();
         }
+    }
+    // AP4: throttle accepted requests (global token bucket). An unauthenticated
+    // request was already rejected above, so a flood can't spend the budget to
+    // lock out a valid peer. Checked before the body is parsed.
+    if !state
+        .rate
+        .lock()
+        .expect("rate limiter mutex poisoned")
+        .try_acquire()
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "1")],
+            "rate limit exceeded",
+        )
+            .into_response();
     }
     let raw = match body {
         Ok(Json(v)) => v,
@@ -352,6 +465,16 @@ fn subscribe_task(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
             "SubscribeToTask requires a request `id` (cannot stream to a notification)",
         );
     };
+    // AP4: reserve a subscription slot before doing any work. The guard releases
+    // the slot on drop, so the pre-flight early-returns below free it too, and
+    // it lives for the stream's whole lifetime once moved in.
+    let Some(sub_guard) = SubGuard::acquire(state.subs.clone(), MAX_SUBSCRIPTIONS) else {
+        return rpc_error(
+            id,
+            RESOURCE_EXHAUSTED,
+            format!("too many concurrent subscriptions (max {MAX_SUBSCRIPTIONS}); retry later"),
+        );
+    };
     let Some((team_id, tasks_path)) = state.team.as_ref() else {
         return rpc_error(
             id,
@@ -380,6 +503,9 @@ fn subscribe_task(state: &Arc<ServeState>, req: &JsonRpcRequest) -> Response {
     let team_id = team_id.clone();
     let tasks_path = tasks_path.clone();
     let stream = async_stream::stream! {
+        // Hold the subscription slot for the stream's whole lifetime; dropped
+        // (slot released) when the stream ends or the client disconnects.
+        let _sub_guard = sub_guard;
         let start = Instant::now();
         let mut last: Option<crate::types::TaskState> = None;
         loop {
@@ -507,6 +633,8 @@ mod tests {
             card,
             team: None,
             auth_token: None,
+            rate: default_rate_limiter(),
+            subs: Arc::new(AtomicUsize::new(0)),
         });
         (state, dir)
     }
@@ -528,6 +656,8 @@ mod tests {
             card: base.card.clone(),
             team: Some(("team-security".into(), tasks_path)),
             auth_token: None,
+            rate: default_rate_limiter(),
+            subs: Arc::new(AtomicUsize::new(0)),
         });
         (state, dir)
     }
@@ -703,6 +833,8 @@ mod tests {
             card: base.card.clone(),
             team: Some(("team-security".into(), tasks_path)),
             auth_token: None,
+            rate: default_rate_limiter(),
+            subs: Arc::new(AtomicUsize::new(0)),
         });
         (state, dir)
     }
@@ -761,6 +893,66 @@ mod tests {
         assert_eq!(ev["kind"], "status-update");
         assert_eq!(ev["status"]["state"], "TASK_STATE_COMPLETED");
         assert_eq!(ev["final"], true);
+    }
+
+    #[test]
+    fn rate_limiter_refills_up_to_capacity() {
+        // cap 2, 1 token/sec.
+        let mut rl = RateLimiter::new(2, 1.0);
+        let t0 = Instant::now();
+        assert!(rl.try_acquire_at(t0)); // 2 -> 1
+        assert!(rl.try_acquire_at(t0)); // 1 -> 0
+        assert!(!rl.try_acquire_at(t0), "bucket is empty");
+        // One second later refills exactly one token.
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(rl.try_acquire_at(t1));
+        assert!(!rl.try_acquire_at(t1));
+        // Idle far longer than capacity: refill is clamped to `capacity`, not
+        // unbounded — only two tokens are available, not a hundred.
+        let later = t0 + Duration::from_secs(100);
+        assert!(rl.try_acquire_at(later));
+        assert!(rl.try_acquire_at(later));
+        assert!(!rl.try_acquire_at(later));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_returns_429_when_bucket_empty() {
+        let (state, _d) = test_state();
+        // Drain the global bucket directly, then a real request is throttled.
+        {
+            let mut rl = state.rate.lock().unwrap();
+            while rl.try_acquire() {}
+        }
+        let resp = app(state)
+            .oneshot(post_json(send_msg_body()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn subscribe_concurrency_cap_rejects_then_readmits_on_release() {
+        let (state, _d) = test_state_with_team();
+        let sub = |id: u32| {
+            post_json(serde_json::json!({
+                "jsonrpc":"2.0","id":id,"method":method::SUBSCRIBE_TO_TASK,"params":{"id":"t1"}
+            }))
+        };
+        // Fill every slot and hold the streams open (un-polled, so the guards
+        // stay live inside each SSE body).
+        let mut held = Vec::new();
+        for i in 0..MAX_SUBSCRIPTIONS as u32 {
+            let resp = app(state.clone()).oneshot(sub(i)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "subscription {i} admitted");
+            held.push(resp);
+        }
+        // One past the cap → a RESOURCE_EXHAUSTED JSON-RPC error (HTTP 200).
+        let over = body_json(app(state.clone()).oneshot(sub(999)).await.unwrap()).await;
+        assert_eq!(over["error"]["code"], RESOURCE_EXHAUSTED);
+        // Dropping a held stream releases its slot, re-admitting a new one.
+        held.pop();
+        let again = app(state).oneshot(sub(1000)).await.unwrap();
+        assert_eq!(again.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -996,6 +1188,8 @@ mod tests {
             card: base.card.clone().with_bearer_security(),
             team: None,
             auth_token: Some("s3cr3t".into()),
+            rate: default_rate_limiter(),
+            subs: Arc::new(AtomicUsize::new(0)),
         });
         (state, dir)
     }
