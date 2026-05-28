@@ -102,8 +102,10 @@ _gcloud_project_show() {
     exit 2
   fi
 
+  # `--` ends option parsing so a `-`-leading project id is a positional, not a
+  # gcloud flag (option-injection guard, #91).
   local raw
-  if ! raw="$(gcloud projects describe "$project" --format=json 2>&1)"; then
+  if ! raw="$(gcloud projects describe --format=json -- "$project" 2>&1)"; then
     printf '%s\n' "$PLUGIN show: 'gcloud projects describe $project' failed: $(printf '%s' "$raw" | head -c 300)" >&2
     exit 6
   fi
@@ -143,7 +145,9 @@ _gcloud_project_set_default() {
   # remote API call. The CLI gates this verb behind operator confirmation
   # (BWOC-52); the plugin itself trusts the caller. Reversibility is trivial
   # (`gcloud config set project <previous>`).
-  if ! gcloud config set project "$project" >/dev/null 2>&1; then
+  # `--` ends option parsing so a `-`-leading project id is the value, not a
+  # gcloud flag (option-injection guard, #91).
+  if ! gcloud config set project -- "$project" >/dev/null 2>&1; then
     printf '%s\n' "$PLUGIN set-default: 'gcloud config set project $project' failed" >&2
     exit 6
   fi

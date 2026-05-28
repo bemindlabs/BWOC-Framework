@@ -157,7 +157,9 @@ _gcloud_auth_login() {
   gcloud_assert_cli || exit 1
 
   if [[ -n "$account" ]]; then
-    gcloud auth login --brief "$account"
+    # `--` ends option parsing: a `-`-leading account is a positional, never a
+    # gcloud flag (option-injection guard, #91).
+    gcloud auth login --brief -- "$account"
   else
     gcloud auth login --brief
   fi
