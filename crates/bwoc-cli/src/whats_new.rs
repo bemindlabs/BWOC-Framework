@@ -26,7 +26,7 @@ pub const HEADLINE: &str = concat!(
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc a2a serve` now needs a Bearer token to bind beyond loopback (#80)",
+    "`bwoc a2a serve` refuses a non-loopback bind without a token (or `--allow-unauthenticated`) (#80)",
     "Webhook delivery fires (auth-gated) behind an SSRF guard with IP pinning",
     "Request rate limit (429) + `SubscribeToTask` concurrency cap",
     "`bwoc a2a send`/`fetch-card` authenticate to peers (`.bwoc/a2a-credentials.json`)",
