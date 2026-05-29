@@ -11,8 +11,9 @@ status: frozen
 
 > **Status: FROZEN (architect sign-off 2026-05-29) + implemented.** Sets the
 > spec frame for `BWOC-EPIC-11` (the third write-capable GCP slice). The three
-> open questions on decisions 3–4 were resolved with the recommended answers
-> (see "Resolved"); the slice is implemented in this change.
+> open questions — the `deploy` tier (Decision 3), the Cloud Build scope
+> (Decision 1), and traffic handling (Decision 4) — were resolved with the
+> recommended answers (see "Resolved"); the slice is implemented in this change.
 
 The throughline: **a deploy mutates a *live, traffic-serving* service.** Unlike
 compute `stop` (one instance) or object `delete` (one object), a bad Cloud Run
@@ -105,8 +106,10 @@ addition (`list`/`describe`) is fine; the write verb stays behind the gated CLI.
 
 ## Status / deferred
 
-- Decisions 1, 2, 5 follow EPIC-8/9/10 precedent and are stable.
-- **Decisions 3–4 frozen** with the resolved answers above; implemented in this change.
+- Decisions 2 and 5 follow EPIC-8/9/10 precedent and are stable.
+- **Decisions 1, 3, 4 frozen** with the resolved answers above — Decision 1's
+  scope incl. the Cloud Build deferral (Open question 2), the `deploy` tier
+  (3), and traffic handling (4); implemented in this change.
 - Live verification gated on an operator-provided sandbox (a deployable Cloud
   Run service + a test image/source) at the smoke-test gate.
 - T3/T4 remain for `delete`-class (future) and IAM (EPIC-12).
