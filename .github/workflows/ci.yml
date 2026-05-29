@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege: every job here only checks out + runs cargo. No writes.
+permissions:
+  contents: read
+
 # Forward-compat for the Node 24 cutover (2026-06-02). `actions/checkout@v6`
 # runs on Node 24 natively; the env below forces any other JS actions still
 # defaulting to Node 20 (unsupported 2026-09-16) onto Node 24, so the

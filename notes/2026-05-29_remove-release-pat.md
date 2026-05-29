@@ -63,3 +63,17 @@ top-level `permissions.pull-requests: write` grant existed only for the removed
 `gh pr create` / `gh pr merge` step. Dropped it — the job now needs only
 `contents: write` (create/upload the release + push the formula branch).
 Least-privilege (Sīla).
+
+## Follow-up — cross-workflow permission audit (#118)
+
+Audited all six workflows for the same leftover-permission smell. None had a
+declared-but-unused write grant. `pages.yml` (`pages`/`id-token`/`contents:read`)
+and the two `claude*` workflows (read-only GITHUB_TOKEN + `id-token:write`,
+posting via the OAuth token) are correctly scoped.
+
+`ci.yml` and `docs.yml` had **no `permissions:` block** — they inherited the
+repo default. That default is currently `read` (`gh api .../actions/permissions/workflow`),
+so they weren't over-privileged in practice. Added an explicit
+`permissions: contents: read` to both anyway: defense-in-depth so a future flip
+of the repo/org default to "write" can't silently over-grant a checkout-only
+job. Fitting for a security framework.

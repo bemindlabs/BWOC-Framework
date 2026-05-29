@@ -13,6 +13,10 @@ on:
       - '**/*.md'
       - '.github/workflows/docs.yml'
 
+# Least-privilege: checkout + read-only naming audit (find/grep). No writes.
+permissions:
+  contents: read
+
 jobs:
   naming:
     name: '*.md naming audit (per docs/en/NAMING.en.md §Audit)'
