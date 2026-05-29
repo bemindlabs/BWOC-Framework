@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **`release.yml` drops the `RELEASE_PAT` path (#116, #117)** — the zero-touch PAT hook (added with the #101 fix) was never wired: the secret was unset, so every formula bump used the `GITHUB_TOKEN` fallback (branch push + manual finish command). Removed the PAT plumbing and the now-unused `pull-requests: write` grant; the `bump-formula` job keeps only `contents: write`. No behavior change — the operator still opens + auto-merges the formula PR by hand, as it already did every release.
+
+### Security
+
+- **Least-privilege `GITHUB_TOKEN` on CI workflows (#118)** — `ci.yml` and `docs.yml` now declare an explicit `permissions: contents: read` instead of inheriting the repo default (currently `read`), so a future flip of the repo/org default to "write" can't silently over-grant a checkout-only job. `pages.yml` and the two `claude*` workflows were already correctly scoped.
+
 ## [v2026.5.29-3] — 2026-05-29 — 2.15.0
 
 **Minor release.** gcloud IAM project bindings (EPIC-12, #99) — the **fourth and last** write-capable GCP slice and the first use of the risk matrix's top tier, **T4**. Cargo SemVer `2.14.0` → `2.15.0`.
