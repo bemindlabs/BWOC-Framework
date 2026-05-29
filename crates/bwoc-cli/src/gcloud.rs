@@ -1226,7 +1226,23 @@ fn is_valid_iam_role(role: &str) -> bool {
     if role.starts_with('-') || role.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return false;
     }
-    role.starts_with("roles/") || role.contains("/roles/")
+    // Predefined: `roles/<name>` (single segment after the prefix).
+    if let Some(name) = role.strip_prefix("roles/") {
+        return !name.is_empty() && !name.contains('/');
+    }
+    // Custom: `projects/<id>/roles/<name>` or `organizations/<id>/roles/<name>`,
+    // where neither <id> nor <name> may contain a further `/`.
+    for prefix in ["projects/", "organizations/"] {
+        if let Some(rest) = role.strip_prefix(prefix) {
+            if let Some((id, name)) = rest.split_once("/roles/") {
+                return !id.is_empty()
+                    && !id.contains('/')
+                    && !name.is_empty()
+                    && !name.contains('/');
+            }
+        }
+    }
+    false
 }
 
 /// Roles whose grant is catastrophic enough to warrant an explicit elevated-risk
@@ -3259,6 +3275,12 @@ mod tests {
         assert!(!is_valid_iam_role("viewer"));
         assert!(!is_valid_iam_role("-roles/viewer"));
         assert!(!is_valid_iam_role("roles/has space"));
+        // Tightened shape: a bare `*/roles/*` that isn't projects|organizations
+        // prefixed, or extra path segments, are rejected.
+        assert!(!is_valid_iam_role("foo/roles/bar"));
+        assert!(!is_valid_iam_role("roles/a/b"));
+        assert!(!is_valid_iam_role("projects//roles/r"));
+        assert!(!is_valid_iam_role("projects/p/roles/"));
     }
 
     #[test]

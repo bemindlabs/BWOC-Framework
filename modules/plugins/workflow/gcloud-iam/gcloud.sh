@@ -137,7 +137,7 @@ _gcloud_iam_binding() {
     project: $p,
     member: $m,
     role: $r,
-    present: ([ (.bindings // [])[] | select(.role == $r) | .members[] ] | index($m) != null)
+    present: ([ (.bindings // [])[] | select(.role == $r) | (.members // [])[] ] | index($m) != null)
   }'
 }
 
