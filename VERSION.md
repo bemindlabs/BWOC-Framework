@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.14.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.4.5`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.15.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.4.6`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.5.29-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.29-2) *(2026-05-29 — **2.14.0**; gcloud Cloud Run serverless (EPIC-11) — `bwoc gcloud run {list, describe, deploy}`, reads T0 + `deploy` T2 confirm/echoed target (#98). Prior: `v2026.5.29-1` 2.13.0 — Google Workspace `gws` plugin kind + gcloud storage)*
+**Latest release:** [`v2026.5.29-3`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.29-3) *(2026-05-29 — **2.15.0**; gcloud IAM project bindings (EPIC-12, LAST) — `bwoc gcloud iam {get, add, remove}`, get T0 + add/remove T4 (refuse-by-default: workspace `writes_enabled` + typed `member role` confirm) (#99). Prior: `v2026.5.29-2` 2.14.0 — gcloud Cloud Run serverless)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-29T05:20:10Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-29T06:05:52Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 

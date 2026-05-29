@@ -20,17 +20,18 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — gcloud Cloud Run serverless"
+    " — gcloud IAM project bindings"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc gcloud run {list, describe, deploy}` — Cloud Run services (EPIC-11, #98)",
-    "Third write-capable GCP slice: reads T0; `deploy` T2 — confirm + echoed service/region/source/traffic",
-    "`deploy` requires exactly one of `--image`/`--source`; `--source` canonicalized; `--json` needs `--yes`",
-    "Plugin reads no credential (Adinnādāna); BWOC CLI owns the gate so it runs `gcloud run deploy --quiet`",
-    "Prior 2.13.0: Google Workspace `gws` plugin kind + gcloud storage (#107, #97)",
+    "`bwoc gcloud iam {get, add, remove}` — project IAM bindings (EPIC-12, LAST, #99)",
+    "Fourth + last write slice; first use of T4 — the risk matrix's top tier",
+    "add/remove refuse-by-default: workspace `writes_enabled` + typed `member role` confirm",
+    "Public principals (allUsers/allAuthenticatedUsers) refused; high-priv roles flagged",
+    "Completes the gcloud write ladder: compute (T1/T2) · storage (T3) · run (T2) · IAM (T4)",
+    "Prior 2.14.0: gcloud Cloud Run serverless (#98)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

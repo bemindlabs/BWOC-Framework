@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.29-3] — 2026-05-29 — 2.15.0
+
+**Minor release.** gcloud IAM project bindings (EPIC-12, #99) — the **fourth and last** write-capable GCP slice and the first use of the risk matrix's top tier, **T4**. Cargo SemVer `2.14.0` → `2.15.0`.
+
+### Added
+
+- **`bwoc gcloud iam {get, add, remove}` (#99)** — project IAM policy operations via the new `workflow/gcloud-iam` plugin. `get` is **T0** (read; never skill-exposed — a policy read discloses security posture). `add`/`remove` of a `(member, role)` binding are **T4 — refuse-by-default**: they run only when the workspace sets `[plugins.gcloud-iam] writes_enabled = true` **and** the operator clears a typed `member role` confirm. Public principals (`allUsers`/`allAuthenticatedUsers`) are hard-refused; high-privilege roles (`owner`/`editor`/`*.admin`/`iam.*`) are flagged in the prompt. `--json` requires `--yes`. Validators for project id / IAM member / role; `bwoc check` auto-audits the manifest. Deferred: `set-iam-policy`, SA-key minting, custom roles, non-project resource IAM.
+
+### Security
+
+- **IAM writes are gated at the matrix's top tier (T4).** Reversibility (a matching `remove`/`add` undoes a binding) does **not** demote the tier — the exposure window during a bad grant is not undoable, so the blast radius is security. The standing `writes_enabled` opt-in + typed-name confirm are layered on the existing `--`/`=` option-injection guard (#92): member/role reach `gcloud` as `--flag=value`, the project id as a positional after `--`. The plugin reads no credential value (Adinnādāna) and never mints one (no SA-key creation).
+
 ## [v2026.5.29-2] — 2026-05-29 — 2.14.0
 
 **Minor release.** gcloud Cloud Run serverless (EPIC-11, #98) — the third write-capable GCP slice, on the EPIC-8 foundation. Cargo SemVer `2.13.0` → `2.14.0`.
