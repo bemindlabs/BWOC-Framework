@@ -49,12 +49,15 @@ dispatches it. Same option-injection guard as #92 (`--`+`=`-bound args).
 
 ### 3. Risk-matrix instantiation (first T3 use)
 
-| Verb | Mutation | Reversibility | Idempotent? | Confirmation tier |
-|---|---|---|---|---|
-| `list` / `stat` | none | — | yes | **T0 — none** |
-| `put` (new object) | creates an object | trivial (`delete`) | yes | **T1 — confirm** |
-| `put` (overwrites existing) | replaces object bytes | **lossy** (old bytes gone unless versioned) | no | **T2 — confirm + echo target** |
-| `delete` | removes an object | **irreversible** (unless bucket versioning) | yes (gone→gone) | **T3 — typed-name confirm** |
+Same axes as the EPIC-9 template (Mutation / Reversibility / Blast radius /
+Idempotent? / Tier); the tier is a function of **reversibility × blast radius**.
+
+| Verb | Mutation | Reversibility | Blast radius | Idempotent? | Confirmation tier |
+|---|---|---|---|---|---|
+| `list` / `stat` | none | — | none | yes | **T0 — none** |
+| `put` (new object) | creates an object | trivial (`delete`) | data (single object) + cost | yes | **T1 — confirm** |
+| `put` (overwrites existing) | replaces object bytes | **lossy** (old bytes gone unless versioned) | data (one object's prior bytes) | no | **T2 — confirm + echo target** |
+| `delete` | removes an object | **irreversible** (unless bucket versioning) | data (one object, permanent) | yes (gone→gone) | **T3 — typed-name confirm** |
 
 This is the first slice to exercise **T3**: the operator must re-type the
 object path (`gs://bucket/object`), not just `y`, to delete. `put` is T1/T2
@@ -96,9 +99,10 @@ addition to a skill (`list`/`stat`) is fine; writes stay behind the gated CLI.
 - **Recursive `rm -r` / `rsync` in v1** — rejected. Bulk/recursive deletes are a
   far larger blast radius than single-object; they earn their own slice with
   stricter gating once single-object is proven.
-- **Treat `delete` as T2 like compute `stop`** — rejected. `stop` is reversible;
-  object `delete` is not. The matrix ties the tier to reversibility, so delete
-  must step up to T3.
+- **Treat `delete` as T2 like compute `stop`** — rejected. The matrix sets the
+  tier from **reversibility × blast radius**: `stop` and object `delete` share a
+  single-resource blast radius, but `stop` is reversible (→ T2) while `delete`
+  is irreversible (→ T3). The reversibility axis is what separates them here.
 
 ## Status / deferred
 
