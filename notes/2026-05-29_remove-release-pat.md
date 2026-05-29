@@ -28,9 +28,11 @@ to `GITHUB_TOKEN`, and the `HAS_PAT` branch always took the manual path.
 - Checkout `token:` → `${{ secrets.GITHUB_TOKEN }}` (dropped the `|| RELEASE_PAT`).
 - Removed the `HAS_PAT` env and the conditional, plus the unreachable
   `gh pr create` + `gh pr merge --auto` tail.
-- The step (renamed *"Push a formula-bump branch if the formula changed"*) now
-  unconditionally pushes `chore/formula-<tag>` and prints the finish command to
-  the job summary, then exits 0 — exactly what already happened every release.
+- The step (renamed *"Push a formula-bump branch if the formula changed"*) keeps
+  its early `exit 0` when `Formula/bwoc.rb` is unchanged; when the formula did
+  change it now always takes the push-branch + print-finish-command path — no
+  longer gated on `HAS_PAT` — then exits 0, exactly what already happened every
+  release. (What became unconditional is that path, not the push itself.)
 - Rewrote the three explanatory comments to stop advertising RELEASE_PAT.
 
 Net behavior is **unchanged** — this removes a dead branch, not a working
