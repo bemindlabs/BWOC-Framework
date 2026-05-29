@@ -55,3 +55,11 @@ before. `.yml`-only edit, so no auto-version bump.
 - Fully hands-off release (auto-open + auto-merge the formula PR) remains a
   future option, now requiring an explicit re-add of an identity that can both
   open a PR and trigger CI under the org's Actions-PR restriction.
+
+## Follow-up — full-file re-audit (#117)
+
+Re-reading the whole workflow after #116 surfaced one vestigial leftover: the
+top-level `permissions.pull-requests: write` grant existed only for the removed
+`gh pr create` / `gh pr merge` step. Dropped it — the job now needs only
+`contents: write` (create/upload the release + push the formula branch).
+Least-privilege (Sīla).
