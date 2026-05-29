@@ -76,6 +76,7 @@ const EXIT_PLUGIN_ERROR: i32 = 255;
 const PLUGIN_AUTH: &str = "gcloud-auth";
 const PLUGIN_PROJECT: &str = "gcloud-project";
 const PLUGIN_COMPUTE: &str = "gcloud-compute";
+const PLUGIN_STORAGE: &str = "gcloud-storage";
 const PLUGIN_KIND: &str = "workflow";
 
 const ENV_ACCOUNT: &str = "BWOC_GCLOUD_ACCOUNT";
@@ -101,8 +102,23 @@ pub enum GcloudCommand {
     /// Compute instance lifecycle (gcloud-compute plugin, EPIC-9).
     #[command(subcommand)]
     Compute(ComputeCommand),
+    /// Cloud Storage objects (gcloud-storage plugin, EPIC-10).
+    #[command(subcommand)]
+    Storage(StorageCommand),
     /// Combined auth + project view. Degrades cleanly when plugins are missing.
     Status(StatusArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum StorageCommand {
+    /// List objects under a bucket (optionally a prefix).
+    List(StorageListArgs),
+    /// Stat one object (reports `exists: false` for a missing object).
+    Stat(StorageObjectArgs),
+    /// Upload a local file to an object. WRITE — T1 (new) / T2 (overwrite).
+    Put(StoragePutArgs),
+    /// Delete an object. WRITE (irreversible) — T3, typed-name confirmation.
+    Delete(StorageDeleteArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -202,6 +218,92 @@ pub struct ProjectSetDefaultArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct StorageListArgs {
+    /// Bucket name. Required.
+    #[arg(long)]
+    bucket: String,
+    /// Restrict to keys under this prefix.
+    #[arg(long)]
+    prefix: Option<String>,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct StorageObjectArgs {
+    /// Bucket name. Required.
+    #[arg(long)]
+    bucket: String,
+    /// Object name (key within the bucket). Required.
+    #[arg(long)]
+    object: String,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct StoragePutArgs {
+    /// Bucket name. Required.
+    #[arg(long)]
+    bucket: String,
+    /// Destination object name (key within the bucket). Required.
+    #[arg(long)]
+    object: String,
+    /// Local source file to upload. Required.
+    #[arg(long = "local")]
+    local: String,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Acknowledge the write up front (required in --json mode).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct StorageDeleteArgs {
+    /// Bucket name. Required.
+    #[arg(long)]
+    bucket: String,
+    /// Object name (key within the bucket) to delete. Required.
+    #[arg(long)]
+    object: String,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Acknowledge the irreversible delete up front (required in --json mode;
+    /// skips the typed-name confirmation).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Workspace root.
     #[arg(long = "workspace")]
@@ -280,6 +382,10 @@ pub fn run(cmd: GcloudCommand) -> i32 {
         GcloudCommand::Compute(ComputeCommand::Describe(a)) => run_compute_describe(a),
         GcloudCommand::Compute(ComputeCommand::Start(a)) => run_compute_lifecycle(a, "start"),
         GcloudCommand::Compute(ComputeCommand::Stop(a)) => run_compute_lifecycle(a, "stop"),
+        GcloudCommand::Storage(StorageCommand::List(a)) => run_storage_list(a),
+        GcloudCommand::Storage(StorageCommand::Stat(a)) => run_storage_stat(a),
+        GcloudCommand::Storage(StorageCommand::Put(a)) => run_storage_put(a),
+        GcloudCommand::Storage(StorageCommand::Delete(a)) => run_storage_delete(a),
         GcloudCommand::Status(a) => run_combined_status(a),
     }
 }
@@ -675,6 +781,60 @@ fn compute_target_request(
     })
 }
 
+fn storage_list_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    bucket: &str,
+    prefix: Option<&str>,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "list",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "bucket": bucket,
+        "prefix": prefix,
+        "project": project,
+    })
+}
+
+fn storage_object_request(
+    operation: &str,
+    workspace: &Path,
+    plugin_dir: &Path,
+    bucket: &str,
+    object: &str,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": operation,
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "bucket": bucket,
+        "object": object,
+        "project": project,
+    })
+}
+
+fn storage_put_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    bucket: &str,
+    object: &str,
+    local: &str,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "put",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "bucket": bucket,
+        "object": object,
+        "local": local,
+        "project": project,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers.
 // ---------------------------------------------------------------------------
@@ -705,6 +865,19 @@ fn confirm(prompt: &str) -> bool {
         return false;
     }
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// T3 confirmation (irreversible writes): the operator must re-type `expected`
+/// exactly — a bare `y` is not enough. The friction is proportionate to "gone
+/// forever". The full prompt (including what to type) is the caller's.
+fn confirm_typed(expected: &str, prompt: &str) -> bool {
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    line.trim() == expected
 }
 
 fn emit_error_json(verb: &str, code: &str, message: &str) {
@@ -751,6 +924,30 @@ fn is_valid_gce_name(s: &str) -> bool {
     }
     b.iter()
         .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
+/// GCS bucket names (looser pre-check than the full GCS rules): 3–63 chars,
+/// lowercase letters/digits/hyphens/underscores/dots, starting and ending
+/// alphanumeric. Rejects junk + `-`-leading values before dispatch.
+fn is_valid_bucket_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    if !(3..=63).contains(&b.len()) {
+        return false;
+    }
+    let alnum = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    if !alnum(b[0]) || !alnum(*b.last().unwrap()) {
+        return false;
+    }
+    b.iter()
+        .all(|&c| alnum(c) || c == b'-' || c == b'_' || c == b'.')
+}
+
+/// GCS object names are permissive (almost any UTF-8), so we guard only the
+/// shapes that would break the request or be unsafe: empty, > 1024 bytes,
+/// control characters, or a leading `-` (option-injection shape — rejected at
+/// the door even though the plugin's `--` guard is the second layer).
+fn is_valid_object_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 1024 && !s.starts_with('-') && !s.chars().any(|c| c.is_control())
 }
 
 /// Stub-error envelope for the missing-plugin path. Names the exact plugin and
@@ -1361,6 +1558,362 @@ fn run_compute_lifecycle(args: ComputeWriteArgs, verb: &str) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Storage (EPIC-10) — object operations. Reads T0; put T1/T2 (stat-first),
+// delete T3 (typed-name confirm, irreversible).
+// ---------------------------------------------------------------------------
+
+fn validate_storage_object(
+    bucket: &str,
+    object: &str,
+    project: Option<&str>,
+) -> Result<(), String> {
+    if !is_valid_bucket_name(bucket) {
+        return Err(format!(
+            "invalid bucket '{bucket}' — 3–63 chars, lowercase letters/digits/._- , \
+             starting and ending alphanumeric"
+        ));
+    }
+    if !is_valid_object_name(object) {
+        return Err(format!(
+            "invalid object name '{object}' — must be non-empty, ≤1024 bytes, no control \
+             chars, and not start with '-'"
+        ));
+    }
+    if let Some(p) = project {
+        if !is_valid_project_id(p) {
+            return Err(format!("invalid project id '{p}'"));
+        }
+    }
+    Ok(())
+}
+
+fn run_storage_list(args: StorageListArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud storage list: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if !is_valid_bucket_name(&args.bucket) {
+        let msg = format!("invalid bucket '{}'", args.bucket);
+        if args.json {
+            emit_error_json("storage list", "bad_bucket", &msg);
+        } else {
+            eprintln!("bwoc gcloud storage list: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    if let Some(p) = &args.project {
+        if !is_valid_project_id(p) {
+            let msg = format!("invalid project id '{p}'");
+            if args.json {
+                emit_error_json("storage list", "bad_project_id", &msg);
+            } else {
+                eprintln!("bwoc gcloud storage list: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+    let plugin = match require_plugin(&root, PLUGIN_STORAGE, "storage list", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = storage_list_request(
+        &root,
+        &plugin.dir,
+        &args.bucket,
+        args.prefix.as_deref(),
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let total = value.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!(
+                "bwoc gcloud storage list: {total} object(s) under gs://{}",
+                args.bucket
+            );
+            if let Some(arr) = value.get("objects").and_then(|v| v.as_array()) {
+                for o in arr {
+                    let url = o.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("  {url}");
+                }
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("storage list", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud storage list: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+fn run_storage_stat(args: StorageObjectArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud storage stat: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Err(msg) = validate_storage_object(&args.bucket, &args.object, args.project.as_deref()) {
+        if args.json {
+            emit_error_json("storage stat", "bad_target", &msg);
+        } else {
+            eprintln!("bwoc gcloud storage stat: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    let plugin = match require_plugin(&root, PLUGIN_STORAGE, "storage stat", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = storage_object_request(
+        "stat",
+        &root,
+        &plugin.dir,
+        &args.bucket,
+        &args.object,
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let exists = value
+                .get("exists")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if exists {
+                let size = value
+                    .get("size")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".into());
+                println!(
+                    "bwoc gcloud storage stat: gs://{}/{} exists ({size} bytes)",
+                    args.bucket, args.object
+                );
+            } else {
+                println!(
+                    "bwoc gcloud storage stat: gs://{}/{} does not exist",
+                    args.bucket, args.object
+                );
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("storage stat", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud storage stat: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+fn run_storage_put(args: StoragePutArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud storage put: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Err(msg) = validate_storage_object(&args.bucket, &args.object, args.project.as_deref()) {
+        if args.json {
+            emit_error_json("storage put", "bad_target", &msg);
+        } else {
+            eprintln!("bwoc gcloud storage put: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    if !Path::new(&args.local).is_file() {
+        let msg = format!("local source '{}' not found", args.local);
+        if args.json {
+            emit_error_json("storage put", "bad_source", &msg);
+        } else {
+            eprintln!("bwoc gcloud storage put: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    let plugin = match require_plugin(&root, PLUGIN_STORAGE, "storage put", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+
+    // Write gate — stat-first: T1 for a new object, T2 (echo existing) on overwrite.
+    if !args.yes {
+        if json_write_blocked(args.json, args.yes) {
+            eprintln!(
+                "bwoc gcloud storage put: --json requires --yes (a write needs explicit ack)"
+            );
+            return EXIT_USAGE;
+        }
+        let stat = invoke_plugin(
+            &plugin,
+            &root,
+            &storage_object_request(
+                "stat",
+                &root,
+                &plugin.dir,
+                &args.bucket,
+                &args.object,
+                args.project.as_deref(),
+            ),
+        )
+        .ok();
+        let exists = stat
+            .as_ref()
+            .and_then(|v| v.get("exists"))
+            .and_then(|e| e.as_bool());
+        let dest = format!("gs://{}/{}", args.bucket, args.object);
+        let prompt = match exists {
+            Some(true) => {
+                let size = stat
+                    .as_ref()
+                    .and_then(|v| v.get("size"))
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".into());
+                format!(
+                    "OVERWRITE {dest} (existing object, {size} bytes) with '{}'? This replaces the current bytes.",
+                    args.local
+                )
+            }
+            Some(false) => format!("Upload '{}' to {dest} (new object)?", args.local),
+            None => format!(
+                "Upload '{}' to {dest}? (could not check for an existing object — this may overwrite)",
+                args.local
+            ),
+        };
+        if !confirm(&prompt) {
+            eprintln!("bwoc gcloud storage put: aborted (no write performed)");
+            return EXIT_USAGE;
+        }
+    }
+
+    let request = storage_put_request(
+        &root,
+        &plugin.dir,
+        &args.bucket,
+        &args.object,
+        &args.local,
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            println!(
+                "bwoc gcloud storage put: uploaded '{}' → gs://{}/{}",
+                args.local, args.bucket, args.object
+            );
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("storage put", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud storage put: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+fn run_storage_delete(args: StorageDeleteArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud storage delete: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Err(msg) = validate_storage_object(&args.bucket, &args.object, args.project.as_deref()) {
+        if args.json {
+            emit_error_json("storage delete", "bad_target", &msg);
+        } else {
+            eprintln!("bwoc gcloud storage delete: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+
+    // T3 write gate — irreversible: require the operator to re-type the path.
+    let target = format!("gs://{}/{}", args.bucket, args.object);
+    if !args.yes {
+        if json_write_blocked(args.json, args.yes) {
+            eprintln!(
+                "bwoc gcloud storage delete: --json requires --yes (an irreversible delete needs explicit ack)"
+            );
+            return EXIT_USAGE;
+        }
+        let prompt = format!(
+            "This PERMANENTLY deletes {target} (irreversible unless the bucket has versioning).\n\
+             Re-type the full path to confirm: "
+        );
+        if !confirm_typed(&target, &prompt) {
+            eprintln!("bwoc gcloud storage delete: aborted (path did not match; nothing deleted)");
+            return EXIT_USAGE;
+        }
+    }
+
+    let plugin = match require_plugin(&root, PLUGIN_STORAGE, "storage delete", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = storage_object_request(
+        "delete",
+        &root,
+        &plugin.dir,
+        &args.bucket,
+        &args.object,
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            println!("bwoc gcloud storage delete: deleted {target}");
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("storage delete", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud storage delete: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
 /// `bwoc gcloud status` — combined view. **Degrades when plugins are missing:**
 /// reports the auth shape + project env hints from local state alone, and
 /// notes which plugins are absent. Always exits `0` unless the workspace
@@ -1667,6 +2220,69 @@ mod tests {
     fn project_echo_marks_config_default() {
         assert_eq!(project_echo(Some("my-proj-1")), "project 'my-proj-1'");
         assert_eq!(project_echo(None), "project (gcloud config default)");
+    }
+
+    // --- storage (EPIC-10) -------------------------------------------------
+
+    #[test]
+    fn parses_storage_verbs() {
+        match parse(&["storage", "list", "--bucket", "my-bkt", "--prefix", "logs/"]).unwrap() {
+            GcloudCommand::Storage(StorageCommand::List(a)) => {
+                assert_eq!(a.bucket, "my-bkt");
+                assert_eq!(a.prefix.as_deref(), Some("logs/"));
+            }
+            other => panic!("expected Storage::List, got {other:?}"),
+        }
+        match parse(&["storage", "stat", "--bucket", "b", "--object", "a.txt"]).unwrap() {
+            GcloudCommand::Storage(StorageCommand::Stat(a)) => assert_eq!(a.object, "a.txt"),
+            other => panic!("expected Storage::Stat, got {other:?}"),
+        }
+        match parse(&[
+            "storage", "put", "--bucket", "b", "--object", "a.txt", "--local", "./a.txt", "--yes",
+        ])
+        .unwrap()
+        {
+            GcloudCommand::Storage(StorageCommand::Put(a)) => {
+                assert_eq!(a.local, "./a.txt");
+                assert!(a.yes);
+            }
+            other => panic!("expected Storage::Put, got {other:?}"),
+        }
+        assert!(matches!(
+            parse(&["storage", "delete", "--bucket", "b", "--object", "a.txt"]).unwrap(),
+            GcloudCommand::Storage(StorageCommand::Delete(_))
+        ));
+    }
+
+    #[test]
+    fn storage_verbs_require_their_flags() {
+        assert!(parse(&["storage", "list"]).is_err()); // no --bucket
+        assert!(parse(&["storage", "stat", "--bucket", "b"]).is_err()); // no --object
+        assert!(parse(&["storage", "put", "--bucket", "b", "--object", "a"]).is_err()); // no --local
+        assert!(parse(&["storage", "delete", "--bucket", "b"]).is_err()); // no --object
+    }
+
+    #[test]
+    fn bucket_name_validation() {
+        assert!(is_valid_bucket_name("my-bucket"));
+        assert!(is_valid_bucket_name("a1b"));
+        assert!(is_valid_bucket_name("my.bucket_name-1"));
+        assert!(!is_valid_bucket_name("ab")); // < 3
+        assert!(!is_valid_bucket_name("-startshyphen"));
+        assert!(!is_valid_bucket_name("endshyphen-"));
+        assert!(!is_valid_bucket_name("UPPER"));
+        assert!(!is_valid_bucket_name(&"a".repeat(64))); // > 63
+    }
+
+    #[test]
+    fn object_name_validation() {
+        assert!(is_valid_object_name("a.txt"));
+        assert!(is_valid_object_name("logs/2026/app.log")); // slashes ok
+        assert!(is_valid_object_name("name with spaces.txt")); // spaces ok in GCS
+        assert!(!is_valid_object_name("")); // empty
+        assert!(!is_valid_object_name("-leading")); // option-injection shape
+        assert!(!is_valid_object_name("has\nnewline")); // control char
+        assert!(!is_valid_object_name(&"a".repeat(1025))); // > 1024
     }
 
     // --- auth-shape probe (file + env, no network) -------------------------

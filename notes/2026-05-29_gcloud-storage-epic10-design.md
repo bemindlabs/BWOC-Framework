@@ -4,17 +4,15 @@ date: 2026-05-29
 epic: BWOC-EPIC-10
 tracking: "#97"
 related: ["#86 (EPIC-8 foundation)", "#96 (EPIC-9 compute)", "#98", "#99"]
-status: draft
+status: frozen
 ---
 
-# 2026-05-29 — gcloud storage slice (EPIC-10 framing) — DRAFT for sign-off
+# 2026-05-29 — gcloud storage slice (EPIC-10 framing)
 
-> **Status: DRAFT.** Sets the spec frame for `BWOC-EPIC-10` (the second
-> write-capable GCP slice) before code. Decisions 1–2, 5 follow EPIC-8/9
-> precedent; **decision 3 (the matrix instantiation) makes the first use of
-> tier T3 (irreversible) and decision 4 (overwrite handling) is the new
-> surface — both carry open questions for the architect** (see "Open
-> questions"). Nothing here is frozen until those are answered.
+> **Status: FROZEN (architect sign-off 2026-05-29) + implemented.** Sets the
+> spec frame for `BWOC-EPIC-10` (the second write-capable GCP slice). The three
+> open questions on decisions 3–4 were resolved with the recommended answers
+> (see "Resolved"); the slice is implemented in this change.
 
 The throughline: **storage is where a write first becomes *irreversible*.** A
 misfired `compute stop` (EPIC-9) is undone by `start`; a misfired
@@ -84,16 +82,14 @@ considered:
 agents never autonomously delete objects). A future read-only `storage-inventory`
 addition to a skill (`list`/`stat`) is fine; writes stay behind the gated CLI.
 
-## Open questions (for architect sign-off before code)
+## Resolved (architect sign-off 2026-05-29)
 
-1. **`delete` tier** — T3 (type the `gs://bucket/object`) as proposed, or T2
-   (echo target, plain confirm)? (Proposed: T3 — it is the first *irreversible*
-   verb; the typed-name friction is proportionate to "gone forever".)
-2. **`put` overwrite** — stat-first → T2-on-overwrite (recommended), or
-   refuse-without-`--force`? (Proposed: stat-first/T2 — honest + no extra flag.)
-3. **v1 scope** — object-level only as proposed, or include `buckets create`
-   (not delete)? (Proposed: object-level only — keep bucket lifecycle out until
-   there's a concrete need.)
+1. **`delete` tier** → **T3** (re-type the `gs://bucket/object`). It is the first
+   irreversible verb; typed-name friction is proportionate to "gone forever".
+2. **`put` overwrite** → **stat-first**: T1 for a new path, escalate to **T2**
+   (echo the existing object) when it would overwrite. No `--force` flag.
+3. **v1 scope** → **object-level only** (`list`/`stat`/`put`/`delete`). Bucket
+   lifecycle and recursive/bulk ops deferred to their own future slices.
 
 ## Alternatives considered
 
@@ -107,7 +103,7 @@ addition to a skill (`list`/`stat`) is fine; writes stay behind the gated CLI.
 ## Status / deferred
 
 - Decisions 1, 2, 5 follow EPIC-8/9 precedent and are stable.
-- **Decisions 3–4 await the open-question answers before freezing.**
+- **Decisions 3–4 frozen** with the resolved answers above; implemented in this change.
 - Live verification gated on an operator-provided sandbox (a test bucket + a
   throwaway object) at the smoke-test gate.
 - T4 (security/refuse+opt-in) remains unused until EPIC-12 (IAM).

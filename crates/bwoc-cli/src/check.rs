@@ -5654,6 +5654,27 @@ entry       = "bin"
     }
 
     #[test]
+    fn audit_plugin_manifest_real_gcloud_storage_reference_passes() {
+        // EPIC-10: the second write-capable slice (first irreversible write).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../modules/plugins/workflow/gcloud-storage");
+        if !dir.join("manifest.toml").is_file() {
+            return;
+        }
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "real gcloud-storage manifest + auth.toml must pass bwoc check, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report.passes.iter().any(|p| p == "[sources] table present"),
+            "expected the workflow auth.toml shape to be validated, got: {:?}",
+            report.passes
+        );
+    }
+
+    #[test]
     fn audit_skill_manifest_real_gcloud_ops_reference_passes() {
         // The gcloud-ops skill is the framework's first skill-on-MULTIPLE-plugins
         // (requires_plugins = ["workflow"], kind-level). Its manifest must pass

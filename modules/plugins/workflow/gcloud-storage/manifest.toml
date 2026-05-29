@@ -1,0 +1,17 @@
+[plugin]
+name        = "gcloud-storage"
+kind        = "workflow"
+version     = "0.1.0"
+description = "Google Cloud Storage (gcloud) object adapter — list / stat (read) and put / delete (gated writes, delete is irreversible/T3); sources credential helpers from the sibling gcloud-auth plugin. EPIC-10, the second write-capable GCP slice."
+compat      = ">=2.12.0"
+entry       = "gcloud.sh"
+
+# [config.schema] intentionally omitted.
+#
+# Object state is read live from `gcloud storage ls` / `objects describe` and
+# mutated via `gcloud storage cp` (put) / `rm` (delete). Credentials are
+# resolved by the sibling `workflow/gcloud-auth` plugin's helpers — see this
+# plugin's `auth.toml` for the shape (no values). Write gating lives in the
+# `bwoc gcloud storage` CLI: `put` is stat-first (T1 new / T2 overwrite),
+# `delete` is T3 (typed-name confirmation) because object deletion is
+# irreversible. See notes/2026-05-29_gcloud-storage-epic10-design.md.
