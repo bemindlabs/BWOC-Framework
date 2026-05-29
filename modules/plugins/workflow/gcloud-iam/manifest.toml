@@ -1,0 +1,24 @@
+[plugin]
+name        = "gcloud-iam"
+kind        = "workflow"
+version     = "0.1.0"
+description = "Google Cloud IAM (gcloud) project-policy adapter — get-iam-policy (read) and add/remove project IAM bindings (gated write, T4 — security blast radius); sources credential helpers from the sibling gcloud-auth plugin. EPIC-12, the fourth and LAST (highest blast radius) write-capable GCP slice."
+compat      = ">=2.14.0"
+entry       = "gcloud.sh"
+
+# [config.schema] intentionally omitted.
+#
+# IAM policy is read live from `gcloud projects get-iam-policy` and mutated via
+# `gcloud projects add-iam-policy-binding` / `remove-iam-policy-binding` (the
+# surgical, server-atomic primitives — never `set-iam-policy`). Credentials are
+# resolved by the sibling `workflow/gcloud-auth` plugin's helpers — see this
+# plugin's `auth.toml` for the shape (no values).
+#
+# Write gating lives entirely in the `bwoc gcloud iam` CLI — never here:
+#   - T4 (refuse-by-default + standing opt-in): `add`/`remove` run only when the
+#     workspace sets `[plugins.gcloud-iam] writes_enabled = true`, AND the
+#     operator clears a typed-name confirm (re-type the resolved `member role`).
+#   - Public principals (`allUsers` / `allAuthenticatedUsers`) are hard-refused.
+#   - High-privilege roles (owner / editor / *.admin / iam.*) are flagged.
+#   - `--json` requires `--yes`.
+# See notes/2026-05-29_gcloud-iam-epic12-design.md.

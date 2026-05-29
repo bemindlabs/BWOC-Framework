@@ -6676,6 +6676,27 @@ entry       = "bin"
     }
 
     #[test]
+    fn audit_plugin_manifest_real_gcloud_iam_reference_passes() {
+        // EPIC-12: the fourth + LAST write-capable slice (IAM bindings, T4).
+        let dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules/plugins/workflow/gcloud-iam");
+        if !dir.join("manifest.toml").is_file() {
+            return;
+        }
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "real gcloud-iam manifest + auth.toml must pass bwoc check, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report.passes.iter().any(|p| p == "[sources] table present"),
+            "expected the workflow auth.toml shape to be validated, got: {:?}",
+            report.passes
+        );
+    }
+
+    #[test]
     fn audit_skill_manifest_real_gcloud_ops_reference_passes() {
         // The gcloud-ops skill is the framework's first skill-on-MULTIPLE-plugins
         // (requires_plugins = ["workflow"], kind-level). Its manifest must pass

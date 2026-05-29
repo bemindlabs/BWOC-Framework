@@ -78,6 +78,7 @@ const PLUGIN_PROJECT: &str = "gcloud-project";
 const PLUGIN_COMPUTE: &str = "gcloud-compute";
 const PLUGIN_STORAGE: &str = "gcloud-storage";
 const PLUGIN_RUN: &str = "gcloud-run";
+const PLUGIN_IAM: &str = "gcloud-iam";
 const PLUGIN_KIND: &str = "workflow";
 
 const ENV_ACCOUNT: &str = "BWOC_GCLOUD_ACCOUNT";
@@ -109,8 +110,22 @@ pub enum GcloudCommand {
     /// Cloud Run services (gcloud-run plugin, EPIC-11).
     #[command(subcommand)]
     Run(RunCommand),
+    /// Project IAM policy bindings (gcloud-iam plugin, EPIC-12 — LAST, T4).
+    #[command(subcommand)]
+    Iam(IamCommand),
     /// Combined auth + project view. Degrades cleanly when plugins are missing.
     Status(StatusArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum IamCommand {
+    /// Read the project IAM policy bindings (role → members).
+    Get(IamGetArgs),
+    /// Grant a (member, role) binding on the project. WRITE (T4) — refuse-by-default:
+    /// needs `[plugins.gcloud-iam] writes_enabled = true` + a typed `member role` confirm.
+    Add(IamBindingArgs),
+    /// Revoke a (member, role) binding on the project. WRITE (T4) — same gate as `add`.
+    Remove(IamBindingArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -383,6 +398,43 @@ pub struct RunDeployArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct IamGetArgs {
+    /// Project id whose policy to read. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct IamBindingArgs {
+    /// Project id to mutate. Required — no implicit default for a write.
+    #[arg(long = "project")]
+    project: String,
+    /// IAM principal (e.g. `user:x@y.com`, `serviceAccount:sa@p.iam.gserviceaccount.com`,
+    /// `group:g@y.com`, `domain:y.com`). Public principals are refused. Required.
+    #[arg(long)]
+    member: String,
+    /// Role to grant/revoke (e.g. `roles/viewer`, `projects/p/roles/custom`). Required.
+    #[arg(long)]
+    role: String,
+    /// Acknowledge the write up front (required in --json mode; still fenced by
+    /// the workspace `writes_enabled` opt-in).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Workspace root.
     #[arg(long = "workspace")]
@@ -468,6 +520,9 @@ pub fn run(cmd: GcloudCommand) -> i32 {
         GcloudCommand::Run(RunCommand::List(a)) => run_run_list(a),
         GcloudCommand::Run(RunCommand::Describe(a)) => run_run_describe(a),
         GcloudCommand::Run(RunCommand::Deploy(a)) => run_run_deploy(a),
+        GcloudCommand::Iam(IamCommand::Get(a)) => run_iam_get(a),
+        GcloudCommand::Iam(IamCommand::Add(a)) => run_iam_binding(a, "add"),
+        GcloudCommand::Iam(IamCommand::Remove(a)) => run_iam_binding(a, "remove"),
         GcloudCommand::Status(a) => run_combined_status(a),
     }
 }
@@ -653,6 +708,24 @@ fn workspace_enabled_set(root: &Path) -> Result<BTreeMap<String, bool>, String> 
         out.insert(name.clone(), enabled);
     }
     Ok(out)
+}
+
+/// Read `.bwoc/workspace.toml [plugins.gcloud-iam] writes_enabled` — the T4
+/// standing opt-in for IAM writes (EPIC-12). Absent / non-true ⇒ refuse-by-default.
+fn iam_writes_enabled(root: &Path) -> Result<bool, String> {
+    let path = root.join(".bwoc/workspace.toml");
+    let body =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&body).map_err(|e| format!("{}: parse: {e}", path.display()))?;
+    Ok(value
+        .get("plugins")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get(PLUGIN_IAM))
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("writes_enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 /// Try the two known plugin layouts in order — flat, then `workflow/`-namespaced.
@@ -970,6 +1043,37 @@ fn run_deploy_request(
     })
 }
 
+fn iam_get_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "get",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "project": project,
+    })
+}
+
+fn iam_binding_request(
+    op: &str,
+    workspace: &Path,
+    plugin_dir: &Path,
+    project: &str,
+    member: &str,
+    role: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": op,
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "project": project,
+        "member": member,
+        "role": role,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers.
 // ---------------------------------------------------------------------------
@@ -1083,6 +1187,60 @@ fn is_valid_bucket_name(s: &str) -> bool {
 /// the door even though the plugin's `--` guard is the second layer).
 fn is_valid_object_name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 1024 && !s.starts_with('-') && !s.chars().any(|c| c.is_control())
+}
+
+/// IAM member prefixes we accept for v1 (EPIC-12). `principal://` /
+/// `principalSet://` (workforce/workload identity) are deferred — narrower
+/// surface, fewer footguns. Public principals are handled separately
+/// (`is_public_principal`) so they can be *refused* with a specific message.
+const IAM_MEMBER_PREFIXES: [&str; 4] = ["user:", "serviceAccount:", "group:", "domain:"];
+
+/// The two public IAM principals. A CLI agent tool never makes a resource
+/// public, so `add`/`remove` hard-refuse these regardless of the standing
+/// opt-in or typed confirm (EPIC-12 §Decision 4).
+fn is_public_principal(member: &str) -> bool {
+    member == "allUsers" || member == "allAuthenticatedUsers"
+}
+
+/// IAM member syntax pre-check: a known prefix (`user:` / `serviceAccount:` /
+/// `group:` / `domain:`) followed by a non-empty principal with no whitespace,
+/// control chars, or leading `-` (option-injection shape). The `--` guard in
+/// the plugin is the second layer. Public principals validate *shape*-wise but
+/// are refused by the handler before dispatch.
+fn is_valid_iam_member(member: &str) -> bool {
+    if member.starts_with('-') || member.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    IAM_MEMBER_PREFIXES.iter().any(|p| {
+        member
+            .strip_prefix(p)
+            .is_some_and(|principal| !principal.is_empty())
+    })
+}
+
+/// IAM role shape: a predefined `roles/<name>` or a custom
+/// `projects/<id>/roles/<name>` / `organizations/<id>/roles/<name>`. No
+/// whitespace, control chars, or leading `-`. The live API re-validates; this
+/// is the local pre-check so junk never reaches `gcloud`.
+fn is_valid_iam_role(role: &str) -> bool {
+    if role.starts_with('-') || role.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    role.starts_with("roles/") || role.contains("/roles/")
+}
+
+/// Roles whose grant is catastrophic enough to warrant an explicit elevated-risk
+/// line in the confirm prompt (still allowed under the typed confirm — EPIC-12
+/// §Decision 4: warn, don't block). Heuristic, not an exhaustive allowlist:
+/// `roles/owner`, `roles/editor`, anything admin-ish, or the `iam.*` family.
+fn is_high_privilege_role(role: &str) -> bool {
+    if role == "roles/owner" || role == "roles/editor" {
+        return true;
+    }
+    // The short name after the last `/` (e.g. `iam.securityAdmin`, `storage.admin`).
+    let short = role.rsplit('/').next().unwrap_or(role);
+    let lower = short.to_ascii_lowercase();
+    lower.starts_with("iam.") || lower.contains("admin")
 }
 
 /// Stub-error envelope for the missing-plugin path. Names the exact plugin and
@@ -2337,6 +2495,234 @@ fn run_run_deploy(args: RunDeployArgs) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// IAM (EPIC-12, LAST) — project policy bindings. `get` is T0 but never
+// skill-exposed (a policy read discloses security posture). `add`/`remove` are
+// T4 — refuse-by-default: a workspace standing opt-in (`writes_enabled`) AND a
+// typed `member role` confirm. Public principals are hard-refused; high-priv
+// roles are flagged. Every gate lives here in the CLI, never in the plugin.
+// ---------------------------------------------------------------------------
+
+fn run_iam_get(args: IamGetArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud iam get: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Some(p) = &args.project {
+        if !is_valid_project_id(p) {
+            let msg = format!("invalid project id '{p}'");
+            if args.json {
+                emit_error_json("iam get", "bad_project_id", &msg);
+            } else {
+                eprintln!("bwoc gcloud iam get: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+    let plugin = match require_plugin(&root, PLUGIN_IAM, "iam get", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = iam_get_request(&root, &plugin.dir, args.project.as_deref());
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let project = value.get("project").and_then(|v| v.as_str()).unwrap_or("?");
+            let bindings = value
+                .get("bindings")
+                .and_then(|v| v.as_array())
+                .map(|a| a.as_slice())
+                .unwrap_or(&[]);
+            println!(
+                "bwoc gcloud iam get: {project} — {} binding(s)",
+                bindings.len()
+            );
+            for b in bindings {
+                let role = b.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                let members = b
+                    .get("members")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                println!("  {role} → {members} member(s)");
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("iam get", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud iam get: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+/// `add` / `remove` (T4). Reversible (a matching inverse undoes the binding) but
+/// the security blast radius pins the tier at the top. Two gates on top of T3:
+/// the workspace standing opt-in `[plugins.gcloud-iam] writes_enabled = true`,
+/// and a typed `member role` confirm. Public principals are refused outright;
+/// high-privilege roles are flagged in the prompt.
+fn run_iam_binding(args: IamBindingArgs, op: &str) -> i32 {
+    let verb = format!("iam {op}");
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud {verb}: {e}");
+            return EXIT_USAGE;
+        }
+    };
+
+    // --- input validation -------------------------------------------------
+    if !is_valid_project_id(&args.project) {
+        let msg = format!("invalid project id '{}'", args.project);
+        if args.json {
+            emit_error_json(&verb, "bad_project_id", &msg);
+        } else {
+            eprintln!("bwoc gcloud {verb}: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    if is_public_principal(&args.member) {
+        let msg = format!(
+            "refusing member '{}' — public principals (allUsers / allAuthenticatedUsers) \
+             are not permitted by this tool (they make the resource public)",
+            args.member
+        );
+        if args.json {
+            emit_error_json(&verb, "public_principal_refused", &msg);
+        } else {
+            eprintln!("bwoc gcloud {verb}: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    if !is_valid_iam_member(&args.member) {
+        let msg = format!(
+            "invalid --member '{}' — expected a prefixed principal \
+             (user: / serviceAccount: / group: / domain:)",
+            args.member
+        );
+        if args.json {
+            emit_error_json(&verb, "bad_member", &msg);
+        } else {
+            eprintln!("bwoc gcloud {verb}: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    if !is_valid_iam_role(&args.role) {
+        let msg = format!(
+            "invalid --role '{}' — expected roles/<name> or projects|organizations/<id>/roles/<name>",
+            args.role
+        );
+        if args.json {
+            emit_error_json(&verb, "bad_role", &msg);
+        } else {
+            eprintln!("bwoc gcloud {verb}: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+
+    // --- T4 gate 1: workspace standing opt-in -----------------------------
+    match iam_writes_enabled(&root) {
+        Ok(true) => {}
+        Ok(false) => {
+            let msg = "IAM writes refuse by default (T4). Enable them for this workspace \
+                 by setting `[plugins.gcloud-iam] writes_enabled = true` in \
+                 .bwoc/workspace.toml, then retry."
+                .to_string();
+            if args.json {
+                emit_error_json(&verb, "writes_disabled", &msg);
+            } else {
+                eprintln!("bwoc gcloud {verb}: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json(&verb, "config_error", &e);
+            } else {
+                eprintln!("bwoc gcloud {verb}: {e}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+
+    // --- T4 gate 2: typed `member role` confirm ---------------------------
+    if !args.yes {
+        if json_write_blocked(args.json, args.yes) {
+            eprintln!(
+                "bwoc gcloud {verb}: --json requires --yes (an IAM write needs explicit ack)"
+            );
+            return EXIT_USAGE;
+        }
+        let expected = format!("{} {}", args.member, args.role);
+        let action = if op == "add" { "GRANT" } else { "REVOKE" };
+        let hp = if is_high_privilege_role(&args.role) {
+            "\n  ⚠ HIGH-PRIVILEGE role — grants broad project control. Proceed only if intended."
+        } else {
+            ""
+        };
+        let prompt = format!(
+            "{action} IAM binding on project '{}':\n  member = {}\n  role   = {}{hp}\n  \
+             Re-type 'member role' exactly to confirm: ",
+            args.project, args.member, args.role
+        );
+        if !confirm_typed(&expected, &prompt) {
+            eprintln!("bwoc gcloud {verb}: aborted (input did not match; policy unchanged)");
+            return EXIT_USAGE;
+        }
+    }
+
+    // --- dispatch ---------------------------------------------------------
+    let plugin = match require_plugin(&root, PLUGIN_IAM, &verb, args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = iam_binding_request(
+        op,
+        &root,
+        &plugin.dir,
+        &args.project,
+        &args.member,
+        &args.role,
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let done = if op == "add" { "granted" } else { "revoked" };
+            println!(
+                "bwoc gcloud {verb}: {done} {} → {} on {}",
+                args.role, args.member, args.project
+            );
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json(&verb, "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud {verb}: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
 /// `bwoc gcloud status` — combined view. **Degrades when plugins are missing:**
 /// reports the auth shape + project env hints from local state alone, and
 /// notes which plugins are absent. Always exits `0` unless the workspace
@@ -2775,6 +3161,135 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    // --- IAM (EPIC-12) -----------------------------------------------------
+
+    #[test]
+    fn parses_iam_verbs() {
+        match parse(&["iam", "get", "--project", "my-proj-123"]).unwrap() {
+            GcloudCommand::Iam(IamCommand::Get(a)) => {
+                assert_eq!(a.project.as_deref(), Some("my-proj-123"))
+            }
+            other => panic!("expected Iam::Get, got {other:?}"),
+        }
+        match parse(&[
+            "iam",
+            "add",
+            "--project",
+            "my-proj-123",
+            "--member",
+            "user:x@y.com",
+            "--role",
+            "roles/viewer",
+            "--yes",
+        ])
+        .unwrap()
+        {
+            GcloudCommand::Iam(IamCommand::Add(a)) => {
+                assert_eq!(a.project, "my-proj-123");
+                assert_eq!(a.member, "user:x@y.com");
+                assert_eq!(a.role, "roles/viewer");
+                assert!(a.yes);
+            }
+            other => panic!("expected Iam::Add, got {other:?}"),
+        }
+        match parse(&[
+            "iam",
+            "remove",
+            "--project",
+            "my-proj-123",
+            "--member",
+            "group:g@y.com",
+            "--role",
+            "roles/editor",
+        ])
+        .unwrap()
+        {
+            GcloudCommand::Iam(IamCommand::Remove(a)) => {
+                assert_eq!(a.member, "group:g@y.com");
+                assert_eq!(a.role, "roles/editor");
+            }
+            other => panic!("expected Iam::Remove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iam_writes_require_project_member_role() {
+        assert!(
+            parse(&[
+                "iam",
+                "add",
+                "--member",
+                "user:x@y.com",
+                "--role",
+                "roles/viewer"
+            ])
+            .is_err()
+        );
+        assert!(parse(&["iam", "add", "--project", "p", "--role", "roles/viewer"]).is_err());
+        assert!(parse(&["iam", "add", "--project", "p", "--member", "user:x@y.com"]).is_err());
+    }
+
+    #[test]
+    fn iam_member_validation() {
+        assert!(is_valid_iam_member("user:x@y.com"));
+        assert!(is_valid_iam_member(
+            "serviceAccount:sa@p.iam.gserviceaccount.com"
+        ));
+        assert!(is_valid_iam_member("group:devs@y.com"));
+        assert!(is_valid_iam_member("domain:y.com"));
+        // No prefix, empty principal, leading '-', whitespace → rejected.
+        assert!(!is_valid_iam_member("x@y.com"));
+        assert!(!is_valid_iam_member("user:"));
+        assert!(!is_valid_iam_member("-user:x@y.com"));
+        assert!(!is_valid_iam_member("user:x y"));
+        // Public principals pass *shape* but are caught by is_public_principal.
+        assert!(is_public_principal("allUsers"));
+        assert!(is_public_principal("allAuthenticatedUsers"));
+        assert!(!is_public_principal("user:x@y.com"));
+    }
+
+    #[test]
+    fn iam_role_validation() {
+        assert!(is_valid_iam_role("roles/viewer"));
+        assert!(is_valid_iam_role("roles/iam.securityAdmin"));
+        assert!(is_valid_iam_role("projects/my-proj/roles/customRole"));
+        assert!(is_valid_iam_role("organizations/12345/roles/customRole"));
+        assert!(!is_valid_iam_role("viewer"));
+        assert!(!is_valid_iam_role("-roles/viewer"));
+        assert!(!is_valid_iam_role("roles/has space"));
+    }
+
+    #[test]
+    fn iam_high_privilege_detection() {
+        assert!(is_high_privilege_role("roles/owner"));
+        assert!(is_high_privilege_role("roles/editor"));
+        assert!(is_high_privilege_role("roles/iam.securityAdmin"));
+        assert!(is_high_privilege_role("roles/storage.admin"));
+        assert!(is_high_privilege_role("projects/p/roles/iam.custom"));
+        assert!(!is_high_privilege_role("roles/viewer"));
+        assert!(!is_high_privilege_role("roles/run.invoker"));
+    }
+
+    #[test]
+    fn iam_writes_enabled_reads_the_flag() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join(".bwoc")).unwrap();
+        let toml_path = ws.path().join(".bwoc/workspace.toml");
+        // Absent key → refuse-by-default.
+        std::fs::write(&toml_path, "[plugins.gcloud-iam]\nenabled = true\n").unwrap();
+        assert_eq!(iam_writes_enabled(ws.path()), Ok(false));
+        // Explicit true → enabled.
+        std::fs::write(
+            &toml_path,
+            "[plugins.gcloud-iam]\nenabled = true\nwrites_enabled = true\n",
+        )
+        .unwrap();
+        assert_eq!(iam_writes_enabled(ws.path()), Ok(true));
+        // Explicit false → refuse.
+        std::fs::write(&toml_path, "[plugins.gcloud-iam]\nwrites_enabled = false\n").unwrap();
+        assert_eq!(iam_writes_enabled(ws.path()), Ok(false));
     }
 
     // --- auth-shape probe (file + env, no network) -------------------------
