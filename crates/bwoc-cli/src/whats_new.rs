@@ -20,17 +20,17 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — gcloud compute lifecycle"
+    " — Google Workspace plugin kind"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc gcloud compute {list, describe, start, stop}` — GCE instance lifecycle (#96)",
-    "First write-capable GCP slice: `start`=confirm, `stop`=confirm + echoed target",
-    "Reusable write-verb risk matrix (T0–T4) for the storage/serverless/IAM slices",
-    "Reads stay unguarded; `--instance`/`--zone` required + validated before dispatch",
-    "Prior 2.11.0: gcloud workflow foundation (#86)",
+    "`bwoc gws {auth, drive, gmail, calendar}` — read-mostly Google Workspace (#107)",
+    "OAuth token stays out of tracked files; header-only; `bwoc check` fails closed on a value",
+    "`bwoc gcloud storage {list, stat, put, delete}` — GCS objects; delete is T3 typed-confirm (#97)",
+    "`gws` is the 9th plugin kind; all plugins ship EN/TH SPEC pairs",
+    "Prior 2.12.0: gcloud compute lifecycle (#96)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

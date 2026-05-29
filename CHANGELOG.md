@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.29-1] — 2026-05-29 — 2.13.0
+
+**Minor release.** Google Workspace `gws` plugin kind (#107) + gcloud storage objects (EPIC-10, #97). Cargo SemVer `2.12.0` → `2.13.0`.
+
+### Added
+
+- **`gws` plugin kind + `bwoc gws {auth, drive, gmail, calendar}` (#107)** — a read-mostly Google Workspace integration (the framework's ninth plugin kind). `gws-auth` owns the OAuth2 credential surface; `gws-drive`/`gws-gmail`/`gws-calendar` source the token from it and project Drive files / Gmail threads / Calendar events into the Workspace Resource Schema. Each plugin ships an EN/TH SPEC pair; `bwoc check` gains a fail-closed `audit_gws_auth` secret-leak guard.
+- **`bwoc gcloud storage {list, stat, put, delete}` (#97)** — Cloud Storage object operations via the new `workflow/gcloud-storage` plugin. Reads (`list`/`stat`) are unguarded; `put` is stat-first (T1 new / T2 overwrite, echoing the existing object); **`delete` is T3 — typed-name confirmation** (re-type `gs://bucket/object`), the first irreversible-write tier of the EPIC-9 risk matrix. `--instance`-style validation on bucket/object before dispatch.
+
+### Security
+
+- **OAuth tokens never touch tracked files (gws).** The token is runtime-resolved from `BWOC_GWS_TOKEN` or a `0600` `.bwoc/secrets/gws-token.json`, handed only to the `Authorization: Bearer` header, and never serialized into output (Adinnādāna). `auth.toml` declares shape only; `bwoc check` fails closed on any value-looking field. REST query params are URL-encoded and resource/calendar IDs + queries are validated before dispatch (no injection).
+- **gcloud storage writes are tiered by reversibility × blast radius** — `put` stat-first (T1/T2), `delete` T3 (typed-name). Operator values reach `gcloud` as `--flag=value` or after a `--` separator (option-injection guard, #92 precedent).
+
 ## [v2026.5.29-0] — 2026-05-29 — 2.12.0
 
 **Minor release.** gcloud compute lifecycle (#96) — the first write-capable GCP slice (EPIC-9), on the EPIC-8 foundation. Cargo SemVer `2.11.0` → `2.12.0`.
