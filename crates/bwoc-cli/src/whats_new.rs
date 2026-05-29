@@ -20,17 +20,17 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — Google Workspace plugin kind"
+    " — gcloud Cloud Run serverless"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc gws {auth, drive, gmail, calendar}` — read-mostly Google Workspace (#107)",
-    "OAuth token stays out of tracked files; header-only; `bwoc check` fails closed on a value",
-    "`bwoc gcloud storage {list, stat, put, delete}` — GCS objects; delete is T3 typed-confirm (#97)",
-    "`gws` is the 9th plugin kind; all plugins ship EN/TH SPEC pairs",
-    "Prior 2.12.0: gcloud compute lifecycle (#96)",
+    "`bwoc gcloud run {list, describe, deploy}` — Cloud Run services (EPIC-11, #98)",
+    "Third write-capable GCP slice: reads T0; `deploy` T2 — confirm + echoed service/region/source/traffic",
+    "`deploy` requires exactly one of `--image`/`--source`; `--source` canonicalized; `--json` needs `--yes`",
+    "Plugin reads no credential (Adinnādāna); BWOC CLI owns the gate so it runs `gcloud run deploy --quiet`",
+    "Prior 2.13.0: Google Workspace `gws` plugin kind + gcloud storage (#107, #97)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

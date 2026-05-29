@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.29-2] — 2026-05-29 — 2.14.0
+
+**Minor release.** gcloud Cloud Run serverless (EPIC-11, #98) — the third write-capable GCP slice, on the EPIC-8 foundation. Cargo SemVer `2.13.0` → `2.14.0`.
+
+### Added
+
+- **`bwoc gcloud run {list, describe, deploy}` (#98)** — Cloud Run service operations via the new `workflow/gcloud-run` plugin. Reads (`list`/`describe`) are unguarded (T0); **`deploy` is T2 — confirm + echoed target** (resolved `service / region / {image|source} / traffic`, since a deploy routes 100% traffic to the new revision but is reversible via revision rollback). `deploy` requires `--service`/`--region` + exactly one of `--image`/`--source` (`--source` canonicalized to an absolute existing dir); service/region names validated before dispatch. `--json` requires `--yes`. Standalone `gcloud-build` and `services delete` are deferred to their own slices.
+
+### Security
+
+- **gcloud-run reads no credential value (Adinnādāna).** It sources the sibling `gcloud-auth` helpers and asks `gcloud` for Cloud Run state; `auth.toml` declares shape only. Operator values reach `gcloud` as `--flag=value` or after a `--` separator (option-injection guard, #92 precedent); the BWOC CLI owns the T2 gate so the plugin runs `gcloud run deploy --quiet`. `bwoc check` auto-audits the plugin manifest.
+
 ## [v2026.5.29-1] — 2026-05-29 — 2.13.0
 
 **Minor release.** Google Workspace `gws` plugin kind (#107) + gcloud storage objects (EPIC-10, #97). Cargo SemVer `2.12.0` → `2.13.0`.
