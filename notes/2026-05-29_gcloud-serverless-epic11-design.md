@@ -4,16 +4,15 @@ date: 2026-05-29
 epic: BWOC-EPIC-11
 tracking: "#98"
 related: ["#86 (EPIC-8 foundation)", "#96 (EPIC-9 compute)", "#97 (EPIC-10 storage)", "#99"]
-status: draft
+status: frozen
 ---
 
-# 2026-05-29 — gcloud serverless slice (EPIC-11 framing) — DRAFT for sign-off
+# 2026-05-29 — gcloud serverless slice (EPIC-11 framing)
 
-> **Status: DRAFT.** Sets the spec frame for `BWOC-EPIC-11` (the third
-> write-capable GCP slice) before code. Decisions 1–2, 5 follow EPIC-8/9/10
-> precedent; **decisions 3–4 (the deploy tier + what `deploy` consumes) carry
-> open questions for the architect** (see "Open questions"). Nothing is frozen
-> until those are answered.
+> **Status: FROZEN (architect sign-off 2026-05-29) + implemented.** Sets the
+> spec frame for `BWOC-EPIC-11` (the third write-capable GCP slice). The three
+> open questions on decisions 3–4 were resolved with the recommended answers
+> (see "Resolved"); the slice is implemented in this change.
 
 The throughline: **a deploy mutates a *live, traffic-serving* service.** Unlike
 compute `stop` (one instance) or object `delete` (one object), a bad Cloud Run
@@ -78,20 +77,18 @@ about to take new traffic.
 never autonomously ship a revision). A future read-only `run-inventory` skill
 addition (`list`/`describe`) is fine; the write verb stays behind the gated CLI.
 
-## Open questions (for architect sign-off before code)
+## Resolved (architect sign-off 2026-05-29)
 
-1. **`deploy` tier** — T2 (confirm + echo target, as proposed) or T3 (typed
-   service name) given it affects live traffic? (Proposed: T2 — a deploy is
-   reversible via revision rollback; T3 typed-name would be over-prompting for a
-   routine deploy. The echoed target addresses the wrong-service risk.)
-2. **Cloud Build scope** — `gcloud-run` only with `--source` covering build+deploy
-   (proposed), or also ship a standalone `gcloud-build` (`builds submit`) in
-   EPIC-11? (Proposed: gcloud-run only; gcloud-build is its own future slice.)
-3. **Traffic on deploy** — default `gcloud run deploy` routes 100% of traffic to
-   the new revision. Keep that default (echoed in the prompt), or add a
-   `--no-traffic` option in v1 to deploy a revision without routing? (Proposed:
-   keep the default + echo "routes 100% traffic"; `--no-traffic` is a cheap
-   follow-up if wanted.)
+1. **`deploy` tier** → **T2** (confirm + echo resolved target). A deploy is
+   reversible via revision rollback; T3 typed-name would over-prompt a routine
+   deploy. The echoed `service / region / source / traffic` covers the
+   wrong-target risk.
+2. **Cloud Build scope** → **`gcloud-run` only.** `run deploy --source` covers
+   build+deploy; a standalone `gcloud-build` (`builds submit`) is its own future
+   slice.
+3. **Traffic on deploy** → **keep the default 100%-routing**, echoed in the
+   prompt ("routes 100% traffic to the new revision"). `--no-traffic` is a cheap
+   follow-up if a concrete need appears.
 
 ## Alternatives considered
 
@@ -109,7 +106,7 @@ addition (`list`/`describe`) is fine; the write verb stays behind the gated CLI.
 ## Status / deferred
 
 - Decisions 1, 2, 5 follow EPIC-8/9/10 precedent and are stable.
-- **Decisions 3–4 await the open-question answers before freezing.**
+- **Decisions 3–4 frozen** with the resolved answers above; implemented in this change.
 - Live verification gated on an operator-provided sandbox (a deployable Cloud
   Run service + a test image/source) at the smoke-test gate.
 - T3/T4 remain for `delete`-class (future) and IAM (EPIC-12).

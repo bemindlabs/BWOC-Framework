@@ -1,0 +1,18 @@
+[plugin]
+name        = "gcloud-run"
+kind        = "workflow"
+version     = "0.1.0"
+description = "Google Cloud Run (gcloud) serverless adapter — list / describe (read) and deploy (gated write, T2 — reversible via revision rollback); sources credential helpers from the sibling gcloud-auth plugin. EPIC-11, the third write-capable GCP slice."
+compat      = ">=2.13.0"
+entry       = "gcloud.sh"
+
+# [config.schema] intentionally omitted.
+#
+# Service state is read live from `gcloud run services list/describe` and
+# mutated via `gcloud run deploy` (a new revision + traffic shift). Credentials
+# are resolved by the sibling `workflow/gcloud-auth` plugin's helpers — see this
+# plugin's `auth.toml` for the shape (no values). Write gating lives in the
+# `bwoc gcloud run` CLI: `deploy` is T2 (confirmation + echoed service/region/
+# source/traffic; `--json` requires `--yes`), never here. `deploy --source`
+# triggers a server-side build; a standalone Cloud Build plugin is a future
+# slice. See notes/2026-05-29_gcloud-serverless-epic11-design.md.

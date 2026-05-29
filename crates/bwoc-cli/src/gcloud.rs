@@ -77,6 +77,7 @@ const PLUGIN_AUTH: &str = "gcloud-auth";
 const PLUGIN_PROJECT: &str = "gcloud-project";
 const PLUGIN_COMPUTE: &str = "gcloud-compute";
 const PLUGIN_STORAGE: &str = "gcloud-storage";
+const PLUGIN_RUN: &str = "gcloud-run";
 const PLUGIN_KIND: &str = "workflow";
 
 const ENV_ACCOUNT: &str = "BWOC_GCLOUD_ACCOUNT";
@@ -105,8 +106,21 @@ pub enum GcloudCommand {
     /// Cloud Storage objects (gcloud-storage plugin, EPIC-10).
     #[command(subcommand)]
     Storage(StorageCommand),
+    /// Cloud Run services (gcloud-run plugin, EPIC-11).
+    #[command(subcommand)]
+    Run(RunCommand),
     /// Combined auth + project view. Degrades cleanly when plugins are missing.
     Status(StatusArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RunCommand {
+    /// List Cloud Run services (optionally scoped to a region).
+    List(RunListArgs),
+    /// Describe one service (URL, latest revision, traffic split).
+    Describe(RunDescribeArgs),
+    /// Deploy a service revision. WRITE (T2) — gated behind confirmation + target echo.
+    Deploy(RunDeployArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -304,6 +318,71 @@ pub struct StorageDeleteArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct RunListArgs {
+    /// Restrict to one region (e.g. `us-central1`). Default: all regions.
+    #[arg(long)]
+    region: Option<String>,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct RunDescribeArgs {
+    /// Service name. Required.
+    #[arg(long)]
+    service: String,
+    /// Region the service is in (e.g. `us-central1`). Required.
+    #[arg(long)]
+    region: String,
+    /// Project id. Default: the local `gcloud config` project.
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct RunDeployArgs {
+    /// Service name to deploy. Required.
+    #[arg(long)]
+    service: String,
+    /// Region to deploy in (e.g. `us-central1`). Required.
+    #[arg(long)]
+    region: String,
+    /// Prebuilt container image to deploy (e.g. `gcr.io/p/api:v2`). Exactly one
+    /// of --image / --source is required.
+    #[arg(long)]
+    image: Option<String>,
+    /// Local source directory to build-and-deploy (server-side build). Exactly
+    /// one of --image / --source is required.
+    #[arg(long = "source")]
+    source: Option<String>,
+    /// Project id. Default: the local `gcloud config` project (echoed in the prompt).
+    #[arg(long = "project")]
+    project: Option<String>,
+    /// Acknowledge the deploy up front (required in --json mode).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Workspace root.
     #[arg(long = "workspace")]
@@ -386,6 +465,9 @@ pub fn run(cmd: GcloudCommand) -> i32 {
         GcloudCommand::Storage(StorageCommand::Stat(a)) => run_storage_stat(a),
         GcloudCommand::Storage(StorageCommand::Put(a)) => run_storage_put(a),
         GcloudCommand::Storage(StorageCommand::Delete(a)) => run_storage_delete(a),
+        GcloudCommand::Run(RunCommand::List(a)) => run_run_list(a),
+        GcloudCommand::Run(RunCommand::Describe(a)) => run_run_describe(a),
+        GcloudCommand::Run(RunCommand::Deploy(a)) => run_run_deploy(a),
         GcloudCommand::Status(a) => run_combined_status(a),
     }
 }
@@ -831,6 +913,59 @@ fn storage_put_request(
         "bucket": bucket,
         "object": object,
         "local": local,
+        "project": project,
+    })
+}
+
+fn run_list_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    region: Option<&str>,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "list",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "region": region,
+        "project": project,
+    })
+}
+
+fn run_describe_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    service: &str,
+    region: &str,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "describe",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "service": service,
+        "region": region,
+        "project": project,
+    })
+}
+
+fn run_deploy_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    service: &str,
+    region: &str,
+    image: Option<&str>,
+    source: Option<&str>,
+    project: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "deploy",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "service": service,
+        "region": region,
+        "image": image,
+        "source": source,
         "project": project,
     })
 }
@@ -1914,6 +2049,294 @@ fn run_storage_delete(args: StorageDeleteArgs) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cloud Run (EPIC-11) — services. Reads T0; deploy T2 (reversible via revision
+// rollback, service-wide availability blast radius → confirm + echo target).
+// ---------------------------------------------------------------------------
+
+fn run_run_list(args: RunListArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud run list: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Some(r) = &args.region {
+        if !is_valid_gce_name(r) {
+            let msg =
+                format!("invalid region '{r}' — expected an RFC 1035 label (e.g. us-central1)");
+            if args.json {
+                emit_error_json("run list", "bad_region", &msg);
+            } else {
+                eprintln!("bwoc gcloud run list: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+    if let Some(p) = &args.project {
+        if !is_valid_project_id(p) {
+            let msg = format!("invalid project id '{p}'");
+            if args.json {
+                emit_error_json("run list", "bad_project_id", &msg);
+            } else {
+                eprintln!("bwoc gcloud run list: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+    let plugin = match require_plugin(&root, PLUGIN_RUN, "run list", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = run_list_request(
+        &root,
+        &plugin.dir,
+        args.region.as_deref(),
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let total = value.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("bwoc gcloud run list: {total} service(s)");
+            if let Some(arr) = value.get("services").and_then(|v| v.as_array()) {
+                for s in arr {
+                    let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let region = s.get("region").and_then(|v| v.as_str()).unwrap_or("?");
+                    let url = s.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("  {name} [{region}] {url}");
+                }
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("run list", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud run list: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+fn run_run_describe(args: RunDescribeArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud run describe: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if !is_valid_gce_name(&args.service) || !is_valid_gce_name(&args.region) {
+        let msg = "invalid service or region — expected RFC 1035 labels (e.g. service 'api', region 'us-central1')".to_string();
+        if args.json {
+            emit_error_json("run describe", "bad_target", &msg);
+        } else {
+            eprintln!("bwoc gcloud run describe: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    if let Some(p) = &args.project {
+        if !is_valid_project_id(p) {
+            let msg = format!("invalid project id '{p}'");
+            if args.json {
+                emit_error_json("run describe", "bad_project_id", &msg);
+            } else {
+                eprintln!("bwoc gcloud run describe: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+    let plugin = match require_plugin(&root, PLUGIN_RUN, "run describe", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = run_describe_request(
+        &root,
+        &plugin.dir,
+        &args.service,
+        &args.region,
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let url = value.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            let rev = value
+                .get("latest_ready_revision")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            println!(
+                "bwoc gcloud run describe: {} [{}] {url} (revision {rev})",
+                args.service, args.region
+            );
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("run describe", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud run describe: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+/// `deploy` (T2). Reversible via revision rollback, but service-wide
+/// availability blast radius — the prompt echoes service/region/source and the
+/// 100%-traffic intent. `--json` requires `--yes`. Exactly one of --image /
+/// --source; --source is canonicalized to an absolute path (so the plugin's cwd
+/// doesn't matter) and must be an existing directory.
+fn run_run_deploy(args: RunDeployArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc gcloud run deploy: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if !is_valid_gce_name(&args.service) || !is_valid_gce_name(&args.region) {
+        let msg = "invalid service or region — expected RFC 1035 labels".to_string();
+        if args.json {
+            emit_error_json("run deploy", "bad_target", &msg);
+        } else {
+            eprintln!("bwoc gcloud run deploy: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    if let Some(p) = &args.project {
+        if !is_valid_project_id(p) {
+            let msg = format!("invalid project id '{p}'");
+            if args.json {
+                emit_error_json("run deploy", "bad_project_id", &msg);
+            } else {
+                eprintln!("bwoc gcloud run deploy: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+    }
+
+    // Exactly one of --image / --source.
+    let (image, source_abs): (Option<String>, Option<String>) = match (&args.image, &args.source) {
+        (Some(_), Some(_)) | (None, None) => {
+            let msg = "exactly one of --image or --source is required".to_string();
+            if args.json {
+                emit_error_json("run deploy", "bad_source", &msg);
+            } else {
+                eprintln!("bwoc gcloud run deploy: {msg}");
+            }
+            return EXIT_USAGE;
+        }
+        (Some(img), None) => {
+            if !is_valid_object_name(img) {
+                let msg = format!("invalid --image '{img}' (empty, control chars, or leading '-')");
+                if args.json {
+                    emit_error_json("run deploy", "bad_image", &msg);
+                } else {
+                    eprintln!("bwoc gcloud run deploy: {msg}");
+                }
+                return EXIT_USAGE;
+            }
+            (Some(img.clone()), None)
+        }
+        (None, Some(src)) => match std::fs::canonicalize(src) {
+            Ok(abs) if abs.is_dir() => (None, Some(abs.to_string_lossy().to_string())),
+            _ => {
+                let msg = format!("--source '{src}' is not an existing directory");
+                if args.json {
+                    emit_error_json("run deploy", "bad_source", &msg);
+                } else {
+                    eprintln!("bwoc gcloud run deploy: {msg}");
+                }
+                return EXIT_USAGE;
+            }
+        },
+    };
+
+    // Write gate (T2): confirm + echo the resolved target + traffic intent.
+    if !args.yes {
+        if json_write_blocked(args.json, args.yes) {
+            eprintln!(
+                "bwoc gcloud run deploy: --json requires --yes (a deploy needs explicit ack)"
+            );
+            return EXIT_USAGE;
+        }
+        let from = match (&image, &source_abs) {
+            (Some(img), _) => format!("image '{img}'"),
+            (_, Some(src)) => format!("source '{src}' (server-side build)"),
+            _ => unreachable!(),
+        };
+        let prompt = format!(
+            "Deploy Cloud Run service '{}' in '{}' ({}) from {from} — routes 100% traffic to the new revision. Proceed?",
+            args.service,
+            args.region,
+            project_echo(args.project.as_deref())
+        );
+        if !confirm(&prompt) {
+            eprintln!("bwoc gcloud run deploy: aborted (no deploy performed)");
+            return EXIT_USAGE;
+        }
+    }
+
+    let plugin = match require_plugin(&root, PLUGIN_RUN, "run deploy", args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = run_deploy_request(
+        &root,
+        &plugin.dir,
+        &args.service,
+        &args.region,
+        image.as_deref(),
+        source_abs.as_deref(),
+        args.project.as_deref(),
+    );
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if args.json {
+                return if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_PLUGIN_ERROR
+                };
+            }
+            let url = value.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            let rev = value
+                .get("latest_ready_revision")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            println!(
+                "bwoc gcloud run deploy: {} in {} → {url} (revision {rev})",
+                args.service, args.region
+            );
+            EXIT_OK
+        }
+        Err(e) => {
+            if args.json {
+                emit_error_json("run deploy", "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gcloud run deploy: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
 /// `bwoc gcloud status` — combined view. **Degrades when plugins are missing:**
 /// reports the auth shape + project env hints from local state alone, and
 /// notes which plugins are absent. Always exits `0` unless the workspace
@@ -2283,6 +2706,75 @@ mod tests {
         assert!(!is_valid_object_name("-leading")); // option-injection shape
         assert!(!is_valid_object_name("has\nnewline")); // control char
         assert!(!is_valid_object_name(&"a".repeat(1025))); // > 1024
+    }
+
+    // --- cloud run (EPIC-11) -----------------------------------------------
+
+    #[test]
+    fn parses_run_verbs() {
+        match parse(&["run", "list", "--region", "us-central1"]).unwrap() {
+            GcloudCommand::Run(RunCommand::List(a)) => {
+                assert_eq!(a.region.as_deref(), Some("us-central1"))
+            }
+            other => panic!("expected Run::List, got {other:?}"),
+        }
+        match parse(&[
+            "run",
+            "describe",
+            "--service",
+            "api",
+            "--region",
+            "us-central1",
+        ])
+        .unwrap()
+        {
+            GcloudCommand::Run(RunCommand::Describe(a)) => {
+                assert_eq!(a.service, "api");
+                assert_eq!(a.region, "us-central1");
+            }
+            other => panic!("expected Run::Describe, got {other:?}"),
+        }
+        match parse(&[
+            "run",
+            "deploy",
+            "--service",
+            "api",
+            "--region",
+            "us-central1",
+            "--image",
+            "gcr.io/p/api:v2",
+            "--yes",
+        ])
+        .unwrap()
+        {
+            GcloudCommand::Run(RunCommand::Deploy(a)) => {
+                assert_eq!(a.image.as_deref(), Some("gcr.io/p/api:v2"));
+                assert!(a.source.is_none());
+                assert!(a.yes);
+            }
+            other => panic!("expected Run::Deploy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_verbs_require_their_flags() {
+        assert!(parse(&["run", "describe", "--service", "api"]).is_err()); // no --region
+        assert!(parse(&["run", "deploy", "--service", "api"]).is_err()); // no --region
+        // --image + --source both parse (clap-wise); the exactly-one check is at
+        // dispatch — covered by the handler, not arg parsing.
+        assert!(
+            parse(&[
+                "run",
+                "deploy",
+                "--service",
+                "api",
+                "--region",
+                "us-central1",
+                "--source",
+                "./app"
+            ])
+            .is_ok()
+        );
     }
 
     // --- auth-shape probe (file + env, no network) -------------------------
