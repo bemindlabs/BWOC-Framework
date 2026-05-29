@@ -141,13 +141,11 @@ jobs:
   # sidecars exist before we rewrite Formula/bwoc.rb from them.
   #
   # The tap serves the default branch's HEAD and `main` is protected, so the
-  # bump lands via an auto-merging PR — never a direct push. Full hands-off
-  # automation needs a real identity that can BOTH open a PR AND trigger CI;
-  # the default GITHUB_TOKEN can do neither (the org blocks Actions from
-  # opening PRs, and a GITHUB_TOKEN-opened PR doesn't fire CI). Set repo secret
-  # RELEASE_PAT (a PAT with `repo` + `workflow`) for zero-touch releases.
-  # WITHOUT it this job does not fail the release: it still pushes the formula
-  # branch and prints the one finish command in the job summary.
+  # bump must land via an auto-merging PR — never a direct push. The default
+  # GITHUB_TOKEN can't open that PR (the org blocks Actions from opening PRs,
+  # and a GITHUB_TOKEN-opened PR wouldn't fire CI anyway), so this job pushes
+  # the formula branch and prints the one finish command in the job summary.
+  # It never fails the release.
   bump-formula:
     name: bump Homebrew formula
     needs: build
@@ -158,10 +156,7 @@ jobs:
           # Commit onto the default branch (the tap serves its HEAD), not
           # the detached tag ref the push event would otherwise check out.
           ref: ${{ github.event.repository.default_branch }}
-          # Prefer a PAT so the formula-bump PR is authored by a real identity
-          # and therefore triggers CI (a GITHUB_TOKEN-opened PR does not — see
-          # the bump step below). Falls back to GITHUB_TOKEN if unset.
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rewrite Formula/bwoc.rb from the released sidecars
         env:
@@ -177,15 +172,12 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
           ./scripts/bump-formula.sh "$tag" sidecars
 
-      - name: Open an auto-merging formula-bump PR if the formula changed
-        # `main` is protected, so the bump lands via an auto-merged PR, never a
-        # direct push. Opening that PR needs RELEASE_PAT (a real identity that
-        # can create a PR AND trigger CI — the default GITHUB_TOKEN can do
-        # neither). When RELEASE_PAT is absent we still push the branch and
-        # print the finish command, then exit 0 so the release run stays green.
+      - name: Push a formula-bump branch if the formula changed
+        # `main` is protected, so the bump must land via an auto-merged PR,
+        # never a direct push. The default GITHUB_TOKEN can't open that PR (org
+        # setting), so this step pushes the branch and prints the one finish
+        # command in the job summary, then exits 0 so the release run stays green.
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
-          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if git diff --quiet -- Formula/bwoc.rb; then
@@ -207,24 +199,13 @@ jobs:
           # bot-owned and its content is fully derived from the released
           # sidecars, so overwriting it on a rerun is correct and safe.
           git push --force origin "$branch"
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::notice::RELEASE_PAT not set — pushed formula branch '$branch' but did not open a PR (the default GITHUB_TOKEN cannot create PRs under the org setting). Finish with the command in the job summary; set RELEASE_PAT to fully automate."
-            {
-              echo "### Homebrew formula bump — one manual step"
-              echo "Branch \`$branch\` was pushed with the \`${GITHUB_REF_NAME}\` formula, but \`GITHUB_TOKEN\` can't open a PR (org setting). Open + auto-merge it:"
-              echo ""
-              echo '```sh'
-              echo "gh pr create --base $DEFAULT_BRANCH --head $branch --fill"
-              echo "gh pr merge $branch --squash --auto --delete-branch"
-              echo '```'
-              echo ""
-              echo "Add repo secret **\`RELEASE_PAT\`** (PAT with \`repo\` + \`workflow\`) to make future releases hands-off."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          gh pr create \
-            --base "$DEFAULT_BRANCH" \
-            --head "$branch" \
-            --title "chore(formula): bump Homebrew formula to ${GITHUB_REF_NAME}" \
-            --body "Automated Homebrew formula bump for ${GITHUB_REF_NAME} — version + url + sha256 synced to the released sidecars. Auto-merges once CI is green."
-          gh pr merge "$branch" --squash --auto --delete-branch
+          echo "::notice::Pushed formula branch '$branch'. GITHUB_TOKEN can't open the PR under the org setting — finish with the command in the job summary."
+          {
+            echo "### Homebrew formula bump — one manual step"
+            echo "Branch \`$branch\` was pushed with the \`${GITHUB_REF_NAME}\` formula. Open + auto-merge it:"
+            echo ""
+            echo '```sh'
+            echo "gh pr create --base $DEFAULT_BRANCH --head $branch --fill"
+            echo "gh pr merge $branch --squash --auto --delete-branch"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
