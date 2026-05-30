@@ -74,7 +74,7 @@ No agents *live* here. The framework provides the recipe.
 The canonical blueprint copied into every new agent. Contains:
 
 - **`AGENTS.md`** — backend-neutral single source of truth.
-- **Backend symlinks** — `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md` all point at `AGENTS.md`.
+- **Backend symlinks** — `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md`, `OPENAI.md` all point at `AGENTS.md`.
 - **`config.manifest.json`** — the placeholder schema (`{{agentId}}`, `{{primaryModel}}`, etc.).
 - **Slots** — `persona/`, `memories/`, `interconnect/`, `mindsets/`, `skills/`.
 - **`scripts/`** — `incarnate.sh`, `check-agent-neutrality.sh`.

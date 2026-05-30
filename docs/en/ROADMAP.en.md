@@ -160,7 +160,7 @@ These are realized by maintainers outside the original authors using the framewo
 ## Cross-cutting (every phase)
 
 - **Bilingual parity** — every spec doc has EN canonical + TH (and future languages); the bilingual-reminder hook gates this.
-- **Backend neutrality** — every CLI feature works against any of the five declared backends; `/check-neutrality` gates this for `AGENTS.md`.
+- **Backend neutrality** — every CLI feature works against any of the six declared backends; `/check-neutrality` gates this for `AGENTS.md`.
 - **Doc-version + software-version stay consistent** — both auto-stamped on every Claude Code edit.
 - **Open-source readiness** — every artifact a public contributor needs (CONTRIBUTING, SECURITY, CoC, LICENSE, VERSION, CHANGELOG, VISION, ROADMAP) is current and accurate.
 

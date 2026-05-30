@@ -8,7 +8,7 @@ Plugins extend the framework with capabilities that **do not belong in every age
 
 - **Agent skills** (`modules/agent-template/skills/`) — capabilities an individual agent declares.
 - **Framework skills** (`modules/skills/`) — the recommended baseline set of skills any agent can opt into.
-- **Backend integrations** — the four declared backends (Claude, Antigravity, Codex, Kimi) are first-class and live in spec, not as plugins.
+- **Backend integrations** — the six declared backends (Claude, Antigravity, Codex, Kimi, Ollama, OpenAI-compatible) are first-class and live in spec, not as plugins.
 
 ## What plugins might be
 

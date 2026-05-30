@@ -77,7 +77,7 @@ Should print `Neutrality check passed.` regardless of which backend you switch t
 
 ## Caveats
 
-- All four backend CLIs read **the same `AGENTS.md`** via symlinks (`CLAUDE.md` / `AGY.md` / `CODEX.md` / `KIMI.md` all point to `AGENTS.md`). If your agent's instructions assume a specific backend, `bwoc check` will flag it as a neutrality violation.
+- All six backends read **the same `AGENTS.md`** via symlinks (`CLAUDE.md` / `AGY.md` / `CODEX.md` / `KIMI.md` / `OLLAMA.md` / `OPENAI.md` all point to `AGENTS.md`). If your agent's instructions assume a specific backend, `bwoc check` will flag it as a neutrality violation.
 - Model identifiers in the picker are a convenience catalog, not a whitelist — type any model name and it's accepted as-is.
 - Phase 2 adds `bwoc set-backend` and related lifecycle commands; for now manifest editing is the manual path.
 

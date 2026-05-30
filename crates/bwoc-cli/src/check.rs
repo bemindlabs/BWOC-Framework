@@ -973,13 +973,20 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
 //   - docs/en/PLUGINS.en.md §"Manifest" + §"Verification"
 // ---------------------------------------------------------------------------
 
-/// Backend identifiers — the five declared backends from ARCHITECTURE.en.md.
+/// Backend identifiers — the six declared backends from ARCHITECTURE.en.md.
 /// A skill manifest naming any of these is backend-specific and belongs as
 /// that backend's integration plugin, not as a framework skill (Samānattatā).
 /// Whole-word match: substring is too loose (e.g. "claude" would trip on
 /// any name containing those letters); too-strict matching is fine here
 /// because manifest values are short, kebab-case-or-sentence text.
-const BACKEND_NAMES: &[&str] = &["claude", "antigravity", "codex", "kimi", "ollama"];
+const BACKEND_NAMES: &[&str] = &[
+    "claude",
+    "antigravity",
+    "codex",
+    "kimi",
+    "ollama",
+    "openai-compatible",
+];
 
 /// Plugin kinds accepted by the framework. The task brief enumerates
 /// `audit (future)` as a forward-compatible value — accept it now so

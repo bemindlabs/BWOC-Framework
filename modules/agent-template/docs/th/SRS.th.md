@@ -360,7 +360,7 @@ updated: <ISO 8601>                  # required
 | สัมมาสังกัปปะ | Task ทั้งหมดมี `taskId` และ goal |
 | สัมมาวาจา | 2 agents complete consensus exchange |
 | สัมมากัมมันตะ | 3 concurrent agents, 0 collisions |
-| สัมมาอาชีวะ | 4 backends, equivalent behavior |
+| สัมมาอาชีวะ | 6 backends, equivalent behavior |
 | สัมมาวายามะ | 100% gates pass on merged PRs |
 | สัมมาสติ | Prior-decision test ≥ 95% |
 | สัมมาสมาธิ | Incarnation ≤ 5s ; check ≤ 2s |

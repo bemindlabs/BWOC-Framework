@@ -74,7 +74,7 @@ repo นี้ บรรจุ —
 พิมพ์เขียวที่ถูก copy ไปยังทุก agent ใหม่ บรรจุ —
 
 - **`AGENTS.md`** — แหล่งความจริงเดียวที่เป็นกลางต่อ backend
-- **Backend symlinks** — `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md` ล้วนชี้ไปที่ `AGENTS.md`
+- **Backend symlinks** — `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md`, `OPENAI.md` ล้วนชี้ไปที่ `AGENTS.md`
 - **`config.manifest.json`** — schema ของ placeholder (`{{agentId}}`, `{{primaryModel}}` ฯลฯ)
 - **ช่องเสียบ (slots)** — `persona/`, `memories/`, `interconnect/`, `mindsets/`, `skills/`
 - **`scripts/`** — `incarnate.sh`, `check-agent-neutrality.sh`

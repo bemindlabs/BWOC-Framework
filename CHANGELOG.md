@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Changed
 
+- **Declared-backend count canonicalized at six.** The docs described the declared backends inconsistently (`four` for the vendor CLIs, `five` with ollama, `six` after the OpenAI-compatible surface refresh); the code has always had six (`Backend` enum / `bwoc new --backend`: claude, antigravity, codex, kimi, ollama, openai-compatible). Normalized the general declared-count statements and enumerated lists to **six** across `PLUGINS`, `ROADMAP`, `SRS`, `ARCHITECTURE` (EN/TH), `help backends`, `configure-backends`, the plugins README, and the agent-template `AGENTS.md`; `check.rs` `BACKEND_NAMES` (neutrality denylist) gains `openai-compatible`. Narrative/CI-reality statements that correctly say "five" (ollama was the fifth added; CI exercises the harness once) are left as-is.
 - **`release.yml` drops the `RELEASE_PAT` path (#116, #117)** — the zero-touch PAT hook (added with the #101 fix) was never wired: the secret was unset, so every formula bump used the `GITHUB_TOKEN` fallback (branch push + manual finish command). Removed the PAT plumbing and the now-unused `pull-requests: write` grant; the `bump-formula` job keeps only `contents: write`. No behavior change — the operator still opens + auto-merges the formula PR by hand, as it already did every release.
 
 ### Security

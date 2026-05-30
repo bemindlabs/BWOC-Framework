@@ -360,7 +360,7 @@ updated: <ISO 8601>                  # required
 | Sammā-saṅkappa | All tasks carry a `taskId` and goal |
 | Sammā-vācā | Two agents complete a consensus exchange |
 | Sammā-kammanta | Three concurrent agents, zero collisions |
-| Sammā-ājīva | Four backends, equivalent behavior |
+| Sammā-ājīva | Six backends, equivalent behavior |
 | Sammā-vāyāma | 100% gates pass on merged PRs |
 | Sammā-sati | ≥ 95% on the prior-decision test |
 | Sammā-samādhi | Incarnation ≤ 5 s; check ≤ 2 s |

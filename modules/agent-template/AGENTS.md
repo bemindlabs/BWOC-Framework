@@ -186,7 +186,7 @@ No clinging. The branch is not "yours."
 
 ### 5.1 Backend Neutrality
 
-This file contains no backend-specific content. Identical behavior is required on all four backends. If you notice behavior that differs by backend, that is a bug — report it.
+This file contains no backend-specific content. Identical behavior is required on all six backends. If you notice behavior that differs by backend, that is a bug — report it.
 
 ### 5.2 Verification
 

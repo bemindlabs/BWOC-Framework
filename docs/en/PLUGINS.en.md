@@ -38,7 +38,7 @@ Every plugin declares a `kind`. Kinds define the lifecycle hooks the framework w
 | Kind | What it extends | Lifecycle owner |
 |---|---|---|
 | `memory-backend` | Tier 2 memory (semantic search, vector store, deep-memory CLI) | The agent's memory subsystem |
-| `llm-backend` | Backends beyond the five declared (`claude`, `antigravity`, `codex`, `kimi`, `ollama`) | `bwoc spawn` |
+| `llm-backend` | Backends beyond the six declared (`claude`, `antigravity`, `codex`, `kimi`, `ollama`, `openai-compatible`) | `bwoc spawn` |
 | `workflow` | External system integrations (issue trackers, code review, CI) | The agent calling out |
 | `audit` | Inspection of the workspace against external standards (ISO/IEC 29110, ISO 9001, ISO 20000-1, ISO 27001) or operator-authored audits (license headers, doc parity, secret scans) | `bwoc audit` CLI |
 | `jira` | Bidirectional sync with an external issue tracker (Jira Cloud) — reads issues via JQL and **writes** status transitions, field updates, and sprint assignment back to the tracker | `bwoc jira` CLI |
@@ -76,7 +76,7 @@ Read verbs carry **no** gate — they are free. **Destructive, irreversible verb
 
 ### What plugins are NOT
 
-- **Not a loophole for vendor-specific framework logic.** The five declared backends are first-class and live in spec, not as plugins. Vendor phrasing in `AGENTS.md` is still forbidden (**Samānattatā**).
+- **Not a loophole for vendor-specific framework logic.** The six declared backends are first-class and live in spec, not as plugins. Vendor phrasing in `AGENTS.md` is still forbidden (**Samānattatā**).
 - **Not a place for one-off scripts.** Those belong with the agent that uses them.
 - **Not skills with extra steps.** If an agent calls it during its own operation, it is a skill (see [`SKILLS.en.md`](SKILLS.en.md)).
 
@@ -493,7 +493,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # required — binary on PATH (p
 
 ### Neutrality constraint (HARD)
 
-A `memory-backend` plugin must work for any agent regardless of backend. An `llm-backend` plugin must not pretend it is one of the five declared backends. Vendor names in plugin **manifest values** are tolerated only inside `description` (where they describe the integration target); they remain forbidden anywhere else. This is the same **Samānattatā** rule that `bwoc check` already enforces on `AGENTS.md`.
+A `memory-backend` plugin must work for any agent regardless of backend. An `llm-backend` plugin must not pretend it is one of the six declared backends. Vendor names in plugin **manifest values** are tolerated only inside `description` (where they describe the integration target); they remain forbidden anywhere else. This is the same **Samānattatā** rule that `bwoc check` already enforces on `AGENTS.md`.
 
 ---
 
@@ -768,7 +768,7 @@ A failed check exits non-zero on the workspace audit — same surface, same exit
 ## What This Spec Does NOT Cover
 
 - **Skills** — see [`SKILLS.en.md`](SKILLS.en.md). Skills are agent-invoked; plugins are framework-loaded.
-- **The five declared backends** (`claude`, `antigravity`, `codex`, `kimi`, `ollama`) — they are first-class, not plugins. See [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md).
+- **The six declared backends** (`claude`, `antigravity`, `codex`, `kimi`, `ollama`, `openai-compatible`) — they are first-class, not plugins. See [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md).
 - **The first reference plugin itself** — see story `BWOC-7` and (once landed) `modules/plugins/memory-tier2-noop/SPEC.md`.
 - **Trust v2 / signing of plugin binaries** — deferred. Plugin binaries today are trusted by virtue of being installed under `modules/plugins/`; richer trust gating lands with the broader Trust v2 work.
 

@@ -38,7 +38,7 @@ Skill กับ plugin ใช้ substrate ร่วมกัน (TOML manifest,
 | Kind | สิ่งที่ขยาย | ผู้รับ lifecycle |
 |---|---|---|
 | `memory-backend` | Tier 2 memory (semantic search, vector store, deep-memory CLI) | Memory subsystem ของ agent |
-| `llm-backend` | Backend นอกเหนือจากห้าตัวที่ประกาศ (`claude`, `antigravity`, `codex`, `kimi`, `ollama`) | `bwoc spawn` |
+| `llm-backend` | Backend นอกเหนือจากหกตัวที่ประกาศ (`claude`, `antigravity`, `codex`, `kimi`, `ollama`, `openai-compatible`) | `bwoc spawn` |
 | `workflow` | Integration กับระบบภายนอก (issue tracker, code review, CI) | โค้ดของ agent ที่เรียกออก |
 | `audit` | การตรวจสอบ workspace ตามมาตรฐานภายนอก (ISO/IEC 29110, ISO 9001, ISO 20000-1, ISO 27001) หรือ audit ที่ operator เขียนเอง (license header, doc parity, secret scan) | `bwoc audit` CLI |
 | `jira` | Sync สองทิศทางกับ issue tracker ภายนอก (Jira Cloud) — อ่าน issue ผ่าน JQL และ **เขียน** status transition, การแก้ field, และการ assign sprint กลับไปยัง tracker | `bwoc jira` CLI |
@@ -76,7 +76,7 @@ read verb **ไม่มี** gate — ฟรี **verb ที่ destructive + 
 
 ### สิ่งที่ Plugin ไม่ใช่
 
-- **ไม่ใช่ช่องโหว่สำหรับ logic เฉพาะ vendor ใน framework** ห้า backend ที่ประกาศเป็น first-class อยู่ใน spec ไม่ใช่ plugin คำพูดเฉพาะ vendor ใน `AGENTS.md` ยังห้ามอยู่ (**Samānattatā**)
+- **ไม่ใช่ช่องโหว่สำหรับ logic เฉพาะ vendor ใน framework** หก backend ที่ประกาศเป็น first-class อยู่ใน spec ไม่ใช่ plugin คำพูดเฉพาะ vendor ใน `AGENTS.md` ยังห้ามอยู่ (**Samānattatā**)
 - **ไม่ใช่ที่สำหรับสคริปต์ครั้งเดียวจบ** สคริปต์เหล่านั้นอยู่กับ agent ที่ใช้
 - **ไม่ใช่ skill ที่ซับซ้อนกว่าเดิม** ถ้า agent เรียกในระหว่างทำงานของตัวเอง = skill (ดู [`SKILLS.th.md`](SKILLS.th.md))
 
@@ -493,7 +493,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # บังคับ — binary 
 
 ### ข้อจำกัดเรื่องความเป็นกลาง (HARD)
 
-ปลั๊กอินประเภท `memory-backend` ต้องทำงานได้กับ agent ทุกตัวไม่ว่าใช้ backend ใด ปลั๊กอินประเภท `llm-backend` ต้องไม่แอบอ้างเป็นหนึ่งใน backend ห้าตัวที่ประกาศ ชื่อ vendor ใน **manifest values** ทนได้เฉพาะใน `description` (ที่อธิบายเป้าหมายของ integration); ที่อื่นยังห้ามอยู่ กฎ **Samānattatā** เดียวกันกับที่ `bwoc check` บังคับใช้กับ `AGENTS.md` อยู่แล้ว
+ปลั๊กอินประเภท `memory-backend` ต้องทำงานได้กับ agent ทุกตัวไม่ว่าใช้ backend ใด ปลั๊กอินประเภท `llm-backend` ต้องไม่แอบอ้างเป็นหนึ่งใน backend หกตัวที่ประกาศ ชื่อ vendor ใน **manifest values** ทนได้เฉพาะใน `description` (ที่อธิบายเป้าหมายของ integration); ที่อื่นยังห้ามอยู่ กฎ **Samānattatā** เดียวกันกับที่ `bwoc check` บังคับใช้กับ `AGENTS.md` อยู่แล้ว
 
 ---
 
@@ -768,7 +768,7 @@ Check ที่ไม่ผ่าน exit non-zero ใน workspace audit — su
 ## สิ่งที่ Spec นี้ไม่ครอบคลุม
 
 - **Skills** — ดู [`SKILLS.th.md`](SKILLS.th.md) Skill ถูก agent invoke; plugin ถูก framework load
-- **ห้า backend ที่ประกาศ** (`claude`, `antigravity`, `codex`, `kimi`, `ollama`) — เป็น first-class ไม่ใช่ plugin ดู [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md)
+- **หก backend ที่ประกาศ** (`claude`, `antigravity`, `codex`, `kimi`, `ollama`, `openai-compatible`) — เป็น first-class ไม่ใช่ plugin ดู [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md)
 - **Reference plugin ตัวแรกเอง** — ดู story `BWOC-7` และ (เมื่อลงแล้ว) `modules/plugins/memory-tier2-noop/SPEC.md`
 - **Trust v2 / signing ของ plugin binary** — เลื่อนออก ปัจจุบัน plugin binary trust ได้เพราะติดตั้งใต้ `modules/plugins/`; trust gating ที่ละเอียดกว่าจะลงพร้อมงาน Trust v2 ในภาพรวม
 

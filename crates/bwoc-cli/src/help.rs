@@ -25,7 +25,7 @@ const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "backends",
-        "The 5 declared backends and how to switch between them",
+        "The 6 declared backends and how to switch between them",
         BACKENDS,
     ),
     (
