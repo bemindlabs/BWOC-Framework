@@ -156,10 +156,22 @@ async fn run() -> HarnessResult<()> {
     // Pick up an optional `reasoningEffort` from the agent's manifest and send
     // it as `reasoning_effort` on every completion (OpenAI-compat effort
     // control). Absent manifest / field ≡ provider default.
-    let reasoning_effort =
-        bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
-            .ok()
-            .and_then(|m| m.reasoning_effort);
+    let reasoning_effort = match bwoc_core::manifest::Manifest::load_from_path(
+        &workdir.join("config.manifest.json"),
+    ) {
+        Ok(m) => m.reasoning_effort,
+        // A malformed manifest is worth surfacing — silently dropping
+        // `reasoningEffort` here would make a config typo hard to debug. A
+        // missing file is normal (no manifest ⇒ no effort), so stay quiet.
+        Err(bwoc_core::manifest::ManifestError::Json(e)) => {
+            eprintln!(
+                "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
+                 ignoring reasoningEffort"
+            );
+            None
+        }
+        Err(_) => None,
+    };
     if let Some(ref e) = reasoning_effort {
         println!("  effort   : {e}");
     }

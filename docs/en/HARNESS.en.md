@@ -244,12 +244,11 @@ No other change required. The harness reads the same `AGENTS.md` every other bac
 ```json
 {
   "primaryModel": "gemma4",
-  "fallbackModel": "qwen2.5-coder:7b",
-  "contextLimit": 8192
+  "fallbackModel": "qwen2.5-coder:7b"
 }
 ```
 
-`fallbackModel` is tried if the primary model produces malformed tool calls more than twice in a row. `contextLimit` triggers history compaction (truncate-with-marker strategy) when the estimated context token count approaches the limit.
+`fallbackModel` is tried if the primary model produces malformed tool calls more than twice in a row. (History compaction and per-model context limits live on the harness `LoopConfig`, not as a `config.manifest.json` field.)
 
 For OpenAI-compatible endpoints serving GPT-5.5, prefer an explicit model or
 runtime selection pool:

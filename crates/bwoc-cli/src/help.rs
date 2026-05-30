@@ -198,7 +198,7 @@ See also:
 ";
 
 const BACKENDS: &str = "\
-BWOC supports 5 declared backends (Samānattatā — equal treatment, no lock-in):
+BWOC supports 6 declared backends (Samānattatā — equal treatment, no lock-in):
 
   | Backend     | CLI binary    | Common models                                          |
   |-------------|---------------|--------------------------------------------------------|
@@ -213,8 +213,8 @@ Each agent picks ONE backend at incarnation, recorded in its
 config.manifest.json (primaryModel + optional fallbackModel) and in
 .bwoc/agents.toml.
 
-All 5 read the SAME AGENTS.md via symlinks (CLAUDE.md / AGY.md /
-CODEX.md / KIMI.md / OLLAMA.md all → AGENTS.md). If your agent's
+All 6 read the SAME AGENTS.md via symlinks (CLAUDE.md / AGY.md /
+CODEX.md / KIMI.md / OLLAMA.md / OPENAI.md all → AGENTS.md). If your agent's
 instructions assume a specific backend, `bwoc check` flags it as a
 neutrality violation.
 
@@ -295,7 +295,7 @@ Schema (resolved by `bwoc new`, written verbatim — no placeholders):
     name              kebab-case agent name (e.g. \"alpha\")
     agentId           always \"agent-{name}\" (auto-derived)
     agentRole         one-or-two-word role description
-    primaryModel      LLM model identifier (e.g. \"claude-opus-4-7\")
+    primaryModel      LLM model identifier (e.g. \"claude-opus-4-8\")
                       or \"auto\" for harness-backed runtime selection
     lintCmd           shell command for lint
     formatCmd         shell command for format check

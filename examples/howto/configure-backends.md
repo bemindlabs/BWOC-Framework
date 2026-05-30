@@ -11,14 +11,16 @@ Understand the per-agent backend choice and how to switch it.
 
 ## Background
 
-BWOC supports four declared backends (Samānattatā — equal treatment, no vendor lock-in):
+BWOC supports six declared backends (Samānattatā — equal treatment, no vendor lock-in):
 
 | Backend | CLI binary | Common models |
 |---|---|---|
 | Claude | `claude` | `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | Antigravity | `agy` | `gemini-3.5-flash-medium`, `gemini-3.1-pro-high`, `claude-sonnet-4.6-thinking`, `gpt-oss-120b-medium` |
-| Codex | `codex` | `gpt-5`, `gpt-5-mini`, `o1` |
+| Codex | `codex` | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex` |
 | Kimi | `kimi` | `kimi-k2`, `kimi-k1.5` |
+| Ollama | `bwoc-harness` | `qwen2.5-coder:7b`, `llama3.1:8b`, `mistral-nemo`, `gemma4:8b` |
+| OpenAI-compatible | `bwoc-harness` | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini` |
 
 Each agent picks **one** backend at incarnation time, recorded in its `config.manifest.json` (`primaryModel` + optional `fallbackModel`) and in the workspace's `.bwoc/agents.toml`.
 

@@ -244,12 +244,11 @@ ln -s AGENTS.md OLLAMA.md
 ```json
 {
   "primaryModel": "gemma4",
-  "fallbackModel": "qwen2.5-coder:7b",
-  "contextLimit": 8192
+  "fallbackModel": "qwen2.5-coder:7b"
 }
 ```
 
-`fallbackModel` จะถูกลองใช้ถ้า primary model สร้าง tool call ผิดรูปแบบซ้ำๆ เกินสองครั้ง `contextLimit` trigger history compaction (ตัด-พร้อม-marker) เมื่อ context token ใกล้ถึงขีดจำกัด
+`fallbackModel` จะถูกลองใช้ถ้า primary model สร้าง tool call ผิดรูปแบบซ้ำๆ เกินสองครั้ง (ส่วน history compaction และ context limit ต่อ model ตั้งบน `LoopConfig` ของ harness ไม่ใช่ field ใน `config.manifest.json`)
 
 สำหรับ endpoint แบบ OpenAI-compatible ที่ serve GPT-5.5 ให้ใช้ model ชัดเจน
 หรือ pool สำหรับเลือกตอน runtime:
