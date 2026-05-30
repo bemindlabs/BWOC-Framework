@@ -421,7 +421,10 @@ fn extra_has_effort(extra: &[OsString], backend: Backend) -> bool {
         .filter_map(|a| a.to_str())
         .any(|s| match backend {
             Backend::Claude => s == "--effort" || s.starts_with("--effort="),
-            Backend::Codex => s.contains("model_reasoning_effort"),
+            // Match the Codex config-override shape (`-c model_reasoning_effort=…`,
+            // i.e. the `key=value` token) rather than any arg merely containing
+            // the substring, so an unrelated positional doesn't suppress effort.
+            Backend::Codex => s.starts_with("model_reasoning_effort="),
             _ => false,
         })
 }
@@ -552,6 +555,10 @@ mod tests {
         assert!(!extra_has_effort(&claude_yes, Backend::Codex));
         assert!(extra_has_effort(&codex_yes, Backend::Codex));
         assert!(!extra_has_effort(&codex_yes, Backend::Claude));
+        // An arg that merely *mentions* the key (not the `key=value` override
+        // shape) must NOT suppress the manifest effort.
+        let codex_substr = vec![OsString::from("explain model_reasoning_effort to me")];
+        assert!(!extra_has_effort(&codex_substr, Backend::Codex));
         // Backends without effort control never match.
         assert!(!extra_has_effort(&claude_yes, Backend::Kimi));
     }
