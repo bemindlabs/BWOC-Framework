@@ -28,6 +28,8 @@ Agents can now declare `primaryModel: "auto"` in `config.manifest.json` and let 
 - Heuristic `classify_task` keyword list is EN/TH only; extend as agents are themed in other languages.
 - `estimate_task_tokens` is a ~4-chars/token approximation with fixed headroom — fine for window-fit gating, not for billing.
 - No `--auto-models` CLI flag on `bwoc new` (see decision above).
+- **Reached via `bwoc run` (and direct `bwoc-harness` invocation) only — not `bwoc spawn`.** `bwoc spawn` does not forward `manifest.primary_model` to the harness as `--model` (it relies on the harness reading its own default), so `primaryModel: "auto"` never reaches the resolver through `spawn`. This is a pre-existing `spawn` gap (it ignores `primaryModel` generally for harness backends), broader than this feature; forwarding the model in `spawn.rs` is tracked as a separate follow-up rather than widened into this PR.
+- **`--resume` does not re-resolve.** A resumed run reuses the model recorded in its checkpoint (`RunState.active_model`); re-resolving with no `--task` would reclassify the work as Light and could swap the run onto a smaller model mid-history. Auto-resolution and startup model-validation are both skipped on resume.
 
 ## Related (links)
 

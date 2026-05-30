@@ -165,7 +165,20 @@ async fn run() -> HarnessResult<()> {
     let mut auto_fallbacks: Vec<String> = Vec::new();
     let mut auto_context_limits: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
-    if args.model == bwoc_harness::model_select::AUTO_SENTINEL {
+    if let Some(run_id) = args.resume.as_deref() {
+        // On --resume we must NOT re-resolve: with no `--task` the resolver
+        // would reclassify the work as Light and could swap the run onto a
+        // smaller/cheaper model mid-history. Reuse the model the run was
+        // checkpointed with (the loop also overrides `active_model` from the
+        // checkpoint, but config.model still feeds the vetted-model gate).
+        if args.model == bwoc_harness::model_select::AUTO_SENTINEL {
+            resolved_model = bwoc_harness::checkpoint::CheckpointConfig::resume(run_id)
+                .ok()
+                .and_then(|c| c.resume)
+                .map(|s| s.active_model)
+                .unwrap_or(resolved_model);
+        }
+    } else if args.model == bwoc_harness::model_select::AUTO_SENTINEL {
         let candidates =
             bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
                 .ok()
@@ -188,8 +201,10 @@ async fn run() -> HarnessResult<()> {
         auto_context_limits = sel.context_limits;
     }
 
-    // Validate model exists before running (spike: wrong tag → 404).
-    if !args.skip_model_check {
+    // Validate model exists before running (spike: wrong tag → 404). Skipped on
+    // resume: the model was validated in the original run and is reloaded from
+    // the checkpoint, not re-supplied here.
+    if !args.skip_model_check && args.resume.is_none() {
         print!("  checking model availability... ");
         provider.validate_model(&resolved_model).await?;
         println!("ok");
