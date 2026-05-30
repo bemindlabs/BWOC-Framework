@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`primaryModel: "auto"` runtime model selection** — an agent's `config.manifest.json` may set `primaryModel` to the literal `"auto"` plus an ordered `autoModels` candidate pool; the harness then resolves a concrete model at run time against the **live** provider rather than pinning one at incarnation. Resolution is a deterministic four-criteria pipeline: availability (`ProviderClient::list_models` ∩ candidates), context fit (`model_context_limit` vs an estimated task-token need), task class (an EN/TH keyword + length heuristic splitting heavy vs light work), and cost (candidate order *is* the cost axis — heavy tasks take the most-capable/most-preferred fitting model, light tasks the cheapest). Scoped to harness backends (`ollama` / `openai-compatible`); vendor CLIs (Claude/Codex/Kimi) self-select, so `"auto"` is a no-op there. The resolver also harvests the remaining available candidates and their probed context limits into the harness's previously-empty `LoopConfig` fallback / token-pressure / context-limit fields. New `bwoc-harness::model_select` module; new `NoAutoCandidate` error when the pool is empty or nothing is reachable. `bwoc new` gains no flag — operators opt in by hand-editing the manifest.
+
 ### Changed
 
 - **`release.yml` drops the `RELEASE_PAT` path (#116, #117)** — the zero-touch PAT hook (added with the #101 fix) was never wired: the secret was unset, so every formula bump used the `GITHUB_TOKEN` fallback (branch push + manual finish command). Removed the PAT plumbing and the now-unused `pull-requests: write` grant; the `bump-formula` job keeps only `contents: write`. No behavior change — the operator still opens + auto-merges the formula PR by hand, as it already did every release.

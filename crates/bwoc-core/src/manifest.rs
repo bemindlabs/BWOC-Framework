@@ -24,6 +24,19 @@ pub struct Manifest {
     pub primary_model: String,
     #[serde(rename = "fallbackModel", skip_serializing_if = "Option::is_none")]
     pub fallback_model: Option<String>,
+    /// Candidate model pool for `primaryModel: "auto"` resolution.
+    ///
+    /// Ordered by operator preference (first = most preferred). Required, and
+    /// only meaningful, when `primary_model == "auto"`: the harness probes
+    /// these against the live provider and picks one by availability,
+    /// context-fit, task class, and cost (preference order is the cost
+    /// tie-break). Ignored when `primary_model` names a concrete model.
+    #[serde(
+        rename = "autoModels",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_models: Option<Vec<String>>,
     #[serde(rename = "memoryPath")]
     pub memory_path: String,
     #[serde(rename = "sessionsPath", skip_serializing_if = "Option::is_none")]
@@ -288,6 +301,7 @@ mod tests {
             agent_role: "demo agent".into(),
             primary_model: "model-x".into(),
             fallback_model: None,
+            auto_models: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -324,6 +338,26 @@ mod tests {
         assert!(!json.contains("\"fallbackModel\""));
         // Trust block absent → no "trust" key in serialized output.
         assert!(!json.contains("\"trust\""));
+    }
+
+    /// `autoModels` is optional: absent → `None` and omitted on serialize;
+    /// present → preserved in order. Drives `primaryModel: "auto"` resolution.
+    #[test]
+    fn auto_models_serde() {
+        // Absent → None, not serialized.
+        let m = sample();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"autoModels\""));
+        assert!(m.auto_models.is_none());
+
+        // Present → order preserved through roundtrip.
+        let mut m2 = sample();
+        m2.primary_model = "auto".into();
+        m2.auto_models = Some(vec!["big".into(), "small".into()]);
+        let json2 = serde_json::to_string(&m2).unwrap();
+        assert!(json2.contains("\"autoModels\":[\"big\",\"small\"]"));
+        let back: Manifest = serde_json::from_str(&json2).unwrap();
+        assert_eq!(back.auto_models, Some(vec!["big".into(), "small".into()]));
     }
 
     // ---- TrustBlock tests ---------------------------------------------------

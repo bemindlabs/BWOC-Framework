@@ -65,6 +65,19 @@ pub trait ProviderClient: Send + Sync {
     async fn model_context_limit(&self, _model: &str) -> Option<u32> {
         None
     }
+
+    /// List the model IDs this endpoint currently serves.
+    ///
+    /// Used by `primaryModel: "auto"` resolution to filter the candidate pool
+    /// down to models the provider can actually reach. Best-effort, like
+    /// [`Self::model_context_limit`]: a network/parse failure or an endpoint
+    /// that doesn't implement model listing returns an **empty** Vec, which the
+    /// resolver reads as "availability unknown — don't filter on it" rather than
+    /// "nothing available". The default returns empty so non-listing providers
+    /// degrade gracefully.
+    async fn list_models(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +259,32 @@ impl ProviderClient for OllamaClient {
         } else {
             Err(HarnessError::ModelNotFound(model.to_string()))
         }
+    }
+
+    /// List served model IDs via `GET /v1/models`.
+    ///
+    /// Mirrors [`Self::validate_model`]'s parsing of the OpenAI-compat list
+    /// shape (`{"data": [{"id": ...}, ...]}`). Any failure — request error,
+    /// non-2xx, or parse error — yields an empty Vec so the auto-resolver
+    /// degrades to "availability unknown" instead of failing the run.
+    async fn list_models(&self) -> Vec<String> {
+        let Ok(resp) = self.client.get(self.models_url()).send().await else {
+            return Vec::new();
+        };
+        if !resp.status().is_success() {
+            return Vec::new();
+        }
+        let Ok(body) = resp.json::<Value>().await else {
+            return Vec::new();
+        };
+        body["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m["id"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Query Ollama's native `POST /api/show` endpoint for the model's

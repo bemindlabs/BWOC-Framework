@@ -846,6 +846,7 @@ mod tests {
             agent_role: "demo".into(),
             primary_model: "m".into(),
             fallback_model: None,
+            auto_models: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,

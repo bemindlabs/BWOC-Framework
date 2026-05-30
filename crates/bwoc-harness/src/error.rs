@@ -29,6 +29,18 @@ pub enum HarnessError {
         last_error: String,
     },
 
+    /// `primaryModel: "auto"` resolution could not pick a model: either the
+    /// candidate pool was empty/missing, or none of the candidates survived the
+    /// availability + context-fit filters.
+    #[error(
+        "auto model selection found no usable candidate: {reason} \
+         (candidates: {candidates:?})"
+    )]
+    NoAutoCandidate {
+        reason: String,
+        candidates: Vec<String>,
+    },
+
     /// The configured model is not in the vetted-models allowlist and
     /// `vetted_mode` is `Enforce`.  The loop refused to start.
     #[error(

@@ -34,6 +34,7 @@ pub mod error;
 pub mod eval;
 pub mod lead;
 pub mod mcp;
+pub mod model_select;
 pub mod policy;
 pub mod provider;
 pub mod queue;

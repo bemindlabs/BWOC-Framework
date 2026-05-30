@@ -155,10 +155,43 @@ async fn run() -> HarnessResult<()> {
     // ── Provider ──────────────────────────────────────────────────────────
     let provider: Arc<dyn ProviderClient> = Arc::new(OllamaClient::new(args.endpoint.clone()));
 
+    // ── Auto model selection (primaryModel: "auto") ───────────────────────
+    // When the agent's manifest declares `primaryModel: "auto"`, `bwoc run`
+    // passes the literal sentinel through as --model. Resolve it now against
+    // the live provider using the manifest's `autoModels` pool, and harvest the
+    // by-products (fallback chain, probed context limits) so the LoopConfig
+    // fields below get populated from real provider data rather than left empty.
+    let mut resolved_model = args.model.clone();
+    let mut auto_fallbacks: Vec<String> = Vec::new();
+    let mut auto_context_limits: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    if args.model == bwoc_harness::model_select::AUTO_SENTINEL {
+        let candidates =
+            bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
+                .ok()
+                .and_then(|m| m.auto_models)
+                .unwrap_or_default();
+        let task_for_class = args.task.as_deref().unwrap_or("");
+        print!(
+            "  resolving auto model from {} candidate(s)... ",
+            candidates.len()
+        );
+        let sel = bwoc_harness::model_select::resolve_auto(
+            provider.as_ref(),
+            &candidates,
+            task_for_class,
+        )
+        .await?;
+        println!("→ {}", sel.chosen);
+        resolved_model = sel.chosen;
+        auto_fallbacks = sel.remaining;
+        auto_context_limits = sel.context_limits;
+    }
+
     // Validate model exists before running (spike: wrong tag → 404).
     if !args.skip_model_check {
         print!("  checking model availability... ");
-        provider.validate_model(&args.model).await?;
+        provider.validate_model(&resolved_model).await?;
         println!("ok");
     }
 
@@ -253,8 +286,11 @@ async fn run() -> HarnessResult<()> {
 
     // ── Loop config ───────────────────────────────────────────────────────
     let config = LoopConfig {
-        model: args.model.clone(),
-        fallback_models: Vec::new(),
+        model: resolved_model.clone(),
+        // For an auto-resolved run these carry the remaining available
+        // candidates (preference order) + their probed context limits; for a
+        // concrete model they stay empty, preserving prior behaviour.
+        fallback_models: auto_fallbacks.clone(),
         vetted_models: Vec::new(),
         vetted_mode,
         max_iterations: args.max_iterations,
@@ -262,8 +298,8 @@ async fn run() -> HarnessResult<()> {
         policy,
         is_tty,
         context_limit: 0, // no compaction by default; operator sets via config
-        model_context_limits: std::collections::HashMap::new(),
-        token_pressure_models: Vec::new(),
+        model_context_limits: auto_context_limits,
+        token_pressure_models: auto_fallbacks,
         checkpoint,
         budget: bwoc_harness::budget::BudgetConfig {
             max_tokens: args.token_budget,

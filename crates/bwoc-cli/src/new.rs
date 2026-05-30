@@ -996,6 +996,9 @@ fn build_manifest(r: &Resolved) -> Manifest {
         agent_role: r.role.clone(),
         primary_model: r.primary_model.clone(),
         fallback_model: r.fallback_model.clone(),
+        // `bwoc new` does not expose an --auto-models flag; operators opt into
+        // `primaryModel: "auto"` by hand-editing the manifest's `autoModels`.
+        auto_models: None,
         memory_path: r.memory_path.clone(),
         sessions_path: r.sessions_path.clone(),
         deep_memory_cmd: r.deep_memory_cmd.clone(),
