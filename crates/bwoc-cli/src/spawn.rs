@@ -97,6 +97,31 @@ impl Backend {
         matches!(self, Backend::Ollama | Backend::OpenAiCompatible)
     }
 
+    /// CLI args that set the reasoning-effort level for a **vendor** backend,
+    /// given the manifest's `reasoningEffort` value. Empty when the backend's
+    /// CLI exposes no effort control.
+    ///
+    /// Verified against each installed CLI:
+    /// - Claude — `--effort <v>` (`low|medium|high|xhigh|max`).
+    /// - Codex — `-c model_reasoning_effort=<v>` (a `~/.codex/config.toml`
+    ///   override; `minimal|low|medium|high`).
+    /// - Antigravity / Kimi — no effort-*level* flag (Kimi has only a boolean
+    ///   `--thinking`; Antigravity has none), so nothing is passed.
+    ///
+    /// The value is forwarded verbatim — `reasoningEffort`'s value space is
+    /// backend-specific by design, so the operator supplies a level their
+    /// backend accepts. Harness backends are absent here: the harness reads
+    /// `reasoningEffort` from the manifest itself.
+    pub fn vendor_effort_args(self, effort: &str) -> Vec<String> {
+        match self {
+            Backend::Claude => vec!["--effort".to_string(), effort.to_string()],
+            Backend::Codex => vec!["-c".to_string(), format!("model_reasoning_effort={effort}")],
+            Backend::Antigravity | Backend::Kimi | Backend::Ollama | Backend::OpenAiCompatible => {
+                Vec::new()
+            }
+        }
+    }
+
     /// Curated catalog of common LLM model identifiers per backend, surfaced
     /// in the `bwoc new` interactive picker. First entry is the recommended
     /// default. Free-text input is still accepted for unlisted models — this
@@ -259,16 +284,17 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     // ── Spawn the backend ────────────────────────────────────────────────────
     // Harness backends (Ollama, OpenAiCompatible) → exec bwoc-harness.
     // Vendor backends (Claude, Antigravity, Codex, Kimi) → exec their CLI.
+    // Load the manifest once (best-effort) — used for harness `--endpoint` /
+    // `--model` forwarding and vendor `reasoningEffort` passthrough.
+    let manifest_path = path.join("config.manifest.json");
+    let manifest = Manifest::load_from_path(&manifest_path).ok();
+
     let mut cmd = if args.backend.uses_harness() {
-        // Read the manifest *before* locating the harness binary so that a
-        // missing-baseUrl error is reported before a harness-not-found error.
-        // This ordering matters for `openai-compatible` where baseUrl is
-        // required; a clear config error should take priority over a binary
-        // lookup error.
-        let manifest_path = path.join("config.manifest.json");
-        let base_url: Option<String> = Manifest::load_from_path(&manifest_path)
-            .ok()
-            .and_then(|m| m.base_url);
+        // Read baseUrl *before* locating the harness binary so a missing-baseUrl
+        // error is reported before a harness-not-found error. This ordering
+        // matters for `openai-compatible` where baseUrl is required; a clear
+        // config error should take priority over a binary lookup error.
+        let base_url: Option<String> = manifest.as_ref().and_then(|m| m.base_url.clone());
 
         // For OpenAiCompatible, enforce that baseUrl is present before we
         // bother finding (or failing to find) the harness binary.
@@ -296,6 +322,17 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
             _ => unreachable!("uses_harness() only true for Ollama and OpenAiCompatible"),
         }
 
+        // Forward the manifest's primaryModel as `--model` so harness backends
+        // honour the agent's configured model (including the `"auto"` sentinel)
+        // rather than falling back to the harness default. Skipped when the
+        // caller already passed `--model`/`-m` in `--extra` (harness clap would
+        // reject the duplicate).
+        if let Some(model) = manifest.as_ref().map(|m| m.primary_model.clone()) {
+            if !extra_has_model(&args.extra) {
+                c.arg("--model").arg(model);
+            }
+        }
+
         c.args(&args.extra);
         c
     } else {
@@ -304,7 +341,23 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
             .cli_name()
             .expect("vendor backend always has a cli_name");
         let mut c = Command::new(cli);
-        c.current_dir(&path).args(&args.extra);
+        c.current_dir(&path);
+
+        // Pass `reasoningEffort` through to vendor CLIs that support it.
+        if let Some(effort) = manifest.as_ref().and_then(|m| m.reasoning_effort.clone()) {
+            let eff_args = args.backend.vendor_effort_args(&effort);
+            if eff_args.is_empty() {
+                eprintln!(
+                    "[bwoc spawn] note: backend `{}` has no reasoning-effort CLI control; \
+                     ignoring reasoningEffort=\"{effort}\"",
+                    args.backend.display_name()
+                );
+            } else if !extra_has_effort(&args.extra, args.backend) {
+                c.args(&eff_args);
+            }
+        }
+
+        c.args(&args.extra);
         c
     };
 
@@ -348,6 +401,29 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     }
 
     Ok(status.code().unwrap_or(1))
+}
+
+/// True if `--extra` already carries a `--model` / `-m` flag. We avoid
+/// forwarding the manifest model in that case so the harness's clap parser
+/// doesn't reject a duplicate `--model`.
+fn extra_has_model(extra: &[OsString]) -> bool {
+    extra
+        .iter()
+        .filter_map(|a| a.to_str())
+        .any(|s| s == "--model" || s == "-m" || s.starts_with("--model="))
+}
+
+/// True if `--extra` already sets the reasoning-effort flag for `backend`, so
+/// the caller's explicit choice wins over the manifest value.
+fn extra_has_effort(extra: &[OsString], backend: Backend) -> bool {
+    extra
+        .iter()
+        .filter_map(|a| a.to_str())
+        .any(|s| match backend {
+            Backend::Claude => s == "--effort" || s.starts_with("--effort="),
+            Backend::Codex => s.contains("model_reasoning_effort"),
+            _ => false,
+        })
 }
 
 /// Walk up from `start` to find the nearest `.bwoc/workspace.toml`.
@@ -432,6 +508,53 @@ fn validate_agent_path(path: &Path) -> Result<(), SpawnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vendor_effort_args_per_backend() {
+        // Claude → --effort <v>
+        assert_eq!(
+            Backend::Claude.vendor_effort_args("max"),
+            vec!["--effort".to_string(), "max".to_string()]
+        );
+        // Codex → -c model_reasoning_effort=<v>
+        assert_eq!(
+            Backend::Codex.vendor_effort_args("high"),
+            vec!["-c".to_string(), "model_reasoning_effort=high".to_string()]
+        );
+        // No effort-level CLI control → empty (nothing passed).
+        assert!(Backend::Kimi.vendor_effort_args("high").is_empty());
+        assert!(Backend::Antigravity.vendor_effort_args("high").is_empty());
+        assert!(Backend::Ollama.vendor_effort_args("high").is_empty());
+    }
+
+    #[test]
+    fn extra_has_model_detection() {
+        let yes_long = vec![OsString::from("--model"), OsString::from("x")];
+        let yes_short = vec![OsString::from("-m"), OsString::from("x")];
+        let yes_eq = vec![OsString::from("--model=x")];
+        let no = vec![OsString::from("--foo"), OsString::from("bar")];
+        assert!(extra_has_model(&yes_long));
+        assert!(extra_has_model(&yes_short));
+        assert!(extra_has_model(&yes_eq));
+        assert!(!extra_has_model(&no));
+        assert!(!extra_has_model(&[]));
+    }
+
+    #[test]
+    fn extra_has_effort_detection() {
+        let claude_yes = vec![OsString::from("--effort"), OsString::from("max")];
+        let codex_yes = vec![
+            OsString::from("-c"),
+            OsString::from("model_reasoning_effort=high"),
+        ];
+        // Claude flag does not count as effort for Codex and vice-versa.
+        assert!(extra_has_effort(&claude_yes, Backend::Claude));
+        assert!(!extra_has_effort(&claude_yes, Backend::Codex));
+        assert!(extra_has_effort(&codex_yes, Backend::Codex));
+        assert!(!extra_has_effort(&codex_yes, Backend::Claude));
+        // Backends without effort control never match.
+        assert!(!extra_has_effort(&claude_yes, Backend::Kimi));
+    }
 
     #[test]
     fn backend_cli_names() {
