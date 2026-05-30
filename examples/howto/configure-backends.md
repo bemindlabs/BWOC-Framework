@@ -15,7 +15,7 @@ BWOC supports four declared backends (Samānattatā — equal treatment, no vend
 
 | Backend | CLI binary | Common models |
 |---|---|---|
-| Claude | `claude` | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
+| Claude | `claude` | `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | Antigravity | `agy` | `gemini-3.5-flash-medium`, `gemini-3.1-pro-high`, `claude-sonnet-4.6-thinking`, `gpt-oss-120b-medium` |
 | Codex | `codex` | `gpt-5`, `gpt-5-mini`, `o1` |
 | Kimi | `kimi` | `kimi-k2`, `kimi-k1.5` |

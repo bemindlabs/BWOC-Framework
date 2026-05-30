@@ -107,7 +107,12 @@ impl Backend {
     /// slugs of the picker labels Google surfaces in the `agy` chooser.
     pub fn models(self) -> &'static [&'static str] {
         match self {
-            Backend::Claude => &["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
+            Backend::Claude => &[
+                "claude-opus-4-8",
+                "claude-opus-4-7",
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5",
+            ],
             Backend::Antigravity => &[
                 "gemini-3.5-flash-medium",
                 "gemini-3.5-flash-high",
@@ -117,7 +122,7 @@ impl Backend {
                 "claude-opus-4.6-thinking",
                 "gpt-oss-120b-medium",
             ],
-            Backend::Codex => &["gpt-5", "gpt-5-mini", "o1"],
+            Backend::Codex => &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
             Backend::Kimi => &["kimi-k2", "kimi-k1.5"],
             Backend::Ollama => &[
                 "qwen2.5-coder:7b",
@@ -128,7 +133,7 @@ impl Backend {
             ],
             // OpenAI-compatible endpoint: any model the server supports.
             // These are common examples; free-text input is always accepted.
-            Backend::OpenAiCompatible => &["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+            Backend::OpenAiCompatible => &["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
         }
     }
 
@@ -460,6 +465,12 @@ mod tests {
     #[test]
     fn openai_compatible_has_models() {
         assert!(!Backend::OpenAiCompatible.models().is_empty());
+    }
+
+    #[test]
+    fn gpt_5_5_is_recommended_for_openai_surfaces() {
+        assert_eq!(Backend::Codex.models().first(), Some(&"gpt-5.5"));
+        assert_eq!(Backend::OpenAiCompatible.models().first(), Some(&"gpt-5.5"));
     }
 
     #[test]

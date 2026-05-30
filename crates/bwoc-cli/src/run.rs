@@ -254,10 +254,19 @@ pub fn build_command(
     match backend {
         Backend::Claude => {
             // `claude -p "<task>"` — Claude Code's print/headless mode.
-            Ok((
-                "claude".to_string(),
-                vec!["-p".to_string(), task.to_string()],
-            ))
+            let mut args = vec!["-p".to_string()];
+            // Pass through the manifest's reasoningEffort as `--effort <level>`
+            // (Claude Opus 4.8 effort control: low|medium|high|xhigh|max).
+            // Absent manifest / field leaves Claude on its default effort.
+            let manifest_path = agent_dir.join("config.manifest.json");
+            if let Ok(m) = Manifest::load_from_path(&manifest_path) {
+                if let Some(effort) = m.reasoning_effort {
+                    args.push("--effort".to_string());
+                    args.push(effort);
+                }
+            }
+            args.push(task.to_string());
+            Ok(("claude".to_string(), args))
         }
         Backend::Ollama => {
             let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
@@ -578,6 +587,26 @@ mod tests {
         .unwrap();
         assert_eq!(program, "claude");
         assert_eq!(args, ["-p", "hello world"]);
+    }
+
+    #[test]
+    fn claude_dispatch_passes_reasoning_effort_when_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("config.manifest.json"),
+            r#"{
+                "name": "x", "agentId": "agent-x", "agentRole": "r",
+                "primaryModel": "claude-opus-4-8", "reasoningEffort": "max",
+                "memoryPath": "memories/", "lintCmd": "true", "formatCmd": "true",
+                "testCmd": "true", "buildCmd": "true", "version": "2.0"
+            }"#,
+        )
+        .unwrap();
+        let (program, args) =
+            build_command(Backend::Claude, tmp.path(), "do it", "claude-opus-4-8").unwrap();
+        assert_eq!(program, "claude");
+        // Effort flag sits between -p and the positional task.
+        assert_eq!(args, ["-p", "--effort", "max", "do it"]);
     }
 
     #[test]

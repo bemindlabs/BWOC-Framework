@@ -43,7 +43,7 @@ You'll be prompted for required manifest fields. **Press Enter to accept default
 ```
 agentRole (Short role description for this agent): documentation writer
 Common claude models (pick a number, or type a custom model name):
-  1. claude-opus-4-7  (default: 1)
+  1. claude-opus-4-8  (default: 1)
   2. claude-sonnet-4-6
   3. claude-haiku-4-5
 primaryModel (Primary LLM model identifier): ↵

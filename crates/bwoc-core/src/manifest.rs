@@ -37,6 +37,20 @@ pub struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub auto_models: Option<Vec<String>>,
+    /// Reasoning-effort level passed through to the active backend, if it
+    /// supports one.
+    ///
+    /// Backend-neutral and free-form: the **value space is backend-specific**,
+    /// so this carries the operator's literal string rather than a fixed
+    /// mapping. The OpenAI-compatible harness sends this as
+    /// `reasoning_effort` on completion requests; backends without an effort
+    /// control ignore it. `None` = leave the backend on its own default.
+    #[serde(
+        rename = "reasoningEffort",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_effort: Option<String>,
     #[serde(rename = "memoryPath")]
     pub memory_path: String,
     #[serde(rename = "sessionsPath", skip_serializing_if = "Option::is_none")]
@@ -302,6 +316,7 @@ mod tests {
             primary_model: "model-x".into(),
             fallback_model: None,
             auto_models: None,
+            reasoning_effort: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -358,6 +373,23 @@ mod tests {
         assert!(json2.contains("\"autoModels\":[\"big\",\"small\"]"));
         let back: Manifest = serde_json::from_str(&json2).unwrap();
         assert_eq!(back.auto_models, Some(vec!["big".into(), "small".into()]));
+    }
+
+    /// `reasoningEffort` is optional: absent → `None` and omitted on
+    /// serialize; present → preserved verbatim (free-form, backend-mapped).
+    #[test]
+    fn reasoning_effort_serde() {
+        let m = sample();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"reasoningEffort\""));
+        assert!(m.reasoning_effort.is_none());
+
+        let mut m2 = sample();
+        m2.reasoning_effort = Some("max".into());
+        let json2 = serde_json::to_string(&m2).unwrap();
+        assert!(json2.contains("\"reasoningEffort\":\"max\""));
+        let back: Manifest = serde_json::from_str(&json2).unwrap();
+        assert_eq!(back.reasoning_effort, Some("max".into()));
     }
 
     // ---- TrustBlock tests ---------------------------------------------------

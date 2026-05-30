@@ -90,6 +90,10 @@ pub trait ProviderClient: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct OllamaClient {
     pub base_url: String,
+    /// Optional `reasoning_effort` sent on every completion request. `None`
+    /// leaves the field off the body (provider default). Set via
+    /// [`Self::with_reasoning_effort`] from the agent's manifest.
+    reasoning_effort: Option<String>,
     client: Client,
 }
 
@@ -98,6 +102,7 @@ impl OllamaClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
+            reasoning_effort: None,
             client: Client::new(),
         }
     }
@@ -105,6 +110,14 @@ impl OllamaClient {
     /// Create a client pointing at the default Ollama endpoint.
     pub fn default_endpoint() -> Self {
         Self::new("http://localhost:11434/v1")
+    }
+
+    /// Set the `reasoning_effort` sent on every completion request (OpenAI-
+    /// compatible effort control). `None` is a no-op. Returns `self` for
+    /// chaining at construction.
+    pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort;
+        self
     }
 
     fn completions_url(&self) -> String {
@@ -140,7 +153,13 @@ impl ProviderClient for OllamaClient {
         tools: Vec<Tool>,
         model: &str,
     ) -> Result<ChatCompletion, HarnessError> {
-        let body = build_request_body(messages, tools, model, false);
+        let body = build_request_body(
+            messages,
+            tools,
+            model,
+            false,
+            self.reasoning_effort.as_deref(),
+        );
 
         let resp = self
             .client
@@ -175,7 +194,13 @@ impl ProviderClient for OllamaClient {
         use bytes::Bytes;
         use futures_util::{StreamExt, TryStreamExt};
 
-        let body = build_request_body(messages, tools, model, true);
+        let body = build_request_body(
+            messages,
+            tools,
+            model,
+            true,
+            self.reasoning_effort.as_deref(),
+        );
 
         let resp = self
             .client
@@ -356,6 +381,7 @@ fn build_request_body(
     tools: Vec<Tool>,
     model: &str,
     stream: bool,
+    reasoning_effort: Option<&str>,
 ) -> Value {
     let mut body = json!({
         "model": model,
@@ -365,6 +391,12 @@ fn build_request_body(
 
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools).unwrap_or(Value::Array(vec![]));
+    }
+
+    // OpenAI-compatible effort control. Only emitted when configured; providers
+    // that don't understand it (e.g. plain Ollama) ignore the extra field.
+    if let Some(effort) = reasoning_effort {
+        body["reasoning_effort"] = json!(effort);
     }
 
     // Ask for token usage on the streaming path (HV2-7).  Providers that don't
@@ -393,6 +425,38 @@ pub(crate) fn classify_http_error(status: u16, body: &str) -> HarnessError {
         HarnessError::TransientProvider(format!("HTTP {status}: {body}"))
     } else {
         HarnessError::Provider(format!("HTTP {status}: {body}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_body_omits_reasoning_effort_by_default() {
+        let body = build_request_body(
+            vec![ChatMessage::user("task")],
+            Vec::new(),
+            "gpt-5.5",
+            false,
+            None,
+        );
+
+        assert_eq!(body["model"], "gpt-5.5");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn request_body_includes_configured_reasoning_effort() {
+        let body = build_request_body(
+            vec![ChatMessage::user("task")],
+            Vec::new(),
+            "gpt-5.5",
+            false,
+            Some("medium"),
+        );
+
+        assert_eq!(body["reasoning_effort"], "medium");
     }
 }
 

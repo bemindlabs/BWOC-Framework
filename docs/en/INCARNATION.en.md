@@ -59,7 +59,7 @@ The script copies the template, creates backend symlinks (`CLAUDE.md`, `AGY.md`,
   ```bash
   bwoc new <name> \
     --role "database schema reviewer" \
-    --primary-model claude-opus-4-7 \
+    --primary-model claude-opus-4-8 \
     --fallback-model claude-haiku-4-5 \
     --lint-cmd "cargo clippy" \
     --format-cmd "cargo fmt" \

@@ -243,13 +243,41 @@ ln -s AGENTS.md OLLAMA.md
 
 ```json
 {
-  "model": "gemma4",
+  "primaryModel": "gemma4",
   "fallbackModel": "qwen2.5-coder:7b",
   "contextLimit": 8192
 }
 ```
 
 `fallbackModel` จะถูกลองใช้ถ้า primary model สร้าง tool call ผิดรูปแบบซ้ำๆ เกินสองครั้ง `contextLimit` trigger history compaction (ตัด-พร้อม-marker) เมื่อ context token ใกล้ถึงขีดจำกัด
+
+สำหรับ endpoint แบบ OpenAI-compatible ที่ serve GPT-5.5 ให้ใช้ model ชัดเจน
+หรือ pool สำหรับเลือกตอน runtime:
+
+```json
+{
+  "backend": "openai-compatible",
+  "baseUrl": "https://api.openai.com/v1",
+  "primaryModel": "auto",
+  "autoModels": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
+  "reasoningEffort": "medium"
+}
+```
+
+`primaryModel: "auto"` รักษาความเป็นกลางต่อ backend ของ BWOC และให้ harness
+เลือกจาก model ที่ provider ปัจจุบัน serve จริง ใส่ model capability สูงสุดไว้
+ก่อน และ fallback ที่ถูกกว่า/latency ต่ำกว่าไว้ทีหลัง; resolver ใช้ลำดับนี้
+เป็นแกน cost หลังตรวจ availability และ context-fit แล้ว
+
+OpenAI แนะนำ GPT-5.5 สำหรับงาน coding และ agent workflow ที่ต้อง reasoning มาก
+โดยใช้ `medium` reasoning effort เป็นจุดเริ่มต้นที่สมดุล และลอง effort ต่ำกว่า
+ก่อนปิด reasoning ทั้งหมด `reasoningEffort` เป็น optional; ถ้าตั้งค่าไว้
+harness จะส่งเป็น `reasoning_effort` ใน request แบบ OpenAI-compatible completion
+ปัจจุบัน BWOC harness ยังพูดผ่าน surface OpenAI-compatible `/v1/chat/completions`
+เพื่อให้รันได้ทั้ง Ollama และ provider compatible อื่นๆ adapter แบบ native
+Responses API คือขั้นถัดไปสำหรับ control reasoning ของ GPT-5.5 แบบเต็ม ระหว่างนี้
+ให้ `AGENTS.md` เน้น outcome, ลด prompt scaffolding แบบบอกขั้นตอนละเอียดเกินจำเป็น,
+และระบุ completion criteria ให้ชัดเจน
 
 ---
 

@@ -202,11 +202,12 @@ BWOC supports 5 declared backends (Samānattatā — equal treatment, no lock-in
 
   | Backend     | CLI binary    | Common models                                          |
   |-------------|---------------|--------------------------------------------------------|
-  | Claude      | claude        | claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5   |
+  | Claude      | claude        | claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5   |
   | Antigravity | agy           | gemini-3.5-flash-*, gemini-3.1-pro-*, claude-*-thinking, gpt-oss-120b-* |
-  | Codex       | codex         | gpt-5, gpt-5-mini, o1                                  |
+  | Codex       | codex         | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex          |
   | Kimi        | kimi          | kimi-k2, kimi-k1.5                                     |
   | Ollama      | bwoc-harness  | qwen2.5-coder:7b, llama3.1:8b, mistral-nemo, gemma4:8b |
+  | OpenAI-compatible | bwoc-harness | gpt-5.5, gpt-5.5-pro, gpt-5.4, gpt-5.4-mini       |
 
 Each agent picks ONE backend at incarnation, recorded in its
 config.manifest.json (primaryModel + optional fallbackModel) and in
@@ -295,6 +296,7 @@ Schema (resolved by `bwoc new`, written verbatim — no placeholders):
     agentId           always \"agent-{name}\" (auto-derived)
     agentRole         one-or-two-word role description
     primaryModel      LLM model identifier (e.g. \"claude-opus-4-7\")
+                      or \"auto\" for harness-backed runtime selection
     lintCmd           shell command for lint
     formatCmd         shell command for format check
     testCmd           shell command for tests
@@ -305,6 +307,8 @@ Schema (resolved by `bwoc new`, written verbatim — no placeholders):
 
   Optional (no prompt; pass --flag if you want them):
     fallbackModel     fallback LLM model identifier
+    autoModels        ordered candidate pool used when primaryModel=\"auto\"
+    reasoningEffort   optional backend effort control (e.g. \"medium\")
     sessionsPath      session data dir for Tier 2 memory mining
     deepMemoryCmd     Tier 2 memory CLI command
     worktreeBase      base path for spawned worktrees

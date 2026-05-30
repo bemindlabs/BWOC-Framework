@@ -153,7 +153,18 @@ async fn run() -> HarnessResult<()> {
     }
 
     // ── Provider ──────────────────────────────────────────────────────────
-    let provider: Arc<dyn ProviderClient> = Arc::new(OllamaClient::new(args.endpoint.clone()));
+    // Pick up an optional `reasoningEffort` from the agent's manifest and send
+    // it as `reasoning_effort` on every completion (OpenAI-compat effort
+    // control). Absent manifest / field ≡ provider default.
+    let reasoning_effort =
+        bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
+            .ok()
+            .and_then(|m| m.reasoning_effort);
+    if let Some(ref e) = reasoning_effort {
+        println!("  effort   : {e}");
+    }
+    let provider: Arc<dyn ProviderClient> =
+        Arc::new(OllamaClient::new(args.endpoint.clone()).with_reasoning_effort(reasoning_effort));
 
     // ── Auto model selection (primaryModel: "auto") ───────────────────────
     // When the agent's manifest declares `primaryModel: "auto"`, `bwoc run`

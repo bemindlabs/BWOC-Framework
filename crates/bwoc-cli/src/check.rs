@@ -27,6 +27,7 @@ const HARDCODED_MODELS: &[&str] = &[
     "gemini-2",
     "gemini-1",
     "gemini-pro",
+    "gpt-5",
     "gpt-4",
     "gpt-3",
     "gpt-oss",

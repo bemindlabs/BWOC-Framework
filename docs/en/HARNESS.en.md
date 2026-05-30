@@ -243,13 +243,41 @@ No other change required. The harness reads the same `AGENTS.md` every other bac
 
 ```json
 {
-  "model": "gemma4",
+  "primaryModel": "gemma4",
   "fallbackModel": "qwen2.5-coder:7b",
   "contextLimit": 8192
 }
 ```
 
 `fallbackModel` is tried if the primary model produces malformed tool calls more than twice in a row. `contextLimit` triggers history compaction (truncate-with-marker strategy) when the estimated context token count approaches the limit.
+
+For OpenAI-compatible endpoints serving GPT-5.5, prefer an explicit model or
+runtime selection pool:
+
+```json
+{
+  "backend": "openai-compatible",
+  "baseUrl": "https://api.openai.com/v1",
+  "primaryModel": "auto",
+  "autoModels": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
+  "reasoningEffort": "medium"
+}
+```
+
+`primaryModel: "auto"` keeps BWOC backend-neutral while letting the harness
+choose from models the live provider actually serves. Put the highest-capability
+model first and cheaper/lower-latency fallbacks later; the resolver uses that
+order as its cost axis after availability and context-fit checks.
+
+OpenAI recommends GPT-5.5 for reasoning-heavy coding and agent workflows, with
+`medium` reasoning effort as the balanced starting point and lower effort
+evaluated before disabling reasoning. `reasoningEffort` is optional; when set,
+the harness sends it as `reasoning_effort` on OpenAI-compatible completion
+requests. The current BWOC harness still speaks the OpenAI-compatible
+`/v1/chat/completions` surface so it can also run Ollama and other compatible
+providers. A native Responses API adapter is the right next step for full
+GPT-5.5 reasoning controls; until then, keep `AGENTS.md` outcome-first, avoid
+process-heavy prompt scaffolding, and make completion criteria explicit.
 
 ---
 
