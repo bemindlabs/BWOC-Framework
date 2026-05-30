@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.30-0] — 2026-05-30 — 2.16.0
+
+**Minor release.** Frontier-model surface + self-hosted runtime model control: `primaryModel: "auto"` runtime selection (#120), Claude Opus 4.8 + GPT-5.5 model surface with a backend-neutral `reasoningEffort` knob (#121), the declared-backend count canonicalized at six (#122), and `bwoc spawn` forwarding the agent's model + reasoning-effort (#123). Also bundles the previously-unreleased CI least-privilege + `release.yml` hardening (#116–#118). Cargo SemVer `2.15.0` → `2.16.0`.
+
 ### Added
 
 - **`primaryModel: "auto"` runtime model selection** — an agent's `config.manifest.json` may set `primaryModel` to the literal `"auto"` plus an ordered `autoModels` candidate pool; the harness then resolves a concrete model at run time against the **live** provider rather than pinning one at incarnation. Resolution is a deterministic four-criteria pipeline: availability (`ProviderClient::list_models` ∩ candidates), context fit (`model_context_limit` vs an estimated task-token need), task class (an EN/TH keyword + length heuristic splitting heavy vs light work), and cost (candidate order *is* the cost axis — heavy tasks take the most-capable/most-preferred fitting model, light tasks the cheapest). Scoped to harness backends (`ollama` / `openai-compatible`); vendor CLIs (Claude/Codex/Kimi) self-select, so `"auto"` is a no-op there. The resolver also harvests the remaining available candidates and their probed context limits into the harness's previously-empty `LoopConfig` fallback / token-pressure / context-limit fields. New `bwoc-harness::model_select` module; new `NoAutoCandidate` error when the pool is empty or nothing is reachable. `bwoc new` gains no flag — operators opt in by hand-editing the manifest.

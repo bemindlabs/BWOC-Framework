@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.15.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.4.6`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.16.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.4.7`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.5.29-3`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.29-3) *(2026-05-29 — **2.15.0**; gcloud IAM project bindings (EPIC-12, LAST) — `bwoc gcloud iam {get, add, remove}`, get T0 + add/remove T4 (refuse-by-default: workspace `writes_enabled` + typed `member role` confirm) (#99). Prior: `v2026.5.29-2` 2.14.0 — gcloud Cloud Run serverless)*
+**Latest release:** [`v2026.5.30-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.30-0) *(2026-05-30 — **2.16.0**; frontier-model surface + self-hosted runtime model control — `primaryModel: "auto"` runtime selection (#120), Claude Opus 4.8 + GPT-5.5 + backend-neutral `reasoningEffort` (#121), declared-backend count → six (#122), `bwoc spawn` forwards model + effort (#123). Prior: `v2026.5.29-3` 2.15.0 — gcloud IAM project bindings)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-29T06:05:52Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-30T18:57:58Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
