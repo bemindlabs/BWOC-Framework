@@ -12,14 +12,17 @@
 //! Each worker re-applies the full guardrails→permission→sandbox pipeline as a
 //! fresh process, so the lead's authority does not extend into the worker.
 //!
-//! Collection is **sequential** in this first build (submit one worker, await
-//! it, then the next): correct and easy to reason about.  Concurrent
-//! collection up to the queue's capacity is a deferred follow-up — the queue
-//! and per-worktree guard already support it.
+//! Collection runs **up to `--concurrency` workers in parallel**: the lead
+//! keeps that many in flight, claiming + submitting new tasks as earlier ones
+//! finish (`--concurrency 1` reproduces the original one-at-a-time behaviour).
+//! Claim/complete/unclaim and the summary are only ever touched from the single
+//! lead task across `.await` points — never in parallel — so the parallelism is
+//! confined to the queue's worker pool, each worker in its own worktree.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -153,45 +156,65 @@ pub async fn run_lead(
 
     let mut summary = LeadSummary::default();
 
-    for task in source.list_tasks() {
-        if cfg.max_tasks != 0 && summary.claimed >= cfg.max_tasks {
+    // Concurrent collection up to `cfg.capacity` (`--concurrency`): keep that
+    // many workers in flight, claiming + submitting new tasks as earlier ones
+    // finish. `capacity = 1` reproduces the original sequential behaviour. The
+    // `source` claim/complete/unclaim and `summary` are only ever touched from
+    // this one task (across `.await` points, never in parallel), so there is no
+    // shared-state race; the actual parallelism is the queue's worker pool.
+    let cap = cfg.capacity.max(1);
+    let mut pending = source
+        .list_tasks()
+        .into_iter()
+        .filter(|t| t.state == TaskState::Pending);
+    // Each in-flight entry resolves to (task, worktree, worker-result).
+    let mut inflight = FuturesUnordered::new();
+
+    loop {
+        // Top up to capacity with freshly claimed + submitted tasks.
+        while inflight.len() < cap {
+            if cfg.max_tasks != 0 && summary.claimed >= cfg.max_tasks {
+                break;
+            }
+            let Some(task) = pending.next() else { break };
+            // Claim — skips blocked/already-claimed tasks.
+            if source.claim(&task.id, &cfg.agent_id).is_err() {
+                continue;
+            }
+            summary.claimed += 1;
+
+            let worktree = cfg.worktree_base.join(&task.id);
+            if let Err(e) = git_worktree_add(&cfg.repo_root, &worktree) {
+                eprintln!(
+                    "[bwoc-harness] lead: worktree add failed for `{}`: {e}",
+                    task.id
+                );
+                let _ = source.unclaim(&task.id, &cfg.agent_id);
+                summary.failed += 1;
+                continue;
+            }
+
+            let (tx, rx) = oneshot::channel();
+            let item = WorkItem {
+                task: task.clone(),
+                worktree_path: worktree.clone(),
+                result_tx: tx,
+            };
+            if let Err(e) = queue.submit(item).await {
+                eprintln!("[bwoc-harness] lead: submit failed for `{}`: {e}", task.id);
+                let _ = git_worktree_remove(&cfg.repo_root, &worktree);
+                let _ = source.unclaim(&task.id, &cfg.agent_id);
+                summary.failed += 1;
+                continue;
+            }
+            inflight.push(async move { (task, worktree, rx.await) });
+        }
+
+        // Drain one completed worker (or stop when nothing is left).
+        let Some((task, worktree, res)) = inflight.next().await else {
             break;
-        }
-        if task.state != TaskState::Pending {
-            continue;
-        }
-        // Claim — skips blocked/already-claimed tasks.
-        if source.claim(&task.id, &cfg.agent_id).is_err() {
-            continue;
-        }
-        summary.claimed += 1;
-
-        let worktree = cfg.worktree_base.join(&task.id);
-        if let Err(e) = git_worktree_add(&cfg.repo_root, &worktree) {
-            eprintln!(
-                "[bwoc-harness] lead: worktree add failed for `{}`: {e}",
-                task.id
-            );
-            let _ = source.unclaim(&task.id, &cfg.agent_id);
-            summary.failed += 1;
-            continue;
-        }
-
-        let (tx, rx) = oneshot::channel();
-        let item = WorkItem {
-            task: task.clone(),
-            worktree_path: worktree.clone(),
-            result_tx: tx,
         };
-        if let Err(e) = queue.submit(item).await {
-            eprintln!("[bwoc-harness] lead: submit failed for `{}`: {e}", task.id);
-            let _ = git_worktree_remove(&cfg.repo_root, &worktree);
-            let _ = source.unclaim(&task.id, &cfg.agent_id);
-            summary.failed += 1;
-            continue;
-        }
-
-        match rx.await {
+        match res {
             Ok(Ok(())) => {
                 if let Err(e) = source.complete(&task.id, &cfg.agent_id) {
                     eprintln!(
@@ -231,6 +254,8 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
     /// Mock runner returning a per-task-id verdict (no real subprocess).
     struct ScriptedRunner {
         fail_ids: Vec<String>,
@@ -244,6 +269,62 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    /// Runner that records the peak number of concurrently-running workers, so a
+    /// test can assert the lead actually parallelises up to `--concurrency`.
+    struct ConcurrencyRunner {
+        inflight: AtomicUsize,
+        max_seen: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl SpawnRunner for ConcurrencyRunner {
+        async fn run(&self, _spec: &WorkerSpec) -> HarnessResult<()> {
+            let now = self.inflight.fetch_add(1, SeqCst) + 1;
+            self.max_seen.fetch_max(now, SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            self.inflight.fetch_sub(1, SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn lead_runs_workers_concurrently_up_to_capacity() {
+        let repo = temp_repo();
+        let source =
+            InMemoryTaskSource::new(vec![pending("a"), pending("b"), pending("c"), pending("d")]);
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let runner = Arc::new(ConcurrencyRunner {
+            inflight: AtomicUsize::new(0),
+            max_seen: max_seen.clone(),
+        });
+        let mut cfg = lead_cfg(&repo);
+        cfg.capacity = 3;
+        let summary = run_lead(&source, runner, &cfg).await.unwrap();
+        assert_eq!(summary.completed, 4);
+        let peak = max_seen.load(SeqCst);
+        assert!(peak >= 2, "expected parallel workers, peak was {peak}");
+        assert!(peak <= 3, "peak {peak} exceeded --concurrency 3");
+    }
+
+    #[tokio::test]
+    async fn lead_capacity_one_stays_sequential() {
+        let repo = temp_repo();
+        let source = InMemoryTaskSource::new(vec![pending("a"), pending("b"), pending("c")]);
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let runner = Arc::new(ConcurrencyRunner {
+            inflight: AtomicUsize::new(0),
+            max_seen: max_seen.clone(),
+        });
+        let mut cfg = lead_cfg(&repo);
+        cfg.capacity = 1;
+        let summary = run_lead(&source, runner, &cfg).await.unwrap();
+        assert_eq!(summary.completed, 3);
+        assert_eq!(
+            max_seen.load(SeqCst),
+            1,
+            "capacity 1 must run one at a time"
+        );
     }
 
     /// A throwaway git repo with one commit so worktrees can branch off HEAD.

@@ -10,8 +10,9 @@
 //!    I/O are the CLI's responsibility; this module works with an injected
 //!    [`TaskSource`] trait so tests can drive it with an in-memory mock).
 //!
-//! 2. **Bounded concurrency**: admits at most `capacity` items at once; back-
-//!    pressure is applied to callers that try to enqueue beyond the limit.
+//! 2. **Bounded concurrency**: runs up to `capacity` workers in parallel (a
+//!    `Semaphore` gates execution); back-pressure is applied to callers that
+//!    try to enqueue beyond the limit. `capacity == 1` is one-at-a-time.
 //!
 //! 3. **One-in-flight per worktree**: a second enqueue for a task that
 //!    maps to the same `worktree_path` is rejected with [`QueueError::Busy`].
@@ -35,7 +36,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use bwoc_core::team::{Task, TaskState};
@@ -234,7 +235,7 @@ impl TaskQueue {
         let ctx = RunnerCtx { runner, config };
 
         tokio::spawn(async move {
-            run_worker(rx, in_flight_worker, cancel_worker, ctx).await;
+            run_worker(rx, in_flight_worker, cancel_worker, ctx, capacity.max(1)).await;
         });
 
         Self {
@@ -304,47 +305,62 @@ async fn run_worker(
     in_flight: Arc<Mutex<HashSet<PathBuf>>>,
     cancel: CancellationToken,
     ctx: RunnerCtx,
+    capacity: usize,
 ) {
-    loop {
-        tokio::select! {
+    // Up to `capacity` items execute at once: acquire a permit *before* taking
+    // an item, so no more than `capacity` workers run concurrently, then spawn
+    // the work so the accept loop is free to admit the next one. `capacity == 1`
+    // reproduces the original one-at-a-time behaviour.
+    let sem = Arc::new(Semaphore::new(capacity));
+    let mut handles = Vec::new();
+
+    'accept: loop {
+        let permit = tokio::select! {
             biased;
+            _ = cancel.cancelled() => break 'accept,
+            // `acquire_owned` only errors on a closed semaphore, which we never do.
+            p = sem.clone().acquire_owned() => p.expect("semaphore open"),
+        };
+        let item = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break 'accept,
+            maybe = rx.recv() => match maybe {
+                Some(it) => it,
+                None => break 'accept, // all senders dropped
+            },
+        };
 
-            _ = cancel.cancelled() => {
-                // Drain remaining items and report cancellation.
-                while let Ok(item) = rx.try_recv() {
-                    // Release the worktree slot before reporting the error.
-                    in_flight.lock().unwrap().remove(&item.worktree_path);
-                    let _ = item.result_tx.send(Err(HarnessError::Other(
-                        "queue cancelled".to_string(),
-                    )));
-                }
-                break;
-            }
+        let in_flight = Arc::clone(&in_flight);
+        let cancel = cancel.clone();
+        let ctx = ctx.clone();
+        handles.push(tokio::spawn(async move {
+            let worktree = item.worktree_path.clone();
+            // Race the worker against cancellation so an in-flight worker is
+            // interrupted, not merely stopped between items. `kill_on_drop` on
+            // the subprocess runner reaps the child when its future is dropped.
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Err(HarnessError::Other("queue cancelled".to_string())),
+                r = execute_item(&item, &ctx) => r,
+            };
+            in_flight.lock().unwrap().remove(&worktree);
+            // Send outcome (ignore if the receiver has already dropped).
+            let _ = item.result_tx.send(result);
+            drop(permit); // free the slot only once the worker is fully done
+        }));
+    }
 
-            maybe_item = rx.recv() => {
-                match maybe_item {
-                    None => break, // all senders dropped
-                    Some(item) => {
-                        let worktree = item.worktree_path.clone();
-                        // Race the worker against cancellation so an in-flight
-                        // worker is interrupted, not merely stopped between
-                        // items.  `kill_on_drop` on the subprocess runner reaps
-                        // the child when its future is dropped here.
-                        let result = tokio::select! {
-                            biased;
-                            _ = cancel.cancelled() => {
-                                Err(HarnessError::Other("queue cancelled".to_string()))
-                            }
-                            r = execute_item(&item, &ctx) => r,
-                        };
-                        // Release the worktree slot.
-                        in_flight.lock().unwrap().remove(&worktree);
-                        // Send outcome (ignore if the receiver has already dropped).
-                        let _ = item.result_tx.send(result);
-                    }
-                }
-            }
-        }
+    // Drain any items still buffered in the channel as cancelled.
+    while let Ok(item) = rx.try_recv() {
+        in_flight.lock().unwrap().remove(&item.worktree_path);
+        let _ = item
+            .result_tx
+            .send(Err(HarnessError::Other("queue cancelled".to_string())));
+    }
+    // Let in-flight workers finish their own cancellation race (each already
+    // sent its result + released its worktree slot).
+    for h in handles {
+        let _ = h.await;
     }
 }
 
