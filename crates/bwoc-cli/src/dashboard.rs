@@ -447,7 +447,8 @@ fn start_selected_agent(app: &mut App) {
     let root_str = root.to_string_lossy().to_string();
 
     // `--json` requires `--yes` (no TTY prompt path in a captured child).
-    let result = std::process::Command::new(crate::spawn::bwoc_exe())
+    let exe = crate::spawn::bwoc_exe();
+    let result = std::process::Command::new(&exe)
         .args([
             "start",
             entry.id.as_str(),
@@ -483,7 +484,7 @@ fn start_selected_agent(app: &mut App) {
             app.last_action = Some(format!("start '{}' failed: {first}", entry.id));
         }
         Err(e) => {
-            app.last_action = Some(format!("start exec failed: {e} (is bwoc on PATH?)"));
+            app.last_action = Some(format!("start exec failed: {e} (tried to run `{exe}`)"));
         }
     }
 }
@@ -507,7 +508,8 @@ fn stop_selected_agent(app: &mut App) {
     };
     let root_str = root.to_string_lossy().to_string();
 
-    let result = std::process::Command::new(crate::spawn::bwoc_exe())
+    let exe = crate::spawn::bwoc_exe();
+    let result = std::process::Command::new(&exe)
         .args([
             "stop",
             entry.id.as_str(),
@@ -552,7 +554,7 @@ fn stop_selected_agent(app: &mut App) {
             app.last_action = Some(format!("stop '{}' failed: {first}", entry.id));
         }
         Err(e) => {
-            app.last_action = Some(format!("stop exec failed: {e} (is bwoc on PATH?)"));
+            app.last_action = Some(format!("stop exec failed: {e} (tried to run `{exe}`)"));
         }
     }
 }
