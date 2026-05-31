@@ -497,6 +497,9 @@ pub async fn run_loop(
         // ── Turn builder (telemetry) ──────────────────────────────────────────
         let mut tb = TurnBuilder::new(turns);
         tb.token_pressure_switch = this_turn_pressure_switch;
+        // Record the model this turn runs against (it may have just switched
+        // under token pressure) for per-turn telemetry / OTel (BWOC-11).
+        tb.model = active_model.clone();
 
         // Snapshot context token estimate for this turn's start.
         tb.context_tokens = estimate_context_tokens(&history);
