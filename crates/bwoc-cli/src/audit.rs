@@ -225,16 +225,9 @@ fn workspace_enabled_set(root: &Path) -> Result<BTreeMap<String, bool>, String> 
 const SEVERITIES: &[&str] = &["info", "low", "medium", "high", "critical"];
 const STATUSES: &[&str] = &["pass", "fail", "not_applicable", "not_implemented"];
 // BWOC-27 grew the enum from {file, content, command, none} to add `attestation`
-// + `sample`. v1 producers still validate — the additive shape is the contract
-// pinned in PLUGINS.en.md §Evidence kinds.
-const EVIDENCE_KINDS: &[&str] = &[
-    "file",
-    "content",
-    "command",
-    "attestation",
-    "sample",
-    "none",
-];
+// + `sample`. The closed set is owned by `check` (single source of truth shared
+// with manifest validation) so the two validators can't drift apart.
+use crate::check::EVIDENCE_KINDS;
 
 /// Kind-specific and orthogonal sub-fields on `evidence` (BWOC-27). All optional
 /// at the struct level; `parse_finding` enforces the per-kind required-ness rule

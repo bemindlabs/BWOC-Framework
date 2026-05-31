@@ -90,7 +90,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
-const BACKENDS: &str = "claude · agy · codex · kimi · ollama";
+// Six declared backends (cf. `help.rs` table, `check::BACKEND_NAMES`) — CLI
+// invocation aliases, in registration order. Keep `openai-compatible` listed
+// so the banner matches the "6 backends" surfaced elsewhere.
+const BACKENDS: &str = "claude · agy · codex · kimi · ollama · openai-compatible";
 const LOCALES: &str = "en · th";
 
 /// Print the banner to stdout. Honours TTY/non-TTY for color output.
