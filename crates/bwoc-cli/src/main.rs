@@ -443,7 +443,9 @@ struct PluginShowArgs {
 struct PluginInitArgs {
     /// Plugin name — kebab-case; becomes the directory name under `modules/plugins/`.
     name: String,
-    /// Plugin kind — one of: `memory-backend`, `llm-backend`, `workflow`, `audit`.
+    /// Plugin kind — one of the kinds in `check::PLUGIN_KINDS` (PLUGINS.en.md
+    /// §"Plugin Kinds"): `memory-backend`, `llm-backend`, `workflow`, `audit`,
+    /// `jira`, `okr`, `council`, `figma`, `gws`.
     /// Required; no default (PLUGINS.en.md §"Scaffolding from template" line 398).
     #[arg(long)]
     kind: String,

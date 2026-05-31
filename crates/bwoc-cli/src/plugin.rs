@@ -42,7 +42,9 @@ pub struct ListArgs {
     pub common: CommonArgs,
     /// Filter to plugins enabled in `workspace.toml [plugins.<name>]`.
     pub enabled: bool,
-    /// Filter to one plugin kind (`memory-backend`, `llm-backend`, `workflow`, `audit`).
+    /// Filter to one plugin kind (see `check::PLUGIN_KINDS` / PLUGINS.en.md
+    /// §"Plugin Kinds" — `memory-backend`, `llm-backend`, `workflow`, `audit`,
+    /// `jira`, `okr`, `council`, `figma`, `gws`).
     pub kind: Option<String>,
     pub json: bool,
 }
@@ -58,7 +60,9 @@ pub struct ShowArgs {
 pub struct InitArgs {
     pub common: CommonArgs,
     pub name: String,
-    /// Required — one of: `memory-backend`, `llm-backend`, `workflow`, `audit`.
+    /// Required — one of the kinds in `check::PLUGIN_KINDS` (PLUGINS.en.md
+    /// §"Plugin Kinds"): `memory-backend`, `llm-backend`, `workflow`, `audit`,
+    /// `jira`, `okr`, `council`, `figma`, `gws`.
     /// PLUGINS.en.md §"Scaffolding from template" line 398 mandates this:
     /// "no default … forces the operator to declare intent up front."
     pub kind: String,
@@ -672,18 +676,18 @@ fn installed_sources_path(root: &Path) -> PathBuf {
     root.join(".bwoc/installed-sources.toml")
 }
 
-/// Closed enum from PLUGINS.en.md §"Plugin Kinds" + the EPIC-2 `audit` kind
-/// (BWOC-10). Future kinds extend this list without restructuring the
-/// template — see `modules/plugin-template/SPEC.md` line 62.
-const VALID_KINDS: &[&str] = &["memory-backend", "llm-backend", "workflow", "audit"];
-
 fn validate_plugin_kind(kind: &str) -> Result<(), String> {
-    if VALID_KINDS.contains(&kind) {
+    // Single source of truth: `check::PLUGIN_KINDS` (mirrors PLUGINS.en.md
+    // §"Plugin Kinds"). Sharing it keeps `bwoc plugin install` from drifting
+    // behind `bwoc check` — every declared kind (incl. jira/okr/council/figma/
+    // gws) is installable, not just the original four.
+    use crate::check::PLUGIN_KINDS;
+    if PLUGIN_KINDS.contains(&kind) {
         Ok(())
     } else {
         Err(format!(
             "'{kind}' is not a valid plugin kind. Expected one of: {}",
-            VALID_KINDS.join(", ")
+            PLUGIN_KINDS.join(", ")
         ))
     }
 }
@@ -1801,8 +1805,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_kind_accepts_all_four() {
-        for k in ["memory-backend", "llm-backend", "workflow", "audit"] {
+    fn validate_kind_accepts_all_declared() {
+        // Every kind in the canonical list must install — guards against the
+        // installer drifting behind `check::PLUGIN_KINDS` / PLUGINS.en.md.
+        for k in crate::check::PLUGIN_KINDS {
+            assert!(validate_plugin_kind(k).is_ok(), "expected '{k}' to pass");
+        }
+        // Spot-check the kinds the installer previously rejected.
+        for k in ["jira", "okr", "council", "figma", "gws"] {
             assert!(validate_plugin_kind(k).is_ok(), "expected '{k}' to pass");
         }
     }

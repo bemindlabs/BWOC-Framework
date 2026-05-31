@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bwoc plugin install` accepts every declared plugin kind.** The installer validated `[plugin].kind` against a stale four-kind list (`memory-backend, llm-backend, workflow, audit`), so the bundled reference plugins for the five kinds added since (`jira`, `okr`, `council`, `figma`, `gws`) could not be installed even though they pass `bwoc check`. `validate_plugin_kind` now shares the canonical `check::PLUGIN_KINDS` list, so installer and checker can't drift. Test-installing all 19 bundled plugin roots: 11/8 → 19/0.
+
 ## [v2026.5.30-0] — 2026-05-30 — 2.16.0
 
 **Minor release.** Frontier-model surface + self-hosted runtime model control: `primaryModel: "auto"` runtime selection (#120), Claude Opus 4.8 + GPT-5.5 model surface with a backend-neutral `reasoningEffort` knob (#121), the declared-backend count canonicalized at six (#122), and `bwoc spawn` forwarding the agent's model + reasoning-effort (#123). Also bundles the previously-unreleased CI least-privilege + `release.yml` hardening (#116–#118). Cargo SemVer `2.15.0` → `2.16.0`.

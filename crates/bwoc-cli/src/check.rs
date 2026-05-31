@@ -1013,7 +1013,7 @@ const BACKEND_NAMES: &[&str] = &[
 /// reference `gws/gws-auth` + `gws/gws-drive` plugins (BWOC-75) pass basic
 /// well-formedness. The gws `auth.toml` secret-leak guard + Workspace Resource
 /// Schema validation land in BWOC-77 (`audit_gws_auth`).
-const PLUGIN_KINDS: &[&str] = &[
+pub(crate) const PLUGIN_KINDS: &[&str] = &[
     "memory-backend",
     "llm-backend",
     "workflow",
