@@ -28,9 +28,9 @@ bwoc-core = { path = "../bwoc-core" }
 
 # OpenTelemetry — OPTIONAL, behind the `otel` feature only (heavy + network
 # egress). Dep-quarantine: these never enter the default build.
-opentelemetry = { version = "0.27", optional = true }
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.27", optional = true }
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"], optional = true }
 
 # Async runtime — required for streaming + concurrent tool execution + queue
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "time"] }

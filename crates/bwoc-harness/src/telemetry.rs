@@ -44,10 +44,14 @@
 //!
 //! ## OpenTelemetry export (optional)
 //!
-//! Compile with `--features otel` to export one OTLP span per session to the
-//! collector at `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4317`).
-//! The default build has **no OTEL dependency** — the export call compiles to
-//! nothing without the feature.
+//! Compile with `--features otel` (opentelemetry 0.32) to export one OTLP span
+//! per session. It is additionally **env-gated**: nothing is exported unless
+//! `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so even an `otel` build is a silent
+//! no-op until a collector is configured. The default build has **no OTEL
+//! dependency** — the export call compiles to nothing without the feature
+//! (dep-quarantine). The span carries GenAI-semconv token usage
+//! (`gen_ai.usage.*`) plus the session's bwoc metrics; per-turn child spans are
+//! a planned phase-2. See `notes/2026-05-31_otel-exporter-research.md`.
 //!
 //! ## Secrets
 //!
@@ -328,24 +332,27 @@ impl TurnBuilder {
 // OTEL exporter — active only under `--features otel`
 // ---------------------------------------------------------------------------
 
-/// Export one OTLP span per finished session (BWOC-2 / HV2 follow-up).
+/// Export one OTLP span per finished session (BWOC-2).
 ///
-/// Best-effort: builds a one-shot OTLP/tonic exporter, emits a `bwoc.session`
-/// span carrying the record's key metrics as attributes, flushes, and shuts
-/// down.  The collector endpoint comes from the standard
-/// `OTEL_EXPORTER_OTLP_ENDPOINT` env var (default `http://localhost:4317`); any
-/// failure is logged, never fatal — telemetry must not break a run.
+/// Best-effort and **env-gated**: when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset
+/// this is a silent no-op — no exporter is built and no connection is
+/// attempted, so an `--features otel` build costs nothing until a collector is
+/// configured. When set, it builds an OTLP/tonic exporter, emits a
+/// `bwoc.session` span carrying GenAI-semconv token usage + the record's bwoc
+/// metrics, and `shutdown()`s the provider to flush the batch before returning.
+/// Any failure is logged, never fatal — telemetry must not break a run.
+///
+/// Design basis: `notes/2026-05-31_otel-exporter-research.md` (opentelemetry
+/// 0.32; the thread-based BatchSpanProcessor needs no Tokio runtime; the
+/// layer/global shutdown path does not flush, so we shut the provider down
+/// explicitly). Per-turn `gen_ai.*` child spans are a documented phase-2.
 #[cfg(feature = "otel")]
 fn export_otel_span(record: &SessionRecord) {
     use opentelemetry::KeyValue;
     use opentelemetry::trace::{Span, Tracer, TracerProvider as _};
 
-    // The OTLP/tonic exporter and batch processor schedule on the Tokio
-    // runtime; with no reactor in context (e.g. a synchronous caller) building
-    // them would panic.  The local JSONL append in `finish` has already
-    // succeeded, so skip the network export rather than take down the caller.
-    if tokio::runtime::Handle::try_current().is_err() {
-        eprintln!("[otel] no Tokio runtime in context — skipping span export");
+    // Env-gate: no collector endpoint → silent no-op (zero overhead).
+    if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none() {
         return;
     }
 
@@ -360,12 +367,35 @@ fn export_otel_span(record: &SessionRecord) {
         }
     };
 
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+    // Construct the provider once; the 0.32 BatchSpanProcessor runs on its own
+    // background thread (no runtime arg, no Tokio context required).
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
         .build();
     let tracer = provider.tracer("bwoc-harness");
 
+    // Saturating u64→i64 for OTEL integer attributes — `as i64` would wrap a
+    // value past i64::MAX into a negative count. Realistically unreachable for
+    // token/gate counters, but a corrupt negative attribute is worse than a
+    // clamp.
+    let clamp = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+
     let mut span = tracer.start("bwoc.session");
+    // GenAI semantic conventions (status: Development). `operation.name` and
+    // `provider.name` are Required; the harness drives an OpenAI-compatible API.
+    span.set_attribute(KeyValue::new("gen_ai.operation.name", "invoke_agent"));
+    span.set_attribute(KeyValue::new("gen_ai.provider.name", "openai"));
+    if let Some(h) = &record.harness {
+        span.set_attribute(KeyValue::new(
+            "gen_ai.usage.input_tokens",
+            clamp(h.totals.tokens_in),
+        ));
+        span.set_attribute(KeyValue::new(
+            "gen_ai.usage.output_tokens",
+            clamp(h.totals.tokens_out),
+        ));
+    }
+    // bwoc-specific attributes (low cardinality — ids + counters, no prompts).
     span.set_attribute(KeyValue::new("session.id", record.session_id.clone()));
     span.set_attribute(KeyValue::new("agent.id", record.agent_id.clone()));
     span.set_attribute(KeyValue::new(
@@ -378,22 +408,17 @@ fn export_otel_span(record: &SessionRecord) {
     ));
     span.set_attribute(KeyValue::new(
         "gates.passed",
-        record.metrics.gates_passed as i64,
+        clamp(record.metrics.gates_passed),
     ));
     span.set_attribute(KeyValue::new(
         "gates.failed",
-        record.metrics.gates_failed as i64,
+        clamp(record.metrics.gates_failed),
     ));
     span.end();
 
-    // Flush the batch before the provider drops, or the span may never ship.
-    for result in provider.force_flush() {
-        if let Err(e) = result {
-            eprintln!("[otel] flush error: {e}");
-        }
-    }
-    // Explicit shutdown is the documented-safe close — a drop-without-shutdown
-    // can discard the just-flushed batch on the Tokio batch runtime.
+    // Explicit shutdown flushes the batch before the provider drops — the
+    // global/layer shutdown path does NOT flush (opentelemetry-rust PR 1625),
+    // and a short-lived CLI would otherwise drop the span on exit.
     if let Err(e) = provider.shutdown() {
         eprintln!("[otel] shutdown error: {e}");
     }
