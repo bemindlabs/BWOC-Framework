@@ -1524,10 +1524,12 @@ mod tests {
         assert_eq!(harness.turns[0].tokens_out, 30);
     }
 
-    // Asserts denial of a unix-specific threat (`rm -rf /`). The guardrail's
-    // dangerous-path detection is unix-oriented; Windows-specific destructive
-    // patterns (e.g. `del /s /q`, `rmdir /s`) are a documented follow-up, so
-    // this case is gated to unix. String-based guardrails still run on Windows.
+    // Asserts denial of a unix destructive command (`rm -rf /`); gated to unix
+    // because the assertion uses the unix `rm -rf /` idiom. Windows-specific
+    // destructive patterns (`del /s`, `rmdir /s`, `format`, `Remove-Item
+    // -Recurse -Force`) are NOT a follow-up — they ship in the guardrail (#31)
+    // with their own cross-platform coverage in `policy::guardrails` tests
+    // (`blocks_win_*`). The string-based guardrails run on every host.
     #[cfg(unix)]
     #[tokio::test]
     async fn telemetry_denial_count_increments_on_blocked_tool() {
