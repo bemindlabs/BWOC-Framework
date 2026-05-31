@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
+- **`bwoc-harness --lead` runs workers concurrently (`--concurrency`, BWOC-14).** The Saṅgha lead collected tasks one-at-a-time even with `--concurrency > 1`; now it keeps that many workers in flight (the queue's worker loop spawns each item under a `Semaphore`, the lead tops the queue up as workers finish). `--concurrency 1` is unchanged one-at-a-time behaviour; claim/complete bookkeeping stays single-threaded so there are no shared-state races.
 - **`bwoc-harness` per-tool `execute_tool` OTel spans (BWOC-13).** Completing the BWOC-10 follow-up, each tool the model requests now emits an `execute_tool` child span (`gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`) nested under its `bwoc.turn` span. `TurnMetrics` gains an additive `tool_names` list. Same env-gate + dep-quarantine; default build unchanged.
 
 - **`bwoc-harness` per-turn model on OTel spans (BWOC-11).** Each `bwoc.turn` child span now carries `gen_ai.request.model` (the active model that turn, recorded in `TurnMetrics.model`) — useful when token pressure switches the model mid-session. `session-metrics.jsonl` gains an additive `model` field (omitted when empty). Default build + behaviour unchanged.

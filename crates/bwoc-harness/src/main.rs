@@ -59,7 +59,8 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     max_tasks: usize,
 
-    /// Worker concurrency for lead mode (collection is currently sequential).
+    /// Worker concurrency for lead mode: up to this many workers run in
+    /// parallel (`1` = one at a time).
     #[arg(long, default_value_t = 1)]
     concurrency: usize,
 
