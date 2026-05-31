@@ -661,6 +661,9 @@ pub async fn run_loop(
         history.push(completion);
 
         tb.tool_calls = tool_calls.len() as u32;
+        // Record the requested tool names (call order) for per-tool execute_tool
+        // OTel spans (BWOC-13).
+        tb.tool_names = tool_calls.iter().map(|c| c.function.name.clone()).collect();
 
         let results = execute_tool_calls(&tool_calls, &registry, &ctx, &config).await;
 

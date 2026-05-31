@@ -52,15 +52,17 @@
 //! (dep-quarantine). The session span carries GenAI-semconv token usage
 //! (`gen_ai.usage.*`) plus the session's bwoc metrics, and each recorded turn
 //! is replayed as a `bwoc.turn` child span with its own per-turn token usage
-//! (durations reconstructed from `latency_ms`).
+//! (durations reconstructed from `latency_ms`), and each requested tool emits
+//! an `execute_tool` child span (`gen_ai.tool.name`) nested under its turn.
 //! See `notes/2026-05-31_otel-exporter-research.md`.
 //!
 //! ## Secrets
 //!
 //! Telemetry MUST NOT include secret values.  The `TurnMetrics` struct carries
-//! counts, durations, and the model identifier — never env-var values, command
-//! arguments that may contain tokens, or any string from the credential broker.
-//! The model id is a non-secret label (e.g. `gemma4`, `claude-opus-4-8`).
+//! counts, durations, the model identifier, and requested tool names — never
+//! env-var values, command arguments that may contain tokens, tool argument
+//! payloads, or any string from the credential broker. The model id and tool
+//! names are non-secret labels (e.g. `gemma4`, `run_command`).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -74,8 +76,9 @@ use serde::{Deserialize, Serialize};
 
 /// Metrics collected for a single agent turn (one model call + tool dispatch).
 ///
-/// All fields are counts or durations — no string payloads, so no risk of
-/// accidentally capturing secrets.
+/// Fields are counts, durations, or non-secret identifiers (the model id and
+/// requested tool names) — never argument/content payloads, so there is no risk
+/// of capturing a secret.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TurnMetrics {
     /// Turn index (1-based).
@@ -104,6 +107,11 @@ pub struct TurnMetrics {
     /// records that predate the field are unaffected).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
+    /// Names of the tools the model requested this turn, in call order (a tool
+    /// is a registered capability name — never a secret). Drives per-tool
+    /// `execute_tool` OTel spans. Additive; omitted on the wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_names: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +312,8 @@ pub struct TurnBuilder {
     /// Model active for this turn's provider call. Set by the loop from its
     /// `active_model`; empty if never set.
     pub model: String,
+    /// Names of the tools the model requested this turn (call order).
+    pub tool_names: Vec<String>,
 }
 
 impl TurnBuilder {
@@ -320,6 +330,7 @@ impl TurnBuilder {
             context_tokens: 0,
             token_pressure_switch: 0,
             model: String::new(),
+            tool_names: Vec::new(),
         }
     }
 
@@ -337,6 +348,7 @@ impl TurnBuilder {
             context_tokens: self.context_tokens,
             token_pressure_switch: self.token_pressure_switch,
             model: self.model,
+            tool_names: self.tool_names,
         }
     }
 }
@@ -490,12 +502,28 @@ fn export_otel_span(record: &SessionRecord) {
             if !t.model.is_empty() {
                 attrs.push(KeyValue::new("gen_ai.request.model", t.model.clone()));
             }
-            let mut turn_span = tracer
+            let turn_span = tracer
                 .span_builder("bwoc.turn")
                 .with_start_time(*start)
                 .with_attributes(attrs)
                 .start_with_context(&tracer, &cx);
-            turn_span.end_with_timestamp(*end);
+
+            // Per-tool `execute_tool` child spans nested under the turn span
+            // (BWOC-13). We record names, not per-tool timing, so each tool span
+            // spans the turn window — enough to attribute which tools ran.
+            let cx_turn = Context::current().with_span(turn_span);
+            for name in &t.tool_names {
+                let mut tool_span = tracer
+                    .span_builder("execute_tool")
+                    .with_start_time(*start)
+                    .with_attributes(vec![
+                        KeyValue::new("gen_ai.operation.name", "execute_tool"),
+                        KeyValue::new("gen_ai.tool.name", name.clone()),
+                    ])
+                    .start_with_context(&tracer, &cx_turn);
+                tool_span.end_with_timestamp(*end);
+            }
+            cx_turn.span().end_with_timestamp(*end); // end the turn span
         }
     }
     cx.span().end_with_timestamp(now); // session ends at now, after all children
@@ -616,23 +644,33 @@ mod tests {
     }
 
     #[test]
-    fn turn_model_serialization_is_additive(/* BWOC-11 */) {
-        // A non-empty model serializes under `model` and round-trips.
+    fn turn_model_and_tools_serialization_is_additive(/* BWOC-11, BWOC-13 */) {
+        // Non-empty model + tool_names serialize and round-trip.
         let m = TurnMetrics {
             turn: 1,
             model: "gemma4".into(),
+            tool_names: vec!["read_file".into(), "run_command".into()],
             ..Default::default()
         };
         let json = serde_json::to_value(&m).unwrap();
         assert_eq!(json.get("model").and_then(|v| v.as_str()), Some("gemma4"));
+        assert_eq!(
+            json.get("tool_names")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
         let back: TurnMetrics = serde_json::from_value(json).unwrap();
         assert_eq!(back.model, "gemma4");
-        // An empty model is omitted on the wire and deserializes back to "" —
-        // records that predate the field stay valid (additive).
+        assert_eq!(back.tool_names, vec!["read_file", "run_command"]);
+        // Empty model + tool_names are omitted on the wire and deserialize back
+        // to defaults — records that predate the fields stay valid (additive).
         let empty_json = serde_json::to_value(TurnMetrics::default()).unwrap();
         assert!(empty_json.get("model").is_none());
+        assert!(empty_json.get("tool_names").is_none());
         let from_old: TurnMetrics = serde_json::from_value(empty_json).unwrap();
         assert_eq!(from_old.model, "");
+        assert!(from_old.tool_names.is_empty());
     }
     use tempfile::TempDir;
 
@@ -693,6 +731,7 @@ mod tests {
             context_tokens: 300,
             token_pressure_switch: 0,
             model: String::new(),
+            tool_names: Vec::new(),
         };
         let t2 = TurnMetrics {
             turn: 2,
@@ -706,6 +745,7 @@ mod tests {
             context_tokens: 600,
             token_pressure_switch: 0,
             model: String::new(),
+            tool_names: Vec::new(),
         };
         totals.accumulate(&t1);
         totals.accumulate(&t2);
@@ -735,6 +775,7 @@ mod tests {
             context_tokens: 500,
             token_pressure_switch: 0,
             model: String::new(),
+            tool_names: Vec::new(),
         };
         telem.record_turn(m);
         telem.agent.tasks_attempted = 1;
@@ -803,6 +844,7 @@ mod tests {
             context_tokens: 200,
             token_pressure_switch: 0,
             model: String::new(),
+            tool_names: Vec::new(),
         });
         telem.finish(&sink).unwrap();
 
@@ -864,6 +906,7 @@ mod tests {
             context_tokens: 400,
             token_pressure_switch: 0,
             model: String::new(),
+            tool_names: Vec::new(),
         };
         let json = serde_json::to_value(&m).unwrap();
         // Every value in the TurnMetrics JSON must be a number, not a string.
