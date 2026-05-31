@@ -6,9 +6,15 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.31-0] — 2026-05-31 — 2.16.1
+
+**Patch release.** Plugin-install + integration-plugin bug fixes on top of 2.16.0, mostly from field reports against the `v2026.5.30-0` build. Cargo SemVer `2.16.0` → `2.16.1`.
+
 ### Fixed
 
-- **`bwoc plugin install` accepts every declared plugin kind.** The installer validated `[plugin].kind` against a stale four-kind list (`memory-backend, llm-backend, workflow, audit`), so the bundled reference plugins for the five kinds added since (`jira`, `okr`, `council`, `figma`, `gws`) could not be installed even though they pass `bwoc check`. `validate_plugin_kind` now shares the canonical `check::PLUGIN_KINDS` list, so installer and checker can't drift. Test-installing all 19 bundled plugin roots: 11/8 → 19/0.
+- **`bwoc plugin install` accepts every declared plugin kind (#126, #127).** The installer validated `[plugin].kind` against a stale four-kind list (`memory-backend, llm-backend, workflow, audit`), so the bundled reference plugins for the five kinds added since (`jira`, `okr`, `council`, `figma`, `gws`) could not be installed even though they pass `bwoc check`. `validate_plugin_kind` now shares the canonical `check::PLUGIN_KINDS` list, so installer and checker can't drift; the `bwoc check` "expected one of …" messages now derive from the same list too. Test-installing all 19 bundled plugin roots: 11/8 → 19/0.
+- **`jira-cloud-rest` query verb works against live Jira Cloud (#128, #129, #132).** The `query` verb called `GET /rest/api/3/search`, which Atlassian removed (HTTP 410, CHANGE-2046) → migrated to the token-paginated `GET /rest/api/3/search/jql` (projection keeps `total`/`start_at`/`max_results` for schema stability and adds `next_page_token`/`is_last`). Project scoping also lifts a trailing `ORDER BY` outside the `AND (...)` predicate instead of producing invalid JQL. Plugin bumped to `0.1.1`; `SPEC.md`/`SPEC.th.md` updated (EN/TH parity).
+- **`bwoc gcloud project list` human output no longer reports `0 project(s)` (#130, #131).** `run_project_list` read the plugin response as a bare array, but the `gcloud-project` plugin returns an object `{ok, operation, total, projects:[…]}` — so the count and rows were always empty (`--json` was unaffected). Now reads `total` + `projects` from the object, matching the sibling `compute`/`storage`/`run` list renderers.
 
 ## [v2026.5.30-0] — 2026-05-30 — 2.16.0
 
