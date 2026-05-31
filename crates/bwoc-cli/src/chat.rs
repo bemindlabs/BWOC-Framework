@@ -103,16 +103,22 @@ fn open_in_tmux(agent_id: &str, agent_path: &std::path::Path, backend: Backend) 
     let path_str = agent_path.to_string_lossy().to_string();
     let args = tmux_launch_args(inside_tmux, agent_id, &path_str, backend.display_name());
 
+    // The outside-tmux branch attaches and blocks until the user detaches, so a
+    // post-`status()` message would only surface after they've left — announce
+    // it *before* launching. The inside-tmux branch returns immediately (the
+    // window opens in the background), so its confirmation prints after success.
+    if !inside_tmux {
+        println!(
+            "Starting tmux session 'bwoc-{agent_id}' (backend: {})",
+            backend.display_name()
+        );
+    }
+
     match std::process::Command::new("tmux").args(&args).status() {
         Ok(s) if s.success() => {
             if inside_tmux {
                 println!(
                     "Opened tmux window '{agent_id}' (backend: {})",
-                    backend.display_name()
-                );
-            } else {
-                println!(
-                    "Started tmux session 'bwoc-{agent_id}' (backend: {})",
                     backend.display_name()
                 );
             }
