@@ -101,7 +101,13 @@ fn open_in_tmux(agent_id: &str, agent_path: &std::path::Path, backend: Backend) 
     // "run tmux new-session first" hint.
     let inside_tmux = std::env::var_os("TMUX").is_some();
     let path_str = agent_path.to_string_lossy().to_string();
-    let args = tmux_launch_args(inside_tmux, agent_id, &path_str, backend.display_name());
+    let args = tmux_launch_args(
+        inside_tmux,
+        agent_id,
+        &path_str,
+        backend.display_name(),
+        &spawn::bwoc_exe(),
+    );
 
     // The outside-tmux branch attaches and blocks until the user detaches, so a
     // post-`status()` message would only surface after they've left — announce
@@ -156,6 +162,7 @@ fn tmux_launch_args(
     agent_id: &str,
     path: &str,
     backend_name: &str,
+    bwoc_exe: &str,
 ) -> Vec<String> {
     let mut args: Vec<String> = if inside_tmux {
         vec!["new-window".into(), "-n".into(), agent_id.into()]
@@ -171,7 +178,7 @@ fn tmux_launch_args(
     };
     args.extend([
         "--".into(),
-        "bwoc".into(),
+        bwoc_exe.into(),
         "spawn".into(),
         "--path".into(),
         path.into(),
@@ -197,6 +204,7 @@ fn open_in_ghostty(agent_id: &str, agent_path: &std::path::Path, backend: Backen
     }
     let path_str = agent_path.to_string_lossy().to_string();
     let wd_arg = format!("--working-directory={path_str}");
+    let exe = spawn::bwoc_exe();
     // `open -na Ghostty.app --args --working-directory=<p> -e bwoc spawn --path <p> --backend <b>`
     // -n forces a new window even if Ghostty is already running.
     // --args passes the rest through to Ghostty itself.
@@ -208,7 +216,7 @@ fn open_in_ghostty(agent_id: &str, agent_path: &std::path::Path, backend: Backen
             "--args",
             wd_arg.as_str(),
             "-e",
-            "bwoc",
+            exe.as_str(),
             "spawn",
             "--path",
             path_str.as_str(),
@@ -276,7 +284,7 @@ mod tests {
 
     #[test]
     fn inside_tmux_adds_a_window() {
-        let a = tmux_launch_args(true, "agent-pi", "/ws/agent-pi", "claude");
+        let a = tmux_launch_args(true, "agent-pi", "/ws/agent-pi", "claude", "/opt/bin/bwoc");
         assert_eq!(
             a,
             [
@@ -284,7 +292,7 @@ mod tests {
                 "-n",
                 "agent-pi",
                 "--",
-                "bwoc",
+                "/opt/bin/bwoc",
                 "spawn",
                 "--path",
                 "/ws/agent-pi",
@@ -296,7 +304,7 @@ mod tests {
 
     #[test]
     fn outside_tmux_auto_starts_an_attached_session() {
-        let a = tmux_launch_args(false, "agent-pi", "/ws/agent-pi", "ollama");
+        let a = tmux_launch_args(false, "agent-pi", "/ws/agent-pi", "ollama", "/opt/bin/bwoc");
         assert_eq!(
             a,
             [
@@ -307,7 +315,7 @@ mod tests {
                 "-n",
                 "agent-pi",
                 "--",
-                "bwoc",
+                "/opt/bin/bwoc",
                 "spawn",
                 "--path",
                 "/ws/agent-pi",
@@ -315,5 +323,20 @@ mod tests {
                 "ollama"
             ]
         );
+    }
+
+    /// The launcher must re-invoke the running binary verbatim — including a
+    /// dev-build absolute path — never collapse it to a bare `bwoc` PATH lookup.
+    #[test]
+    fn launch_args_use_the_given_bwoc_exe_verbatim() {
+        let a = tmux_launch_args(
+            true,
+            "agent-pi",
+            "/ws/agent-pi",
+            "claude",
+            "./target/debug/bwoc",
+        );
+        assert!(a.contains(&"./target/debug/bwoc".to_string()));
+        assert!(!a.contains(&"bwoc".to_string()));
     }
 }
