@@ -312,7 +312,10 @@ async fn run_worker(
     // the work so the accept loop is free to admit the next one. `capacity == 1`
     // reproduces the original one-at-a-time behaviour.
     let sem = Arc::new(Semaphore::new(capacity));
-    let mut handles = Vec::new();
+    // A `JoinSet` (not a `Vec<JoinHandle>`) so finished workers are reaped as we
+    // go — a long-lived queue draining thousands of tasks must not accumulate
+    // handles for its whole lifetime.
+    let mut workers = tokio::task::JoinSet::new();
 
     'accept: loop {
         let permit = tokio::select! {
@@ -333,7 +336,7 @@ async fn run_worker(
         let in_flight = Arc::clone(&in_flight);
         let cancel = cancel.clone();
         let ctx = ctx.clone();
-        handles.push(tokio::spawn(async move {
+        workers.spawn(async move {
             let worktree = item.worktree_path.clone();
             // Race the worker against cancellation so an in-flight worker is
             // interrupted, not merely stopped between items. `kill_on_drop` on
@@ -347,7 +350,10 @@ async fn run_worker(
             // Send outcome (ignore if the receiver has already dropped).
             let _ = item.result_tx.send(result);
             drop(permit); // free the slot only once the worker is fully done
-        }));
+        });
+        // Reap any workers that have already finished so their handles don't
+        // pile up across a long drain.
+        while workers.try_join_next().is_some() {}
     }
 
     // Drain any items still buffered in the channel as cancelled.
@@ -359,9 +365,7 @@ async fn run_worker(
     }
     // Let in-flight workers finish their own cancellation race (each already
     // sent its result + released its worktree slot).
-    for h in handles {
-        let _ = h.await;
-    }
+    while workers.join_next().await.is_some() {}
 }
 
 /// Execute a [`WorkItem`] by spawning its worker (HV2-1).
