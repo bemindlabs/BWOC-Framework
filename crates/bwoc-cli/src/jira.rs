@@ -28,7 +28,9 @@
 //! ## Auth model — credentials NEVER touch the CLI's printed surface
 //!
 //! Credentials resolve from three environment variables (per the BWOC-40 note
-//! §2): `BWOC_JIRA_EMAIL`, `BWOC_JIRA_TOKEN`, `BWOC_JIRA_BASE_URL`. The CLI only
+//! §2): `BWOC_JIRA_EMAIL`, `BWOC_JIRA_TOKEN`, `BWOC_JIRA_BASE_URL` — or, when an
+//! env var is unset, from the `[jira]` table of the gitignored, `0600`
+//! `.bwoc/secrets.toml` (auth.toml resolution option 2; env wins). The CLI only
 //! ever **verifies the token is present** — it never reads the token value into
 //! a field, never logs it, and never serializes it. `bwoc jira status` reports
 //! `token_present: <bool>`, never the secret. The token reaches the plugin
@@ -320,6 +322,68 @@ fn real_getenv(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
+/// Resolution option 2 (auth.toml §`[jira.auth.secrets_file]`): load the
+/// `[jira]` table from `<workspace>/.bwoc/secrets.toml` into the `BWOC_JIRA_*`
+/// keyspace, so credentials resolve from the gitignored secrets file when the
+/// env vars are unset. Returns an empty map when the file is absent, unparseable,
+/// or (on unix) group/world-accessible — the last is refused with a stderr
+/// warning, mirroring the gws/figma secret-permission guards. The token value is
+/// handed only to the plugin's inherited env; it is never logged or serialized.
+fn secrets_file_env(workspace: &Path) -> BTreeMap<&'static str, String> {
+    let mut out = BTreeMap::new();
+    let path = workspace.join(".bwoc/secrets.toml");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        Err(_) => return out, // absent → nothing to resolve
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                eprintln!(
+                    "bwoc jira: ignoring {} — it is group/world-accessible; `chmod 600` it.",
+                    path.display()
+                );
+                return out;
+            }
+        }
+    }
+    let value: toml::Value = match toml::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("bwoc jira: ignoring {} — parse error: {e}", path.display());
+            return out;
+        }
+    };
+    let Some(jira) = value.get("jira").and_then(|v| v.as_table()) else {
+        return out;
+    };
+    let mut take = |field: &str, key: &'static str| {
+        if let Some(s) = jira.get(field).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                out.insert(key, s.to_string());
+            }
+        }
+    };
+    take("email", ENV_EMAIL);
+    take("token", ENV_TOKEN);
+    take("base_url", ENV_BASE_URL);
+    out
+}
+
+/// Credential resolver used by the live verbs + `status`: a non-empty env var
+/// wins; otherwise fall back to the `.bwoc/secrets.toml` `[jira]` table. Mirrors
+/// the precedence documented in auth.toml (env first — nothing touches disk).
+fn getenv_with_secrets(workspace: &Path) -> impl Fn(&str) -> Option<String> {
+    let secrets = secrets_file_env(workspace);
+    move |k: &str| {
+        real_getenv(k)
+            .filter(|s| !s.is_empty())
+            .or_else(|| secrets.get(k).cloned())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sync ledger — `.scrum/jira-sync.json`. State, not secrets (no token field).
 // Mapping entries conform to the normative Jira Issue Mapping Schema
@@ -572,14 +636,25 @@ fn invoke_jira_plugin(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let mut child = Command::new(&program)
-        .current_dir(&plugin.dir)
+    let mut cmd = Command::new(&program);
+    cmd.current_dir(&plugin.dir)
         .env("BWOC_WORKSPACE", workspace)
         .env("BWOC_PLUGIN_DIR", &plugin.dir)
         .env("BWOC_JIRA_OPERATION", operation)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // The plugin reads BWOC_JIRA_{EMAIL,TOKEN,BASE_URL} from its env. When they
+    // come from .bwoc/secrets.toml (not the process env), inject them here so the
+    // child sees them — a non-empty inherited env var still wins (never overridden).
+    for (key, val) in secrets_file_env(workspace) {
+        if real_getenv(key).filter(|s| !s.is_empty()).is_none() {
+            cmd.env(key, val);
+        }
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn '{}': {e}", program.to_string_lossy()))?;
 
@@ -651,14 +726,15 @@ fn emit_error_json(verb: &str, code: &str, message: &str) {
 
 /// Resolve auth for a live verb. On miss, print the precise remediation (naming
 /// the missing vars, never any value) and the JSON twin, returning the exit code.
-fn require_auth(verb: &str, json: bool) -> Result<JiraAuth, i32> {
-    match resolve_auth(&real_getenv) {
+fn require_auth(verb: &str, json: bool, workspace: &Path) -> Result<JiraAuth, i32> {
+    match resolve_auth(&getenv_with_secrets(workspace)) {
         Ok(auth) => Ok(auth),
         Err(missing) => {
             let list = missing.join(", ");
             let msg = format!(
                 "missing Jira credentials: {list}. Set {ENV_EMAIL}, {ENV_TOKEN}, and \
-                 {ENV_BASE_URL} in the environment (never commit the token)."
+                 {ENV_BASE_URL} in the environment or the [jira] table of \
+                 .bwoc/secrets.toml (never commit the token)."
             );
             if json {
                 emit_error_json(verb, "auth_missing", &msg);
@@ -718,7 +794,7 @@ fn run_status(args: StatusArgs) -> i32 {
             return EXIT_LOCAL_ERROR;
         }
     };
-    let auth = auth_status(&real_getenv);
+    let auth = auth_status(&getenv_with_secrets(&root));
 
     if args.json {
         let issues: Vec<serde_json::Value> = ledger
@@ -958,7 +1034,7 @@ fn run_query(args: QueryArgs) -> i32 {
         }
         return EXIT_USAGE;
     }
-    let _auth = match require_auth("query", args.json) {
+    let _auth = match require_auth("query", args.json, &root) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -1015,7 +1091,7 @@ fn run_transition(args: TransitionArgs) -> i32 {
         }
         return EXIT_USAGE;
     }
-    let _auth = match require_auth("transition", args.json) {
+    let _auth = match require_auth("transition", args.json, &root) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -1073,7 +1149,7 @@ fn run_sync(args: SyncArgs) -> i32 {
             return EXIT_USAGE;
         }
     };
-    let _auth = match require_auth("sync", args.json) {
+    let _auth = match require_auth("sync", args.json, &root) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -1172,6 +1248,69 @@ mod tests {
 
     fn getenv_from(map: HashMap<&'static str, &'static str>) -> impl Fn(&str) -> Option<String> {
         move |k: &str| map.get(k).map(|v| v.to_string())
+    }
+
+    // --- .bwoc/secrets.toml resolution (auth.toml option 2) ----------------
+
+    fn write_secrets(dir: &Path, body: &str) -> PathBuf {
+        let secrets_dir = dir.join(".bwoc");
+        std::fs::create_dir_all(&secrets_dir).unwrap();
+        let path = secrets_dir.join("secrets.toml");
+        std::fs::write(&path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn secrets_file_reads_jira_table() {
+        let dir = tempfile::tempdir().unwrap();
+        write_secrets(
+            dir.path(),
+            "[jira]\nemail = \"a@b.com\"\ntoken = \"t0ken\"\nbase_url = \"https://x.atlassian.net\"\n",
+        );
+        let env = secrets_file_env(dir.path());
+        assert_eq!(env.get(ENV_EMAIL).map(String::as_str), Some("a@b.com"));
+        assert_eq!(env.get(ENV_TOKEN).map(String::as_str), Some("t0ken"));
+        assert_eq!(
+            env.get(ENV_BASE_URL).map(String::as_str),
+            Some("https://x.atlassian.net")
+        );
+        // Resolves cleanly through the live-verb auth gate.
+        let auth = resolve_auth(&getenv_with_secrets(dir.path())).unwrap();
+        assert_eq!(auth.email, "a@b.com");
+        assert_eq!(auth.base_url, "https://x.atlassian.net");
+    }
+
+    #[test]
+    fn secrets_file_absent_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(secrets_file_env(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn secrets_file_ignores_empty_values() {
+        let dir = tempfile::tempdir().unwrap();
+        write_secrets(dir.path(), "[jira]\nemail = \"\"\ntoken = \"t\"\n");
+        let env = secrets_file_env(dir.path());
+        assert!(!env.contains_key(ENV_EMAIL)); // empty string is not a value
+        assert_eq!(env.get(ENV_TOKEN).map(String::as_str), Some("t"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secrets_file_refuses_group_or_world_accessible() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_secrets(dir.path(), "[jira]\ntoken = \"t\"\n");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            secrets_file_env(dir.path()).is_empty(),
+            "a group/world-accessible secrets file must be refused"
+        );
     }
 
     // --- arg parsing -------------------------------------------------------

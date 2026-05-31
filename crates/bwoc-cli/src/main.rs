@@ -206,8 +206,9 @@ enum Commands {
     /// project-scoped JQL, transition issues, and link/unlink story ↔ issue
     /// mappings in `.scrum/jira-sync.json`. Reads + writes an external tracker,
     /// so write verbs are gated behind confirmation. Credentials come from
-    /// `BWOC_JIRA_{EMAIL,TOKEN,BASE_URL}` env (never committed); a missing one
-    /// exits 2. The live REST path is provided by an enabled `jira`-kind plugin
+    /// `BWOC_JIRA_{EMAIL,TOKEN,BASE_URL}` env, or the `[jira]` table of the
+    /// gitignored `0600` `.bwoc/secrets.toml` when unset (never committed); a
+    /// missing one exits 2. The live REST path is provided by a `jira`-kind plugin
     /// (see PLUGINS.en.md §jira); without one, live verbs stub-error (exit 4).
     /// Every verb has a `--json` twin. See `docs/en/PLUGINS.en.md`.
     #[command(name = "jira", subcommand)]
