@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.17.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.4.10`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.18.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.4.11`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.5.31-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.31-2) *(2026-05-31 — **2.17.1**; patch — `bwoc-harness` OpenTelemetry exporter modernized to 0.32 + env-gate + GenAI semconv + per-turn child spans (#140, #141), opt-in `--features otel` only. Prior: `v2026.5.31-1` 2.17.0 — tmux auto-start + jira secrets.toml)*
+**Latest release:** [`v2026.5.31-3`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.31-3) *(2026-05-31 — **2.18.0**; minor — `bwoc-harness` observability + parallelism: per-turn model + per-tool `execute_tool` OTel spans (opt-in `--features otel`), and `--lead` runs up to `--concurrency` workers in parallel (BWOC-11/13/14). Prior: `v2026.5.31-2` 2.17.1 — OTel exporter modernization)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-31T09:47:53Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-31T12:43:35Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
