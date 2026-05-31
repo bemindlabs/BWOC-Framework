@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`bwoc chat --tmux` auto-starts tmux when needed.** Outside a tmux session it no longer refuses with a "run `tmux new-session` first" hint — it auto-starts (and attaches to) a dedicated `bwoc-<id>` session via `tmux new-session -A` (reattaching if one already exists). Inside a session it still adds a `new-window` as before. A missing `tmux` binary now gives a clear install hint.
+
 ## [v2026.5.31-0] — 2026-05-31 — 2.16.1
 
 **Patch release.** Plugin-install + integration-plugin bug fixes on top of 2.16.0, mostly from field reports against the `v2026.5.30-0` build. Cargo SemVer `2.16.0` → `2.16.1`.

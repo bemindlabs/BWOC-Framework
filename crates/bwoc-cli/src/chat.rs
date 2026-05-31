@@ -10,8 +10,10 @@
 //! Three modes:
 //!   - default: exec the backend CLI in this shell (replaces the
 //!     current process via spawn's existing flow)
-//!   - `--tmux`: open `tmux new-window` running spawn; current shell
-//!     stays put. Requires `$TMUX` (caller is inside a tmux session).
+//!   - `--tmux`: run spawn under tmux. Inside a tmux session it opens a
+//!     `tmux new-window` (current shell stays put); outside one it
+//!     auto-starts a dedicated session (`tmux new-session -A -s bwoc-<id>`)
+//!     and attaches — no "run tmux first" dance.
 //!   - `--ghostty`: open a new Ghostty terminal window running spawn;
 //!     current shell stays put. macOS-only (Ghostty's CLI entry-point
 //!     on macOS is `open -na Ghostty.app`).
@@ -94,38 +96,39 @@ pub fn run(args: ChatArgs) -> i32 {
 }
 
 fn open_in_tmux(agent_id: &str, agent_path: &std::path::Path, backend: Backend) -> i32 {
-    if std::env::var_os("TMUX").is_none() {
-        eprintln!(
-            "bwoc chat --tmux: not inside a tmux session. Run `tmux new-session` first, \
-             then re-run, or drop --tmux to exec in this shell."
-        );
-        return 2;
-    }
+    // Auto-start tmux when needed: inside a session we add a window; outside
+    // one we create+attach a dedicated session instead of refusing with a
+    // "run tmux new-session first" hint.
+    let inside_tmux = std::env::var_os("TMUX").is_some();
     let path_str = agent_path.to_string_lossy().to_string();
-    match std::process::Command::new("tmux")
-        .args([
-            "new-window",
-            "-n",
-            agent_id,
-            "--",
-            "bwoc",
-            "spawn",
-            "--path",
-            path_str.as_str(),
-            "--backend",
-            backend.display_name(),
-        ])
-        .status()
-    {
+    let args = tmux_launch_args(inside_tmux, agent_id, &path_str, backend.display_name());
+
+    match std::process::Command::new("tmux").args(&args).status() {
         Ok(s) if s.success() => {
-            println!(
-                "Opened tmux window '{agent_id}' (backend: {})",
-                backend.display_name()
-            );
+            if inside_tmux {
+                println!(
+                    "Opened tmux window '{agent_id}' (backend: {})",
+                    backend.display_name()
+                );
+            } else {
+                println!(
+                    "Started tmux session 'bwoc-{agent_id}' (backend: {})",
+                    backend.display_name()
+                );
+            }
             0
         }
         Ok(s) => {
-            eprintln!("bwoc chat --tmux: tmux new-window exited {s}");
+            eprintln!("bwoc chat --tmux: tmux exited {s}");
+            1
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // We now invoke tmux even when the caller isn't already in it, so a
+            // missing binary is a likelier first encounter — say so plainly.
+            eprintln!(
+                "bwoc chat --tmux: tmux not found on PATH — install tmux, or drop \
+                 --tmux to exec the backend in this shell."
+            );
             1
         }
         Err(e) => {
@@ -133,6 +136,43 @@ fn open_in_tmux(agent_id: &str, agent_path: &std::path::Path, backend: Backend) 
             1
         }
     }
+}
+
+/// Build the `tmux` argument vector (excluding the `tmux` program name) for
+/// launching `bwoc spawn` against `agent_id`.
+///
+/// - **Inside** a tmux session → `new-window` in the current session.
+/// - **Outside** one → `new-session -A -s bwoc-<id>` (attach-or-create), so a
+///   bare `bwoc chat --tmux` from a plain shell still lands in tmux. `-A`
+///   reattaches if a session for this agent already exists.
+fn tmux_launch_args(
+    inside_tmux: bool,
+    agent_id: &str,
+    path: &str,
+    backend_name: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = if inside_tmux {
+        vec!["new-window".into(), "-n".into(), agent_id.into()]
+    } else {
+        vec![
+            "new-session".into(),
+            "-A".into(),
+            "-s".into(),
+            format!("bwoc-{agent_id}"),
+            "-n".into(),
+            agent_id.into(),
+        ]
+    };
+    args.extend([
+        "--".into(),
+        "bwoc".into(),
+        "spawn".into(),
+        "--path".into(),
+        path.into(),
+        "--backend".into(),
+        backend_name.into(),
+    ]);
+    args
 }
 
 /// `--ghostty` mode — open a new Ghostty terminal window running
@@ -221,5 +261,53 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
         if !cur.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inside_tmux_adds_a_window() {
+        let a = tmux_launch_args(true, "agent-pi", "/ws/agent-pi", "claude");
+        assert_eq!(
+            a,
+            [
+                "new-window",
+                "-n",
+                "agent-pi",
+                "--",
+                "bwoc",
+                "spawn",
+                "--path",
+                "/ws/agent-pi",
+                "--backend",
+                "claude"
+            ]
+        );
+    }
+
+    #[test]
+    fn outside_tmux_auto_starts_an_attached_session() {
+        let a = tmux_launch_args(false, "agent-pi", "/ws/agent-pi", "ollama");
+        assert_eq!(
+            a,
+            [
+                "new-session",
+                "-A",
+                "-s",
+                "bwoc-agent-pi",
+                "-n",
+                "agent-pi",
+                "--",
+                "bwoc",
+                "spawn",
+                "--path",
+                "/ws/agent-pi",
+                "--backend",
+                "ollama"
+            ]
+        );
     }
 }

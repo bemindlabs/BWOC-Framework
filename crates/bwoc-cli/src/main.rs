@@ -1266,7 +1266,8 @@ struct ChatArgs {
     /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
     workspace: Option<PathBuf>,
-    /// Run inside a new tmux window instead of exec'ing in this shell. Requires $TMUX.
+    /// Run spawn under tmux instead of exec'ing in this shell. Adds a window
+    /// when already inside tmux; otherwise auto-starts a `bwoc-<id>` session.
     #[arg(long, conflicts_with = "ghostty")]
     tmux: bool,
     /// Open a new Ghostty terminal window instead of exec'ing in this shell. macOS-only.

@@ -74,7 +74,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "chat",
-        "Chat with an agent — exec backend CLI with manifest-driven model (--tmux for new window)",
+        "Chat with an agent — exec backend CLI with manifest-driven model (--tmux runs under tmux, auto-starting a session if needed)",
     ),
     (
         "inbox",
