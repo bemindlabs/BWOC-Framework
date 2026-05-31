@@ -46,7 +46,7 @@ CLI เรียก `jira.sh` จากไดเรกทอรีนี้ (ส
 
 เมื่อสำเร็จ สคริปต์จะออกด้วยรหัส `0` และปล่อย **อ็อบเจกต์ JSON หนึ่งตัว** ทาง stdout ให้ CLI แยกวิเคราะห์ เมื่อผิดพลาด มันจะเขียนข้อความวินิจฉัยทาง **stderr** และออกด้วยรหัสไม่ใช่ศูนย์ ซึ่ง CLI จะรายงานเป็น `plugin '<name>' exited <code>` รูปแบบผลลัพธ์ที่ CLI ใช้:
 
-- `query` → `{ "total": <n>, "issues": [ … ], "start_at", "max_results" }`
+- `query` → `{ "total": <n>, "issues": [ … ], "start_at", "max_results", "next_page_token", "is_last" }` (`/search/jql` แบ่งหน้าด้วย token; `next_page_token`/`is_last` ใช้ทำ paging loop ในอนาคต, `total` ← จำนวนต่อหน้า)
 - `transition` → `{ "ok": true, "issue", "to_status", "transitioned": <bool> }`
 - `sync` → `{ "summary": { "push", "pull", "noop", "conflict" }, "dry_run" }` — ค่า `conflict` ที่ไม่ใช่ศูนย์ทำให้ CLI ออกด้วยรหัส `3`
 

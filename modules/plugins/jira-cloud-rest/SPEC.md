@@ -46,7 +46,7 @@ The CLI spawns `jira.sh` from this directory (mirroring how `bwoc audit` dispatc
 
 On success the script exits `0` and emits **one JSON object** on stdout, which the CLI parses. On error it writes a human diagnostic to **stderr** and exits non-zero; the CLI surfaces it as `plugin '<name>' exited <code>`. The output shapes the CLI consumes:
 
-- `query` → `{ "total": <n>, "issues": [ … ], "start_at", "max_results" }`
+- `query` → `{ "total": <n>, "issues": [ … ], "start_at", "max_results", "next_page_token", "is_last" }` (`/search/jql` is token-paginated; `next_page_token`/`is_last` drive a future paging loop, `total` ← page count)
 - `transition` → `{ "ok": true, "issue", "to_status", "transitioned": <bool> }`
 - `sync` → `{ "summary": { "push", "pull", "noop", "conflict" }, "dry_run" }` — a non-zero `conflict` makes the CLI exit `3`.
 

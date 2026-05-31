@@ -1,7 +1,7 @@
 [plugin]
 name        = "jira-cloud-rest"
 kind        = "jira"
-version     = "0.1.0"
+version     = "0.1.1"
 description = "Jira Cloud REST v3 integration adapter — project-scoped JQL reads plus gated status transitions for bidirectional scrum sync."
 compat      = ">=2.7.0"
 entry       = "jira.sh"
