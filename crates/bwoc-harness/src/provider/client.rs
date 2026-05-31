@@ -84,9 +84,14 @@ pub trait ProviderClient: Send + Sync {
 // Real implementation
 // ---------------------------------------------------------------------------
 
+/// Default OpenAI-compatible endpoint (Ollama's local server). Single source
+/// of truth — the CLI `--endpoint` default, worker config defaults, and
+/// [`OllamaClient::default_endpoint`] all reference this so they cannot drift.
+pub const DEFAULT_ENDPOINT: &str = "http://localhost:11434/v1";
+
 /// Real HTTP client speaking the OpenAI-compat API.
 ///
-/// Default endpoint: `http://localhost:11434/v1` (Ollama).
+/// Default endpoint: [`DEFAULT_ENDPOINT`] (`http://localhost:11434/v1`, Ollama).
 #[derive(Debug, Clone)]
 pub struct OllamaClient {
     pub base_url: String,
@@ -109,7 +114,7 @@ impl OllamaClient {
 
     /// Create a client pointing at the default Ollama endpoint.
     pub fn default_endpoint() -> Self {
-        Self::new("http://localhost:11434/v1")
+        Self::new(DEFAULT_ENDPOINT)
     }
 
     /// Set the `reasoning_effort` sent on every completion request (OpenAI-
