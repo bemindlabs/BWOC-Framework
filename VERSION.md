@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.17.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.4.9`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.17.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.4.10`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.5.31-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.31-1) *(2026-05-31 — **2.17.0**; minor — operator-ergonomics: `bwoc chat --tmux` auto-starts tmux when needed (#137), `bwoc jira` resolves credentials from `.bwoc/secrets.toml` (#136). Prior: `v2026.5.31-0` 2.16.1 — plugin-install + integration-plugin fixes)*
+**Latest release:** [`v2026.5.31-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.31-2) *(2026-05-31 — **2.17.1**; patch — `bwoc-harness` OpenTelemetry exporter modernized to 0.32 + env-gate + GenAI semconv + per-turn child spans (#140, #141), opt-in `--features otel` only. Prior: `v2026.5.31-1` 2.17.0 — tmux auto-start + jira secrets.toml)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-31T06:50:15Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-31T09:47:53Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
