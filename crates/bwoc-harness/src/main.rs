@@ -94,7 +94,7 @@ struct Args {
     model: String,
 
     /// OpenAI-compatible endpoint base URL.
-    #[arg(long, short = 'e', default_value = "http://localhost:11434/v1")]
+    #[arg(long, short = 'e', default_value = bwoc_harness::provider::client::DEFAULT_ENDPOINT)]
     endpoint: String,
 
     /// Maximum number of agentic turns before giving up.

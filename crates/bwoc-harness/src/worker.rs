@@ -51,7 +51,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             model: "gemma4".to_string(),
-            endpoint: "http://localhost:11434/v1".to_string(),
+            endpoint: crate::provider::client::DEFAULT_ENDPOINT.to_string(),
             skip_model_check: false,
         }
     }
@@ -240,7 +240,7 @@ mod tests {
             prompt: "do the thing".to_string(),
             worktree: worktree.to_path_buf(),
             model: "mock".to_string(),
-            endpoint: "http://localhost:11434/v1".to_string(),
+            endpoint: crate::provider::client::DEFAULT_ENDPOINT.to_string(),
             skip_model_check: true,
         }
     }
