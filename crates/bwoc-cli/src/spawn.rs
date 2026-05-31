@@ -201,6 +201,23 @@ impl Backend {
     }
 }
 
+/// Absolute path to the **currently-running** `bwoc` binary, as a string
+/// suitable for an argv slot when re-invoking `bwoc` in a child process
+/// (a tmux window, a Ghostty window, a captured shell-out).
+///
+/// Mirrors `harness_binary`'s "sibling of the running binary" rule: a child
+/// launched from a dev build or a non-PATH install runs *that same* binary,
+/// not whatever stale `bwoc` happens to be first on `$PATH` (which silently
+/// produced a version mismatch — e.g. a 2.18 dev build spawning a 2.11
+/// install). Falls back to the bare name `"bwoc"` (PATH lookup) only when
+/// `current_exe()` is unavailable.
+pub(crate) fn bwoc_exe() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "bwoc".to_string())
+}
+
 pub struct SpawnArgs {
     pub path: Option<PathBuf>,
     pub backend: Backend,

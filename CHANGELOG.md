@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bwoc chat --tmux` (and the dashboard's `t`/`g`/`l`/`i`/start/stop shell-outs) now re-invoke the *running* `bwoc` binary instead of a bare `bwoc` PATH lookup.** The tmux window / Ghostty window / captured child launched whatever `bwoc` was first on `$PATH`, so a dev build or a non-PATH install silently spawned a *different, stale* binary (e.g. a 2.18 build opening a 2.11 install) — or, with no `bwoc` on `$PATH` at all, the window flashed "command not found" and vanished. All these launchers now resolve `std::env::current_exe()` (new `spawn::bwoc_exe()` helper, mirroring `harness_binary`'s sibling-of-the-running-binary rule), falling back to `"bwoc"` only when `current_exe()` is unavailable.
+
 ## [v2026.5.31-3] — 2026-05-31 — 2.18.0
 
 **Minor release.** Self-hosted runtime observability + parallelism (`bwoc-harness`): per-turn `gen_ai.request.model` (#BWOC-11) and per-tool `execute_tool` OTel spans (#BWOC-13) under the opt-in `--features otel`, and `--lead` now actually runs up to `--concurrency` workers in parallel (#BWOC-14). Cargo SemVer `2.17.1` → `2.18.0`.

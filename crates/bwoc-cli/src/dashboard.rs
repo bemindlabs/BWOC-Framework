@@ -330,15 +330,17 @@ fn open_in_tmux(app: &mut App) {
 
     let agent_path = root.join(&entry.path);
     let agent_path_str = agent_path.to_string_lossy().to_string();
+    let exe = crate::spawn::bwoc_exe();
     // `tmux new-window -n <name> -- bwoc spawn --path <p> --backend <b>`
     // The trailing args after `--` are run as the new window's command.
+    // `exe` is the running binary (not a PATH `bwoc`) so the window matches.
     let result = std::process::Command::new("tmux")
         .args([
             "new-window",
             "-n",
             entry.id.as_str(),
             "--",
-            "bwoc",
+            exe.as_str(),
             "spawn",
             "--path",
             agent_path_str.as_str(),
@@ -388,6 +390,7 @@ fn open_in_ghostty(app: &mut App) {
     let agent_path = root.join(&entry.path);
     let agent_path_str = agent_path.to_string_lossy().to_string();
     let wd_arg = format!("--working-directory={agent_path_str}");
+    let exe = crate::spawn::bwoc_exe();
     // `open -na Ghostty.app --args --working-directory=<p> -e bwoc spawn --path <p> --backend <b>`
     let result = std::process::Command::new("open")
         .args([
@@ -396,7 +399,7 @@ fn open_in_ghostty(app: &mut App) {
             "--args",
             wd_arg.as_str(),
             "-e",
-            "bwoc",
+            exe.as_str(),
             "spawn",
             "--path",
             agent_path_str.as_str(),
@@ -444,7 +447,8 @@ fn start_selected_agent(app: &mut App) {
     let root_str = root.to_string_lossy().to_string();
 
     // `--json` requires `--yes` (no TTY prompt path in a captured child).
-    let result = std::process::Command::new("bwoc")
+    let exe = crate::spawn::bwoc_exe();
+    let result = std::process::Command::new(&exe)
         .args([
             "start",
             entry.id.as_str(),
@@ -480,7 +484,7 @@ fn start_selected_agent(app: &mut App) {
             app.last_action = Some(format!("start '{}' failed: {first}", entry.id));
         }
         Err(e) => {
-            app.last_action = Some(format!("start exec failed: {e} (is bwoc on PATH?)"));
+            app.last_action = Some(format!("start exec failed: {e} (tried to run `{exe}`)"));
         }
     }
 }
@@ -504,7 +508,8 @@ fn stop_selected_agent(app: &mut App) {
     };
     let root_str = root.to_string_lossy().to_string();
 
-    let result = std::process::Command::new("bwoc")
+    let exe = crate::spawn::bwoc_exe();
+    let result = std::process::Command::new(&exe)
         .args([
             "stop",
             entry.id.as_str(),
@@ -549,7 +554,7 @@ fn stop_selected_agent(app: &mut App) {
             app.last_action = Some(format!("stop '{}' failed: {first}", entry.id));
         }
         Err(e) => {
-            app.last_action = Some(format!("stop exec failed: {e} (is bwoc on PATH?)"));
+            app.last_action = Some(format!("stop exec failed: {e} (tried to run `{exe}`)"));
         }
     }
 }
@@ -581,13 +586,14 @@ fn open_log_in_tmux(app: &mut App) {
     let root_str = root.to_string_lossy().to_string();
     let bare = entry.id.strip_prefix("agent-").unwrap_or(&entry.id);
     let window_name = format!("{}-log", entry.id);
+    let exe = crate::spawn::bwoc_exe();
     let result = std::process::Command::new("tmux")
         .args([
             "new-window",
             "-n",
             window_name.as_str(),
             "--",
-            "bwoc",
+            exe.as_str(),
             "log",
             bare,
             "--workspace",
@@ -636,13 +642,14 @@ fn open_inbox_in_tmux(app: &mut App) {
     let root_str = root.to_string_lossy().to_string();
     let bare = entry.id.strip_prefix("agent-").unwrap_or(&entry.id);
     let window_name = format!("{}-inbox", entry.id);
+    let exe = crate::spawn::bwoc_exe();
     let result = std::process::Command::new("tmux")
         .args([
             "new-window",
             "-n",
             window_name.as_str(),
             "--",
-            "bwoc",
+            exe.as_str(),
             "inbox",
             bare,
             "--workspace",
