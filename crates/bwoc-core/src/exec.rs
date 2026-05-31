@@ -17,7 +17,28 @@
 //! This is pure `std` (no new dependencies) — safe for the lean core crate.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Existing-file candidate for `name` inside `dir`. On Windows an executable is
+/// `<name>.exe`, so when `name` carries no extension we also probe the `.exe`
+/// sibling — otherwise a direct `is_file()` check (tiers 1 and 3) would miss a
+/// Windows dev build and silently fall through to a `$PATH` copy, the very bug
+/// this module exists to prevent. (The bare-name fallback in [`binary_or_name`]
+/// still works on Windows because the OS appends `.exe` during a `$PATH`
+/// lookup; these tiers are direct file checks, so they can't rely on that.)
+fn resolve_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    let direct = dir.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    if cfg!(windows) && Path::new(name).extension().is_none() {
+        let exe = dir.join(format!("{name}.exe"));
+        if exe.is_file() {
+            return Some(exe);
+        }
+    }
+    None
+}
 
 /// Resolve a sibling BWOC binary (`bwoc`, `bwoc-agent`, `bwoc-harness`) by the
 /// shared three-tier rule. Returns `None` only when none of the tiers yield an
@@ -26,9 +47,8 @@ pub fn sibling_binary(name: &str) -> Option<PathBuf> {
     // 1. Sibling of the running binary.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
+            if let Some(hit) = resolve_in(dir, name) {
+                return Some(hit);
             }
         }
     }
@@ -44,9 +64,8 @@ pub fn sibling_binary(name: &str) -> Option<PathBuf> {
     // 3. $PATH fallback.
     let path_env = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_env) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
+        if let Some(hit) = resolve_in(&dir, name) {
+            return Some(hit);
         }
     }
     None
