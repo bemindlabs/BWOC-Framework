@@ -90,9 +90,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
-// Six declared backends (cf. `help.rs` table, `check::BACKEND_NAMES`) — CLI
-// invocation aliases, in registration order. Keep `openai-compatible` listed
-// so the banner matches the "6 backends" surfaced elsewhere.
+// The six CLI backend aliases accepted by `--backend` (`chat::parse_backend`),
+// not the canonical vendor names in `check::BACKEND_NAMES` (which says
+// `antigravity`, not the `agy` alias shown here). Display-only; kept complete —
+// with `openai-compatible` — to match the "6 backends" `help.rs` documents.
 const BACKENDS: &str = "claude · agy · codex · kimi · ollama · openai-compatible";
 const LOCALES: &str = "en · th";
 
