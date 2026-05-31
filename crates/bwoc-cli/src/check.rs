@@ -1038,7 +1038,10 @@ const AUDIT_SEVERITY_LEVELS: &[&str] = &["info", "low", "medium", "high", "criti
 /// `expected_evidence_kind` field declares which kind the runtime intends
 /// to emit; BWOC-29 enforces the kind name is valid and (for kinds that
 /// carry spec-mandated sub-fields) the per-kind contract is declared.
-const EVIDENCE_KINDS: &[&str] = &[
+///
+/// Single source of truth shared with audit-finding validation (`audit.rs`)
+/// so the two validators cannot drift. Mirrors the [`PLUGIN_KINDS`] pattern.
+pub(crate) const EVIDENCE_KINDS: &[&str] = &[
     "file",
     "content",
     "command",
