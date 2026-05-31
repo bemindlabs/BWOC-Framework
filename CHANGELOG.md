@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.5.31-3] — 2026-05-31 — 2.18.0
+
+**Minor release.** Self-hosted runtime observability + parallelism (`bwoc-harness`): per-turn `gen_ai.request.model` (#BWOC-11) and per-tool `execute_tool` OTel spans (#BWOC-13) under the opt-in `--features otel`, and `--lead` now actually runs up to `--concurrency` workers in parallel (#BWOC-14). Cargo SemVer `2.17.1` → `2.18.0`.
+
 ### Added
 
 - **`bwoc-harness --lead` runs workers concurrently (`--concurrency`, BWOC-14).** The Saṅgha lead collected tasks one-at-a-time even with `--concurrency > 1`; now it keeps that many workers in flight (the queue's worker loop spawns each item under a `Semaphore`, the lead tops the queue up as workers finish). `--concurrency 1` is unchanged one-at-a-time behaviour; claim/complete bookkeeping stays single-threaded so there are no shared-state races.
