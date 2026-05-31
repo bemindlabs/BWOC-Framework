@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.16.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.4.8`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.17.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.4.9`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.5.31-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.31-0) *(2026-05-31 — **2.16.1**; patch — plugin-install + integration-plugin fixes: `bwoc plugin install` accepts all declared kinds (#126), `jira-cloud-rest` query → `/search/jql` + ORDER BY scoping (#129), `bwoc gcloud project list` human count (#131). Prior: `v2026.5.30-0` 2.16.0 — frontier-model surface)*
+**Latest release:** [`v2026.5.31-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.31-1) *(2026-05-31 — **2.17.0**; minor — operator-ergonomics: `bwoc chat --tmux` auto-starts tmux when needed (#137), `bwoc jira` resolves credentials from `.bwoc/secrets.toml` (#136). Prior: `v2026.5.31-0` 2.16.1 — plugin-install + integration-plugin fixes)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-05-31T05:38:34Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-05-31T06:50:15Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
