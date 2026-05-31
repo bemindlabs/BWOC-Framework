@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 ### Changed
 
 - **`bwoc-harness` OpenTelemetry exporter modernized (BWOC-2).** The optional `--features otel` OTLP exporter moved from opentelemetry 0.27 to **0.32**, is now **runtime env-gated** (silent no-op unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so an `otel` build costs nothing until a collector exists), emits GenAI-semconv token usage (`gen_ai.operation.name`, `gen_ai.usage.input_tokens`/`output_tokens`) on the session span, and flushes via an explicit `provider.shutdown()` so a short-lived CLI doesn't drop the span on exit. The default build keeps **zero** OpenTelemetry dependencies (dep-quarantine). Per-turn `gen_ai.*` child spans are a planned phase-2.
+- **`bwoc-harness` per-turn OTel spans (BWOC-10).** Building on BWOC-2, each recorded turn is now replayed as a `bwoc.turn` child span under the session span, carrying that turn's `gen_ai.usage.input_tokens`/`output_tokens`, tool-call count, and a duration reconstructed from `latency_ms`. Same env-gate + dep-quarantine as the session span (no-op unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set; zero deps in the default build).
 
 
 ## [v2026.5.31-1] — 2026-05-31 — 2.17.0

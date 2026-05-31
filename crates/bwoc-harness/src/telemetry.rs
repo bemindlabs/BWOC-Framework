@@ -49,9 +49,11 @@
 //! `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so even an `otel` build is a silent
 //! no-op until a collector is configured. The default build has **no OTEL
 //! dependency** — the export call compiles to nothing without the feature
-//! (dep-quarantine). The span carries GenAI-semconv token usage
-//! (`gen_ai.usage.*`) plus the session's bwoc metrics; per-turn child spans are
-//! a planned phase-2. See `notes/2026-05-31_otel-exporter-research.md`.
+//! (dep-quarantine). The session span carries GenAI-semconv token usage
+//! (`gen_ai.usage.*`) plus the session's bwoc metrics, and each recorded turn
+//! is replayed as a `bwoc.turn` child span with its own per-turn token usage
+//! (durations reconstructed from `latency_ms`).
+//! See `notes/2026-05-31_otel-exporter-research.md`.
 //!
 //! ## Secrets
 //!
@@ -345,11 +347,15 @@ impl TurnBuilder {
 /// Design basis: `notes/2026-05-31_otel-exporter-research.md` (opentelemetry
 /// 0.32; the thread-based BatchSpanProcessor needs no Tokio runtime; the
 /// layer/global shutdown path does not flush, so we shut the provider down
-/// explicitly). Per-turn `gen_ai.*` child spans are a documented phase-2.
+/// explicitly). Each recorded turn is replayed as a `bwoc.turn` child span
+/// parented to the session span (BWOC-10); per-turn timings are reconstructed
+/// from `latency_ms` walking backward from now (no wall-clock parsing needed).
 #[cfg(feature = "otel")]
 fn export_otel_span(record: &SessionRecord) {
-    use opentelemetry::KeyValue;
-    use opentelemetry::trace::{Span, Tracer, TracerProvider as _};
+    use std::time::{Duration, SystemTime};
+
+    use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider as _};
+    use opentelemetry::{Context, KeyValue};
 
     // Env-gate: no collector endpoint → silent no-op (zero overhead).
     if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none() {
@@ -414,7 +420,36 @@ fn export_otel_span(record: &SessionRecord) {
         "gates.failed",
         clamp(record.metrics.gates_failed),
     ));
-    span.end();
+
+    // Per-turn child spans (BWOC-10). Move the session span into a Context so
+    // the turn spans parent under it, then replay each recorded turn as a
+    // `bwoc.turn` span. Durations are reconstructed from `latency_ms` walking
+    // backward from now — the last turn ended ~now (this runs at session finish).
+    let cx = Context::current().with_span(span);
+    if let Some(h) = &record.harness {
+        let mut end = SystemTime::now();
+        for t in h.turns.iter().rev() {
+            let start = end
+                .checked_sub(Duration::from_millis(t.latency_ms))
+                .unwrap_or(end);
+            let mut turn_span = tracer
+                .span_builder("bwoc.turn")
+                .with_start_time(start)
+                .with_attributes(vec![
+                    KeyValue::new("gen_ai.operation.name", "chat"),
+                    KeyValue::new("gen_ai.provider.name", "openai"),
+                    KeyValue::new("gen_ai.usage.input_tokens", clamp(u64::from(t.tokens_in))),
+                    KeyValue::new("gen_ai.usage.output_tokens", clamp(u64::from(t.tokens_out))),
+                    KeyValue::new("bwoc.turn", i64::from(t.turn)),
+                    KeyValue::new("bwoc.tool_calls", i64::from(t.tool_calls)),
+                    KeyValue::new("bwoc.latency_ms", clamp(t.latency_ms)),
+                ])
+                .start_with_context(&tracer, &cx);
+            turn_span.end_with_timestamp(end);
+            end = start;
+        }
+    }
+    cx.span().end(); // end the session span (held in the context)
 
     // Explicit shutdown flushes the batch before the provider drops — the
     // global/layer shutdown path does NOT flush (opentelemetry-rust PR 1625),
