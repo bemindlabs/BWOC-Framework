@@ -374,17 +374,25 @@ fn export_otel_span(record: &SessionRecord) {
         .build();
     let tracer = provider.tracer("bwoc-harness");
 
+    // Saturating u64→i64 for OTEL integer attributes — `as i64` would wrap a
+    // value past i64::MAX into a negative count. Realistically unreachable for
+    // token/gate counters, but a corrupt negative attribute is worse than a
+    // clamp.
+    let clamp = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+
     let mut span = tracer.start("bwoc.session");
-    // GenAI semantic conventions (status: Development) — operation + token use.
+    // GenAI semantic conventions (status: Development). `operation.name` and
+    // `provider.name` are Required; the harness drives an OpenAI-compatible API.
     span.set_attribute(KeyValue::new("gen_ai.operation.name", "invoke_agent"));
+    span.set_attribute(KeyValue::new("gen_ai.provider.name", "openai"));
     if let Some(h) = &record.harness {
         span.set_attribute(KeyValue::new(
             "gen_ai.usage.input_tokens",
-            h.totals.tokens_in as i64,
+            clamp(h.totals.tokens_in),
         ));
         span.set_attribute(KeyValue::new(
             "gen_ai.usage.output_tokens",
-            h.totals.tokens_out as i64,
+            clamp(h.totals.tokens_out),
         ));
     }
     // bwoc-specific attributes (low cardinality — ids + counters, no prompts).
@@ -400,11 +408,11 @@ fn export_otel_span(record: &SessionRecord) {
     ));
     span.set_attribute(KeyValue::new(
         "gates.passed",
-        record.metrics.gates_passed as i64,
+        clamp(record.metrics.gates_passed),
     ));
     span.set_attribute(KeyValue::new(
         "gates.failed",
-        record.metrics.gates_failed as i64,
+        clamp(record.metrics.gates_failed),
     ));
     span.end();
 
