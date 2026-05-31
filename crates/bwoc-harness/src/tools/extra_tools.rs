@@ -712,7 +712,8 @@ impl ToolImpl for BwocTask {
             })?;
 
         // Build the bwoc command: `bwoc task <action> [--task <id>] [--team <id>] [--agent <id>]`
-        let mut cmd = tokio::process::Command::new("bwoc");
+        // Resolve `bwoc` as a sibling of the running harness, not a stale PATH copy.
+        let mut cmd = tokio::process::Command::new(bwoc_core::exec::binary_or_name("bwoc"));
         cmd.arg("task").arg(action);
 
         if let Some(task_id) = args["task_id"].as_str() {
@@ -844,7 +845,8 @@ impl ToolImpl for BwocSend {
                 reason: "missing `from` argument".to_string(),
             })?;
 
-        let mut cmd = tokio::process::Command::new("bwoc");
+        // Sibling-of-running-harness resolution (see bwoc_core::exec).
+        let mut cmd = tokio::process::Command::new(bwoc_core::exec::binary_or_name("bwoc"));
         cmd.arg("send")
             .arg("--to")
             .arg(to)

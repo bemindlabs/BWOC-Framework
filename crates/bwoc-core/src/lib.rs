@@ -6,6 +6,7 @@
 pub mod deep_memory;
 pub mod doc_kind;
 pub mod error;
+pub mod exec;
 pub mod identity;
 pub mod lifecycle;
 pub mod manifest;

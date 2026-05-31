@@ -119,7 +119,8 @@ impl TaskWatch {
             return;
         };
         let root_str = root.to_string_lossy().to_string();
-        let result = std::process::Command::new("bwoc")
+        // Resolve `bwoc` as a sibling of the running agent, not a stale PATH copy.
+        let result = std::process::Command::new(bwoc_core::exec::binary_or_name("bwoc"))
             .args([
                 "task",
                 "claim",
