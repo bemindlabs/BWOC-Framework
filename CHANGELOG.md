@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`bwoc-harness` per-turn model on OTel spans (BWOC-11).** Each `bwoc.turn` child span now carries `gen_ai.request.model` (the active model that turn, recorded in `TurnMetrics.model`) — useful when token pressure switches the model mid-session. `session-metrics.jsonl` gains an additive `model` field (omitted when empty). Default build + behaviour unchanged.
+
+
 ## [v2026.5.31-2] — 2026-05-31 — 2.17.1
 
 **Patch release.** OpenTelemetry exporter modernization for `bwoc-harness` (opt-in `--features otel`; the default build is unchanged): bumped to opentelemetry 0.32, runtime env-gated, GenAI-semconv attributes, and per-turn `bwoc.turn` child spans (#140, #141). Cargo SemVer `2.17.0` → `2.17.1`.

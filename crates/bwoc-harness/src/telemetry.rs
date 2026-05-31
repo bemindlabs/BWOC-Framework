@@ -57,9 +57,10 @@
 //!
 //! ## Secrets
 //!
-//! Telemetry MUST NOT include secret values.  The `TurnMetrics` struct only
-//! carries counts and durations — never env-var values, command arguments
-//! that may contain tokens, or any string from the credential broker.
+//! Telemetry MUST NOT include secret values.  The `TurnMetrics` struct carries
+//! counts, durations, and the model identifier — never env-var values, command
+//! arguments that may contain tokens, or any string from the credential broker.
+//! The model id is a non-secret label (e.g. `gemma4`, `claude-opus-4-8`).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -98,6 +99,11 @@ pub struct TurnMetrics {
     /// `1` if a token-pressure–driven model switch occurred at the start of
     /// this turn; `0` otherwise.  Distinct from error-based fallback switches.
     pub token_pressure_switch: u32,
+    /// Model active for this turn's provider call (a model identifier, never a
+    /// secret). Empty when unknown; additive on the wire (older readers and
+    /// records that predate the field are unaffected).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +301,9 @@ pub struct TurnBuilder {
     /// Set to `1` when a token-pressure–driven model switch occurred before
     /// this turn's provider call.  `0` = no switch this turn.
     pub token_pressure_switch: u32,
+    /// Model active for this turn's provider call. Set by the loop from its
+    /// `active_model`; empty if never set.
+    pub model: String,
 }
 
 impl TurnBuilder {
@@ -310,6 +319,7 @@ impl TurnBuilder {
             gates_failed: 0,
             context_tokens: 0,
             token_pressure_switch: 0,
+            model: String::new(),
         }
     }
 
@@ -326,6 +336,7 @@ impl TurnBuilder {
             gates_failed: self.gates_failed,
             context_tokens: self.context_tokens,
             token_pressure_switch: self.token_pressure_switch,
+            model: self.model,
         }
     }
 }
@@ -464,18 +475,25 @@ fn export_otel_span(record: &SessionRecord) {
     let cx = Context::current().with_span(span);
     if let Some(h) = &record.harness {
         for (t, (start, end)) in h.turns.iter().zip(&windows) {
+            let mut attrs = vec![
+                KeyValue::new("gen_ai.operation.name", "chat"),
+                KeyValue::new("gen_ai.provider.name", "openai"),
+                KeyValue::new("gen_ai.usage.input_tokens", clamp(u64::from(t.tokens_in))),
+                KeyValue::new("gen_ai.usage.output_tokens", clamp(u64::from(t.tokens_out))),
+                KeyValue::new("bwoc.turn", i64::from(t.turn)),
+                KeyValue::new("bwoc.tool_calls", i64::from(t.tool_calls)),
+                KeyValue::new("bwoc.latency_ms", clamp(t.latency_ms)),
+            ];
+            // gen_ai.request.model per turn — the model can change mid-session
+            // under token pressure, so it belongs on the turn, not just the
+            // session. Omitted when the loop never recorded one (BWOC-11).
+            if !t.model.is_empty() {
+                attrs.push(KeyValue::new("gen_ai.request.model", t.model.clone()));
+            }
             let mut turn_span = tracer
                 .span_builder("bwoc.turn")
                 .with_start_time(*start)
-                .with_attributes(vec![
-                    KeyValue::new("gen_ai.operation.name", "chat"),
-                    KeyValue::new("gen_ai.provider.name", "openai"),
-                    KeyValue::new("gen_ai.usage.input_tokens", clamp(u64::from(t.tokens_in))),
-                    KeyValue::new("gen_ai.usage.output_tokens", clamp(u64::from(t.tokens_out))),
-                    KeyValue::new("bwoc.turn", i64::from(t.turn)),
-                    KeyValue::new("bwoc.tool_calls", i64::from(t.tool_calls)),
-                    KeyValue::new("bwoc.latency_ms", clamp(t.latency_ms)),
-                ])
+                .with_attributes(attrs)
                 .start_with_context(&tracer, &cx);
             turn_span.end_with_timestamp(*end);
         }
@@ -596,6 +614,26 @@ mod tests {
         // No turns → no windows (session span falls back to `now`).
         assert!(reconstruct_turn_windows(&[], anchor).is_empty());
     }
+
+    #[test]
+    fn turn_model_serialization_is_additive(/* BWOC-11 */) {
+        // A non-empty model serializes under `model` and round-trips.
+        let m = TurnMetrics {
+            turn: 1,
+            model: "gemma4".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&m).unwrap();
+        assert_eq!(json.get("model").and_then(|v| v.as_str()), Some("gemma4"));
+        let back: TurnMetrics = serde_json::from_value(json).unwrap();
+        assert_eq!(back.model, "gemma4");
+        // An empty model is omitted on the wire and deserializes back to "" —
+        // records that predate the field stay valid (additive).
+        let empty_json = serde_json::to_value(TurnMetrics::default()).unwrap();
+        assert!(empty_json.get("model").is_none());
+        let from_old: TurnMetrics = serde_json::from_value(empty_json).unwrap();
+        assert_eq!(from_old.model, "");
+    }
     use tempfile::TempDir;
 
     // ── TurnMetrics: shape and defaults ─────────────────────────────────────
@@ -654,6 +692,7 @@ mod tests {
             latency_ms: 200,
             context_tokens: 300,
             token_pressure_switch: 0,
+            model: String::new(),
         };
         let t2 = TurnMetrics {
             turn: 2,
@@ -666,6 +705,7 @@ mod tests {
             latency_ms: 150,
             context_tokens: 600,
             token_pressure_switch: 0,
+            model: String::new(),
         };
         totals.accumulate(&t1);
         totals.accumulate(&t2);
@@ -694,6 +734,7 @@ mod tests {
             latency_ms: 300,
             context_tokens: 500,
             token_pressure_switch: 0,
+            model: String::new(),
         };
         telem.record_turn(m);
         telem.agent.tasks_attempted = 1;
@@ -761,6 +802,7 @@ mod tests {
             latency_ms: 100,
             context_tokens: 200,
             token_pressure_switch: 0,
+            model: String::new(),
         });
         telem.finish(&sink).unwrap();
 
@@ -821,6 +863,7 @@ mod tests {
             latency_ms: 200,
             context_tokens: 400,
             token_pressure_switch: 0,
+            model: String::new(),
         };
         let json = serde_json::to_value(&m).unwrap();
         // Every value in the TurnMetrics JSON must be a number, not a string.
