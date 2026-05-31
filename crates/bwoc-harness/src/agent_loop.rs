@@ -662,8 +662,16 @@ pub async fn run_loop(
 
         tb.tool_calls = tool_calls.len() as u32;
         // Record the requested tool names (call order) for per-tool execute_tool
-        // OTel spans (BWOC-13).
-        tb.tool_names = tool_calls.iter().map(|c| c.function.name.clone()).collect();
+        // OTel spans (BWOC-13). Filter to tools that actually exist in the
+        // registry — the model can hallucinate arbitrary function names, and an
+        // unknown name (a) never executes and (b) must not reach telemetry as an
+        // unbounded model-controlled string.
+        tb.tool_names = tool_calls
+            .iter()
+            .map(|c| &c.function.name)
+            .filter(|name| registry.get(name).is_some())
+            .cloned()
+            .collect();
 
         let results = execute_tool_calls(&tool_calls, &registry, &ctx, &config).await;
 
