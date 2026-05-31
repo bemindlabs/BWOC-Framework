@@ -334,6 +334,29 @@ impl TurnBuilder {
 // OTEL exporter — active only under `--features otel`
 // ---------------------------------------------------------------------------
 
+/// Reconstruct per-turn `[start, end]` time windows for the OTel replay by
+/// walking each turn's `latency_ms` backward from `end_anchor` (the last turn
+/// ended ~when the session finished). Returned in turn order; `windows[0].0` is
+/// the earliest instant — used as the parent span's start so children nest
+/// inside it. Pure + side-effect-free so it is unit-tested without a collector.
+#[cfg_attr(not(feature = "otel"), allow(dead_code))]
+fn reconstruct_turn_windows(
+    turns: &[TurnMetrics],
+    end_anchor: std::time::SystemTime,
+) -> Vec<(std::time::SystemTime, std::time::SystemTime)> {
+    let mut windows = Vec::with_capacity(turns.len());
+    let mut end = end_anchor;
+    for t in turns.iter().rev() {
+        let start = end
+            .checked_sub(std::time::Duration::from_millis(t.latency_ms))
+            .unwrap_or(end);
+        windows.push((start, end));
+        end = start;
+    }
+    windows.reverse(); // back to turn order
+    windows
+}
+
 /// Export one OTLP span per finished session (BWOC-2).
 ///
 /// Best-effort and **env-gated**: when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset
@@ -352,7 +375,7 @@ impl TurnBuilder {
 /// from `latency_ms` walking backward from now (no wall-clock parsing needed).
 #[cfg(feature = "otel")]
 fn export_otel_span(record: &SessionRecord) {
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider as _};
     use opentelemetry::{Context, KeyValue};
@@ -386,7 +409,22 @@ fn export_otel_span(record: &SessionRecord) {
     // clamp.
     let clamp = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
 
-    let mut span = tracer.start("bwoc.session");
+    // Reconstruct per-turn windows by walking latency backward from now (this
+    // runs at session finish, so the last turn ended ~now). The session span
+    // must START at the earliest turn's start, or every non-zero-latency child
+    // would predate its parent and break trace nesting.
+    let now = SystemTime::now();
+    let windows = record
+        .harness
+        .as_ref()
+        .map(|h| reconstruct_turn_windows(&h.turns, now))
+        .unwrap_or_default();
+    let session_start = windows.first().map(|(s, _)| *s).unwrap_or(now);
+
+    let mut span = tracer
+        .span_builder("bwoc.session")
+        .with_start_time(session_start)
+        .start(&tracer);
     // GenAI semantic conventions (status: Development). `operation.name` and
     // `provider.name` are Required; the harness drives an OpenAI-compatible API.
     span.set_attribute(KeyValue::new("gen_ai.operation.name", "invoke_agent"));
@@ -421,20 +459,14 @@ fn export_otel_span(record: &SessionRecord) {
         clamp(record.metrics.gates_failed),
     ));
 
-    // Per-turn child spans (BWOC-10). Move the session span into a Context so
-    // the turn spans parent under it, then replay each recorded turn as a
-    // `bwoc.turn` span. Durations are reconstructed from `latency_ms` walking
-    // backward from now — the last turn ended ~now (this runs at session finish).
+    // Per-turn child spans (BWOC-10) parented under the session span via the
+    // Context. Each window already nests inside [session_start, now].
     let cx = Context::current().with_span(span);
     if let Some(h) = &record.harness {
-        let mut end = SystemTime::now();
-        for t in h.turns.iter().rev() {
-            let start = end
-                .checked_sub(Duration::from_millis(t.latency_ms))
-                .unwrap_or(end);
+        for (t, (start, end)) in h.turns.iter().zip(&windows) {
             let mut turn_span = tracer
                 .span_builder("bwoc.turn")
-                .with_start_time(start)
+                .with_start_time(*start)
                 .with_attributes(vec![
                     KeyValue::new("gen_ai.operation.name", "chat"),
                     KeyValue::new("gen_ai.provider.name", "openai"),
@@ -445,11 +477,10 @@ fn export_otel_span(record: &SessionRecord) {
                     KeyValue::new("bwoc.latency_ms", clamp(t.latency_ms)),
                 ])
                 .start_with_context(&tracer, &cx);
-            turn_span.end_with_timestamp(end);
-            end = start;
+            turn_span.end_with_timestamp(*end);
         }
     }
-    cx.span().end(); // end the session span (held in the context)
+    cx.span().end_with_timestamp(now); // session ends at now, after all children
 
     // Explicit shutdown flushes the batch before the provider drops — the
     // global/layer shutdown path does NOT flush (opentelemetry-rust PR 1625),
@@ -528,6 +559,43 @@ fn is_leap(year: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_windows_nest_within_parent_and_match_latency() {
+        use std::time::{Duration, SystemTime};
+        let turns = vec![
+            TurnMetrics {
+                turn: 1,
+                latency_ms: 100,
+                ..Default::default()
+            },
+            TurnMetrics {
+                turn: 2,
+                latency_ms: 50,
+                ..Default::default()
+            },
+        ];
+        let anchor = SystemTime::UNIX_EPOCH + Duration::from_millis(1000);
+        let w = reconstruct_turn_windows(&turns, anchor);
+        assert_eq!(w.len(), 2);
+        // Returned in turn order; the last turn ends exactly at the anchor.
+        assert_eq!(w[1].1, anchor);
+        // Each window's duration equals that turn's latency.
+        assert_eq!(
+            w[0].1.duration_since(w[0].0).unwrap(),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            w[1].1.duration_since(w[1].0).unwrap(),
+            Duration::from_millis(50)
+        );
+        // Contiguous (turn 1 ends where turn 2 starts) and the earliest start —
+        // which the session span uses — precedes every child.
+        assert_eq!(w[0].1, w[1].0);
+        assert_eq!(w[0].0, anchor - Duration::from_millis(150));
+        // No turns → no windows (session span falls back to `now`).
+        assert!(reconstruct_turn_windows(&[], anchor).is_empty());
+    }
     use tempfile::TempDir;
 
     // ── TurnMetrics: shape and defaults ─────────────────────────────────────
