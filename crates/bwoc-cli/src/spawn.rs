@@ -164,40 +164,11 @@ impl Backend {
 
     /// Resolve the `bwoc-harness` binary path for the Ollama backend.
     ///
-    /// Resolution order:
-    /// 1. Sibling of the running `bwoc` binary.
-    /// 2. `CARGO_BIN_EXE_bwoc-harness` (set by Cargo during `cargo test`).
-    /// 3. `bwoc-harness` on `$PATH`.
-    ///
+    /// Sibling-of-the-running-binary, then `CARGO_BIN_EXE_bwoc-harness`, then
+    /// `$PATH` — see [`bwoc_core::exec::sibling_binary`] for the shared rule.
     /// Returns `None` if none of the locations yield an executable.
     pub fn harness_binary() -> Option<PathBuf> {
-        // 1. Sibling of the running binary.
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let candidate = dir.join("bwoc-harness");
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-
-        // 2. Cargo test env var (set by `cargo test` for workspace binaries).
-        if let Ok(p) = std::env::var("CARGO_BIN_EXE_bwoc-harness") {
-            let pb = PathBuf::from(&p);
-            if pb.is_file() {
-                return Some(pb);
-            }
-        }
-
-        // 3. $PATH fallback.
-        let path_env = std::env::var_os("PATH")?;
-        for dir in std::env::split_paths(&path_env) {
-            let candidate = dir.join("bwoc-harness");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        None
+        bwoc_core::exec::sibling_binary("bwoc-harness")
     }
 }
 

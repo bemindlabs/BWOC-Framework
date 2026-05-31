@@ -311,7 +311,10 @@ fn spawn_daemon(agent_path: &Path) -> Result<u32, StartError> {
         .append(true)
         .open(&log_path)?;
 
-    let child = Command::new("bwoc-agent")
+    // Resolve `bwoc-agent` relative to the running `bwoc` (sibling), so a dev
+    // build or non-PATH install starts its *own* daemon, not a stale copy.
+    let agent_bin = bwoc_core::exec::binary_or_name("bwoc-agent");
+    let child = Command::new(&agent_bin)
         .arg("--serve")
         .current_dir(agent_path)
         .stdin(Stdio::null())
@@ -320,8 +323,9 @@ fn spawn_daemon(agent_path: &Path) -> Result<u32, StartError> {
         .spawn()
         .map_err(|e| {
             io::Error::other(format!(
-                "failed to spawn `bwoc-agent --serve` in {}: {e} \
-                 (is bwoc-agent on PATH? `cargo install --path crates/bwoc-agent`)",
+                "failed to spawn `{} --serve` in {}: {e} \
+                 (install bwoc-agent next to bwoc, or `cargo install --path crates/bwoc-agent`)",
+                agent_bin.to_string_lossy(),
                 agent_path.display()
             ))
         })?;

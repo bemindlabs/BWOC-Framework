@@ -211,7 +211,10 @@ fn spawn_and_wait(
         .create(true)
         .append(true)
         .open(&log_path)?;
-    let mut child = Command::new("bwoc-agent")
+    // Sibling-of-running-binary resolution (see bwoc_core::exec) so the
+    // supervisor restarts the matching daemon, not a stale PATH copy.
+    let agent_bin = bwoc_core::exec::binary_or_name("bwoc-agent");
+    let mut child = Command::new(&agent_bin)
         .arg("--serve")
         .current_dir(agent_path)
         .stdin(Stdio::null())

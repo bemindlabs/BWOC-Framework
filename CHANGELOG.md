@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 ### Fixed
 
 - **`bwoc chat --tmux` (and the dashboard's `t`/`g`/`l`/`i`/start/stop shell-outs) now re-invoke the *running* `bwoc` binary instead of a bare `bwoc` PATH lookup.** The tmux window / Ghostty window / captured child launched whatever `bwoc` was first on `$PATH`, so a dev build or a non-PATH install silently spawned a *different, stale* binary (e.g. a 2.18 build opening a 2.11 install) — or, with no `bwoc` on `$PATH` at all, the window flashed "command not found" and vanished. All these launchers now resolve `std::env::current_exe()` (new `spawn::bwoc_exe()` helper, mirroring `harness_binary`'s sibling-of-the-running-binary rule), falling back to `"bwoc"` only when `current_exe()` is unavailable.
+- **Every BWOC binary that re-invokes a *sibling* binary now resolves it relative to the running executable, via the shared `bwoc_core::exec::{sibling_binary, binary_or_name}` helper.** Previously `bwoc start` / `bwoc supervise` spawned the daemon as a bare `bwoc-agent`, and the harness/agent shelled out to a bare `bwoc` (`task`, `send`, auto-claim) — each a `$PATH` lookup that could hit a different, stale version than the one running. The three-tier rule (sibling-of-`current_exe` → `CARGO_BIN_EXE_<name>` → `$PATH`) is now defined once in `bwoc-core` and reused; `spawn::harness_binary` was de-duplicated onto it.
 
 ## [v2026.5.31-3] — 2026-05-31 — 2.18.0
 
