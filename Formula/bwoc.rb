@@ -16,7 +16,7 @@
 class Bwoc < Formula
   desc "BWOC framework — backend-neutral spec + Rust runtime for AI coding agents"
   homepage "https://github.com/bemindlabs/BWOC-Framework"
-  version "2.17.1"
+  version "2.18.0"
   license "MIT"
 
   # Per-platform binary download. release.yml builds 4 unix targets;
@@ -25,23 +25,23 @@ class Bwoc < Formula
   # ubuntu-24.04-arm runners.
   on_macos do
     on_arm do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-2/bwoc-v2026.5.31-2-aarch64-apple-darwin.tar.gz"
-      sha256 "178aaf22e1011783510e295f295f09632888d129c42065f15580b7bedce8ef89"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-3/bwoc-v2026.5.31-3-aarch64-apple-darwin.tar.gz"
+      sha256 "50ffb14dace0fa70d2dd17451481c40b30a25728dd6e9ab21550b8663acfea76"
     end
     on_intel do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-2/bwoc-v2026.5.31-2-x86_64-apple-darwin.tar.gz"
-      sha256 "dab3ac1dc394875996fd424630384f9696e0e3db5773380c81462faa249e25be"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-3/bwoc-v2026.5.31-3-x86_64-apple-darwin.tar.gz"
+      sha256 "a5df3a350939b9f9ed51b93c2e16a57151ec209645c8f520dc520b836e8dff79"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-2/bwoc-v2026.5.31-2-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "527a374ddd4c0aa56456bf629b64a59ac90d0d4b36d137e0392853130dfdbc75"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-3/bwoc-v2026.5.31-3-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "7409ac99d9d5cda1bb4443bb59bcc2a6005f79c5de8bc4c2b516bebc4635c6cc"
     end
     on_intel do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-2/bwoc-v2026.5.31-2-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "e85920129c24ee28e0c30cfa0acd3c701d6a2a580a93aaea7012bce9d20ece1d"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.5.31-3/bwoc-v2026.5.31-3-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "e378e5669d8c3666e0110d82ab5572cd1e314cd99a39fd7e5f550f7895613cbd"
     end
   end
 
