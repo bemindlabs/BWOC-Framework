@@ -448,6 +448,16 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
             model: args.model.clone(),
             endpoint: args.endpoint.clone(),
             skip_model_check: args.skip_model_check,
+            // Propagate the scalar budget/vetted flags the operator set on the
+            // lead so a worker enforces the same limits (contrast the non-lead
+            // path, which feeds these straight into BudgetConfig/VettedMode).
+            // `token_budget`/`cost_limit`/`cost_per_1m` are Option — forwarded
+            // only when set. `vetted_mode` always has a clap default ("warn"),
+            // so it is always forwarded.
+            token_budget: args.token_budget,
+            cost_limit: args.cost_limit,
+            cost_per_1m: args.cost_per_1m,
+            vetted_mode: Some(args.vetted_mode.clone()),
         },
         capacity: args.concurrency,
         max_tasks: args.max_tasks,
