@@ -217,8 +217,10 @@ where
         for sd in chunk.choices {
             if let Some(text) = sd.delta.content {
                 if !text.is_empty() {
-                    emit(out, &ChatEvent::Token { text: text.clone() }).await?;
+                    // Accumulate by borrow, then move the owned delta into the
+                    // event — no per-token clone.
                     content.push_str(&text);
+                    emit(out, &ChatEvent::Token { text }).await?;
                 }
             }
             if let Some(tcs) = sd.delta.tool_calls {
@@ -260,6 +262,16 @@ where
             })
             .collect()
     };
+
+    // A stream that yielded neither content nor tool calls (e.g. a usage-only
+    // chunk, or an early termination) is a provider fault — surface it as an
+    // error so the caller emits `Error` + `TurnEnd`, rather than an empty
+    // `Message` that masks the failure. (Matches the old empty-completion guard.)
+    if content.is_empty() && tool_calls.is_empty() {
+        return Err(HarnessError::Provider(
+            "provider returned an empty response (no content, no tool calls)".to_string(),
+        ));
+    }
 
     let message = ChatMessage::assistant(
         (!content.is_empty()).then_some(content),
