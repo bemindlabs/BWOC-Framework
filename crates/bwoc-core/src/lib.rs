@@ -5,6 +5,7 @@
 
 pub mod deep_memory;
 pub mod doc_kind;
+pub mod env_scrub;
 pub mod error;
 pub mod exec;
 pub mod identity;

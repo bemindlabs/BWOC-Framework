@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Security
+
+- **Audit plugins no longer inherit the operator's environment.** `bwoc audit run` spawns each audit plugin — third-party code installed from a git/tarball URL — and the spawn carried the full ambient environment, leaking `GITHUB_TOKEN` / `AWS_*` / `NPM_TOKEN` etc. to exactly the process whose job is to run code you don't yet trust. The spawn now starts from a scrubbed environment (`env_clear()` + an allowlist filter) plus only the three `BWOC_*` context vars. The scrub logic + allowlist moved to a shared `bwoc_core::env_scrub` so the audit runner and the harness sandbox enforce the identical rule (the harness `sandbox::scrub_env` re-exports it; no new crate dependency — `bwoc-cli` already depends on `bwoc-core`, and the dep-quarantine on `bwoc-harness` is preserved).
+
 ## [v2026.5.31-4] — 2026-05-31 — 2.18.1
 
 **Patch release.** Binary-resolution correctness: every place a BWOC binary launches another now runs the binary actually installed alongside it, not whatever stale copy is first on `$PATH` (dev builds, side-by-side version installs). Plus two internal de-duplications of drift-prone constants. Cargo SemVer `2.18.0` → `2.18.1`.
