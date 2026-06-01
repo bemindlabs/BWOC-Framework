@@ -96,14 +96,11 @@ enum SessionMode {
     Plan,
 }
 
-/// Tools that change the workspace or run commands — blocked in [`SessionMode::Plan`].
-const MUTATING_TOOLS: &[&str] = &[
-    "write_file",
-    "edit_file",
-    "run_command",
-    "git",
-    "memory_write",
-];
+/// Read-only tools allowed in [`SessionMode::Plan`]. Plan mode uses an
+/// **allow-list**, not a deny-list: anything not here (writes, shell, git,
+/// task/peer/run delegation, gates, memory writes — and any future tool) is
+/// refused so the model observes and plans without acting or spawning processes.
+const PLAN_READ_ONLY_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "memory_read"];
 
 impl SessionMode {
     fn parse(s: &str) -> Option<Self> {
@@ -135,14 +132,15 @@ impl SessionMode {
         }
     }
 
-    /// In plan mode, a mutating tool is refused outright (before the permission
-    /// gate). Returns the refusal reason the model should see, or `None` if the
-    /// tool is allowed to proceed to the normal permission flow.
+    /// In plan mode, any tool that is not read-only is refused outright (before
+    /// the permission gate). Returns the refusal reason the model should see, or
+    /// `None` if the tool may proceed to the normal permission flow.
     fn plan_block(self, tool: &str) -> Option<String> {
-        if self == Self::Plan && MUTATING_TOOLS.contains(&tool) {
+        if self == Self::Plan && !PLAN_READ_ONLY_TOOLS.contains(&tool) {
             Some(format!(
-                "PLAN MODE: `{tool}` is disabled. Present your proposed plan for \
-                 approval (do not act). The user will switch off plan mode to execute."
+                "PLAN MODE: `{tool}` is disabled (read-only planning). Present your \
+                 proposed plan for approval — do not act. The user will switch off \
+                 plan mode to execute."
             ))
         } else {
             None
@@ -829,14 +827,26 @@ mod tests {
         assert!(SessionMode::Bypass.auto_allows("run_command"));
         assert_eq!(SessionMode::AcceptEdits.wire(), "accept_edits");
 
-        // plan: parses, never auto-allows, and blocks mutating tools only.
+        // plan: parses, never auto-allows, allow-lists read-only tools only.
         assert_eq!(SessionMode::parse("plan"), Some(SessionMode::Plan));
         assert_eq!(SessionMode::Plan.wire(), "plan");
         assert!(!SessionMode::Plan.auto_allows("read_file"));
         assert!(SessionMode::Plan.plan_block("write_file").is_some());
         assert!(SessionMode::Plan.plan_block("edit_file").is_some());
         assert!(SessionMode::Plan.plan_block("run_command").is_some());
+        // Allow-list: every non-read-only tool is blocked, incl. delegation /
+        // gates / git / memory writes (and any future tool).
+        assert!(SessionMode::Plan.plan_block("git").is_some());
+        assert!(SessionMode::Plan.plan_block("run_gates").is_some());
+        assert!(SessionMode::Plan.plan_block("bwoc_task").is_some());
+        assert!(SessionMode::Plan.plan_block("bwoc_send").is_some());
+        assert!(SessionMode::Plan.plan_block("bwoc_run").is_some());
+        assert!(SessionMode::Plan.plan_block("memory_write").is_some());
+        // Read-only tools pass.
         assert!(SessionMode::Plan.plan_block("read_file").is_none());
+        assert!(SessionMode::Plan.plan_block("list_dir").is_none());
+        assert!(SessionMode::Plan.plan_block("grep").is_none());
+        assert!(SessionMode::Plan.plan_block("memory_read").is_none());
         // Other modes never plan-block.
         assert!(SessionMode::Default.plan_block("write_file").is_none());
         assert!(SessionMode::Bypass.plan_block("run_command").is_none());
