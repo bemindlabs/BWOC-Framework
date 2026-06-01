@@ -390,6 +390,10 @@ async fn execute_item(item: &WorkItem, ctx: &RunnerCtx) -> Result<(), HarnessErr
         model: ctx.config.model.clone(),
         endpoint: ctx.config.endpoint.clone(),
         skip_model_check: ctx.config.skip_model_check,
+        token_budget: ctx.config.token_budget,
+        cost_limit: ctx.config.cost_limit,
+        cost_per_1m: ctx.config.cost_per_1m,
+        vetted_mode: ctx.config.vetted_mode.clone(),
     };
     ctx.runner.run(&spec).await
 }
