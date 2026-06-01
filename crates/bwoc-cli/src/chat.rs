@@ -32,6 +32,9 @@ pub struct ChatArgs {
     pub tmux: bool,
     /// Open a new Ghostty terminal window. macOS-only.
     pub ghostty: bool,
+    /// Full-screen ratatui chat client driving `bwoc-harness --chat`. Harness
+    /// backends only; falls back to the default exec path otherwise.
+    pub tui: bool,
 }
 
 pub fn run(args: ChatArgs) -> i32 {
@@ -75,6 +78,27 @@ pub fn run(args: ChatArgs) -> i32 {
         }
     };
     let agent_path = workspace.join(&entry.path);
+
+    if args.tui {
+        // The ratatui client only knows how to drive a `bwoc-harness --chat`
+        // subprocess (the chat_proto wire format). Vendor backends (claude /
+        // agy / codex / kimi) speak their own interactive protocol, so the TUI
+        // can't render them — fall through to the default exec path with a hint.
+        if backend.uses_harness() {
+            return crate::chat_tui::run(crate::chat_tui::TuiArgs {
+                agent_id: entry.id.clone(),
+                agent_path,
+                backend,
+            });
+        }
+        eprintln!(
+            "bwoc chat --tui: agent '{}' uses the '{}' backend, which the TUI can't drive \
+             (it only renders the bwoc-harness chat stream for ollama / openai-compatible). \
+             Launching the backend CLI directly instead.",
+            entry.id,
+            backend.display_name()
+        );
+    }
 
     if args.tmux {
         return open_in_tmux(&entry.id, &agent_path, backend);
