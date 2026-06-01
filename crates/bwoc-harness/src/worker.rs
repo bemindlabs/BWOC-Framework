@@ -12,6 +12,7 @@
 //! worktree lifecycle (`git worktree add` / `remove`).  The lead loop in
 //! [`crate::lead`] drives them; the queue in [`crate::queue`] schedules them.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -146,35 +147,38 @@ impl SubprocessRunner {
 /// Pure (no process spawn) so the flag-propagation logic is unit-testable:
 /// every scalar lead flag is forwarded only when set, leaving an unset flag at
 /// the worker's own default rather than pinning it to a sentinel.
-fn build_worker_argv(spec: &WorkerSpec) -> Vec<String> {
-    let mut argv = vec![
-        "--task".to_string(),
-        spec.prompt.clone(),
-        "--workdir".to_string(),
-        spec.worktree.to_string_lossy().into_owned(),
-        "--model".to_string(),
-        spec.model.clone(),
-        "--endpoint".to_string(),
-        spec.endpoint.clone(),
+fn build_worker_argv(spec: &WorkerSpec) -> Vec<OsString> {
+    // OsString end-to-end so the worktree path is passed verbatim (a lossy
+    // `to_string_lossy()` could corrupt a non-UTF8 path and point the worker at
+    // the wrong directory). Flag names + scalar values are ASCII.
+    let mut argv: Vec<OsString> = vec![
+        "--task".into(),
+        spec.prompt.clone().into(),
+        "--workdir".into(),
+        spec.worktree.clone().into_os_string(),
+        "--model".into(),
+        spec.model.clone().into(),
+        "--endpoint".into(),
+        spec.endpoint.clone().into(),
     ];
     if spec.skip_model_check {
-        argv.push("--skip-model-check".to_string());
+        argv.push("--skip-model-check".into());
     }
     if let Some(budget) = spec.token_budget {
-        argv.push("--token-budget".to_string());
-        argv.push(budget.to_string());
+        argv.push("--token-budget".into());
+        argv.push(budget.to_string().into());
     }
     if let Some(limit) = spec.cost_limit {
-        argv.push("--cost-limit".to_string());
-        argv.push(limit.to_string());
+        argv.push("--cost-limit".into());
+        argv.push(limit.to_string().into());
     }
     if let Some(rate) = spec.cost_per_1m {
-        argv.push("--cost-per-1m".to_string());
-        argv.push(rate.to_string());
+        argv.push("--cost-per-1m".into());
+        argv.push(rate.to_string().into());
     }
     if let Some(mode) = &spec.vetted_mode {
-        argv.push("--vetted-mode".to_string());
-        argv.push(mode.clone());
+        argv.push("--vetted-mode".into());
+        argv.push(mode.clone().into());
     }
     argv
 }
@@ -336,7 +340,7 @@ mod tests {
             "--vetted-mode",
         ] {
             assert!(
-                !argv.iter().any(|a| a == flag),
+                !argv.iter().any(|a| a.to_str() == Some(flag)),
                 "unset {flag} must not appear in argv: {argv:?}"
             );
         }
@@ -353,8 +357,10 @@ mod tests {
         let argv = build_worker_argv(&s);
 
         let pair = |flag: &str| {
-            let i = argv.iter().position(|a| a == flag);
-            i.and_then(|i| argv.get(i + 1)).cloned()
+            let i = argv.iter().position(|a| a.to_str() == Some(flag));
+            i.and_then(|i| argv.get(i + 1))
+                .and_then(|a| a.to_str())
+                .map(str::to_string)
         };
         assert_eq!(pair("--token-budget").as_deref(), Some("50000"));
         assert_eq!(pair("--cost-limit").as_deref(), Some("1.5"));
