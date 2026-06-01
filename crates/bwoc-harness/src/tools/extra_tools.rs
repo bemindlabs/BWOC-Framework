@@ -981,13 +981,15 @@ impl ToolImpl for BwocRun {
             .arg(timeout.to_string());
 
         cmd.current_dir(&ctx.workdir);
-        // Minimal clean env — bwoc reads its workspace from cwd.
+        // Scrubbed env via the shared core scrubber (allowlist + credential
+        // filter, cross-platform TMP/TEMP) — the same rule the sandbox uses;
+        // bwoc reads its workspace from cwd, not the env.
         cmd.env_clear();
-        for var in &["PATH", "HOME", "USER", "LANG", "TMPDIR"] {
-            if let Ok(val) = std::env::var(var) {
-                cmd.env(var, val);
-            }
-        }
+        cmd.envs(crate::sandbox::scrub_env());
+        // Reap the child if this tool future is dropped (harness shutdown /
+        // queue cancellation) so a delegated run never becomes an orphan —
+        // same reason `worker.rs` sets it on spawned workers.
+        cmd.kill_on_drop(true);
 
         let output = cmd
             .output()
