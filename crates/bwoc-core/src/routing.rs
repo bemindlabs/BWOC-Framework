@@ -12,11 +12,17 @@
 //!    the inbox path.
 //! 3. No match → caller emits `NotFound` unchanged.
 //!
-//! # v1 scope constraints
+//! # Transports
 //!
-//! - Local filesystem peers only. No network transport.
-//! - Single hop: a route resolves to a terminal workspace, never another
-//!   routing table.
+//! Each route declares a [`RouteTarget`]: `local` (a peer workspace path on
+//! this machine — the v1 default, written directly into the peer's inbox) or
+//! `mqtt` (publish to a broker for cross-machine federation; the actual publish
+//! lives in the `bwoc-mqtt` crate so `bwoc-core` stays dependency-free).
+//!
+//! # Scope constraints
+//!
+//! - Single hop: a route resolves to a terminal target, never another routing
+//!   table.
 //! - No discovery or gossip: peers are declared by hand in `routes.toml`.
 
 use std::path::{Path, PathBuf};
@@ -35,18 +41,36 @@ pub struct Routes {
 
 /// One entry in `[[route]]`.
 ///
-/// Exactly one of `agent` or `namespace` must be set. `workspace` is
-/// always required and must be an absolute path to the peer workspace
-/// root (the directory that holds that workspace's `.bwoc/agents.toml`).
+/// Exactly one of `agent` or `namespace` must be set (the match discriminant).
+/// The delivery [`RouteTarget`] is `local` (a peer workspace path, the v1
+/// default) or `mqtt` (publish to a broker — cross-machine federation).
 ///
 /// Validation (see [`RouteValidationError`]) is enforced at load time via
 /// [`Routes::load`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
-    /// Peer workspace root — the directory holding `.bwoc/agents.toml`.
-    pub workspace: PathBuf,
     /// Discriminant: `agent` (exact id match) or `namespace` (prefix match).
     pub kind: RouteKind,
+    /// Where a matched message is delivered.
+    pub target: RouteTarget,
+}
+
+/// Where a matched [`Route`] delivers its envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteTarget {
+    /// A peer workspace root on the local filesystem — the directory holding
+    /// that workspace's `.bwoc/agents.toml`. The caller writes directly into
+    /// the peer agent's `inbox.jsonl` (v1 default, no network).
+    Local(PathBuf),
+    /// A remote peer reached over MQTT: the sender publishes the envelope to
+    /// `broker`, and the peer's `bwoc-mqtt serve` daemon drops it into the
+    /// recipient's `inbox.jsonl`. `topic` defaults to `bwoc/<recipient-id>/inbox`
+    /// when omitted. No MQTT dependency reaches `bwoc-core` — these are plain
+    /// strings; the publish lives in the `bwoc-mqtt` crate.
+    Mqtt {
+        broker: String,
+        topic: Option<String>,
+    },
 }
 
 /// How a [`Route`] matches a recipient id.
@@ -70,17 +94,20 @@ pub enum RoutingError {
     Validation(#[from] RouteValidationError),
 }
 
-/// Validation failures for individual route entries.
+/// Validation failures for individual route entries. `route` labels the entry
+/// by its `agent`/`namespace` key (a route need no longer carry a workspace).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RouteValidationError {
-    #[error(
-        "route for workspace '{workspace}' has both 'agent' and 'namespace' set — exactly one is required"
-    )]
-    BothKeys { workspace: String },
-    #[error(
-        "route for workspace '{workspace}' has neither 'agent' nor 'namespace' — exactly one is required"
-    )]
-    NeitherKey { workspace: String },
+    #[error("route '{route}' has both 'agent' and 'namespace' set — exactly one is required")]
+    BothKeys { route: String },
+    #[error("route '{route}' has neither 'agent' nor 'namespace' — exactly one is required")]
+    NeitherKey { route: String },
+    #[error("route '{route}' uses transport 'local' but has no 'workspace'")]
+    LocalMissingWorkspace { route: String },
+    #[error("route '{route}' uses transport 'mqtt' but has no 'broker'")]
+    MqttMissingBroker { route: String },
+    #[error("route '{route}' has unknown transport '{transport}' (expected 'local' or 'mqtt')")]
+    UnknownTransport { route: String, transport: String },
 }
 
 // ── Raw TOML shape ────────────────────────────────────────────────────────────
@@ -95,14 +122,25 @@ struct RawRoutes {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct RawRoute {
-    /// Peer workspace root directory (absolute path).
-    workspace: String,
+    /// Peer workspace root directory (absolute path). Required for the `local`
+    /// transport; absent for `mqtt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace: Option<String>,
     /// Exact recipient id.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
     /// Namespace prefix.
     #[serde(skip_serializing_if = "Option::is_none")]
     namespace: Option<String>,
+    /// Delivery transport: `local` (default) or `mqtt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport: Option<String>,
+    /// MQTT broker URL (e.g. `mqtt://host:1883`). Required for `mqtt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    broker: Option<String>,
+    /// MQTT topic override. Defaults to `bwoc/<recipient-id>/inbox`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic: Option<String>,
 }
 
 // ── Load + validate ───────────────────────────────────────────────────────────
@@ -199,52 +237,92 @@ impl Routes {
     /// The caller is responsible for the local-registry check (step 1) before
     /// calling this method.
     pub fn resolve(&self, recipient_id: &str) -> Option<&Path> {
+        match self.resolve_target(recipient_id)? {
+            RouteTarget::Local(ws) => Some(ws),
+            // An MQTT route has no local workspace path — callers that only
+            // understand local delivery (e.g. `bwoc peer`) treat it as no match.
+            RouteTarget::Mqtt { .. } => None,
+        }
+    }
+
+    /// Resolve a recipient id to its delivery [`RouteTarget`] (local path or
+    /// MQTT broker). Same precedence as [`Self::resolve`] — exact `agent` match
+    /// first, then longest `namespace` prefix.
+    pub fn resolve_target(&self, recipient_id: &str) -> Option<&RouteTarget> {
         // Pass 1: exact agent match.
         for route in &self.routes {
             if let RouteKind::Agent(id) = &route.kind {
                 if id == recipient_id {
-                    return Some(&route.workspace);
+                    return Some(&route.target);
                 }
             }
         }
 
         // Pass 2: longest namespace prefix match.
-        let mut best: Option<(&str, &Path)> = None;
+        let mut best: Option<(&str, &RouteTarget)> = None;
         for route in &self.routes {
             if let RouteKind::Namespace(ns) = &route.kind {
                 if recipient_id.starts_with(ns.as_str()) {
                     let is_longer = best.is_none_or(|(prev, _)| ns.len() > prev.len());
                     if is_longer {
-                        best = Some((ns.as_str(), &route.workspace));
+                        best = Some((ns.as_str(), &route.target));
                     }
                 }
             }
         }
-        best.map(|(_, ws)| ws)
+        best.map(|(_, t)| t)
     }
 }
 
 // ── Validation helper ─────────────────────────────────────────────────────────
 
 fn validate_route(raw: RawRoute) -> Result<Route, RouteValidationError> {
+    // Label the route by its match key for error messages (a route need not
+    // carry a workspace anymore, so the old workspace-based label is gone).
+    let route_label = raw
+        .agent
+        .clone()
+        .or_else(|| raw.namespace.clone())
+        .unwrap_or_default();
+
     let kind = match (raw.agent, raw.namespace) {
         (Some(_), Some(_)) => {
-            return Err(RouteValidationError::BothKeys {
-                workspace: raw.workspace,
-            });
+            return Err(RouteValidationError::BothKeys { route: route_label });
         }
         (None, None) => {
-            return Err(RouteValidationError::NeitherKey {
-                workspace: raw.workspace,
-            });
+            return Err(RouteValidationError::NeitherKey { route: route_label });
         }
         (Some(id), None) => RouteKind::Agent(id),
         (None, Some(ns)) => RouteKind::Namespace(ns),
     };
-    Ok(Route {
-        workspace: PathBuf::from(raw.workspace),
-        kind,
-    })
+
+    // Transport defaults to `local` so every pre-MQTT route (just `workspace`)
+    // keeps its meaning unchanged.
+    let target = match raw.transport.as_deref().unwrap_or("local") {
+        "local" | "fs" => {
+            let ws = raw
+                .workspace
+                .ok_or(RouteValidationError::LocalMissingWorkspace { route: route_label })?;
+            RouteTarget::Local(PathBuf::from(ws))
+        }
+        "mqtt" => {
+            let broker = raw
+                .broker
+                .ok_or(RouteValidationError::MqttMissingBroker { route: route_label })?;
+            RouteTarget::Mqtt {
+                broker,
+                topic: raw.topic,
+            }
+        }
+        other => {
+            return Err(RouteValidationError::UnknownTransport {
+                route: route_label,
+                transport: other.to_string(),
+            });
+        }
+    };
+
+    Ok(Route { kind, target })
 }
 
 // ── Shared-allowlist (cross-workspace learn, #20) ──────────────────────────────
@@ -323,7 +401,10 @@ workspace = "/srv/ws-b"
         let routes = Routes::load(&root).unwrap();
         assert_eq!(routes.routes.len(), 1);
         assert_eq!(routes.routes[0].kind, RouteKind::Agent("agent-neo".into()));
-        assert_eq!(routes.routes[0].workspace, PathBuf::from("/srv/ws-b"));
+        assert_eq!(
+            routes.routes[0].target,
+            RouteTarget::Local(PathBuf::from("/srv/ws-b"))
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -392,13 +473,18 @@ workspace = "/srv/ws"
 
     // ── Resolution order ──────────────────────────────────────────────────────
 
+    /// A `Route` delivering to a local peer workspace (the common test shape).
+    fn local(ws: &str, kind: RouteKind) -> Route {
+        Route {
+            kind,
+            target: RouteTarget::Local(PathBuf::from(ws)),
+        }
+    }
+
     #[test]
     fn resolve_exact_agent_match() {
         let routes = Routes {
-            routes: vec![Route {
-                workspace: PathBuf::from("/peer/ws"),
-                kind: RouteKind::Agent("agent-neo".into()),
-            }],
+            routes: vec![local("/peer/ws", RouteKind::Agent("agent-neo".into()))],
         };
         assert_eq!(routes.resolve("agent-neo"), Some(Path::new("/peer/ws")));
     }
@@ -406,10 +492,10 @@ workspace = "/srv/ws"
     #[test]
     fn resolve_namespace_prefix_match() {
         let routes = Routes {
-            routes: vec![Route {
-                workspace: PathBuf::from("/team-b/ws"),
-                kind: RouteKind::Namespace("agent-team-b".into()),
-            }],
+            routes: vec![local(
+                "/team-b/ws",
+                RouteKind::Namespace("agent-team-b".into()),
+            )],
         };
         assert_eq!(
             routes.resolve("agent-team-b-worker"),
@@ -422,14 +508,8 @@ workspace = "/srv/ws"
         // Even when a namespace would also match, the exact agent route wins.
         let routes = Routes {
             routes: vec![
-                Route {
-                    workspace: PathBuf::from("/namespace/ws"),
-                    kind: RouteKind::Namespace("agent-neo".into()),
-                },
-                Route {
-                    workspace: PathBuf::from("/exact/ws"),
-                    kind: RouteKind::Agent("agent-neo".into()),
-                },
+                local("/namespace/ws", RouteKind::Namespace("agent-neo".into())),
+                local("/exact/ws", RouteKind::Agent("agent-neo".into())),
             ],
         };
         assert_eq!(routes.resolve("agent-neo"), Some(Path::new("/exact/ws")));
@@ -439,14 +519,8 @@ workspace = "/srv/ws"
     fn resolve_longest_namespace_wins() {
         let routes = Routes {
             routes: vec![
-                Route {
-                    workspace: PathBuf::from("/short/ws"),
-                    kind: RouteKind::Namespace("team".into()),
-                },
-                Route {
-                    workspace: PathBuf::from("/long/ws"),
-                    kind: RouteKind::Namespace("team-b".into()),
-                },
+                local("/short/ws", RouteKind::Namespace("team".into())),
+                local("/long/ws", RouteKind::Namespace("team-b".into())),
             ],
         };
         // "team-b-worker" matches both "team" and "team-b"; longest wins.
@@ -456,10 +530,7 @@ workspace = "/srv/ws"
     #[test]
     fn resolve_no_match_returns_none() {
         let routes = Routes {
-            routes: vec![Route {
-                workspace: PathBuf::from("/peer/ws"),
-                kind: RouteKind::Agent("agent-neo".into()),
-            }],
+            routes: vec![local("/peer/ws", RouteKind::Agent("agent-neo".into()))],
         };
         assert_eq!(routes.resolve("agent-unknown"), None);
     }
@@ -468,5 +539,89 @@ workspace = "/srv/ws"
     fn resolve_empty_routes_returns_none() {
         let routes = Routes::default();
         assert_eq!(routes.resolve("agent-anything"), None);
+    }
+
+    // ── MQTT transport ────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_mqtt_route_parses_broker_and_topic() {
+        let root = temp_ws("mqtt-route");
+        write_routes(
+            &root,
+            r#"
+[[route]]
+agent = "agent-remote"
+transport = "mqtt"
+broker = "mqtt://broker.local:1883"
+topic = "bwoc/agent-remote/inbox"
+"#,
+        );
+        let routes = Routes::load(&root).unwrap();
+        assert_eq!(
+            routes.routes[0].target,
+            RouteTarget::Mqtt {
+                broker: "mqtt://broker.local:1883".into(),
+                topic: Some("bwoc/agent-remote/inbox".into()),
+            }
+        );
+        // An MQTT route has no local path → `resolve` (local-only) returns None,
+        // while `resolve_target` surfaces the broker.
+        assert_eq!(routes.resolve("agent-remote"), None);
+        assert!(matches!(
+            routes.resolve_target("agent-remote"),
+            Some(RouteTarget::Mqtt { .. })
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mqtt_route_without_broker_is_error() {
+        let root = temp_ws("mqtt-no-broker");
+        write_routes(
+            &root,
+            "\n[[route]]\nagent = \"agent-remote\"\ntransport = \"mqtt\"\n",
+        );
+        let err = Routes::load(&root).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RoutingError::Validation(RouteValidationError::MqttMissingBroker { .. })
+            ),
+            "expected MqttMissingBroker, got {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unknown_transport_is_error() {
+        let root = temp_ws("bad-transport");
+        write_routes(
+            &root,
+            "\n[[route]]\nagent = \"agent-x\"\ntransport = \"carrier-pigeon\"\n",
+        );
+        let err = Routes::load(&root).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RoutingError::Validation(RouteValidationError::UnknownTransport { .. })
+            ),
+            "expected UnknownTransport, got {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_route_without_workspace_is_error() {
+        let root = temp_ws("local-no-ws");
+        write_routes(&root, "\n[[route]]\nagent = \"agent-x\"\n");
+        let err = Routes::load(&root).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RoutingError::Validation(RouteValidationError::LocalMissingWorkspace { .. })
+            ),
+            "expected LocalMissingWorkspace, got {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

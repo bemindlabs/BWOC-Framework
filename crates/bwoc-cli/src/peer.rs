@@ -30,7 +30,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bwoc_core::doc_kind;
-use bwoc_core::routing::{RouteKind, Routes};
+use bwoc_core::routing::{RouteKind, RouteTarget, Routes};
 use bwoc_core::team::{self, Task, TaskState, Team};
 use bwoc_core::workspace::AgentsRegistry;
 
@@ -96,7 +96,7 @@ fn run_list(routes: &Routes) -> i32 {
     }
 
     println!();
-    println!("{:<32} {:<12} WORKSPACE", "KEY", "KIND");
+    println!("{:<32} {:<12} TARGET", "KEY", "KIND");
     println!(
         "{:<32} {:<12} {}",
         "─".repeat(32),
@@ -108,7 +108,14 @@ fn run_list(routes: &Routes) -> i32 {
             RouteKind::Agent(id) => (id.as_str(), "agent"),
             RouteKind::Namespace(ns) => (ns.as_str(), "namespace"),
         };
-        println!("{:<32} {:<12} {}", key, kind, route.workspace.display());
+        let target = match &route.target {
+            RouteTarget::Local(ws) => ws.display().to_string(),
+            RouteTarget::Mqtt { broker, topic } => match topic {
+                Some(t) => format!("mqtt {broker} [{t}]"),
+                None => format!("mqtt {broker}"),
+            },
+        };
+        println!("{:<32} {:<12} {}", key, kind, target);
     }
     println!();
     0
