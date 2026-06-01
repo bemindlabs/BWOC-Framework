@@ -254,6 +254,16 @@ fn resolve_mode(policy: &Policy, tool_name: &str, arguments_json: &str) -> Resol
     }
 
     // 2. Pattern rules (first match wins).
+    //
+    // NOTE (C3): this is a raw-JSON substring match, NOT the first-token bug
+    // class fixed in `guardrails.rs`. A shell-operator chain like
+    // `true && git push` still contains the `git push` substring, so a `deny`
+    // pattern continues to fire on the chained segment — the operator split
+    // there would not change the match outcome. The known weakness here is the
+    // opposite of guardrails': the pattern can match incidental JSON content
+    // (e.g. a path or commit message), not that a segment slips past. Tightening
+    // it to structured argv matching is a separate concern, kept out of this
+    // narrow security fix (Mattaññutā).
     for rule in &policy.patterns {
         if arguments_json.contains(&rule.pattern) {
             return ResolvedMode {
