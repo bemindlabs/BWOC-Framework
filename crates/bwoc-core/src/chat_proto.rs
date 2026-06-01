@@ -152,6 +152,23 @@ mod tests {
     }
 
     #[test]
+    fn ready_without_tools_defaults_to_empty() {
+        // Wire-compat: an older harness emits `ready` without `tools`; it must
+        // still parse, defaulting the field to `[]` (the `#[serde(default)]`).
+        let line = r#"{"type":"ready","agent":"a","model":"m","backend":"ollama"}"#;
+        let ev: ChatEvent = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            ev,
+            ChatEvent::Ready {
+                agent: "a".into(),
+                model: "m".into(),
+                backend: "ollama".into(),
+                tools: vec![],
+            }
+        );
+    }
+
+    #[test]
     fn snake_case_wire_names_are_stable() {
         // These strings are the wire contract — guard against rename drift.
         assert!(
