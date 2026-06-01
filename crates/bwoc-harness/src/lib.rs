@@ -31,6 +31,7 @@ pub mod agent_loop;
 pub mod budget;
 pub mod chat_session;
 pub mod checkpoint;
+pub mod compact;
 pub mod error;
 pub mod eval;
 pub mod lead;

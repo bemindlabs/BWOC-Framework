@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic context compaction in `--chat`.** When the conversation's estimated size crosses the session's `max_context_tokens` budget, the oldest turns are summarized (one provider call) into a single note before the next request, keeping the recent tail verbatim — so a long chat stays under the model's window without losing earlier decisions. The harness emits a `chat_proto::ChatEvent::Compacted { removed }` notice; a summarizer failure is non-fatal (the turn proceeds uncompacted). The split never starts the kept tail on an orphan tool result. Adapted from openclaude's `autoCompact`.
+
 ### Changed
 
 - **`edit_file` now falls back to whitespace-tolerant matching.** When an exact `old_string` match fails, the tool matches the file line-by-line ignoring each line's leading/trailing whitespace, and re-indents `new_string` to the file's actual indentation. This rescues the most common small-model edit failure — an `old_string` whose indentation is slightly off — while still refusing an ambiguous multi-site match (asks for more context instead of guessing). The result message reports which strategy matched (`exact` / `whitespace-tolerant`). Pattern adapted from openclaude's `FileEditTool`.

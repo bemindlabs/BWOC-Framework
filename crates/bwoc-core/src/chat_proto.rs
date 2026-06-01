@@ -68,6 +68,11 @@ pub enum ChatEvent {
     /// `mode` (`"default"` | `"accept_edits"` | `"bypass"`). Sent once on change
     /// so the frontend can reflect it (e.g. a status indicator).
     ModeChanged { mode: String },
+    /// The session compacted its context: `removed` older messages were folded
+    /// into a single summary to stay under the model's context window. Emitted
+    /// just before the turn proceeds, so the frontend can show a notice. Purely
+    /// informational — the conversation continues seamlessly.
+    Compacted { removed: usize },
     /// The assistant turn is complete; the session is ready for the next
     /// [`ChatInput::User`]. Usage counts are cumulative for the session.
     TurnEnd {
@@ -199,6 +204,14 @@ mod tests {
         };
         let line = ev.to_line().unwrap();
         assert!(line.contains(r#""type":"mode_changed""#));
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
+    }
+
+    #[test]
+    fn compacted_roundtrips() {
+        let ev = ChatEvent::Compacted { removed: 12 };
+        let line = ev.to_line().unwrap();
+        assert!(line.contains(r#""type":"compacted""#));
         assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
     }
 

@@ -569,6 +569,7 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         system_prompt,
         policy,
         max_turn_iterations: args.max_iterations,
+        max_context_tokens: bwoc_harness::chat_session::DEFAULT_MAX_CONTEXT_TOKENS,
     };
 
     chat_session::run(provider, registry, ctx, config).await

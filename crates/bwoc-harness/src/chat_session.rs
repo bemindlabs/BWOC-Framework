@@ -53,7 +53,15 @@ pub struct ChatConfig {
     /// Max agentic sub-turns (provider calls) per user message before the turn
     /// is force-ended. Guards against a tool-call loop that never converges.
     pub max_turn_iterations: u32,
+    /// Context budget (heuristic tokens). When the conversation estimate exceeds
+    /// this, the oldest turns are summarized before the next provider call. `0`
+    /// disables compaction.
+    pub max_context_tokens: usize,
 }
+
+/// Default chat context budget (heuristic tokens) — conservative for the local
+/// models these sessions target. Overridable per session via [`ChatConfig`].
+pub const DEFAULT_MAX_CONTEXT_TOKENS: usize = 8_000;
 
 impl Default for ChatConfig {
     fn default() -> Self {
@@ -64,6 +72,7 @@ impl Default for ChatConfig {
             system_prompt: String::new(),
             policy: Policy::default(),
             max_turn_iterations: 20,
+            max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
         }
     }
 }
@@ -257,6 +266,20 @@ where
             },
             ChatInput::User { text } => {
                 history.push(ChatMessage::user(text));
+                // Keep the conversation under the context budget: summarize the
+                // oldest turns when needed, before the provider sees them.
+                if config.max_context_tokens > 0 {
+                    let removed = crate::compact::maybe_compact(
+                        &*provider,
+                        &config.model,
+                        config.max_context_tokens,
+                        &mut history,
+                    )
+                    .await?;
+                    if let Some(removed) = removed {
+                        emit(&mut out, &ChatEvent::Compacted { removed }).await?;
+                    }
+                }
                 run_turn(
                     &*provider,
                     &registry,
@@ -922,6 +945,9 @@ mod tests {
             system_prompt: "You are a test agent.".to_string(),
             policy,
             max_turn_iterations: 5,
+            // Disabled by default so existing scripted tests are unaffected; the
+            // compaction tests set their own budget.
+            max_context_tokens: 0,
         }
     }
 
@@ -1234,5 +1260,51 @@ mod tests {
         // Both writes landed — the second via the now-bypass mode.
         assert!(tmp.path().join("a.txt").exists());
         assert!(tmp.path().join("b.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn oversized_history_is_compacted_before_turn() {
+        // A large persisted conversation + a small context budget triggers
+        // compaction on the next user turn: the summarizer call is consumed,
+        // a Compacted event is emitted, then the turn proceeds.
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".bwoc")).unwrap();
+        let mut seed: Vec<ChatMessage> = Vec::new();
+        for _ in 0..8 {
+            seed.push(ChatMessage::user("x".repeat(2000)));
+            seed.push(ChatMessage::assistant(Some("y".repeat(2000)), None));
+        }
+        std::fs::write(
+            tmp.path().join(".bwoc/chat-session.json"),
+            serde_json::to_string(&seed).unwrap(),
+        )
+        .unwrap();
+
+        let provider = Arc::new(MockProvider::new(vec![
+            final_response("SUMMARY of the earlier conversation"), // maybe_compact's complete()
+            final_response("ok"),                                  // the turn's stream()
+        ]));
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut cfg = config(allow_all());
+        cfg.max_context_tokens = 1_000; // force compaction
+
+        let stdin = "{\"type\":\"user\",\"text\":\"hi\"}\n{\"type\":\"quit\"}\n";
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        drive(provider, registry, ctx, cfg, lines, &mut out)
+            .await
+            .unwrap();
+        let events: Vec<ChatEvent> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Compacted { removed } if *removed > 0)),
+            "an oversized history should emit Compacted before the turn"
+        );
     }
 }
