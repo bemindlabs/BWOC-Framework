@@ -108,7 +108,7 @@ fn apply_edit(content: &str, old: &str, new: &str) -> EditOutcome {
             // Re-indent `new` by (file block indent − old indent).
             let file_indent = leading_ws(file_lines[start]);
             let old_indent = leading_ws(old_lines[0]);
-            let new_lines: Vec<String> = new
+            let mut new_lines: Vec<String> = new
                 .split('\n')
                 .map(|line| {
                     if line.trim().is_empty() {
@@ -119,6 +119,14 @@ fn apply_edit(content: &str, old: &str, new: &str) -> EditOutcome {
                     }
                 })
                 .collect();
+            // The replaced block is a span of inter-newline lines; the
+            // surrounding file already supplies the boundary newline after it.
+            // A `new_string` ending in `\n` would otherwise splice an extra
+            // blank line, so drop a single trailing empty element (mirrors the
+            // `old_lines` trim above).
+            if new_lines.len() > 1 && new_lines.last().map(|s| s.is_empty()) == Some(true) {
+                new_lines.pop();
+            }
             let mut out: Vec<&str> = Vec::with_capacity(file_lines.len() - n + new_lines.len());
             out.extend_from_slice(&file_lines[..start]);
             out.extend(new_lines.iter().map(|s| s.as_str()));
@@ -157,7 +165,7 @@ impl ToolImpl for EditFile {
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "The exact string to find. Must appear exactly once in the file."
+                    "description": "The string to find. Matched exactly first; if that fails, matched line-by-line ignoring each line's leading/trailing whitespace. Must identify a unique location (an ambiguous match is rejected — add surrounding context)."
                 },
                 "new_string": {
                     "type": "string",
@@ -1353,6 +1361,33 @@ mod tests {
     #[test]
     fn apply_edit_not_found() {
         assert_eq!(apply_edit("a\nb\n", "nope", "x"), EditOutcome::NotFound);
+    }
+
+    #[test]
+    fn apply_edit_tolerant_trailing_newline_no_extra_blank() {
+        // old/new both end in `\n`; the tolerant path must not splice an extra
+        // blank line (the surrounding file already supplies the boundary).
+        // old/new indented differently from the file so the exact pass misses
+        // and the tolerant pass handles the trailing newline.
+        let file = "a\n  foo\nz\n";
+        let out = apply_edit(file, "    foo\n", "    bar\n");
+        match out {
+            EditOutcome::Replaced { content, how } => {
+                assert_eq!(how, "whitespace-tolerant");
+                assert_eq!(content, "a\n  bar\nz\n", "no blank line should appear");
+            }
+            other => panic!("expected Replaced, got {other:?}"),
+        }
+
+        // Multi-line new block with a trailing newline behaves the same.
+        let file2 = "x\n  a\n  b\ny\n";
+        let out2 = apply_edit(file2, "a\nb\n", "p\nq\n");
+        match out2 {
+            EditOutcome::Replaced { content, .. } => {
+                assert_eq!(content, "x\n  p\n  q\ny\n");
+            }
+            other => panic!("expected Replaced, got {other:?}"),
+        }
     }
 
     // ── edit_file ─────────────────────────────────────────────────────────────
