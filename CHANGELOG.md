@@ -6,10 +6,23 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.1-0] — 2026-06-01 — 2.19.0
+
+**Minor release.** Agentic chat TUI + cross-agent delegation, with hardening and a crate split. Headline: `bwoc chat --tui` — a full-screen ratatui chat for the ollama / openai-compatible backends with interactive permission prompts — and the `bwoc_run` tool, letting a model launch another BWOC agent. Plus shell-operator-aware `run_command` guardrails, a provider request timeout, lead→worker budget/vetting propagation, and the audit-plugin environment scrub. Cargo SemVer `2.18.1` → `2.19.0`.
+
 ### Added
 
 - **`bwoc chat <agent> --tui` — full-screen agentic chat TUI** for the ollama / openai-compatible backends. A ratatui client (status / conversation / tools-activity / input panes) drives a `bwoc-harness --chat` subprocess over a new JSON-line protocol (`bwoc_core::chat_proto`: `ChatEvent` out, `ChatInput` in) and renders streaming turns, tool calls, and interactive `[a]llow?`/`[d]eny` permission prompts. Vendor-CLI backends (claude / codex / kimi / agy) print a hint and fall back to the default exec path. The renderer lives in its own **`bwoc-tui`** crate (depends only on `bwoc-core` + ratatui/crossterm — never on `bwoc-harness` or `bwoc-cli`, preserving the dep-quarantine; the harness is a runtime subprocess, resolved as a sibling of the running `bwoc`).
 - **`bwoc_run` harness tool — "ollama launches bwoc".** The model running a `bwoc-harness` loop (the ollama / openai-compatible backends) can now delegate a self-contained subtask to *another* BWOC agent by calling the `bwoc_run` tool, which shells out to `bwoc run <agent> --task <task> --json --timeout <n>` and returns the captured result. Like every tool it is **denied by default** (the permission policy's fail-safe `default_mode`), so it only fires when an operator opts in via `.bwoc/harness-policy.toml`; that same gate bounds recursion (a delegate can re-launch only if its own policy allows it), and each launch is time-bounded (`timeout_secs`, default 300).
+
+### Changed
+
+- **Lead mode forwards budget/vetting flags to its Saṅgha workers.** `bwoc-harness --lead` now propagates `--token-budget` / `--cost-limit` / `--cost-per-1m` / `--vetted-mode` to each spawned worker (previously silently dropped), so a budget or vetting policy set on the lead governs its workers too. The worker argv is built as `OsString` end-to-end so a non-UTF8 worktree path is passed verbatim.
+
+### Fixed
+
+- **`run_command` guardrails are shell-operator-aware.** The destruction / gate-bypass / privilege-escalation checks keyed off the first whitespace token, but the verbatim command runs via `sh -c`, so `true && rm -rf ~` slipped its destructive second segment past them. The command is now split on `;` `&&` `||` `|` and each segment gets the existing checks (an operator-level split, not a full POSIX parser — quoting / substitution remain the OS sandbox's job). The splitter compares ASCII operator bytes directly, so it can't panic on non-ASCII input.
+- **The provider HTTP client now has a request timeout (120s).** A hung completion previously never resolved and bypassed the retry/backoff/budget path; it now surfaces as a transient error the existing retry loop handles.
 
 ### Security
 
