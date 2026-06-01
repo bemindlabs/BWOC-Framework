@@ -326,21 +326,31 @@ fn send(args: SendArgs) -> Result<(), SendError> {
             // never links an MQTT client). The peer's `bwoc-mqtt serve` delivers
             // it into the recipient's inbox on the far side.
             let bin = bwoc_core::exec::binary_or_name("bwoc-mqtt");
-            let status = std::process::Command::new(&bin)
-                .args([
-                    "publish",
-                    "--broker",
-                    &broker,
-                    "--topic",
-                    &topic,
-                    "--payload",
-                    &line,
-                ])
-                .status()
+            // Pipe the envelope via stdin, NOT `--payload`: a command-line arg
+            // would expose the signed envelope in `ps`/process listings and hit
+            // ARG_MAX (E2BIG) for long messages. `bwoc-mqtt publish` reads the
+            // payload from stdin when `--payload` is omitted.
+            let mut child = std::process::Command::new(&bin)
+                .args(["publish", "--broker", &broker, "--topic", &topic])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
                 .map_err(|e| SendError::MqttSpawn {
                     broker: broker.clone(),
                     source: e,
                 })?;
+            child
+                .stdin
+                .take()
+                .expect("stdin piped above")
+                .write_all(line.as_bytes())
+                .map_err(|e| SendError::MqttSpawn {
+                    broker: broker.clone(),
+                    source: e,
+                })?;
+            let status = child.wait().map_err(|e| SendError::MqttSpawn {
+                broker: broker.clone(),
+                source: e,
+            })?;
             if !status.success() {
                 return Err(SendError::MqttPublish {
                     broker: broker.clone(),
