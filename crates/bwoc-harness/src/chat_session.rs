@@ -80,7 +80,21 @@ enum SessionMode {
     AcceptEdits,
     /// Auto-approve every `ask`-mode tool (no prompts).
     Bypass,
+    /// Planning: read-only tools run, but any **mutating** tool is refused with
+    /// a note telling the model to present a plan instead of acting. Switch back
+    /// to `default` (or `accept_edits`/`bypass`) to execute. Mirrors openclaude's
+    /// plan mode.
+    Plan,
 }
+
+/// Tools that change the workspace or run commands — blocked in [`SessionMode::Plan`].
+const MUTATING_TOOLS: &[&str] = &[
+    "write_file",
+    "edit_file",
+    "run_command",
+    "git",
+    "memory_write",
+];
 
 impl SessionMode {
     fn parse(s: &str) -> Option<Self> {
@@ -88,6 +102,7 @@ impl SessionMode {
             "default" => Some(Self::Default),
             "accept_edits" | "acceptedits" => Some(Self::AcceptEdits),
             "bypass" | "full_access" | "dont_ask" => Some(Self::Bypass),
+            "plan" => Some(Self::Plan),
             _ => None,
         }
     }
@@ -98,15 +113,30 @@ impl SessionMode {
             Self::Default => "default",
             Self::AcceptEdits => "accept_edits",
             Self::Bypass => "bypass",
+            Self::Plan => "plan",
         }
     }
 
     /// Does this mode auto-allow an `ask`-mode `tool` without prompting?
     fn auto_allows(self, tool: &str) -> bool {
         match self {
-            Self::Default => false,
+            Self::Default | Self::Plan => false,
             Self::AcceptEdits => matches!(tool, "edit_file" | "write_file"),
             Self::Bypass => true,
+        }
+    }
+
+    /// In plan mode, a mutating tool is refused outright (before the permission
+    /// gate). Returns the refusal reason the model should see, or `None` if the
+    /// tool is allowed to proceed to the normal permission flow.
+    fn plan_block(self, tool: &str) -> Option<String> {
+        if self == Self::Plan && MUTATING_TOOLS.contains(&tool) {
+            Some(format!(
+                "PLAN MODE: `{tool}` is disabled. Present your proposed plan for \
+                 approval (do not act). The user will switch off plan mode to execute."
+            ))
+        } else {
+            None
         }
     }
 }
@@ -573,6 +603,12 @@ where
         return Ok(msg);
     }
 
+    // ── Plan mode: refuse mutating tools before the permission gate ──────────
+    if let Some(reason) = session_mode.plan_block(name) {
+        emit_tool_result(out, call, false, &reason).await?;
+        return Ok(reason);
+    }
+
     // ── Layer 2: Permission ──────────────────────────────────────────────────
     // Resolve the bare mode so `ask` can be routed to the frontend rather than
     // the TTY that `permission::evaluate` assumes.
@@ -769,6 +805,18 @@ mod tests {
         // bypass auto-allows anything.
         assert!(SessionMode::Bypass.auto_allows("run_command"));
         assert_eq!(SessionMode::AcceptEdits.wire(), "accept_edits");
+
+        // plan: parses, never auto-allows, and blocks mutating tools only.
+        assert_eq!(SessionMode::parse("plan"), Some(SessionMode::Plan));
+        assert_eq!(SessionMode::Plan.wire(), "plan");
+        assert!(!SessionMode::Plan.auto_allows("read_file"));
+        assert!(SessionMode::Plan.plan_block("write_file").is_some());
+        assert!(SessionMode::Plan.plan_block("edit_file").is_some());
+        assert!(SessionMode::Plan.plan_block("run_command").is_some());
+        assert!(SessionMode::Plan.plan_block("read_file").is_none());
+        // Other modes never plan-block.
+        assert!(SessionMode::Default.plan_block("write_file").is_none());
+        assert!(SessionMode::Bypass.plan_block("run_command").is_none());
     }
 
     use crate::provider::types::FunctionCall;
@@ -1234,5 +1282,76 @@ mod tests {
         // Both writes landed — the second via the now-bypass mode.
         assert!(tmp.path().join("a.txt").exists());
         assert!(tmp.path().join("b.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_mutating_tool_without_prompt() {
+        // In plan mode a write_file is refused outright (no PermissionRequest,
+        // no file), with a PLAN MODE result fed back to the model.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let stdin = concat!(
+            "{\"type\":\"set_mode\",\"mode\":\"plan\"}\n",
+            "{\"type\":\"user\",\"text\":\"write the file\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let lines = run_scripted(
+            vec![
+                tool_call_response("write_file", r#"{"path":"x.txt","content":"hi"}"#),
+                final_response("here is my plan instead"),
+            ],
+            allow_all(),
+            stdin,
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ModeChanged { mode } if mode == "plan"))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::PermissionRequest { .. })),
+            "plan mode refuses without prompting"
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, ChatEvent::ToolResult { ok, output, .. } if !*ok && output.contains("PLAN MODE"))
+        ));
+        assert!(
+            !tmp.path().join("x.txt").exists(),
+            "no file written in plan mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_mode_allows_read_only_tool() {
+        // Read-only tools still run in plan mode.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let stdin = concat!(
+            "{\"type\":\"set_mode\",\"mode\":\"plan\"}\n",
+            "{\"type\":\"user\",\"text\":\"read note\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let lines = run_scripted(
+            vec![
+                tool_call_response("read_file", r#"{"path":"note.txt"}"#),
+                final_response("it says hello"),
+            ],
+            allow_all(),
+            stdin,
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(events.iter().any(
+            |e| matches!(e, ChatEvent::ToolResult { ok, output, .. } if *ok && output.contains("hello"))
+        ));
     }
 }
