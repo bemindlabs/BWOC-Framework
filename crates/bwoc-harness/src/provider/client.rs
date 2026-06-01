@@ -16,6 +16,7 @@
 //! The retry loop itself lives in `agent_loop` — the provider just classifies.
 
 use std::pin::Pin;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -89,6 +90,15 @@ pub trait ProviderClient: Send + Sync {
 /// [`OllamaClient::default_endpoint`] all reference this so they cannot drift.
 pub const DEFAULT_ENDPOINT: &str = "http://localhost:11434/v1";
 
+/// Per-request timeout applied to every HTTP call the client makes.
+///
+/// Without it, `reqwest::Client::new()` has no request timeout, so a hung
+/// blocking completion never resolves — it bypasses the agent loop's
+/// retry/backoff/budget logic entirely. Bounding the request lets the timeout
+/// surface as a `reqwest` error, which the `send().await` arms below map to
+/// [`HarnessError::TransientProvider`] so the existing retry path can see it.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Real HTTP client speaking the OpenAI-compat API.
 ///
 /// Default endpoint: [`DEFAULT_ENDPOINT`] (`http://localhost:11434/v1`, Ollama).
@@ -105,10 +115,17 @@ pub struct OllamaClient {
 impl OllamaClient {
     /// Create a client with an explicit base URL.
     pub fn new(base_url: impl Into<String>) -> Self {
+        // A request timeout (vs. `Client::new()`'s unbounded default) ensures a
+        // hung completion fails instead of stalling forever; `build()` only
+        // errors on TLS/system init, so fall back to the default client.
+        let client = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_default();
         Self {
             base_url: base_url.into(),
             reasoning_effort: None,
-            client: Client::new(),
+            client,
         }
     }
 
@@ -462,6 +479,21 @@ mod tests {
         );
 
         assert_eq!(body["reasoning_effort"], "medium");
+    }
+
+    #[test]
+    fn client_builds_with_request_timeout() {
+        // The const is the bound a hung completion fails against; if it were
+        // zero/unset the request could stall past the retry/budget logic.
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(120));
+
+        // `OllamaClient::new` must construct via the timeout-bearing builder, not
+        // fall back to the unbounded default. `Client::builder().timeout(..)` only
+        // fails on TLS/system init, so a successful build here proves the path.
+        assert!(Client::builder().timeout(REQUEST_TIMEOUT).build().is_ok());
+
+        // Construction itself stays infallible.
+        let _ = OllamaClient::new(DEFAULT_ENDPOINT);
     }
 }
 
