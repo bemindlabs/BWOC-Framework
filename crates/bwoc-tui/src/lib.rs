@@ -1,11 +1,12 @@
-//! `bwoc chat <agent> --tui` — full-screen ratatui chat client.
+//! `bwoc-tui` — the full-screen ratatui chat client behind `bwoc chat --tui`.
 //!
-//! PR2 of the chat TUI. This drives a `bwoc-harness --chat` subprocess and
-//! renders the `bwoc_core::chat_proto` event stream. It compile-depends ONLY
-//! on `bwoc-core` (the protocol types) and on `crate::spawn` (to resolve the
-//! harness binary path) — never on `bwoc-harness` itself. The harness is a
-//! runtime subprocess, not a build dependency (the dep-quarantine: `bwoc`
-//! must not pull in the harness runtime graph).
+//! Its own crate (not a `bwoc-cli` module) so the TUI can grow without bloating
+//! the CLI and so the ratatui/crossterm surface stays isolated. It drives a
+//! `bwoc-harness --chat` subprocess and renders the `bwoc_core::chat_proto`
+//! event stream. It compile-depends ONLY on `bwoc-core` (the protocol types +
+//! sibling-binary resolution) — never on `bwoc-cli` or `bwoc-harness`. The
+//! harness is a runtime subprocess, not a build dependency (the dep-quarantine:
+//! nothing on the `bwoc` side pulls in the harness runtime graph).
 //!
 //! Architecture (no async, std-only):
 //!   - The child's stdout is read line-by-line on a dedicated `std::thread`,
@@ -47,8 +48,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::spawn::Backend;
-
 /// Default OpenAI-compatible endpoint when the agent's manifest has no
 /// `baseUrl` (Ollama). Mirrors the harness's own `DEFAULT_ENDPOINT`; defined
 /// locally so `bwoc-cli` need not depend on `bwoc-harness` for the constant.
@@ -57,7 +56,10 @@ const DEFAULT_ENDPOINT: &str = "http://localhost:11434/v1";
 pub struct TuiArgs {
     pub agent_id: String,
     pub agent_path: PathBuf,
-    pub backend: Backend,
+    /// Display name of the agent's backend (e.g. `ollama`), shown in the status
+    /// line until the harness's `Ready` event delivers the authoritative value.
+    /// A plain `String` so this crate needs no `bwoc-cli` `Backend` dependency.
+    pub backend_name: String,
 }
 
 pub fn run(args: TuiArgs) -> i32 {
@@ -71,8 +73,8 @@ pub fn run(args: TuiArgs) -> i32 {
     }
 
     // Resolve the harness binary (sibling of the running `bwoc`, then
-    // CARGO_BIN_EXE, then PATH) — same rule `bwoc spawn` uses.
-    let Some(harness) = Backend::harness_binary() else {
+    // CARGO_BIN_EXE, then PATH) — same shared rule `bwoc spawn` uses.
+    let Some(harness) = bwoc_core::exec::sibling_binary("bwoc-harness") else {
         eprintln!(
             "bwoc chat --tui: bwoc-harness binary not found; install it \
              (`cargo install --path crates/bwoc-harness`) or add it to PATH."
@@ -143,7 +145,7 @@ pub fn run(args: TuiArgs) -> i32 {
         }
     };
 
-    let mut app = App::new(args.agent_id, args.backend.display_name());
+    let mut app = App::new(args.agent_id, &args.backend_name);
     let result = event_loop(&mut term, &mut app, &rx, stdin);
 
     if let Err(e) = restore_terminal() {

@@ -85,10 +85,10 @@ pub fn run(args: ChatArgs) -> i32 {
         // agy / codex / kimi) speak their own interactive protocol, so the TUI
         // can't render them — fall through to the default exec path with a hint.
         if backend.uses_harness() {
-            return crate::chat_tui::run(crate::chat_tui::TuiArgs {
+            return bwoc_tui::run(bwoc_tui::TuiArgs {
                 agent_id: entry.id.clone(),
                 agent_path,
-                backend,
+                backend_name: backend.display_name().to_string(),
             });
         }
         eprintln!(

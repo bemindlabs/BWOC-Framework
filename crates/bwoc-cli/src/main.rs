@@ -13,7 +13,6 @@ mod a2a;
 mod audit;
 mod banner;
 mod chat;
-mod chat_tui;
 mod check;
 mod completion;
 mod council;
