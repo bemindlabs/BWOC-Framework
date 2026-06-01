@@ -1,0 +1,21 @@
+[package]
+name = "bwoc-mqtt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MQTT transport for BWOC inter-workspace routing — publish an envelope to a broker, or serve (subscribe → deliver into inbox.jsonl)."
+
+[[bin]]
+name = "bwoc-mqtt"
+path = "src/main.rs"
+
+[dependencies]
+bwoc-core = { path = "../bwoc-core" }
+rumqttc = "0.24"
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
