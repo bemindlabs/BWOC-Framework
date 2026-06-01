@@ -21,8 +21,10 @@
 //!   rather than OpenAI's `choices[].delta` chunks; we re-emit it as
 //!   [`StreamChunk`]s the accumulator in `chat_session`/`agent_loop` understands.
 //!
-//! Auth is the `x-api-key` header, read from the `ANTHROPIC_API_KEY` env var —
-//! the Anthropic SDK convention. No key → a clear error at `validate_model`.
+//! Auth is the `x-api-key` header. The key is resolved from the
+//! `ANTHROPIC_API_KEY` env var (Anthropic SDK convention), falling back to
+//! `~/.bwoc/secrets.toml` (`[anthropic] api_key`) so a GUI-launched `bwoc-chat`
+//! works without an exported env. No key → a clear error at `validate_model`.
 
 use std::pin::Pin;
 use std::time::Duration;
@@ -48,6 +50,66 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Env var carrying the API key — the Anthropic SDK convention.
 const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+
+/// User home directory: `$HOME` on Unix, `%USERPROFILE%` on Windows — mirrors
+/// the `home_dir()` helpers elsewhere in the workspace (no extra crate), so the
+/// secrets fallback works on Windows where `HOME` is usually unset.
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
+/// Resolve the API key: the `ANTHROPIC_API_KEY` env var wins; otherwise fall
+/// back to the gitignored `~/.bwoc/secrets.toml` (`[anthropic] api_key`).
+///
+/// Unlike the Jira/figma resolvers — which read a **per-workspace**
+/// `<workspace>/.bwoc/secrets.toml` — the Anthropic key is intentionally a
+/// **per-user** secret keyed off the home directory, so a GUI-launched
+/// `bwoc-chat` (with no workspace cwd) still finds it. The same `0600`
+/// permission guard is applied (see [`api_key_from_secrets`]). Returns an empty
+/// string when neither source has a key — surfaced as a clear error at first use.
+fn resolve_api_key() -> String {
+    if let Ok(k) = std::env::var(API_KEY_ENV) {
+        if !k.trim().is_empty() {
+            return k;
+        }
+    }
+    home_dir()
+        .map(|home| home.join(".bwoc").join("secrets.toml"))
+        .and_then(|p| api_key_from_secrets(&p))
+        .unwrap_or_default()
+}
+
+/// Read `[anthropic] api_key` from a `secrets.toml` at `path`. Returns `None` on
+/// any error (missing file, parse failure, absent key). On Unix a
+/// group/world-accessible file is **refused** with a warning — the same
+/// "Adinnādāna at the file boundary" guard the Jira/figma secret resolvers
+/// apply (`chmod 600` required). Pure + tested.
+fn api_key_from_secrets(path: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                eprintln!(
+                    "bwoc-harness: ignoring {} — it is group/world-accessible; `chmod 600` it.",
+                    path.display()
+                );
+                return None;
+            }
+        }
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    let value: toml::Value = toml::from_str(&content).ok()?;
+    let key = value
+        .get("anthropic")?
+        .get("api_key")?
+        .as_str()?
+        .trim()
+        .to_string();
+    (!key.is_empty()).then_some(key)
+}
 
 /// `max_tokens` is **required** by the Messages API (unlike OpenAI). A coding
 /// agent emits long edits, so this is generous rather than minimal; Claude
@@ -80,7 +142,7 @@ impl AnthropicClient {
         let base = base.strip_suffix('/').map(str::to_string).unwrap_or(base);
         Self {
             base_url: base,
-            api_key: std::env::var(API_KEY_ENV).unwrap_or_default(),
+            api_key: resolve_api_key(),
             max_tokens: DEFAULT_MAX_TOKENS,
             client,
         }
@@ -110,8 +172,8 @@ impl AnthropicClient {
     fn require_key(&self) -> Result<(), HarnessError> {
         if self.api_key.is_empty() {
             Err(HarnessError::Provider(format!(
-                "{API_KEY_ENV} is not set — export it before chatting with a claude-backed agent \
-                 (e.g. `export {API_KEY_ENV}=sk-ant-...`)"
+                "no Anthropic API key — set `{API_KEY_ENV}` (e.g. `export {API_KEY_ENV}=sk-ant-...`) \
+                 or add an `[anthropic] api_key = \"sk-ant-...\"` entry to ~/.bwoc/secrets.toml (chmod 600)"
             )))
         } else {
             Ok(())
@@ -558,6 +620,60 @@ fn translate_sse_event(
 mod tests {
     use super::*;
     use crate::provider::types::FunctionCall;
+
+    /// Write `body` to `path` with `0600` perms so it passes the on-disk guard.
+    fn write_secret(path: &std::path::Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    #[test]
+    fn api_key_from_secrets_reads_anthropic_table() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("secrets.toml");
+        write_secret(
+            &path,
+            "[jira]\ntoken = \"x\"\n\n[anthropic]\napi_key = \"sk-ant-test123\"\n",
+        );
+        assert_eq!(
+            api_key_from_secrets(&path),
+            Some("sk-ant-test123".to_string())
+        );
+    }
+
+    #[test]
+    fn api_key_from_secrets_none_when_missing_or_absent() {
+        // Missing file.
+        assert_eq!(
+            api_key_from_secrets(std::path::Path::new("/no/such/secrets.toml")),
+            None
+        );
+        // File present but no [anthropic] api_key.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("secrets.toml");
+        write_secret(&path, "[jira]\ntoken = \"x\"\n");
+        assert_eq!(api_key_from_secrets(&path), None);
+        // Empty key is treated as absent.
+        let path2 = dir.path().join("s2.toml");
+        write_secret(&path2, "[anthropic]\napi_key = \"\"\n");
+        assert_eq!(api_key_from_secrets(&path2), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_from_secrets_refuses_group_world_accessible_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("secrets.toml");
+        std::fs::write(&path, "[anthropic]\napi_key = \"sk-ant-leaky\"\n").unwrap();
+        // 0644 → group/world-readable → must be refused even though the key is valid.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(api_key_from_secrets(&path), None);
+    }
 
     #[test]
     fn system_is_lifted_and_roles_mapped() {
