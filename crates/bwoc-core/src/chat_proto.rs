@@ -31,6 +31,13 @@ pub enum ChatEvent {
         #[serde(default)]
         tools: Vec<String>,
     },
+    /// A prior conversation turn replayed on connect to restore a persisted
+    /// session, so the frontend can show the history (the harness has already
+    /// reloaded it into the model's context). Sent after [`Ready`], before the
+    /// session accepts new input. `role` is `"user"` or `"assistant"`.
+    ///
+    /// [`Ready`]: ChatEvent::Ready
+    Restored { role: String, text: String },
     /// A streaming assistant token delta (only when streaming is on).
     Token { text: String },
     /// A complete assistant message for this turn (always sent at turn end,
@@ -77,6 +84,9 @@ pub enum ChatInput {
     User { text: String },
     /// The answer to a pending [`ChatEvent::PermissionRequest`] (same `id`).
     Permission { id: String, allow: bool },
+    /// Forget the persisted conversation — clears the in-memory history back to
+    /// the system prompt and deletes the on-disk session file.
+    Forget,
     /// End the session.
     Quit,
 }

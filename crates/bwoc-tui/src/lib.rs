@@ -261,6 +261,10 @@ impl App {
                     backend,
                 });
             }
+            ChatEvent::Restored { role, text } => {
+                // A replayed turn from a persisted session.
+                self.conversation.push(format!("{role}: {text}"));
+            }
             ChatEvent::Token { text } => {
                 self.streaming.push_str(&text);
             }
