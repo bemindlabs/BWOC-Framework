@@ -294,6 +294,11 @@ impl App {
             ChatEvent::ModeChanged { mode } => {
                 self.conversation.push(format!("● permission mode: {mode}"));
             }
+            ChatEvent::Compacted { removed } => {
+                self.conversation.push(format!(
+                    "● context compacted — folded {removed} earlier messages"
+                ));
+            }
             ChatEvent::TurnEnd {
                 prompt_tokens,
                 completion_tokens,
