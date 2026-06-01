@@ -663,6 +663,24 @@ struct InvokeOutcome {
     duration_ms: u64,
 }
 
+/// Environment handed to a spawned audit plugin: the **scrubbed** (allowlist-
+/// only) operator environment — never the raw inherited env, so a third-party
+/// plugin can't read `GITHUB_TOKEN` / `AWS_*` — plus the three `BWOC_*` context
+/// vars the plugin protocol defines. Apply as `env_clear().envs(...)`.
+fn plugin_child_env(workspace: &Path, plugin_dir: &Path) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = bwoc_core::env_scrub::scrub_env().into_iter().collect();
+    env.push((
+        "BWOC_WORKSPACE".to_string(),
+        workspace.display().to_string(),
+    ));
+    env.push((
+        "BWOC_PLUGIN_DIR".to_string(),
+        plugin_dir.display().to_string(),
+    ));
+    env.push(("BWOC_AUDIT_OPERATION".to_string(), "audit_run".to_string()));
+    env
+}
+
 fn invoke_plugin(plugin: &DiscoveredAudit, workspace: &Path) -> Result<InvokeOutcome, String> {
     // BWOC-36: guard against path-traversal RCE before resolving/spawning the
     // entry. A malicious manifest could otherwise escape the plugin dir.
@@ -671,11 +689,15 @@ fn invoke_plugin(plugin: &DiscoveredAudit, workspace: &Path) -> Result<InvokeOut
     let started_at = current_utc_iso8601();
     let start = Instant::now();
 
+    // An audit plugin is third-party code (installed from a git/tarball URL) —
+    // the one spawn whose explicit job is to run code we don't yet trust. Start
+    // it from a scrubbed environment so it cannot read the operator's
+    // GITHUB_TOKEN / AWS_* / NPM_TOKEN, etc.; `env_clear` first, then re-add only
+    // the scrubbed allowlist + the three BWOC_* context vars it needs.
     let mut child = Command::new(&program)
         .current_dir(&plugin.path)
-        .env("BWOC_WORKSPACE", workspace)
-        .env("BWOC_PLUGIN_DIR", &plugin.path)
-        .env("BWOC_AUDIT_OPERATION", "audit_run")
+        .env_clear()
+        .envs(plugin_child_env(workspace, &plugin.path))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1046,6 +1068,33 @@ pub fn run(args: RunArgs) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BWOC-C6: an audit plugin must never inherit the operator's environment.
+    /// Every var handed to the child, apart from the `BWOC_*` context vars, must
+    /// come from the scrub allowlist — so a raw-inherited env (the original bug)
+    /// would surface `GITHUB_TOKEN` / `CI` / `GITHUB_ACTIONS`, none of which are
+    /// allowlisted, and fail here regardless of the runner's ambient env.
+    #[test]
+    fn plugin_child_env_is_scrubbed_not_inherited() {
+        let env = plugin_child_env(Path::new("/ws"), Path::new("/ws/modules/plugins/x"));
+        let has = |k: &str| env.iter().any(|(key, _)| key == k);
+
+        // The three context vars the plugin protocol expects are present...
+        assert!(has("BWOC_WORKSPACE"));
+        assert!(has("BWOC_PLUGIN_DIR"));
+        assert!(has("BWOC_AUDIT_OPERATION"));
+
+        // ...and every other var is allowlisted — never the raw inherited env.
+        for (k, _) in &env {
+            if k.starts_with("BWOC_") {
+                continue;
+            }
+            assert!(
+                bwoc_core::env_scrub::ENV_ALLOWLIST.contains(&k.as_str()),
+                "audit plugin would inherit non-allowlisted var `{k}` — env scrub bypassed"
+            );
+        }
+    }
     use serde_json::json;
 
     fn ev(kind: &str, value: &str) -> serde_json::Value {

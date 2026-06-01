@@ -42,7 +42,6 @@
 //! | Sīla (Adinnādāna) | Env scrub prevents credential leakage into child procs |
 //! | Anattā (worktree isolation) | cwd is always locked to the worktree root |
 
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::HarnessError;
@@ -426,71 +425,12 @@ fn resolve_existing_prefix(p: &Path) -> PathBuf {
 // Environment scrub
 // ---------------------------------------------------------------------------
 
-/// Variables that are safe to pass through to child processes.
-///
-/// Everything else is stripped.  The list is permissive for development
-/// convenience (PATH, LANG, etc.) but excludes all credential patterns.
-const ENV_ALLOWLIST: &[&str] = &[
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TERM",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "RUST_LOG",
-    "RUST_BACKTRACE",
-    // Git identity (non-sensitive).
-    "GIT_AUTHOR_NAME",
-    "GIT_AUTHOR_EMAIL",
-    "GIT_COMMITTER_NAME",
-    "GIT_COMMITTER_EMAIL",
-    // SSH agent socket (needed for git operations; not a secret itself).
-    "SSH_AUTH_SOCK",
-];
-
-/// Credential-like patterns — env vars whose names match these are stripped
-/// even if they appear in `ENV_ALLOWLIST` (belt-and-suspenders).
-const ENV_SENSITIVE_PATTERNS: &[&str] = &[
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "KEY",
-    "CREDENTIAL",
-    "AUTH",
-    "API_KEY",
-    "APIKEY",
-    "AWS_",
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "NPM_TOKEN",
-    "PYPI_TOKEN",
-];
-
-/// Build a scrubbed environment map for a child process.
-///
-/// - Passes through only keys in `ENV_ALLOWLIST`.
-/// - Additionally drops any key matching a sensitive pattern (case-insensitive).
-pub fn scrub_env() -> HashMap<String, String> {
-    std::env::vars()
-        .filter(|(k, _)| {
-            let upper = k.to_uppercase();
-            // Must be in the allowlist.
-            let in_allowlist = ENV_ALLOWLIST.contains(&k.as_str());
-            // Must not match a sensitive pattern.
-            let is_sensitive = ENV_SENSITIVE_PATTERNS.iter().any(|p| upper.contains(*p));
-            in_allowlist && !is_sensitive
-        })
-        .collect()
-}
+// The env-scrub allowlist + filter now live in `bwoc-core` so the audit-plugin
+// runner (`bwoc-cli`) shares the exact same rule — both spawn less-trusted code
+// (a model-driven `run_command`; a third-party audit plugin). Re-exported here
+// so existing harness call sites, and `tools::auth` which builds on
+// `sandbox::scrub_env`, keep their import path.
+pub use bwoc_core::env_scrub::scrub_env;
 
 // ---------------------------------------------------------------------------
 // Arg-level scan
@@ -832,39 +772,8 @@ mod tests {
         assert!(scan_args("cargo test --workspace").is_ok());
     }
 
-    // ── Env scrub ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn env_scrub_strips_sensitive_vars() {
-        // Inject a fake sensitive var into the current process env temporarily.
-        // We can't easily test std::env in isolation, so we verify the logic
-        // by simulating what scrub_env would do with known inputs.
-        let test_vars: Vec<(String, String)> = vec![
-            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
-            ("HOME".to_string(), "/home/user".to_string()),
-            ("GITHUB_TOKEN".to_string(), "ghp_secret".to_string()),
-            ("AWS_SECRET_ACCESS_KEY".to_string(), "abc123".to_string()),
-            ("MY_API_KEY".to_string(), "key123".to_string()),
-            ("LANG".to_string(), "en_US.UTF-8".to_string()),
-        ];
-
-        let result: HashMap<String, String> = test_vars
-            .into_iter()
-            .filter(|(k, _)| {
-                let upper = k.to_uppercase();
-                let in_allowlist = ENV_ALLOWLIST.contains(&k.as_str());
-                let is_sensitive = ENV_SENSITIVE_PATTERNS.iter().any(|p| upper.contains(*p));
-                in_allowlist && !is_sensitive
-            })
-            .collect();
-
-        assert!(result.contains_key("PATH"));
-        assert!(result.contains_key("HOME"));
-        assert!(result.contains_key("LANG"));
-        assert!(!result.contains_key("GITHUB_TOKEN"));
-        assert!(!result.contains_key("AWS_SECRET_ACCESS_KEY"));
-        assert!(!result.contains_key("MY_API_KEY"));
-    }
+    // (env-scrub behavior now tested in `bwoc_core::env_scrub`; the audit-plugin
+    // call site is covered in `bwoc-cli`'s audit tests.)
 
     // ── Sandboxed command runner (integration) ───────────────────────────────
 
