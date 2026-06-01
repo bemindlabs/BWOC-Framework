@@ -103,8 +103,12 @@ where
 {
     let tools = registry.tool_schemas();
 
-    // Session history: system prompt + every user/assistant/tool message.
+    // Session history: system prompt + every user/assistant/tool message. A
+    // persisted conversation (if any) is reloaded so the agent *remembers* across
+    // restarts, not just the displayed transcript.
+    let session_path = ctx.workdir.join(".bwoc").join("chat-session.json");
     let mut history: Vec<ChatMessage> = vec![ChatMessage::system(&config.system_prompt)];
+    history.extend(load_session(&session_path));
 
     // Cumulative session usage, reported on every TurnEnd.
     let mut prompt_tokens: u64 = 0;
@@ -124,6 +128,21 @@ where
         },
     )
     .await?;
+
+    // Replay the restored conversation so the frontend shows it (the model
+    // already has it in `history`). Skip the system prompt at [0].
+    for msg in history.iter().skip(1) {
+        if let Some((role, text)) = restored_display(msg) {
+            emit(
+                &mut out,
+                &ChatEvent::Restored {
+                    role: role.to_string(),
+                    text,
+                },
+            )
+            .await?;
+        }
+    }
 
     while let Some(line) = lines.next_line().await.map_err(HarnessError::Io)? {
         let line = line.trim();
@@ -160,6 +179,12 @@ where
                 )
                 .await?;
             }
+            ChatInput::Forget => {
+                // Drop everything but the system prompt and remove the on-disk
+                // session — the agent starts fresh.
+                history.truncate(1);
+                let _ = std::fs::remove_file(&session_path);
+            }
             ChatInput::User { text } => {
                 history.push(ChatMessage::user(text));
                 run_turn(
@@ -175,6 +200,9 @@ where
                     &mut completion_tokens,
                 )
                 .await?;
+                // Persist the conversation after the turn settles (incl. tool
+                // results) so the next launch resumes with full context.
+                save_session(&session_path, &history);
             }
         }
     }
@@ -182,6 +210,45 @@ where
     // stdin EOF without an explicit Quit — end the session cleanly.
     emit(&mut out, &ChatEvent::Bye).await?;
     Ok(())
+}
+
+/// Load a persisted conversation (the non-system messages) from `path`. Returns
+/// empty on any error — a missing or corrupt session simply starts fresh.
+fn load_session(path: &std::path::Path) -> Vec<ChatMessage> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the conversation (everything after the system prompt) to `path`,
+/// atomically (temp + rename). Best-effort — a write failure must not break the
+/// live chat.
+fn save_session(path: &std::path::Path, history: &[ChatMessage]) {
+    let convo = history.get(1..).unwrap_or(&[]);
+    let Ok(json) = serde_json::to_string(convo) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// The `(role, text)` to replay for a restored message — `Some` only for
+/// user/assistant messages that carry visible content (skip the system prompt,
+/// tool-result messages, and tool-call-only assistant turns).
+fn restored_display(msg: &ChatMessage) -> Option<(&'static str, String)> {
+    use crate::provider::Role;
+    let content = msg.content.as_ref().filter(|c| !c.is_empty())?;
+    match msg.role {
+        Role::User => Some(("user", content.clone())),
+        Role::Assistant => Some(("assistant", content.clone())),
+        _ => None,
+    }
 }
 
 /// Stream the assistant response, emitting a `Token` event for every content
@@ -769,6 +836,54 @@ mod tests {
         assert!(matches!(events.last(), Some(ChatEvent::Bye)));
         // No turn ran (no provider responses consumed).
         assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn session_persists_restores_and_forgets() {
+        let tmp = TempDir::new().unwrap();
+        let session = tmp.path().join(".bwoc/chat-session.json");
+        // Run 1: one user turn, then quit — persists the conversation.
+        let _ = run_scripted(
+            vec![final_response("hello there")],
+            allow_all(),
+            "{\"type\":\"user\",\"text\":\"hi\"}\n{\"type\":\"quit\"}\n",
+            ToolContext::new(tmp.path()),
+        )
+        .await;
+        assert!(session.is_file(), "session should be persisted");
+
+        // Run 2: quit immediately — the prior turn is replayed as `Restored`.
+        let lines = run_scripted(
+            vec![],
+            allow_all(),
+            "{\"type\":\"quit\"}\n",
+            ToolContext::new(tmp.path()),
+        )
+        .await;
+        let restored: Vec<(String, String)> = parse(&lines)
+            .into_iter()
+            .filter_map(|e| match e {
+                ChatEvent::Restored { role, text } => Some((role, text)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            restored,
+            vec![
+                ("user".to_string(), "hi".to_string()),
+                ("assistant".to_string(), "hello there".to_string()),
+            ]
+        );
+
+        // Run 3: `forget` deletes the on-disk session.
+        let _ = run_scripted(
+            vec![],
+            allow_all(),
+            "{\"type\":\"forget\"}\n{\"type\":\"quit\"}\n",
+            ToolContext::new(tmp.path()),
+        )
+        .await;
+        assert!(!session.is_file(), "forget should delete the session file");
     }
 
     #[tokio::test]
