@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
+- **`bwoc-harness --unrestricted` lifts the workdir file-access sandbox.** With the flag, the file tools (`read_file`/`write_file`/`edit_file`/`list_dir`/`grep`) may touch **any absolute path** on the machine; relative paths still resolve against `--workdir`. Without it, the path-traversal confinement is unchanged (the safe default). The safety gate shifts to the permission policy, so this is meant for an `ask`-gated / operator-reviewed session. `bwoc-chat` (desktop) passes `--unrestricted` so a chat agent can read & edit your real project files, with each write/edit surfaced as an Allow/Deny prompt.
+- **`--chat` defaults to an `ask` permission policy** when the workdir has no `.bwoc/harness-policy.toml` (instead of the batch path's fail-safe deny): read-only tools run freely, while writes/edits/`run_command`/`git` prompt the frontend. An interactive client is always present in chat to answer, so file editing works out of the box without hand-writing a policy.
 - **The `bwoc-harness --chat` session now remembers conversations.** The conversation is persisted to `<workdir>/.bwoc/chat-session.json` after each turn and reloaded on the next launch, so the **agent keeps full context across restarts** (not just a display transcript). On connect the prior turns are replayed to the frontend via a new `chat_proto::ChatEvent::Restored { role, text }`; a new `ChatInput::Forget` clears the memory (history + file). Both additions are backward-compatible (additive variants).
 
 ### Added
