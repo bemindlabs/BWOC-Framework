@@ -13,6 +13,7 @@ mod a2a;
 mod audit;
 mod banner;
 mod chat;
+mod chat_tui;
 mod check;
 mod completion;
 mod council;
@@ -1275,6 +1276,11 @@ struct ChatArgs {
     /// Open a new Ghostty terminal window instead of exec'ing in this shell. macOS-only.
     #[arg(long)]
     ghostty: bool,
+    /// Full-screen ratatui chat client. Spawns `bwoc-harness --chat` and renders
+    /// the chat_proto event stream. Harness backends only (ollama /
+    /// openai-compatible); other backends print a hint and fall back to exec.
+    #[arg(long, conflicts_with_all = ["tmux", "ghostty"])]
+    tui: bool,
 }
 
 impl ChatArgs {
@@ -1285,6 +1291,7 @@ impl ChatArgs {
             lang,
             tmux: self.tmux,
             ghostty: self.ghostty,
+            tui: self.tui,
         }
     }
 }
