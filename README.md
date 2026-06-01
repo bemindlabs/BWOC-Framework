@@ -38,6 +38,7 @@ Buddhist principles are used here as **engineering thinking aids** — not relig
     - [3. Anattā — Non-Clinging](#3-anattā--non-clinging)
     - [4. Samānattatā — Equal Treatment](#4-samānattatā--equal-treatment)
     - [5. Sīla-sāmaññatā — Communal Convention](#5-sīla-sāmaññatā--communal-convention)
+  - [Crates \& Companion Apps](#crates--companion-apps)
   - [Repository \& Workspace Layout](#repository--workspace-layout)
     - [A. The BWOC framework repository](#a-the-bwoc-framework-repository)
     - [B. A user workspace (what `bwoc init` creates)](#b-a-user-workspace-what-bwoc-init-creates)
@@ -180,6 +181,31 @@ All agents run under the same rules via `conventions.md` and a neutrality check.
 
 ---
 
+## Crates & Companion Apps
+
+The framework is a Rust workspace of focused crates, plus companion apps that build on the same protocols.
+
+### Crates (this workspace)
+
+| Crate | Kind | What it does |
+| --- | --- | --- |
+| [`bwoc-core`](crates/bwoc-core) | lib | Shared types — manifest, workspace/agent registry, identity, lifecycle, `chat_proto`, env-scrub, sibling-binary resolution. **Lean + dep-quarantined**: everything depends on it; it depends on almost nothing. |
+| [`bwoc-cli`](crates/bwoc-cli) | bin `bwoc` | The operator CLI — `init` · `new` · `list` · `spawn` · `chat` (`--tui`) · `run` · `start`/`stop`/`supervise` · `dashboard` · `check` · `audit` · `send` · `task` · `team`. |
+| [`bwoc-agent`](crates/bwoc-agent) | bin `bwoc-agent` | The per-agent daemon (`--serve`) — Unix control socket (PING/STATUS/STOP), inbox, and Saṅgha task-watch. |
+| [`bwoc-harness`](crates/bwoc-harness) | bin `bwoc-harness` | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set, guardrails → permission → sandbox pipeline, OpenTelemetry, Saṅgha lead/worker, checkpoint/resume, MCP client, and the interactive `--chat` session. |
+| [`bwoc-tui`](crates/bwoc-tui) | lib | The ratatui chat client behind `bwoc chat --tui` — renders the `chat_proto` stream from `bwoc-harness --chat`. |
+| [`bwoc-signing`](crates/bwoc-signing) | lib | ed25519 signing primitives for the trust layer. |
+| [`bwoc-a2a`](crates/bwoc-a2a) | lib | Agent-to-agent transport — signed envelopes + cross-workspace identity. |
+
+### Companion apps (separate repos)
+
+| Project | What it is |
+| --- | --- |
+| **bwoc-chat** | Native desktop chat for a single agent — one agent, one window. An egui frontend over `bwoc-harness --chat` (the `chat_proto` stream): streaming replies, markdown, a tool-activity pane, inline permission prompts, and slash commands. |
+| **bwoc-penlee-sc01-plus** | SC01 Plus hardware fleet display — firmware (BLE config + WebSocket data) plus a Tauri host app. |
+
+---
+
 ## Repository & Workspace Layout
 
 Two distinct trees the project deals with: **(A)** this repository — what a contributor clones; and **(B)** a _user workspace_ — what `bwoc init` creates on a user's machine. They are not the same thing.
@@ -189,10 +215,13 @@ Two distinct trees the project deals with: **(A)** this repository — what a co
 ```
 bwoc-framwork/
 ├── crates/                      ← Rust workspace (the reference implementation)
-│   ├── bwoc-cli/                  • `bwoc` binary — install + workspace + lifecycle
-│   ├── bwoc-agent/                • `bwoc-agent` daemon — control socket + inbox
-│   ├── bwoc-core/                 • shared types — manifest, workspace, identity
-│   └── bwoc-harness/              • sandbox harness (runs agents with landlock/sandbox-exec)
+│   ├── bwoc-core/                 • shared types — manifest, workspace, identity, chat_proto (lean, dep-quarantined)
+│   ├── bwoc-cli/                  • `bwoc` binary — install · workspace · lifecycle · chat · audit
+│   ├── bwoc-agent/                • `bwoc-agent` daemon — control socket · inbox · task watch
+│   ├── bwoc-harness/              • self-hosted run loop (ollama / openai-compatible) — tools, guardrails, sandbox, OTel, Saṅgha, `--chat`
+│   ├── bwoc-tui/                  • ratatui chat client behind `bwoc chat --tui`
+│   ├── bwoc-signing/              • ed25519 signing primitives
+│   └── bwoc-a2a/                  • agent-to-agent — signed envelopes + cross-workspace identity
 ├── modules/
 │   └── agent-template/          ← Core template (cloned per agent — see B)
 │       ├── AGENTS.md              • single source of truth (symlinked from CLAUDE/AGY/CODEX/KIMI/OLLAMA.md)
