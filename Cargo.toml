@@ -8,6 +8,7 @@ members = [
     "crates/bwoc-agent",
     "crates/bwoc-harness",
     "crates/bwoc-tui",
+    "crates/bwoc-mqtt",
 ]
 
 [workspace.package]
