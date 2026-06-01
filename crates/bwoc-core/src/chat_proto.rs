@@ -64,6 +64,10 @@ pub enum ChatEvent {
         /// Human-readable summary of what the tool will do (args preview).
         detail: String,
     },
+    /// Acknowledges a [`ChatInput::SetMode`]: the session permission mode is now
+    /// `mode` (`"default"` | `"accept_edits"` | `"bypass"`). Sent once on change
+    /// so the frontend can reflect it (e.g. a status indicator).
+    ModeChanged { mode: String },
     /// The assistant turn is complete; the session is ready for the next
     /// [`ChatInput::User`]. Usage counts are cumulative for the session.
     TurnEnd {
@@ -87,6 +91,12 @@ pub enum ChatInput {
     /// Forget the persisted conversation — clears the in-memory history back to
     /// the system prompt and deletes the on-disk session file.
     Forget,
+    /// Switch the session permission mode. `mode` is one of `"default"` (prompt
+    /// for every `ask`-mode tool), `"accept_edits"` (auto-approve file
+    /// write/edit tools, still prompt for the rest), or `"bypass"` (auto-approve
+    /// every `ask`-mode tool). Hard `deny` rules and guardrails are unaffected.
+    /// The harness replies with [`ChatEvent::ModeChanged`].
+    SetMode { mode: String },
     /// End the session.
     Quit,
 }
@@ -176,6 +186,20 @@ mod tests {
                 tools: vec![],
             }
         );
+    }
+
+    #[test]
+    fn set_mode_and_mode_changed_roundtrip() {
+        let inp = ChatInput::SetMode {
+            mode: "accept_edits".into(),
+        };
+        assert_eq!(ChatInput::from_line(&inp.to_line().unwrap()).unwrap(), inp);
+        let ev = ChatEvent::ModeChanged {
+            mode: "bypass".into(),
+        };
+        let line = ev.to_line().unwrap();
+        assert!(line.contains(r#""type":"mode_changed""#));
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
     }
 
     #[test]
