@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **`edit_file` now falls back to whitespace-tolerant matching.** When an exact `old_string` match fails, the tool matches the file line-by-line ignoring each line's leading/trailing whitespace, and re-indents `new_string` to the file's actual indentation. This rescues the most common small-model edit failure — an `old_string` whose indentation is slightly off — while still refusing an ambiguous multi-site match (asks for more context instead of guessing). The result message reports which strategy matched (`exact` / `whitespace-tolerant`). Pattern adapted from openclaude's `FileEditTool`.
+
 ### Added
 
 - **Live permission modes in `--chat`.** A new `chat_proto::ChatInput::SetMode` switches the session's permission posture without restarting: `default` (prompt for every `ask`-mode tool), `accept_edits` (auto-approve file write/edit tools, still prompt for the rest), or `bypass` (auto-approve every `ask`-mode tool). The harness acks with `ChatEvent::ModeChanged`. Hard `deny` rules and guardrails are never relaxed — modes only turn `ask` into auto-allow. Adapted from openclaude's permission modes; additive + backward-compatible.

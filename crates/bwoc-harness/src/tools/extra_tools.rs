@@ -24,9 +24,121 @@ use crate::sandbox::shell_command;
 /// or more than one time (unique-match invariant, same as Claude Code's Edit
 /// tool).
 ///
+/// When an exact match fails, a **whitespace-tolerant fallback** is tried: the
+/// file is matched line-by-line against `old_string` ignoring each line's
+/// leading/trailing whitespace, and the replacement is re-indented to the
+/// file's actual indentation. This rescues the most common small-model failure
+/// — an `old_string` whose indentation is slightly off — while still refusing
+/// an ambiguous (multi-site) match. See [`apply_edit`].
+///
 /// Confined to the worktree; passes through the safety pipeline before
 /// reaching here.
 pub struct EditFile;
+
+/// Outcome of an [`apply_edit`] attempt.
+#[derive(Debug, PartialEq)]
+enum EditOutcome {
+    /// Replacement applied. Carries the new file content and how it matched
+    /// (`"exact"` or `"whitespace-tolerant"`), for the result message.
+    Replaced { content: String, how: &'static str },
+    /// `old_string` matched nowhere (exact nor trimmed).
+    NotFound,
+    /// `old_string` matched in more than one place (`count` sites); the caller
+    /// must ask for more surrounding context rather than guess.
+    Ambiguous { count: usize },
+}
+
+/// Leading-whitespace prefix of a line (spaces/tabs).
+fn leading_ws(line: &str) -> &str {
+    let end = line
+        .find(|c: char| c != ' ' && c != '\t')
+        .unwrap_or(line.len());
+    &line[..end]
+}
+
+/// Compute the replacement for `old` → `new` in `content`.
+///
+/// 1. **Exact**: if `old` occurs exactly once, replace it verbatim. More than
+///    once → [`EditOutcome::Ambiguous`].
+/// 2. **Whitespace-tolerant fallback** (only when there is no exact match):
+///    match `old`'s lines against the file's lines comparing `str::trim`-med
+///    content, so indentation/trailing-space differences don't matter. A unique
+///    block match is replaced; the `new` lines are re-indented by the delta
+///    between the matched file block's indent and `old`'s indent, so the patch
+///    adopts the file's real indentation. Multiple block matches → ambiguous.
+///
+/// Operates on `\n`-split lines; a final `\n` is preserved by the split/join
+/// round-trip. CRLF files match (trim drops the `\r`) but inserted lines use
+/// `\n` — acceptable for the LF-dominant files these agents edit.
+fn apply_edit(content: &str, old: &str, new: &str) -> EditOutcome {
+    // ── 1. Exact ─────────────────────────────────────────────────────────
+    match content.matches(old).count() {
+        1 => {
+            return EditOutcome::Replaced {
+                content: content.replacen(old, new, 1),
+                how: "exact",
+            };
+        }
+        n if n > 1 => return EditOutcome::Ambiguous { count: n },
+        _ => {} // 0 → fall through to the tolerant pass
+    }
+
+    // ── 2. Whitespace-tolerant, line-block fallback ──────────────────────
+    let file_lines: Vec<&str> = content.split('\n').collect();
+    // Drop a single trailing empty element so a trailing newline in `old`
+    // doesn't force the window to include the file's final empty line.
+    let mut old_lines: Vec<&str> = old.split('\n').collect();
+    if old_lines.len() > 1 && old_lines.last() == Some(&"") {
+        old_lines.pop();
+    }
+    let n = old_lines.len();
+    if n == 0 || n > file_lines.len() {
+        return EditOutcome::NotFound;
+    }
+
+    let trimmed_old: Vec<&str> = old_lines.iter().map(|l| l.trim()).collect();
+    let starts: Vec<usize> = (0..=file_lines.len() - n)
+        .filter(|&i| (0..n).all(|j| file_lines[i + j].trim() == trimmed_old[j]))
+        .collect();
+
+    match starts.as_slice() {
+        [] => EditOutcome::NotFound,
+        [start] => {
+            let start = *start;
+            // Re-indent `new` by (file block indent − old indent).
+            let file_indent = leading_ws(file_lines[start]);
+            let old_indent = leading_ws(old_lines[0]);
+            let mut new_lines: Vec<String> = new
+                .split('\n')
+                .map(|line| {
+                    if line.trim().is_empty() {
+                        String::new()
+                    } else {
+                        let body = line.strip_prefix(old_indent).unwrap_or(line);
+                        format!("{file_indent}{body}")
+                    }
+                })
+                .collect();
+            // The replaced block is a span of inter-newline lines; the
+            // surrounding file already supplies the boundary newline after it.
+            // A `new_string` ending in `\n` would otherwise splice an extra
+            // blank line, so drop a single trailing empty element (mirrors the
+            // `old_lines` trim above).
+            if new_lines.len() > 1 && new_lines.last().map(|s| s.is_empty()) == Some(true) {
+                new_lines.pop();
+            }
+            let mut out: Vec<&str> = Vec::with_capacity(file_lines.len() - n + new_lines.len());
+            out.extend_from_slice(&file_lines[..start]);
+            out.extend(new_lines.iter().map(|s| s.as_str()));
+            out.extend_from_slice(&file_lines[start + n..]);
+            EditOutcome::Replaced {
+                content: out.join("\n"),
+                how: "whitespace-tolerant",
+            }
+        }
+        many => EditOutcome::Ambiguous { count: many.len() },
+    }
+}
 
 #[async_trait]
 impl ToolImpl for EditFile {
@@ -35,9 +147,12 @@ impl ToolImpl for EditFile {
     }
 
     fn description(&self) -> &'static str {
-        "Targeted string replacement in a file. Replaces exactly one occurrence of \
-         `old_string` with `new_string`. Fails if `old_string` matches zero or more \
-         than one time (unique-match invariant). The file must already exist."
+        "Targeted string replacement in a file. Replaces one occurrence of \
+         `old_string` with `new_string`. Tries an exact match first, then a \
+         whitespace-tolerant line match (indentation/trailing-space differences \
+         are forgiven and the replacement is re-indented to the file). Fails if \
+         `old_string` is not found, or matches more than one place (provide more \
+         surrounding context to disambiguate). The file must already exist."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -50,7 +165,7 @@ impl ToolImpl for EditFile {
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "The exact string to find. Must appear exactly once in the file."
+                    "description": "The string to find. Matched exactly first; if that fails, matched line-by-line ignoring each line's leading/trailing whitespace. Must identify a unique location (an ambiguous match is rejected — add surrounding context)."
                 },
                 "new_string": {
                     "type": "string",
@@ -91,29 +206,31 @@ impl ToolImpl for EditFile {
                     reason: format!("cannot read `{}`: {e}", path.display()),
                 })?;
 
-        let count = content.matches(old).count();
-        if count == 0 {
-            return Err(HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: format!(
-                    "`old_string` not found in `{}`. \
-                     Read the file first and ensure the string matches exactly.",
-                    path.display()
-                ),
-            });
-        }
-        if count > 1 {
-            return Err(HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: format!(
-                    "`old_string` matches {count} times in `{}`. \
-                     Provide more surrounding context so the match is unique.",
-                    path.display()
-                ),
-            });
-        }
+        let (updated, how) = match apply_edit(&content, old, new) {
+            EditOutcome::Replaced { content, how } => (content, how),
+            EditOutcome::NotFound => {
+                return Err(HarnessError::ToolExecution {
+                    tool: self.name().to_string(),
+                    reason: format!(
+                        "`old_string` not found in `{}` (tried exact and \
+                         whitespace-tolerant matching). Read the file first and \
+                         ensure the lines match.",
+                        path.display()
+                    ),
+                });
+            }
+            EditOutcome::Ambiguous { count } => {
+                return Err(HarnessError::ToolExecution {
+                    tool: self.name().to_string(),
+                    reason: format!(
+                        "`old_string` matches {count} places in `{}`. \
+                         Provide more surrounding context so the match is unique.",
+                        path.display()
+                    ),
+                });
+            }
+        };
 
-        let updated = content.replacen(old, new, 1);
         tokio::fs::write(&path, &updated)
             .await
             .map_err(|e| HarnessError::ToolExecution {
@@ -122,7 +239,7 @@ impl ToolImpl for EditFile {
             })?;
 
         Ok(format!(
-            "edited `{}`: replaced 1 occurrence",
+            "edited `{}`: replaced 1 occurrence ({how} match)",
             path.display()
         ))
     }
@@ -1180,6 +1297,99 @@ mod tests {
         ToolContext::new(dir.path().to_path_buf())
     }
 
+    // ── apply_edit (exact + whitespace-tolerant matching) ──────────────────────
+
+    #[test]
+    fn apply_edit_exact_single() {
+        let out = apply_edit("a = 1\nb = 2\n", "b = 2", "b = 3");
+        assert_eq!(
+            out,
+            EditOutcome::Replaced {
+                content: "a = 1\nb = 3\n".to_string(),
+                how: "exact",
+            }
+        );
+    }
+
+    #[test]
+    fn apply_edit_exact_multi_is_ambiguous() {
+        let out = apply_edit("x\nx\n", "x", "y");
+        assert_eq!(out, EditOutcome::Ambiguous { count: 2 });
+    }
+
+    #[test]
+    fn apply_edit_whitespace_tolerant_reindents() {
+        // File uses a tab; old_string uses 4 spaces — exact match fails, the
+        // tolerant pass matches by trimmed content and re-indents `new` to the
+        // file's tab.
+        let file = "fn f() {\n\tlet x = 1;\n}\n";
+        let out = apply_edit(file, "    let x = 1;", "    let x = 2;");
+        assert_eq!(
+            out,
+            EditOutcome::Replaced {
+                content: "fn f() {\n\tlet x = 2;\n}\n".to_string(),
+                how: "whitespace-tolerant",
+            }
+        );
+    }
+
+    #[test]
+    fn apply_edit_tolerant_multiline_block() {
+        let file = "a\n  foo(\n    bar,\n  )\nz\n";
+        // old block with different (zero) indentation; trimmed lines still match.
+        let old = "foo(\nbar,\n)";
+        let new = "foo(\nbaz,\n)";
+        let out = apply_edit(file, old, new);
+        match out {
+            EditOutcome::Replaced { content, how } => {
+                assert_eq!(how, "whitespace-tolerant");
+                // First matched line's indent ("  ") is applied to the new block.
+                assert_eq!(content, "a\n  foo(\n  baz,\n  )\nz\n");
+            }
+            other => panic!("expected Replaced, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_edit_tolerant_ambiguous_block() {
+        let file = "  foo\nx\n    foo\n";
+        let out = apply_edit(file, "foo", "bar");
+        // Two trimmed-equal single-line blocks → ambiguous, never guesses.
+        assert_eq!(out, EditOutcome::Ambiguous { count: 2 });
+    }
+
+    #[test]
+    fn apply_edit_not_found() {
+        assert_eq!(apply_edit("a\nb\n", "nope", "x"), EditOutcome::NotFound);
+    }
+
+    #[test]
+    fn apply_edit_tolerant_trailing_newline_no_extra_blank() {
+        // old/new both end in `\n`; the tolerant path must not splice an extra
+        // blank line (the surrounding file already supplies the boundary).
+        // old/new indented differently from the file so the exact pass misses
+        // and the tolerant pass handles the trailing newline.
+        let file = "a\n  foo\nz\n";
+        let out = apply_edit(file, "    foo\n", "    bar\n");
+        match out {
+            EditOutcome::Replaced { content, how } => {
+                assert_eq!(how, "whitespace-tolerant");
+                assert_eq!(content, "a\n  bar\nz\n", "no blank line should appear");
+            }
+            other => panic!("expected Replaced, got {other:?}"),
+        }
+
+        // Multi-line new block with a trailing newline behaves the same.
+        let file2 = "x\n  a\n  b\ny\n";
+        let out2 = apply_edit(file2, "a\nb\n", "p\nq\n");
+        match out2 {
+            EditOutcome::Replaced { content, .. } => {
+                assert_eq!(content, "x\n  p\n  q\ny\n");
+            }
+            other => panic!("expected Replaced, got {other:?}"),
+        }
+    }
+
     // ── edit_file ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -1265,7 +1475,7 @@ mod tests {
             });
             let err = tool.execute(args, &ctx).await.unwrap_err();
             let msg = err.to_string();
-            assert!(msg.contains("2 times"), "expected '2 times' in: {msg}");
+            assert!(msg.contains("2 places"), "expected '2 places' in: {msg}");
         });
     }
 
