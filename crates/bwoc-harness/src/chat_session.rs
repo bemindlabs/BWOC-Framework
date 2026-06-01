@@ -268,7 +268,7 @@ where
                     &mut out,
                     &mut prompt_tokens,
                     &mut completion_tokens,
-                    session_mode,
+                    &mut session_mode,
                 )
                 .await?;
                 // Persist the conversation after the turn settles (incl. tool
@@ -440,7 +440,7 @@ async fn run_turn<R, W>(
     out: &mut W,
     prompt_tokens: &mut u64,
     completion_tokens: &mut u64,
-    session_mode: SessionMode,
+    session_mode: &mut SessionMode,
 ) -> HarnessResult<()>
 where
     R: AsyncBufReadExt + Unpin,
@@ -553,7 +553,7 @@ async fn dispatch_call<R, W>(
     call: &ToolCall,
     lines: &mut Lines<R>,
     out: &mut W,
-    session_mode: SessionMode,
+    session_mode: &mut SessionMode,
 ) -> HarnessResult<String>
 where
     R: AsyncBufReadExt + Unpin,
@@ -608,7 +608,7 @@ where
                     },
                 )
                 .await?;
-                let allowed = read_permission(lines, &call.id).await?;
+                let allowed = read_permission(lines, &call.id, session_mode).await?;
                 if !allowed {
                     let msg = format!("DENIED by operator: `{name}` was declined");
                     emit_tool_result(out, call, false, &msg).await?;
@@ -641,7 +641,17 @@ where
 /// request for `expect_id`. Skips blank lines; a `Quit` mid-prompt is treated as
 /// a deny so the call does not execute. A mismatched id is also a deny (the
 /// frontend answered the wrong request — fail safe).
-async fn read_permission<R>(lines: &mut Lines<R>, expect_id: &str) -> HarnessResult<bool>
+///
+/// A `SetMode` arriving while the prompt is outstanding is not an answer — it
+/// updates `session_mode` in place (so it takes effect for *subsequent* tool
+/// calls, exactly as it would between turns) and keeps waiting for the decision.
+/// No `ModeChanged` ack is emitted mid-prompt; the change is silent until the
+/// next call observes it.
+async fn read_permission<R>(
+    lines: &mut Lines<R>,
+    expect_id: &str,
+    session_mode: &mut SessionMode,
+) -> HarnessResult<bool>
 where
     R: AsyncBufReadExt + Unpin,
 {
@@ -655,9 +665,14 @@ where
                 return Ok(allow && id == expect_id);
             }
             Ok(ChatInput::Quit) => return Ok(false),
-            // A mode switch arriving mid-prompt is not an answer — ignore it and
-            // keep waiting for the decision (it applies to subsequent calls).
-            Ok(ChatInput::SetMode { .. }) => continue,
+            // A mode switch mid-prompt is applied to `session_mode` (effective
+            // for later calls) but does not answer this prompt — keep waiting.
+            Ok(ChatInput::SetMode { mode }) => {
+                if let Some(m) = SessionMode::parse(&mode) {
+                    *session_mode = m;
+                }
+                continue;
+            }
             // A User message or a malformed line mid-prompt: fail safe (deny)
             // rather than silently dropping it or executing unapproved.
             _ => return Ok(false),
@@ -1129,5 +1144,95 @@ mod tests {
                 .any(|e| matches!(e, ChatEvent::Message { text } if text == "second answer"))
         );
         assert!(matches!(events.last(), Some(ChatEvent::Bye)));
+    }
+
+    #[tokio::test]
+    async fn accept_edits_auto_allows_edit_without_prompt() {
+        // write_file is `ask`, but a prior `set_mode accept_edits` auto-approves
+        // it: no PermissionRequest, the file is written, the turn completes.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let mut policy = allow_all();
+        policy.tools.insert("write_file".to_string(), Mode::Ask);
+        let stdin = concat!(
+            "{\"type\":\"set_mode\",\"mode\":\"accept_edits\"}\n",
+            "{\"type\":\"user\",\"text\":\"write\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let lines = run_scripted(
+            vec![
+                tool_call_response("write_file", r#"{"path":"x.txt","content":"hi"}"#),
+                final_response("done"),
+            ],
+            policy,
+            stdin,
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        // Mode was acked (set between turns).
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ModeChanged { mode } if mode == "accept_edits"))
+        );
+        // No prompt was raised — the edit auto-approved.
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::PermissionRequest { .. })),
+            "accept_edits must not prompt for a write/edit tool"
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, ChatEvent::ToolResult { ok, name, .. } if *ok && name == "write_file")
+        ));
+        assert!(
+            tmp.path().join("x.txt").exists(),
+            "the file must be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_mode_mid_prompt_applies_to_later_call() {
+        // Call 1 (Default) prompts; mid-prompt `set_mode bypass` is applied but
+        // does NOT answer the prompt (the following `permission allow` does).
+        // Call 2 is then auto-approved by bypass — only ONE PermissionRequest.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let mut policy = allow_all();
+        policy.tools.insert("write_file".to_string(), Mode::Ask);
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"write both\"}\n",
+            "{\"type\":\"set_mode\",\"mode\":\"bypass\"}\n",
+            "{\"type\":\"permission\",\"id\":\"call-1\",\"allow\":true}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let lines = run_scripted(
+            vec![
+                tool_call_response("write_file", r#"{"path":"a.txt","content":"a"}"#),
+                tool_call_response("write_file", r#"{"path":"b.txt","content":"b"}"#),
+                final_response("done"),
+            ],
+            policy,
+            stdin,
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        let prompts = events
+            .iter()
+            .filter(|e| matches!(e, ChatEvent::PermissionRequest { .. }))
+            .count();
+        assert_eq!(prompts, 1, "only the first call should prompt");
+        // No ModeChanged ack is emitted for a mid-prompt switch (documented).
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ModeChanged { .. })),
+            "a mid-prompt set_mode is applied silently (no ack)"
+        );
+        // Both writes landed — the second via the now-bypass mode.
+        assert!(tmp.path().join("a.txt").exists());
+        assert!(tmp.path().join("b.txt").exists());
     }
 }
