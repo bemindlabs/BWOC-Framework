@@ -232,6 +232,17 @@ pub fn evaluate(
     apply_mode(mode, policy, tool_name, arguments_json, is_tty)
 }
 
+/// Resolve the effective [`Mode`] for a tool call without applying the `ask`
+/// TTY-prompt logic.
+///
+/// The interactive `--chat` driver needs to distinguish `ask` from `allow` /
+/// `deny` so it can route the prompt to the frontend (via a `PermissionRequest`
+/// event) instead of the controlling TTY that [`evaluate`] assumes. This is the
+/// same resolution [`evaluate`] runs internally, exposed as the bare mode.
+pub fn resolve_effective_mode(policy: &Policy, tool_name: &str, arguments_json: &str) -> Mode {
+    resolve_mode(policy, tool_name, arguments_json).mode
+}
+
 /// Resolve the effective mode without applying `ask` logic.
 fn resolve_mode(policy: &Policy, tool_name: &str, arguments_json: &str) -> ResolvedMode {
     // 1. Per-tool override.
