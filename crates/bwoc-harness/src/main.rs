@@ -13,7 +13,7 @@ use bwoc_harness::{
     agent_loop::{LoopConfig, VettedMode, run_loop},
     error::HarnessResult,
     policy::{HarnessPolicy, Policy},
-    provider::{ChatMessage, OllamaClient, ProviderClient},
+    provider::{AnthropicClient, ChatMessage, OllamaClient, ProviderClient},
     tools::{ToolContext, registry::default_registry},
 };
 
@@ -112,6 +112,13 @@ struct Args {
     #[arg(long, short = 'e', default_value = bwoc_harness::provider::client::DEFAULT_ENDPOINT)]
     endpoint: String,
 
+    /// Provider backend: `ollama` / `openai-compatible` (OpenAI-compatible HTTP)
+    /// or `claude` / `anthropic` (Anthropic Messages API, key from
+    /// `ANTHROPIC_API_KEY`). Selects which provider client renders the model;
+    /// the chat/agent loops are backend-neutral.
+    #[arg(long, default_value = "ollama")]
+    backend: String,
+
     /// Maximum number of agentic turns before giving up.
     #[arg(long, default_value_t = 20)]
     max_iterations: u32,
@@ -199,7 +206,7 @@ async fn run() -> HarnessResult<()> {
         println!("  effort   : {e}");
     }
     let provider: Arc<dyn ProviderClient> =
-        Arc::new(OllamaClient::new(args.endpoint.clone()).with_reasoning_effort(reasoning_effort));
+        build_provider(&args.backend, &args.endpoint, reasoning_effort);
 
     // ── Auto model selection (primaryModel: "auto") ───────────────────────
     // When the agent's manifest declares `primaryModel: "auto"`, `bwoc run`
@@ -502,6 +509,30 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 ///
 /// No setup output goes to stdout: the chat client reads that stream as JSON
 /// events. Status/warnings (model resolution, policy load) go to stderr.
+/// Build the provider client for `backend`. OpenAI-compatible backends
+/// (`ollama` / `openai-compatible`) hit `endpoint` directly; Anthropic backends
+/// (`claude` / `anthropic`) use the Messages API (key from `ANTHROPIC_API_KEY`),
+/// substituting the Anthropic default endpoint when the caller left the
+/// OpenAI/Ollama default in place — i.e. a `claude` agent with no manifest
+/// `baseUrl`. `reasoning_effort` only applies to the OpenAI-compatible path.
+fn build_provider(
+    backend: &str,
+    endpoint: &str,
+    reasoning_effort: Option<String>,
+) -> Arc<dyn ProviderClient> {
+    match backend {
+        "claude" | "anthropic" => {
+            let base = if endpoint == bwoc_harness::provider::client::DEFAULT_ENDPOINT {
+                bwoc_harness::provider::anthropic::ANTHROPIC_DEFAULT_ENDPOINT
+            } else {
+                endpoint
+            };
+            Arc::new(AnthropicClient::new(base))
+        }
+        _ => Arc::new(OllamaClient::new(endpoint).with_reasoning_effort(reasoning_effort)),
+    }
+}
+
 async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<()> {
     use bwoc_harness::chat_session::{self, ChatConfig};
 
@@ -520,7 +551,7 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         Err(_) => None,
     };
     let provider: Arc<dyn ProviderClient> =
-        Arc::new(OllamaClient::new(args.endpoint.clone()).with_reasoning_effort(reasoning_effort));
+        build_provider(&args.backend, &args.endpoint, reasoning_effort);
 
     if !args.skip_model_check {
         provider.validate_model(&args.model).await?;
@@ -565,7 +596,7 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
     let config = ChatConfig {
         agent,
         model: args.model.clone(),
-        backend: "ollama".to_string(),
+        backend: args.backend.clone(),
         system_prompt,
         policy,
         max_turn_iterations: args.max_iterations,
