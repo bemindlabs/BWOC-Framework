@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.1-1] — 2026-06-01 — 2.20.0
+
 ### Added
 
 - **Native Anthropic (Claude) provider in `bwoc-harness`.** A second `ProviderClient` (`AnthropicClient`) speaks the Anthropic Messages API (`POST /v1/messages`), translated into the same OpenAI-shaped `provider::types` so the chat/agent loops, tool dispatch, and streaming accumulators are unchanged. `claude`-backend agents now run through the harness and emit the `chat_proto` stream (so `bwoc-chat` can render a native window for them). A new `--backend` flag (default `ollama`) selects the provider via a `build_provider()` factory; for `claude`/`anthropic` with the endpoint left at the Ollama default, it substitutes `https://api.anthropic.com`. Auth via `ANTHROPIC_API_KEY`. Translation covers request mapping (system lift, `tool_use`, merged `tool_result` turns, `input_schema`), response parsing, and typed SSE streaming with usage stitching.
