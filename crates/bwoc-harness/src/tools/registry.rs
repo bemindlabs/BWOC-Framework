@@ -53,11 +53,11 @@ impl Default for ToolRegistry {
 /// Build the default registry with the full BWOC tool set.
 ///
 /// P1 tools: `read_file`, `write_file`, `list_dir`, `run_command`
-/// Complete tool set (this increment): `edit_file`, `grep`, `git`,
-/// `run_gates`, `bwoc_task`, `bwoc_send`, `memory_read`, `memory_write`
+/// Complete tool set: `edit_file`, `grep`, `git`, `run_gates`, `bwoc_task`,
+/// `bwoc_send`, `bwoc_run`, `memory_read`, `memory_write`
 pub fn default_registry() -> ToolRegistry {
     use super::extra_tools::{
-        BwocSend, BwocTask, EditFile, Git, Grep, MemoryRead, MemoryWrite, RunGates,
+        BwocRun, BwocSend, BwocTask, EditFile, Git, Grep, MemoryRead, MemoryWrite, RunGates,
     };
     use super::impls::{ListDir, ReadFile, RunCommand, WriteFile};
     let mut reg = ToolRegistry::new();
@@ -73,6 +73,7 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(RunGates);
     reg.register(BwocTask);
     reg.register(BwocSend);
+    reg.register(BwocRun);
     reg.register(MemoryRead);
     reg.register(MemoryWrite);
     reg
