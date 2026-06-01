@@ -21,8 +21,9 @@
 //!
 //! # Scope (v1)
 //!
-//! Non-streaming only. No MCP / checkpoint / eval / budget — those belong to the
-//! batch `run_loop`, not this interactive driver.
+//! Streaming token deltas (`Token` events), then a final `Message`. No MCP /
+//! checkpoint / eval / budget — those belong to the batch `run_loop`, not this
+//! interactive driver.
 
 use std::sync::Arc;
 
@@ -178,10 +179,100 @@ where
     Ok(())
 }
 
+/// Stream the assistant response, emitting a `Token` event for every content
+/// delta as it arrives, and accumulate the full message (content, tool_calls,
+/// usage) — the streaming analogue of `provider.complete()`, but the frontend
+/// renders tokens live. Mirrors `agent_loop::stream_and_accumulate`, adding the
+/// per-delta `Token` emit.
+async fn stream_turn<W>(
+    provider: &dyn ProviderClient,
+    messages: Vec<ChatMessage>,
+    tools: Vec<crate::provider::Tool>,
+    model: &str,
+    out: &mut W,
+) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    use futures_util::StreamExt;
+
+    #[derive(Default)]
+    struct Acc {
+        id: String,
+        kind: String,
+        name: String,
+        args: String,
+    }
+
+    let mut stream = provider.stream(messages, tools, model).await?;
+    let mut content = String::new();
+    let mut calls: std::collections::HashMap<u32, Acc> = std::collections::HashMap::new();
+    let mut usage: Option<crate::provider::Usage> = None;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if chunk.usage.is_some() {
+            usage = chunk.usage;
+        }
+        for sd in chunk.choices {
+            if let Some(text) = sd.delta.content {
+                if !text.is_empty() {
+                    emit(out, &ChatEvent::Token { text: text.clone() }).await?;
+                    content.push_str(&text);
+                }
+            }
+            if let Some(tcs) = sd.delta.tool_calls {
+                for tc in tcs {
+                    let acc = calls.entry(tc.index).or_default();
+                    if let Some(id) = tc.id {
+                        acc.id = id;
+                    }
+                    if let Some(kind) = tc.r#type {
+                        acc.kind = kind;
+                    }
+                    if let Some(func) = tc.function {
+                        if let Some(name) = func.name {
+                            acc.name = name;
+                        }
+                        if let Some(args) = func.arguments {
+                            acc.args.push_str(&args);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let tool_calls: Vec<ToolCall> = if calls.is_empty() {
+        Vec::new()
+    } else {
+        let mut sorted: Vec<_> = calls.into_iter().collect();
+        sorted.sort_by_key(|(idx, _)| *idx);
+        sorted
+            .into_iter()
+            .map(|(_, a)| ToolCall {
+                id: a.id,
+                kind: a.kind,
+                function: crate::provider::FunctionCall {
+                    name: a.name,
+                    arguments: a.args,
+                },
+            })
+            .collect()
+    };
+
+    let message = ChatMessage::assistant(
+        (!content.is_empty()).then_some(content),
+        (!tool_calls.is_empty()).then_some(tool_calls),
+    );
+    Ok((message, usage))
+}
+
 /// Run one agentic turn: call the provider, dispatch any tool calls (each
 /// through the safety pipeline), and repeat until the assistant returns no tool
-/// calls. Emits `Message` + `TurnEnd` on success, or `Error` (and returns) on a
-/// provider failure — the caller keeps the session alive either way.
+/// calls. Emits streamed `Token`s + a final `Message` + `TurnEnd` on success, or
+/// `Error` (and returns) on a provider failure — the caller keeps the session
+/// alive either way.
 #[allow(clippy::too_many_arguments)]
 async fn run_turn<R, W>(
     provider: &dyn ProviderClient,
@@ -224,14 +315,19 @@ where
             return Ok(());
         }
 
-        // ── Provider call (non-streaming) ────────────────────────────────────
-        let completion = match provider
-            .complete(history.clone(), tools.to_vec(), &config.model)
-            .await
+        // ── Provider call (streaming) — emit `Token` deltas live ─────────────
+        let (message, usage) = match stream_turn(
+            provider,
+            history.clone(),
+            tools.to_vec(),
+            &config.model,
+            out,
+        )
+        .await
         {
-            Ok(c) => c,
+            Ok(r) => r,
             Err(e) => {
-                // Recoverable: surface and end the turn; the session continues.
+                // Recoverable: surface, close the turn, keep the session.
                 emit(
                     out,
                     &ChatEvent::Error {
@@ -239,26 +335,16 @@ where
                     },
                 )
                 .await?;
+                emit_turn_end(out, *prompt_tokens, *completion_tokens).await?;
                 return Ok(());
             }
         };
 
-        if let Some(usage) = &completion.usage {
+        if let Some(usage) = &usage {
             *prompt_tokens += u64::from(usage.prompt_tokens);
             *completion_tokens += u64::from(usage.completion_tokens);
         }
 
-        let Some(choice) = completion.choices.into_iter().next() else {
-            emit(
-                out,
-                &ChatEvent::Error {
-                    message: "provider returned empty choices".to_string(),
-                },
-            )
-            .await?;
-            return Ok(());
-        };
-        let message = choice.message;
         let tool_calls = message.tool_calls.clone().unwrap_or_default();
 
         if tool_calls.is_empty() {
@@ -422,6 +508,27 @@ where
     Ok(())
 }
 
+/// Emit the `TurnEnd` that closes every `ChatInput::User` turn — success *or*
+/// error — so a frontend can treat it as the single "ready for next input"
+/// delimiter without ever blocking.
+async fn emit_turn_end<W>(
+    out: &mut W,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) -> HarnessResult<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    emit(
+        out,
+        &ChatEvent::TurnEnd {
+            prompt_tokens,
+            completion_tokens,
+        },
+    )
+    .await
+}
+
 /// Convenience for the common `ToolResult` emit.
 async fn emit_tool_result<W>(
     out: &mut W,
@@ -452,7 +559,10 @@ where
 mod tests {
     use super::*;
     use crate::provider::types::FunctionCall;
-    use crate::provider::{ChatCompletion, Choice, FinishReason, StreamChunk, Tool, Usage};
+    use crate::provider::types::{FunctionDelta, ToolCallDelta};
+    use crate::provider::{
+        ChatCompletion, Choice, Delta, FinishReason, StreamChunk, StreamDelta, Tool, Usage,
+    };
     use async_trait::async_trait;
     use futures_util::Stream;
     use std::collections::HashMap;
@@ -498,7 +608,46 @@ mod tests {
             Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>>,
             HarnessError,
         > {
-            Err(HarnessError::Provider("mock: stream unused".to_string()))
+            // Convert the next queued completion into a single stream chunk so
+            // the streaming driver sees the same turn the non-streaming path did.
+            let mut lock = self.responses.lock().unwrap();
+            if lock.is_empty() {
+                return Err(HarnessError::Provider("mock exhausted".to_string()));
+            }
+            let completion = lock.remove(0)?;
+            let usage = completion.usage.clone();
+            let msg = completion.choices.into_iter().next().map(|c| c.message);
+            let content = msg.as_ref().and_then(|m| m.content.clone());
+            let tool_calls = msg.and_then(|m| m.tool_calls).unwrap_or_default();
+            let tc_deltas: Vec<ToolCallDelta> = tool_calls
+                .into_iter()
+                .enumerate()
+                .map(|(i, tc)| ToolCallDelta {
+                    index: i as u32,
+                    id: Some(tc.id),
+                    r#type: Some(tc.kind),
+                    function: Some(FunctionDelta {
+                        name: Some(tc.function.name),
+                        arguments: Some(tc.function.arguments),
+                    }),
+                })
+                .collect();
+            let chunk = StreamChunk {
+                id: "mock".to_string(),
+                choices: vec![StreamDelta {
+                    index: 0,
+                    delta: Delta {
+                        role: None,
+                        content,
+                        tool_calls: (!tc_deltas.is_empty()).then_some(tc_deltas),
+                    },
+                    finish_reason: Some(FinishReason::Stop),
+                }],
+                usage,
+            };
+            Ok(Box::pin(futures_util::stream::once(
+                async move { Ok(chunk) },
+            )))
         }
 
         async fn validate_model(&self, _model: &str) -> Result<(), HarnessError> {
@@ -613,24 +762,31 @@ mod tests {
         let lines =
             run_scripted(vec![final_response("Hello back!")], allow_all(), stdin, ctx).await;
         let events = parse(&lines);
-        // Ready, Message, TurnEnd, Bye.
+        // Ready, streamed Token(s), final Message, TurnEnd, Bye.
         assert!(matches!(events[0], ChatEvent::Ready { .. }));
+        // The content streams as `Token` deltas (the mock emits it in one chunk).
+        let streamed: String = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Token { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed, "Hello back!", "tokens should stream the content");
+        // A final `Message` with the full text still closes the turn.
         assert!(
-            matches!(&events[1], ChatEvent::Message { text } if text == "Hello back!"),
-            "got {:?}",
-            events[1]
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Message { text } if text == "Hello back!")),
+            "got {events:?}"
         );
-        assert!(
-            matches!(
-                events[2],
-                ChatEvent::TurnEnd {
-                    prompt_tokens: 10,
-                    completion_tokens: 5
-                }
-            ),
-            "got {:?}",
-            events[2]
-        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ChatEvent::TurnEnd {
+                prompt_tokens: 10,
+                completion_tokens: 5
+            }
+        )));
         assert!(matches!(events.last(), Some(ChatEvent::Bye)));
     }
 

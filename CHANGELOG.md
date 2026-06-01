@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **The `bwoc-harness --chat` driver now streams token deltas.** Each assistant turn is generated via the provider's streaming API and emitted as `chat_proto` `Token` events as the tokens arrive (followed by the final `Message`), so frontends — `bwoc chat --tui` and the `bwoc-chat` desktop app — render the reply live instead of all-at-once. Tool calls + the interactive permission round-trip are unchanged.
+
+### Fixed
+
+- **Restored: the chat driver emits `TurnEnd` on every error path.** A frontend treats `TurnEnd` as the per-turn "ready for next input" delimiter; the provider-error / empty-response paths had regressed to returning without it (a #160 review fix lost during the parallel-build integration). Re-added the `emit_turn_end` helper + calls alongside the streaming rewrite.
+
 ## [v2026.6.1-0] — 2026-06-01 — 2.19.0
 
 **Minor release.** Agentic chat TUI + cross-agent delegation, with hardening and a crate split. Headline: `bwoc chat --tui` — a full-screen ratatui chat for the ollama / openai-compatible backends with interactive permission prompts — and the `bwoc_run` tool, letting a model launch another BWOC agent. Plus shell-operator-aware `run_command` guardrails, a provider request timeout, lead→worker budget/vetting propagation, and the audit-plugin environment scrub. Cargo SemVer `2.18.1` → `2.19.0`.
