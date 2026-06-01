@@ -57,7 +57,7 @@ impl Default for ToolRegistry {
 /// `run_gates`, `bwoc_task`, `bwoc_send`, `memory_read`, `memory_write`
 pub fn default_registry() -> ToolRegistry {
     use super::extra_tools::{
-        BwocSend, BwocTask, EditFile, Git, Grep, MemoryRead, MemoryWrite, RunGates,
+        BwocRun, BwocSend, BwocTask, EditFile, Git, Grep, MemoryRead, MemoryWrite, RunGates,
     };
     use super::impls::{ListDir, ReadFile, RunCommand, WriteFile};
     let mut reg = ToolRegistry::new();
@@ -73,6 +73,7 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(RunGates);
     reg.register(BwocTask);
     reg.register(BwocSend);
+    reg.register(BwocRun);
     reg.register(MemoryRead);
     reg.register(MemoryWrite);
     reg

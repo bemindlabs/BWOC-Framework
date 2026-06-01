@@ -895,6 +895,128 @@ impl ToolImpl for BwocSend {
 }
 
 // ---------------------------------------------------------------------------
+// bwoc_run — launch (delegate to) another BWOC agent on a task
+// ---------------------------------------------------------------------------
+
+/// Launch another BWOC agent on a task and return its captured result.
+///
+/// **"ollama launches bwoc"** — the model running this harness loop can hand a
+/// subtask to a *different* agent by shelling out to
+/// `bwoc run <agent> --task <task> --json --timeout <n>` (headless, captured).
+/// The launched agent runs its own full safety pipeline in its own process.
+///
+/// Same shell-out rationale as [`BwocTask`]/[`BwocSend`]: agent resolution,
+/// backend selection, and the run lifecycle live in `bwoc-cli`.
+///
+/// **Safety posture.** Like every tool, `bwoc_run` is gated by the permission
+/// layer and is **denied by default** (the policy's fail-safe `default_mode`),
+/// so it only runs when an operator opts in via `.bwoc/harness-policy.toml`.
+/// That same gate bounds recursion: a launched agent can only launch further
+/// agents if *its* policy also allows `bwoc_run`. Each launch is additionally
+/// time-bounded (`timeout_secs`, default 300) so a delegate can't hang the
+/// caller indefinitely.
+pub struct BwocRun;
+
+#[async_trait]
+impl ToolImpl for BwocRun {
+    fn name(&self) -> &'static str {
+        "bwoc_run"
+    }
+
+    fn description(&self) -> &'static str {
+        "Launch (delegate to) another BWOC agent on a task and return its \
+         captured result. Runs `bwoc run <agent> --task <task>` headless. \
+         Use to hand a self-contained subtask to a specialist agent. \
+         `agent` and `task` are required; `timeout_secs` bounds the run \
+         (default 300). Requires operator opt-in (denied by default policy)."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "description": "Target agent: id (`agent-foo`) or bare name (`foo`)."
+                },
+                "task": {
+                    "type": "string",
+                    "description": "The self-contained task prompt to deliver to that agent."
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Kill the launched agent and report a timeout after this many seconds. Default 300."
+                }
+            },
+            "required": ["agent", "task"]
+        })
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
+        let agent = args["agent"]
+            .as_str()
+            .ok_or_else(|| HarnessError::ToolExecution {
+                tool: self.name().to_string(),
+                reason: "missing `agent` argument".to_string(),
+            })?;
+        let task = args["task"]
+            .as_str()
+            .ok_or_else(|| HarnessError::ToolExecution {
+                tool: self.name().to_string(),
+                reason: "missing `task` argument".to_string(),
+            })?;
+        // Bounded by default so a delegate can never hang the caller forever.
+        let timeout = args["timeout_secs"].as_u64().unwrap_or(300).max(1);
+
+        // `bwoc run <agent> --task <task> --json --timeout <n>` — sibling-resolved
+        // bwoc, not a stale PATH copy (see bwoc_core::exec).
+        let mut cmd = tokio::process::Command::new(bwoc_core::exec::binary_or_name("bwoc"));
+        cmd.arg("run")
+            .arg(agent)
+            .arg("--task")
+            .arg(task)
+            .arg("--json")
+            .arg("--timeout")
+            .arg(timeout.to_string());
+
+        cmd.current_dir(&ctx.workdir);
+        // Minimal clean env — bwoc reads its workspace from cwd.
+        cmd.env_clear();
+        for var in &["PATH", "HOME", "USER", "LANG", "TMPDIR"] {
+            if let Ok(val) = std::env::var(var) {
+                cmd.env(var, val);
+            }
+        }
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| HarnessError::ToolExecution {
+                tool: self.name().to_string(),
+                reason: format!("failed to spawn `bwoc`: {e}. Is `bwoc` on PATH?"),
+            })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let mut result = stdout;
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str("[stderr] ");
+            result.push_str(&stderr);
+        }
+        if !output.status.success() {
+            let code = output.status.code().unwrap_or(-1);
+            result.push_str(&format!("\n[exit code: {code}]"));
+        }
+
+        Ok(result)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // memory_read — read from the agent's tier-1 file-based memory store
 // ---------------------------------------------------------------------------
 
@@ -1567,6 +1689,7 @@ mod tests {
             Box::new(RunGates),
             Box::new(BwocTask),
             Box::new(BwocSend),
+            Box::new(BwocRun),
             Box::new(MemoryRead),
             Box::new(MemoryWrite),
         ];
@@ -1583,5 +1706,22 @@ mod tests {
                 tool.name()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn bwoc_run_requires_agent_and_task() {
+        let ctx = ToolContext::new(std::env::temp_dir());
+        // missing `agent`
+        let err = BwocRun
+            .execute(json!({ "task": "do the thing" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("agent"), "got: {err}");
+        // missing `task`
+        let err = BwocRun
+            .execute(json!({ "agent": "agent-foo" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("task"), "got: {err}");
     }
 }

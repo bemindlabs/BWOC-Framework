@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`bwoc_run` harness tool — "ollama launches bwoc".** The model running a `bwoc-harness` loop (the ollama / openai-compatible backends) can now delegate a self-contained subtask to *another* BWOC agent by calling the `bwoc_run` tool, which shells out to `bwoc run <agent> --task <task> --json --timeout <n>` and returns the captured result. Like every tool it is **denied by default** (the permission policy's fail-safe `default_mode`), so it only fires when an operator opts in via `.bwoc/harness-policy.toml`; that same gate bounds recursion (a delegate can re-launch only if its own policy allows it), and each launch is time-bounded (`timeout_secs`, default 300).
+
 ### Security
 
 - **Audit plugins no longer inherit the operator's environment.** `bwoc audit run` spawns each audit plugin — third-party code installed from a git/tarball URL — and the spawn carried the full ambient environment, leaking `GITHUB_TOKEN` / `AWS_*` / `NPM_TOKEN` etc. to exactly the process whose job is to run code you don't yet trust. The spawn now starts from a scrubbed environment (`env_clear()` + an allowlist filter) plus only the three `BWOC_*` context vars. The scrub logic + allowlist moved to a shared `bwoc_core::env_scrub` so the audit runner and the harness sandbox enforce the identical rule (the harness `sandbox::scrub_env` re-exports it; no new crate dependency — `bwoc-cli` already depends on `bwoc-core`, and the dep-quarantine on `bwoc-harness` is preserved).
