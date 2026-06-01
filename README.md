@@ -192,7 +192,7 @@ The framework is a Rust workspace of focused crates, plus companion apps that bu
 | [`bwoc-core`](crates/bwoc-core) | lib | Shared types — manifest, workspace/agent registry, identity, lifecycle, `chat_proto`, env-scrub, sibling-binary resolution. **Lean + dep-quarantined**: everything depends on it; it depends on almost nothing. |
 | [`bwoc-cli`](crates/bwoc-cli) | bin `bwoc` | The operator CLI — `init` · `new` · `list` · `spawn` · `chat` (`--tui`) · `run` · `start`/`stop`/`supervise` · `dashboard` · `check` · `audit` · `send` · `task` · `team`. |
 | [`bwoc-agent`](crates/bwoc-agent) | bin `bwoc-agent` | The per-agent daemon (`--serve`) — Unix control socket (PING/STATUS/STOP), inbox, and Saṅgha task-watch. |
-| [`bwoc-harness`](crates/bwoc-harness) | bin `bwoc-harness` | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set (incl. whitespace-tolerant `edit_file`), guardrails → permission → sandbox pipeline (with `--unrestricted` for full-machine file access), OpenTelemetry, Saṅgha lead/worker, checkpoint/resume, MCP client, and the interactive `--chat` session (streaming, persistent memory, live permission modes). |
+| [`bwoc-harness`](crates/bwoc-harness) | bin `bwoc-harness` | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set, guardrails → permission → sandbox pipeline (with `--unrestricted` to lift the workdir path sandbox), OpenTelemetry, Saṅgha lead/worker, checkpoint/resume, MCP client, and the interactive `--chat` session (streaming, persistent memory, live permission modes). |
 | [`bwoc-tui`](crates/bwoc-tui) | lib | The ratatui chat client behind `bwoc chat --tui` — renders the `chat_proto` stream from `bwoc-harness --chat`. |
 | [`bwoc-signing`](crates/bwoc-signing) | lib | ed25519 signing primitives for the trust layer. |
 | [`bwoc-a2a`](crates/bwoc-a2a) | lib | Agent-to-agent transport — signed envelopes + cross-workspace identity. |
@@ -467,7 +467,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 **In development since 2.19.0 (unreleased — see [`CHANGELOG.md`](CHANGELOG.md)):**
 
 - **Interactive `--chat`, upgraded** — persistent session memory across restarts (`<workdir>/.bwoc/chat-session.json`), live token streaming, and live **permission modes** (`default` / `accept_edits` / `bypass`) switchable mid-session via `SetMode`.
-- **Full-machine file editing** — `bwoc-harness --unrestricted` lifts the workdir path sandbox (each write/edit becomes an `ask` prompt instead); `edit_file` gains whitespace-tolerant matching + re-indentation so small-model edits land reliably.
+- **Full-machine file editing** — `bwoc-harness --unrestricted` lifts the workdir path sandbox so file tools can reach any absolute path; combined with chat's ask-by-default permission policy, each write/edit is then gated by an Allow/Deny prompt rather than the path sandbox. `edit_file` also gains whitespace-tolerant matching + re-indentation so small-model edits land reliably.
 - **`bwoc-chat` desktop** — **team chat** (N agents in one window, broadcast or `@name`), markdown rendering, `@` agent/file completion, and `/help · /tools · /mode · /clear · /forget · /quit` commands.
 
 **Recent — v2.8.0:** cross-workspace give-feedback. **v2.7.0:** installable plugins & skills (`bwoc plugin/skill install`) + ISO-compliance audit plugins (`bwoc audit`). **v2.6.0:** harness-v2 (durable runs, Saṅgha workers, MCP, budget, streaming) + ed25519 signed messages.
