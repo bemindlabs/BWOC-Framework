@@ -21,11 +21,15 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatEvent {
     /// Session is initialized and waiting for the first [`ChatInput::User`].
-    /// `agent`/`model`/`backend` let the frontend render a status line.
+    /// `agent`/`model`/`backend` let the frontend render a status line; `tools`
+    /// lists the registered tool names available to the agent (for a `/tools`
+    /// view). `#[serde(default)]` so an older harness that omits it still parses.
     Ready {
         agent: String,
         model: String,
         backend: String,
+        #[serde(default)]
+        tools: Vec<String>,
     },
     /// A streaming assistant token delta (only when streaming is on).
     Token { text: String },

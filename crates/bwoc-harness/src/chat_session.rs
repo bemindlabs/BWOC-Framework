@@ -110,12 +110,14 @@ where
     let mut prompt_tokens: u64 = 0;
     let mut completion_tokens: u64 = 0;
 
+    let tool_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
     emit(
         &mut out,
         &ChatEvent::Ready {
             agent: config.agent.clone(),
             model: config.model.clone(),
             backend: config.backend.clone(),
+            tools: tool_names,
         },
     )
     .await?;
