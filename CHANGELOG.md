@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **`edit_file` now falls back to whitespace-tolerant matching.** When an exact `old_string` match fails, the tool matches the file line-by-line ignoring each line's leading/trailing whitespace, and re-indents `new_string` to the file's actual indentation. This rescues the most common small-model edit failure — an `old_string` whose indentation is slightly off — while still refusing an ambiguous multi-site match (asks for more context instead of guessing). The result message reports which strategy matched (`exact` / `whitespace-tolerant`). Pattern adapted from openclaude's `FileEditTool`.
+
 ### Added
 
 - **`bwoc-harness --unrestricted` lifts the workdir file-access sandbox.** With the flag, the file tools (`read_file`/`write_file`/`edit_file`/`list_dir`/`grep`) may touch **any absolute path** on the machine; relative paths still resolve against `--workdir`. Without it, the path-traversal confinement is unchanged (the safe default). The safety gate shifts to the permission policy, so this is meant for an `ask`-gated / operator-reviewed session. `bwoc-chat` (desktop) passes `--unrestricted` so a chat agent can read & edit your real project files, with each write/edit surfaced as an Allow/Deny prompt.
