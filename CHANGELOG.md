@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
+- **`bwoc chat <agent> --tui` — full-screen agentic chat TUI** for the ollama / openai-compatible backends. A ratatui client (status / conversation / tools-activity / input panes) drives a `bwoc-harness --chat` subprocess over a new JSON-line protocol (`bwoc_core::chat_proto`: `ChatEvent` out, `ChatInput` in) and renders streaming turns, tool calls, and interactive `[a]llow?`/`[d]eny` permission prompts. Vendor-CLI backends (claude / codex / kimi / agy) print a hint and fall back to the default exec path. The renderer lives in its own **`bwoc-tui`** crate (depends only on `bwoc-core` + ratatui/crossterm — never on `bwoc-harness` or `bwoc-cli`, preserving the dep-quarantine; the harness is a runtime subprocess, resolved as a sibling of the running `bwoc`).
 - **`bwoc_run` harness tool — "ollama launches bwoc".** The model running a `bwoc-harness` loop (the ollama / openai-compatible backends) can now delegate a self-contained subtask to *another* BWOC agent by calling the `bwoc_run` tool, which shells out to `bwoc run <agent> --task <task> --json --timeout <n>` and returns the captured result. Like every tool it is **denied by default** (the permission policy's fail-safe `default_mode`), so it only fires when an operator opts in via `.bwoc/harness-policy.toml`; that same gate bounds recursion (a delegate can re-launch only if its own policy allows it), and each launch is time-bounded (`timeout_secs`, default 300).
 
 ### Security

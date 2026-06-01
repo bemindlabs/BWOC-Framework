@@ -7,6 +7,7 @@ members = [
     "crates/bwoc-cli",
     "crates/bwoc-agent",
     "crates/bwoc-harness",
+    "crates/bwoc-tui",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ repository = "https://github.com/bmt-bwol-ops/bwoc-framwork"
 bwoc-core = { path = "crates/bwoc-core" }
 bwoc-signing = { path = "crates/bwoc-signing" }
 bwoc-a2a = { path = "crates/bwoc-a2a" }
+bwoc-tui = { path = "crates/bwoc-tui" }
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 ratatui = "0.30"

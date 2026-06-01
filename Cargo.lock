@@ -290,6 +290,7 @@ version = "2.18.1"
 dependencies = [
  "bwoc-core",
  "bwoc-signing",
+ "bwoc-tui",
  "clap",
  "clap_complete",
  "crossterm",
@@ -355,6 +356,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bwoc-tui"
+version = "2.18.1"
+dependencies = [
+ "bwoc-core",
+ "crossterm",
+ "ratatui",
+ "serde_json",
 ]
 
 [[package]]
