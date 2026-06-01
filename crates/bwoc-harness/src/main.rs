@@ -47,6 +47,13 @@ struct Args {
     #[arg(long, conflicts_with_all = ["task", "resume"])]
     lead: bool,
 
+    /// Drive an interactive, multi-turn chat session over stdin/stdout using the
+    /// `bwoc_core::chat_proto` JSON-line protocol (the `bwoc chat --tui`
+    /// frontend spawns the harness this way).  Mutually exclusive with the
+    /// task/resume/lead paths.
+    #[arg(long, conflicts_with_all = ["task", "resume", "lead"])]
+    chat: bool,
+
     /// Path to the Saṅgha `tasks.jsonl` (required with `--lead`).
     #[arg(long, requires = "lead")]
     tasks: Option<PathBuf>,
@@ -139,6 +146,13 @@ async fn run() -> HarnessResult<()> {
         // call surface the error.
         args.workdir.clone()
     });
+
+    // ── Interactive chat session (PR1 of the chat TUI) ────────────────────
+    // stdout must carry ONLY the JSON-line event stream, so this path runs
+    // before the human-readable banner below and emits nothing to stdout itself.
+    if args.chat {
+        return run_chat_mode(&args, &workdir).await;
+    }
 
     println!("bwoc-harness P1 starting");
     println!("  workdir  : {}", workdir.display());
@@ -454,6 +468,76 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         summary.claimed, summary.completed, summary.failed
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Interactive chat mode (PR1 of the chat TUI)
+// ---------------------------------------------------------------------------
+
+/// Set up the provider, tools, policy, and system prompt — mirroring the batch
+/// `run()` path — then hand off to the [`chat_session`] driver, which speaks the
+/// `bwoc_core::chat_proto` JSON-line protocol over stdin/stdout.
+///
+/// No setup output goes to stdout: the chat client reads that stream as JSON
+/// events. Status/warnings (model resolution, policy load) go to stderr.
+async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<()> {
+    use bwoc_harness::chat_session::{self, ChatConfig};
+
+    // Provider — same reasoning-effort wiring as run().
+    let reasoning_effort = match bwoc_core::manifest::Manifest::load_from_path(
+        &workdir.join("config.manifest.json"),
+    ) {
+        Ok(m) => m.reasoning_effort,
+        Err(bwoc_core::manifest::ManifestError::Json(e)) => {
+            eprintln!(
+                "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
+                 ignoring reasoningEffort"
+            );
+            None
+        }
+        Err(_) => None,
+    };
+    let provider: Arc<dyn ProviderClient> =
+        Arc::new(OllamaClient::new(args.endpoint.clone()).with_reasoning_effort(reasoning_effort));
+
+    if !args.skip_model_check {
+        provider.validate_model(&args.model).await?;
+    }
+
+    // System prompt (AGENTS.md / CLAUDE.md), same as run().
+    let system_prompt = load_system_prompt(workdir).await;
+
+    // Tool registry + context, same as run() (no MCP in the chat v1 driver).
+    let registry = Arc::new(default_registry());
+    let ctx = ToolContext::new(workdir);
+
+    // Permission policy, same fail-safe load as run().
+    let policy: Policy = HarnessPolicy::load(workdir)
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "[bwoc-harness] warning: could not load harness-policy.toml: {e}. \
+                 Using fail-safe deny-all policy."
+            );
+            HarnessPolicy::default()
+        })
+        .into();
+
+    // Agent id from the manifest when present, else the --agent fallback.
+    let agent =
+        bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
+            .map(|m| m.agent_id)
+            .unwrap_or_else(|_| args.agent.clone());
+
+    let config = ChatConfig {
+        agent,
+        model: args.model.clone(),
+        backend: "ollama".to_string(),
+        system_prompt,
+        policy,
+        max_turn_iterations: args.max_iterations,
+    };
+
+    chat_session::run(provider, registry, ctx, config).await
 }
 
 // ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ opentelemetry_sdk = { version = "0.32", optional = true }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"], optional = true }
 
 # Async runtime — required for streaming + concurrent tool execution + queue
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "io-std", "time"] }
 # Cancellation token for the task queue (CancellationToken is in the default feature set)
 tokio-util = "0.7"
 # HTTP client for OpenAI-compat endpoint
