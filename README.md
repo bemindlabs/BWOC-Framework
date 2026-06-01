@@ -192,7 +192,7 @@ The framework is a Rust workspace of focused crates, plus companion apps that bu
 | [`bwoc-core`](crates/bwoc-core) | lib | Shared types — manifest, workspace/agent registry, identity, lifecycle, `chat_proto`, env-scrub, sibling-binary resolution. **Lean + dep-quarantined**: everything depends on it; it depends on almost nothing. |
 | [`bwoc-cli`](crates/bwoc-cli) | bin `bwoc` | The operator CLI — `init` · `new` · `list` · `spawn` · `chat` (`--tui`) · `run` · `start`/`stop`/`supervise` · `dashboard` · `check` · `audit` · `send` · `task` · `team`. |
 | [`bwoc-agent`](crates/bwoc-agent) | bin `bwoc-agent` | The per-agent daemon (`--serve`) — Unix control socket (PING/STATUS/STOP), inbox, and Saṅgha task-watch. |
-| [`bwoc-harness`](crates/bwoc-harness) | bin `bwoc-harness` | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set, guardrails → permission → sandbox pipeline, OpenTelemetry, Saṅgha lead/worker, checkpoint/resume, MCP client, and the interactive `--chat` session. |
+| [`bwoc-harness`](crates/bwoc-harness) | bin `bwoc-harness` | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set (incl. whitespace-tolerant `edit_file`), guardrails → permission → sandbox pipeline (with `--unrestricted` for full-machine file access), OpenTelemetry, Saṅgha lead/worker, checkpoint/resume, MCP client, and the interactive `--chat` session (streaming, persistent memory, live permission modes). |
 | [`bwoc-tui`](crates/bwoc-tui) | lib | The ratatui chat client behind `bwoc chat --tui` — renders the `chat_proto` stream from `bwoc-harness --chat`. |
 | [`bwoc-signing`](crates/bwoc-signing) | lib | ed25519 signing primitives for the trust layer. |
 | [`bwoc-a2a`](crates/bwoc-a2a) | lib | Agent-to-agent transport — signed envelopes + cross-workspace identity. |
@@ -201,7 +201,7 @@ The framework is a Rust workspace of focused crates, plus companion apps that bu
 
 | Project | What it is |
 | --- | --- |
-| **bwoc-chat** | Native desktop chat for a single agent — one agent, one window. An egui frontend over `bwoc-harness --chat` (the `chat_proto` stream): streaming replies, markdown, a tool-activity pane, inline permission prompts, and slash commands. |
+| **bwoc-chat** | Native desktop chat for BWOC agents — one agent or a **team** (N agents, one window). An egui frontend over `bwoc-harness --chat` (the `chat_proto` stream): streaming replies, markdown, a per-agent tool-activity pane, inline permission prompts, live `/mode`, `@` agent/file completion, and session memory. |
 | **bwoc-penlee-sc01-plus** | SC01 Plus hardware fleet display — firmware (BLE config + WebSocket data) plus a Tauri host app. |
 
 ---
@@ -460,16 +460,17 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 ## Status
 
-**Current phase:** Phase 3 DoD met; the interconnect mesh now spans workspaces — **2.8.0** adds the cross-workspace **give-feedback** write path, completing the view · learn · give-feedback trio (view + learn shipped 2.3.0). Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
+**Current phase:** Phase 3 DoD met; the interconnect mesh spans workspaces (view · learn · give-feedback). Focus since has been the self-hosted **`bwoc-harness`** runtime: a full agentic run loop plus an interactive **`--chat`** session with token streaming, persistent cross-restart memory, live permission modes, and full-machine file editing. Phase 1 v2.0 DoD met (end-to-end **uppāda** for one backend). Phase 2 — _ṭhiti operations_ — DoD met (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard).
 
-**Latest release:** [`v2026.5.27-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.27-2) (2.8.0) shipped 2026-05-27 — cross-workspace give-feedback. Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23).
+**Latest release:** [`v2026.6.1-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.1-0) (2.19.0) shipped 2026-06-01 — agentic chat TUI (`bwoc chat --tui`, new `bwoc-tui` crate + `bwoc_core::chat_proto`) + `bwoc_run` cross-agent delegation; shell-operator-aware guardrails, provider request timeout, lead→worker budget propagation, audit-plugin env scrub. Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23).
 
-**Shipped in v2.8.0 — cross-workspace give-feedback (#20):**
+**In development since 2.19.0 (unreleased — see [`CHANGELOG.md`](CHANGELOG.md)):**
 
-- **`bwoc peer feedback <agent> "<review>" --from <local-agent>`** — deliver a signed `kind: feedback` envelope into a peer agent's inbox (local-FS mesh). Peer-routed, **signature-required**, no spurious local wakeup. Completes the three peer verbs (view + learn shipped in 2.3.0).
-- **Cross-workspace identity in the trust gate** — on a local-registry miss, the daemon resolves the sender via `routes.toml` + the peer's published `signingPublicKey` and verifies the signature, instead of refusing every peer as `unknown_sender`. Read-vs-write split: a cross-workspace write requires a provable signature. See [`SIGNING.en.md`](docs/en/SIGNING.en.md).
+- **Interactive `--chat`, upgraded** — persistent session memory across restarts (`<workdir>/.bwoc/chat-session.json`), live token streaming, and live **permission modes** (`default` / `accept_edits` / `bypass`) switchable mid-session via `SetMode`.
+- **Full-machine file editing** — `bwoc-harness --unrestricted` lifts the workdir path sandbox (each write/edit becomes an `ask` prompt instead); `edit_file` gains whitespace-tolerant matching + re-indentation so small-model edits land reliably.
+- **`bwoc-chat` desktop** — **team chat** (N agents in one window, broadcast or `@name`), markdown rendering, `@` agent/file completion, and `/help · /tools · /mode · /clear · /forget · /quit` commands.
 
-**Recent — v2.7.0:** installable plugins & skills (`bwoc plugin/skill install`) + ISO-compliance audit plugins (`bwoc audit`). **v2.6.0:** harness-v2 (durable runs, Saṅgha workers, MCP, budget, streaming) + ed25519 signed messages. **v2.5.0:** live fleet ops + startup update-check.
+**Recent — v2.8.0:** cross-workspace give-feedback. **v2.7.0:** installable plugins & skills (`bwoc plugin/skill install`) + ISO-compliance audit plugins (`bwoc audit`). **v2.6.0:** harness-v2 (durable runs, Saṅgha workers, MCP, budget, streaming) + ed25519 signed messages.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full list and [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) for binaries.
 
@@ -483,6 +484,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full list and [GitHub Releases](https
 | `bwoc-agent` runtime (Rust; `--serve` daemon on Unix)           | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 ✓ · plugin-cycle ✓**          |
 | Reference agents (`agent-pi`, `agent-oracle`)                   | **Phase 3 ✓ (incarnated + personalized + `bwoc check` clean)** |
 | Fleet dashboard (`bwoc dashboard` TUI)                          | **Phase 2 ✓**                                                  |
+| `bwoc-harness` self-hosted runtime + interactive `--chat`       | **Active — agentic loop, streaming, memory, permission modes** |
 
 For the full phase-by-phase plan with completed / in-progress / remaining items, see [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md) (Thai: [`docs/th/ROADMAP.th.md`](docs/th/ROADMAP.th.md)).
 
