@@ -21,8 +21,16 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bwoc_core::routing::Routes;
-use bwoc_core::workspace::{AgentEntry, AgentsRegistry};
+use bwoc_core::routing::{RouteTarget, Routes};
+use bwoc_core::workspace::AgentsRegistry;
+
+/// Where a resolved `bwoc send` delivers the envelope.
+enum Target {
+    /// A reachable workspace on this machine — append to the agent's inbox.
+    LocalInbox { inbox_path: PathBuf },
+    /// A remote peer over MQTT — publish via the `bwoc-mqtt` sibling binary.
+    Mqtt { broker: String, topic: String },
+}
 
 pub struct SendArgs {
     pub to: String,
@@ -84,6 +92,16 @@ pub enum SendError {
     Routing(#[from] bwoc_core::routing::RoutingError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error(
+        "could not run `bwoc-mqtt` to publish to {broker}: {source}. Install it \
+         (`cargo install --path crates/bwoc-mqtt`) or add it to PATH."
+    )]
+    MqttSpawn {
+        broker: String,
+        source: std::io::Error,
+    },
+    #[error("`bwoc-mqtt publish` to {broker} (topic {topic}) failed")]
+    MqttPublish { broker: String, topic: String },
 }
 
 pub fn run(args: SendArgs) -> i32 {
@@ -124,22 +142,32 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     } else {
         registry.agents.iter().find(|a| a.id == lookup_id).cloned()
     };
-    let (resolved_workspace, entry): (PathBuf, AgentEntry) = {
+    // Resolve the recipient to a delivery `Target`. The canonical recipient id
+    // (`recipient_id`) is the envelope's `to` and the signing subject for both
+    // transports — it equals a local/peer `entry.id` and the MQTT route key.
+    let (target, recipient_id): (Target, String) = {
         if let Some(local_entry) = local_hit {
-            (workspace.clone(), local_entry)
+            let inbox = workspace
+                .join(&local_entry.path)
+                .join(".bwoc")
+                .join("inbox.jsonl");
+            (Target::LocalInbox { inbox_path: inbox }, local_entry.id)
         } else {
             // Local miss → consult routes.toml.
             let routes = Routes::load(&workspace)?;
-            match routes.resolve(&lookup_id) {
-                Some(peer_ws) => {
-                    // Found a peer workspace via routes.toml. Load the peer
-                    // registry and locate the recipient there.
-                    let peer_ws = peer_ws.to_path_buf();
-                    let peer_registry = AgentsRegistry::load(&peer_ws)?;
+            match routes.resolve_target(&lookup_id) {
+                Some(RouteTarget::Local(peer_ws)) => {
+                    // Found a local-FS peer workspace. Load its registry and
+                    // locate the recipient there (stale route → NotFound).
+                    let peer_registry = AgentsRegistry::load(peer_ws)?;
                     match peer_registry.agents.into_iter().find(|a| a.id == lookup_id) {
-                        Some(peer_entry) => (peer_ws, peer_entry),
-                        // routes.toml points at a peer that doesn't list this
-                        // agent. Treat as NotFound — the routing table is stale.
+                        Some(peer_entry) => {
+                            let inbox = peer_ws
+                                .join(&peer_entry.path)
+                                .join(".bwoc")
+                                .join("inbox.jsonl");
+                            (Target::LocalInbox { inbox_path: inbox }, peer_entry.id)
+                        }
                         None => {
                             return Err(SendError::NotFound {
                                 name: args.to.clone(),
@@ -148,7 +176,22 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                         }
                     }
                 }
-                // Step 3 — no match in routes.toml either. Existing behaviour.
+                Some(RouteTarget::Mqtt { broker, topic }) => {
+                    // Remote peer over MQTT. The peer's `bwoc-mqtt serve`
+                    // resolves the recipient on its side, so no local registry
+                    // lookup — the `to` id is the route key.
+                    let topic = topic
+                        .clone()
+                        .unwrap_or_else(|| format!("bwoc/{lookup_id}/inbox"));
+                    (
+                        Target::Mqtt {
+                            broker: broker.clone(),
+                            topic,
+                        },
+                        lookup_id.clone(),
+                    )
+                }
+                // No match in routes.toml either. Existing behaviour.
                 None => {
                     return Err(SendError::NotFound {
                         name: args.to.clone(),
@@ -184,20 +227,13 @@ fn send(args: SendArgs) -> Result<(), SendError> {
         }
     };
 
-    // Deliver to the resolved workspace (local or peer). For local hits
-    // resolved_workspace == workspace; for peer hits it is the peer root.
-    let agent_path = resolved_workspace.join(&entry.path);
-    let bwoc_dir = agent_path.join(".bwoc");
-    std::fs::create_dir_all(&bwoc_dir)?;
-    let inbox_path = bwoc_dir.join("inbox.jsonl");
-
     let ts = crate::util::utc_now_iso8601();
     let message_id = generate_message_id(&ts);
     let mut envelope = serde_json::Map::new();
     envelope.insert("ts".into(), ts.clone().into());
     envelope.insert("messageId".into(), message_id.clone().into());
     envelope.insert("from".into(), from.clone().into());
-    envelope.insert("to".into(), entry.id.clone().into());
+    envelope.insert("to".into(), recipient_id.clone().into());
     envelope.insert("message".into(), args.message.clone().into());
     if let Some(rt) = args.reply_to.as_deref() {
         envelope.insert("replyTo".into(), rt.into());
@@ -217,7 +253,7 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                 let nonce = bwoc_signing::new_nonce();
                 let canonical = bwoc_signing::canonical_bytes(
                     &from,
-                    &entry.id,
+                    &recipient_id,
                     &ts,
                     &message_id,
                     &args.message,
@@ -253,34 +289,83 @@ fn send(args: SendArgs) -> Result<(), SendError> {
 
     let line = serde_json::to_string(&serde_json::Value::Object(envelope))?;
 
-    // Append-only — multiple `bwoc send` calls just stack lines. The
-    // agent's daemon (when it reads inbox) is responsible for tracking
-    // which messages have been consumed (probably via a sibling
-    // `inbox.cursor` file once we add daemon-side reads).
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&inbox_path)?;
-    writeln!(f, "{line}")?;
-
-    // Best-effort tmux wakeup — see notify_tmux for the convention and
-    // the silent skip rules. Suppressed for CI/daemons via --no-wakeup
-    // or BWOC_DISABLE_TMUX_WAKEUP (the latter keeps tests quiet).
-    if !args.no_wakeup && std::env::var("BWOC_DISABLE_TMUX_WAKEUP").is_err() {
-        notify_tmux(&entry.id, &from, &message_id, &args.message);
-    }
-
     let reply_suffix = match args.reply_to.as_deref() {
         Some(rt) => format!(", reply to {rt}"),
         None => String::new(),
     };
-    println!();
-    println!(
-        "Sent to {} (from {from}) [id {message_id}{reply_suffix}]: {}",
-        entry.id, args.message,
-    );
-    println!("  Inbox: {} (appended at {ts})", inbox_path.display());
-    println!();
+
+    match target {
+        Target::LocalInbox { inbox_path } => {
+            if let Some(dir) = inbox_path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            // Append-only — multiple `bwoc send` calls just stack lines; the
+            // recipient's daemon tracks which have been consumed.
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&inbox_path)?;
+            writeln!(f, "{line}")?;
+
+            // Best-effort tmux wakeup (local only; a remote peer can't be poked
+            // from here). Suppressed via --no-wakeup / BWOC_DISABLE_TMUX_WAKEUP.
+            if !args.no_wakeup && std::env::var("BWOC_DISABLE_TMUX_WAKEUP").is_err() {
+                notify_tmux(&recipient_id, &from, &message_id, &args.message);
+            }
+
+            println!();
+            println!(
+                "Sent to {recipient_id} (from {from}) [id {message_id}{reply_suffix}]: {}",
+                args.message,
+            );
+            println!("  Inbox: {} (appended at {ts})", inbox_path.display());
+            println!();
+        }
+        Target::Mqtt { broker, topic } => {
+            // Publish via the `bwoc-mqtt` sibling binary (dep-quarantine: the CLI
+            // never links an MQTT client). The peer's `bwoc-mqtt serve` delivers
+            // it into the recipient's inbox on the far side.
+            let bin = bwoc_core::exec::binary_or_name("bwoc-mqtt");
+            // Pipe the envelope via stdin, NOT `--payload`: a command-line arg
+            // would expose the signed envelope in `ps`/process listings and hit
+            // ARG_MAX (E2BIG) for long messages. `bwoc-mqtt publish` reads the
+            // payload from stdin when `--payload` is omitted.
+            let mut child = std::process::Command::new(&bin)
+                .args(["publish", "--broker", &broker, "--topic", &topic])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| SendError::MqttSpawn {
+                    broker: broker.clone(),
+                    source: e,
+                })?;
+            child
+                .stdin
+                .take()
+                .expect("stdin piped above")
+                .write_all(line.as_bytes())
+                .map_err(|e| SendError::MqttSpawn {
+                    broker: broker.clone(),
+                    source: e,
+                })?;
+            let status = child.wait().map_err(|e| SendError::MqttSpawn {
+                broker: broker.clone(),
+                source: e,
+            })?;
+            if !status.success() {
+                return Err(SendError::MqttPublish {
+                    broker: broker.clone(),
+                    topic: topic.clone(),
+                });
+            }
+            println!();
+            println!(
+                "Published to {recipient_id} (from {from}) [id {message_id}{reply_suffix}]: {}",
+                args.message,
+            );
+            println!("  MQTT: {broker} → {topic} (at {ts})");
+            println!();
+        }
+    }
     Ok(())
 }
 
