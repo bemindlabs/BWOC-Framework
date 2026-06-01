@@ -827,7 +827,7 @@ mod tests {
         assert!(SessionMode::Bypass.auto_allows("run_command"));
         assert_eq!(SessionMode::AcceptEdits.wire(), "accept_edits");
 
-        // plan: parses, never auto-allows, and blocks mutating tools only.
+        // plan: parses, never auto-allows, allow-lists read-only tools only.
         assert_eq!(SessionMode::parse("plan"), Some(SessionMode::Plan));
         assert_eq!(SessionMode::Plan.wire(), "plan");
         assert!(!SessionMode::Plan.auto_allows("read_file"));
