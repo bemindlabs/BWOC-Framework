@@ -68,6 +68,49 @@ impl Default for ChatConfig {
     }
 }
 
+/// Session-level permission mode, toggled live via [`ChatInput::SetMode`]. It
+/// only relaxes `ask` decisions into auto-allow — `deny` rules and guardrails
+/// (layer 1) are never affected. Mirrors openclaude's permission modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SessionMode {
+    /// Prompt the frontend for every `ask`-mode tool (the safe default).
+    #[default]
+    Default,
+    /// Auto-approve file write/edit tools; still prompt for everything else.
+    AcceptEdits,
+    /// Auto-approve every `ask`-mode tool (no prompts).
+    Bypass,
+}
+
+impl SessionMode {
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "default" => Some(Self::Default),
+            "accept_edits" | "acceptedits" => Some(Self::AcceptEdits),
+            "bypass" | "full_access" | "dont_ask" => Some(Self::Bypass),
+            _ => None,
+        }
+    }
+
+    /// The wire string echoed in [`ChatEvent::ModeChanged`].
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::AcceptEdits => "accept_edits",
+            Self::Bypass => "bypass",
+        }
+    }
+
+    /// Does this mode auto-allow an `ask`-mode `tool` without prompting?
+    fn auto_allows(self, tool: &str) -> bool {
+        match self {
+            Self::Default => false,
+            Self::AcceptEdits => matches!(tool, "edit_file" | "write_file"),
+            Self::Bypass => true,
+        }
+    }
+}
+
 /// Run an interactive chat session against real stdin/stdout.
 ///
 /// Reads [`ChatInput`] lines from stdin and writes [`ChatEvent`] lines to
@@ -113,6 +156,9 @@ where
     // Cumulative session usage, reported on every TurnEnd.
     let mut prompt_tokens: u64 = 0;
     let mut completion_tokens: u64 = 0;
+
+    // Session permission mode (live-toggled via `SetMode`); only relaxes `ask`.
+    let mut session_mode = SessionMode::Default;
 
     // Sorted so the `Ready.tools` list is stable across runs (the registry is a
     // HashMap → non-deterministic iteration order).
@@ -185,6 +231,30 @@ where
                 history.truncate(1);
                 let _ = std::fs::remove_file(&session_path);
             }
+            ChatInput::SetMode { mode } => match SessionMode::parse(&mode) {
+                Some(m) => {
+                    session_mode = m;
+                    emit(
+                        &mut out,
+                        &ChatEvent::ModeChanged {
+                            mode: m.wire().to_string(),
+                        },
+                    )
+                    .await?;
+                }
+                None => {
+                    emit(
+                        &mut out,
+                        &ChatEvent::Error {
+                            message: format!(
+                                "unknown permission mode `{mode}` \
+                                 (use default | accept_edits | bypass)"
+                            ),
+                        },
+                    )
+                    .await?;
+                }
+            },
             ChatInput::User { text } => {
                 history.push(ChatMessage::user(text));
                 run_turn(
@@ -198,6 +268,7 @@ where
                     &mut out,
                     &mut prompt_tokens,
                     &mut completion_tokens,
+                    session_mode,
                 )
                 .await?;
                 // Persist the conversation after the turn settles (incl. tool
@@ -369,6 +440,7 @@ async fn run_turn<R, W>(
     out: &mut W,
     prompt_tokens: &mut u64,
     completion_tokens: &mut u64,
+    session_mode: SessionMode,
 ) -> HarnessResult<()>
 where
     R: AsyncBufReadExt + Unpin,
@@ -451,7 +523,16 @@ where
         // ordering), then run each call through the pipeline.
         history.push(message);
         for call in &tool_calls {
-            let result = dispatch_call(registry, ctx, &config.policy, call, lines, out).await?;
+            let result = dispatch_call(
+                registry,
+                ctx,
+                &config.policy,
+                call,
+                lines,
+                out,
+                session_mode,
+            )
+            .await?;
             history.push(ChatMessage::tool_result(call.id.clone(), result));
         }
         // Loop: feed the tool results back for the next provider call.
@@ -472,6 +553,7 @@ async fn dispatch_call<R, W>(
     call: &ToolCall,
     lines: &mut Lines<R>,
     out: &mut W,
+    session_mode: SessionMode,
 ) -> HarnessResult<String>
 where
     R: AsyncBufReadExt + Unpin,
@@ -511,21 +593,27 @@ where
             return Ok(msg);
         }
         Mode::Ask => {
-            // Route to the frontend: emit a request, block for the answer.
-            emit(
-                out,
-                &ChatEvent::PermissionRequest {
-                    id: call.id.clone(),
-                    tool: name.clone(),
-                    detail: args.clone(),
-                },
-            )
-            .await?;
-            let allowed = read_permission(lines, &call.id).await?;
-            if !allowed {
-                let msg = format!("DENIED by operator: `{name}` was declined");
-                emit_tool_result(out, call, false, &msg).await?;
-                return Ok(msg);
+            // The session permission mode may auto-approve this `ask` (e.g.
+            // accept_edits for write/edit tools, or bypass for everything) —
+            // skip the prompt. `deny`/guardrails already handled above, so the
+            // mode never widens past `ask`.
+            if !session_mode.auto_allows(name) {
+                // Route to the frontend: emit a request, block for the answer.
+                emit(
+                    out,
+                    &ChatEvent::PermissionRequest {
+                        id: call.id.clone(),
+                        tool: name.clone(),
+                        detail: args.clone(),
+                    },
+                )
+                .await?;
+                let allowed = read_permission(lines, &call.id).await?;
+                if !allowed {
+                    let msg = format!("DENIED by operator: `{name}` was declined");
+                    emit_tool_result(out, call, false, &msg).await?;
+                    return Ok(msg);
+                }
             }
         }
     }
@@ -567,6 +655,9 @@ where
                 return Ok(allow && id == expect_id);
             }
             Ok(ChatInput::Quit) => return Ok(false),
+            // A mode switch arriving mid-prompt is not an answer — ignore it and
+            // keep waiting for the decision (it applies to subsequent calls).
+            Ok(ChatInput::SetMode { .. }) => continue,
             // A User message or a malformed line mid-prompt: fail safe (deny)
             // rather than silently dropping it or executing unapproved.
             _ => return Ok(false),
@@ -642,6 +733,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_mode_parse_and_auto_allow() {
+        assert_eq!(SessionMode::parse("default"), Some(SessionMode::Default));
+        assert_eq!(
+            SessionMode::parse("accept-edits"),
+            Some(SessionMode::AcceptEdits)
+        );
+        assert_eq!(SessionMode::parse("BYPASS"), Some(SessionMode::Bypass));
+        assert_eq!(SessionMode::parse("full_access"), Some(SessionMode::Bypass));
+        assert_eq!(SessionMode::parse("nope"), None);
+
+        // Default prompts for everything.
+        assert!(!SessionMode::Default.auto_allows("edit_file"));
+        // accept_edits auto-allows write/edit only.
+        assert!(SessionMode::AcceptEdits.auto_allows("edit_file"));
+        assert!(SessionMode::AcceptEdits.auto_allows("write_file"));
+        assert!(!SessionMode::AcceptEdits.auto_allows("run_command"));
+        // bypass auto-allows anything.
+        assert!(SessionMode::Bypass.auto_allows("run_command"));
+        assert_eq!(SessionMode::AcceptEdits.wire(), "accept_edits");
+    }
+
     use crate::provider::types::FunctionCall;
     use crate::provider::types::{FunctionDelta, ToolCallDelta};
     use crate::provider::{

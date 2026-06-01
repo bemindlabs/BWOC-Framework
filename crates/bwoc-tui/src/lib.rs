@@ -291,6 +291,9 @@ impl App {
                     .push(format!("⚠ permission: {tool} — {detail}  [{id}]"));
                 self.pending = Some(Pending { id, tool, detail });
             }
+            ChatEvent::ModeChanged { mode } => {
+                self.conversation.push(format!("● permission mode: {mode}"));
+            }
             ChatEvent::TurnEnd {
                 prompt_tokens,
                 completion_tokens,
