@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.1-1] — 2026-06-01 — 2.20.0
+
 ### Added
 
 - **New `bwoc-mqtt` crate — MQTT transport for inter-workspace routing.** `bwoc-mqtt publish` pushes one envelope (the same JSON line `bwoc send` writes) to a broker topic; `bwoc-mqtt serve` subscribes (default `bwoc/+/inbox`) and appends each received envelope to the matching agent's `inbox.jsonl`, resolved via the local `AgentsRegistry` — so MQTT delivery and local-FS delivery produce identical inbox lines. Pure helpers (broker parse, topic derivation, recipient extraction, inbox resolution) are unit-tested; the `rumqttc` I/O is verified end-to-end against a live broker. Dep-quarantined: only `bwoc-mqtt` links an MQTT client.

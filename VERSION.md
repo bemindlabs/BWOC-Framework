@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.19.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.5.0`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.20.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.6.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.6.1-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.1-0) *(2026-06-01 — **2.19.0**; minor — agentic chat TUI (`bwoc chat --tui`, new `bwoc-tui` crate + `bwoc_core::chat_proto`) + `bwoc_run` cross-agent delegation; shell-operator-aware guardrails, provider request timeout, lead→worker budget propagation, audit-plugin env scrub. Prior: `v2026.5.31-4` 2.18.1 — binary-resolution correctness)*
+**Latest release:** [`v2026.6.1-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.1-1) *(2026-06-01 — **2.20.0**; minor — native Anthropic (Claude) provider in `bwoc-harness` (`--backend` factory; key from `ANTHROPIC_API_KEY` or `~/.bwoc/secrets.toml`) + a big `--chat` upgrade (persistent memory, streaming, live permission modes incl. plan, context compaction, `--unrestricted` full-machine file access, whitespace-tolerant `edit_file`); new `bwoc-mqtt` crate + `routes.toml` MQTT transport target for cross-machine federation. Prior: `v2026.6.1-0` 2.19.0 — agentic chat TUI + `bwoc_run`)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-06-01T09:37:56Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-06-01T16:26:32Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
