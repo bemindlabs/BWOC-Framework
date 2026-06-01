@@ -91,10 +91,18 @@ struct Args {
     #[arg(long)]
     mcp: Vec<String>,
 
-    /// Working directory (worktree root).  All file operations are confined
-    /// to this directory.  Defaults to the current directory.
+    /// Working directory (worktree root).  Relative tool paths resolve against
+    /// it, and — unless `--unrestricted` — file operations are confined to it.
+    /// Defaults to the current directory.
     #[arg(long, short = 'd', default_value = ".")]
     workdir: PathBuf,
+
+    /// Lift the workdir path-traversal sandbox: file tools may read/write/edit
+    /// any absolute path on the machine (relative paths still resolve against
+    /// `--workdir`).  The permission policy becomes the only gate — use only
+    /// with an `ask`/operator-reviewed policy (e.g. the interactive `--chat`).
+    #[arg(long)]
+    unrestricted: bool,
 
     /// Model identifier (must be pulled and available at the endpoint).
     #[arg(long, short = 'm', default_value = "gemma4")]
@@ -283,7 +291,11 @@ async fn run() -> HarnessResult<()> {
     let registry = Arc::new(registry);
 
     // ── Context ───────────────────────────────────────────────────────────
-    let ctx = ToolContext::new(&workdir);
+    let ctx = if args.unrestricted {
+        ToolContext::unconfined(&workdir)
+    } else {
+        ToolContext::new(&workdir)
+    };
 
     // ── Permission policy ─────────────────────────────────────────────────
     // Load from .bwoc/harness-policy.toml relative to the workdir.
@@ -519,18 +531,30 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 
     // Tool registry + context, same as run() (no MCP in the chat v1 driver).
     let registry = Arc::new(default_registry());
-    let ctx = ToolContext::new(workdir);
+    let ctx = if args.unrestricted {
+        ToolContext::unconfined(workdir)
+    } else {
+        ToolContext::new(workdir)
+    };
 
-    // Permission policy, same fail-safe load as run().
-    let policy: Policy = HarnessPolicy::load(workdir)
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "[bwoc-harness] warning: could not load harness-policy.toml: {e}. \
-                 Using fail-safe deny-all policy."
-            );
-            HarnessPolicy::default()
-        })
-        .into();
+    // Permission policy. A `.bwoc/harness-policy.toml` wins; otherwise — unlike
+    // the batch path's fail-safe deny — chat defaults to **ask** (reads free,
+    // writes/edits/run prompt the frontend's Allow/Deny), because an interactive
+    // client is always present to answer. This is what makes a file-editing chat
+    // usable out of the box without a hand-written policy.
+    let policy: Policy = if workdir.join(".bwoc").join("harness-policy.toml").is_file() {
+        HarnessPolicy::load(workdir)
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "[bwoc-harness] warning: could not load harness-policy.toml: {e}. \
+                     Using ask-by-default chat policy."
+                );
+                HarnessPolicy::default()
+            })
+            .into()
+    } else {
+        chat_default_policy()
+    };
 
     // Agent id from the manifest when present, else the --agent fallback.
     let agent =
@@ -548,6 +572,25 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
     };
 
     chat_session::run(provider, registry, ctx, config).await
+}
+
+/// The fallback permission policy for `--chat` when the workdir has no
+/// `.bwoc/harness-policy.toml`: read-only tools run freely; everything else
+/// (write/edit/run/git/…) is `ask`, surfaced to the frontend as an Allow/Deny
+/// prompt. Chat always has an interactive client to answer, so `ask` is a safe
+/// default — and the one that makes file editing work without setup.
+fn chat_default_policy() -> Policy {
+    use bwoc_harness::policy::permission::Mode;
+    let read_only = ["read_file", "list_dir", "grep", "memory_read"];
+    let tools = read_only
+        .iter()
+        .map(|t| (t.to_string(), Mode::Allow))
+        .collect();
+    Policy {
+        default_mode: Mode::Ask,
+        tools,
+        patterns: Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------

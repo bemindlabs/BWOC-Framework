@@ -179,4 +179,26 @@ mod tests {
         let result = dispatch(&reg, "read_file", r#"{"path": "../../etc/passwd"}"#, &ctx).await;
         assert!(result.contains("outside the allowed working directory"));
     }
+
+    #[tokio::test]
+    async fn dispatch_unconfined_reads_outside_workdir() {
+        // `--unrestricted` end-to-end at the dispatch layer: an unconfined ctx
+        // reads an absolute path outside the workdir that a confined ctx rejects.
+        let reg = default_registry();
+        let workdir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let probe = outside.path().join("probe.txt");
+        std::fs::write(&probe, "secret-outside").unwrap();
+        let args = format!(r#"{{"path": {:?}}}"#, probe.to_str().unwrap());
+
+        // Confined: rejected.
+        let confined = super::super::ToolContext::new(workdir.path().to_path_buf());
+        let rej = dispatch(&reg, "read_file", &args, &confined).await;
+        assert!(rej.contains("outside the allowed working directory"));
+
+        // Unconfined: the file's contents come back.
+        let unconfined = super::super::ToolContext::unconfined(workdir.path().to_path_buf());
+        let ok = dispatch(&reg, "read_file", &args, &unconfined).await;
+        assert_eq!(ok, "secret-outside");
+    }
 }
