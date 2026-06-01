@@ -119,6 +119,17 @@ fn check_destruction(
         None => return Ok(()),
     };
 
+    // The verbatim command runs via `sh -c`, so a chained segment like the
+    // second half of `true && rm -rf ~` executes too. Apply the first-token
+    // check to EACH shell-operator segment, not just the whole string.
+    for segment in split_shell_segments(cmd) {
+        check_destruction_segment(segment, worktree_root)?;
+    }
+    Ok(())
+}
+
+/// Run the destruction first-token check against a single shell segment.
+fn check_destruction_segment(cmd: &str, worktree_root: &Path) -> Result<(), GuardrailViolation> {
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
     if tokens.is_empty() {
         return Ok(());
@@ -339,6 +350,15 @@ fn check_gate_bypass_run_command(args: &serde_json::Value) -> Result<(), Guardra
         None => return Ok(()),
     };
 
+    // Each shell-operator segment is its own command run via `sh -c`; scan all.
+    for segment in split_shell_segments(cmd) {
+        check_gate_bypass_segment(segment)?;
+    }
+    Ok(())
+}
+
+/// Run the gate-bypass first-token check against a single shell segment.
+fn check_gate_bypass_segment(cmd: &str) -> Result<(), GuardrailViolation> {
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
 
     // ── --no-verify ──────────────────────────────────────────────────────────
@@ -440,6 +460,16 @@ fn check_privilege_escalation(
         None => return Ok(()),
     };
 
+    // A chained segment (e.g. `foo || sudo rm -rf /`) also reaches `sh -c`;
+    // check the first token of every shell-operator segment.
+    for segment in split_shell_segments(cmd) {
+        check_privilege_escalation_segment(segment)?;
+    }
+    Ok(())
+}
+
+/// Run the privilege-escalation first-token check against a single shell segment.
+fn check_privilege_escalation_segment(cmd: &str) -> Result<(), GuardrailViolation> {
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
     let binary = tokens
         .iter()
@@ -519,6 +549,54 @@ fn content_contains_secret(content: &str, pattern: &str) -> bool {
         }
     }
     false
+}
+
+/// Split a shell command string on the unquoted operators `;` `&&` `||` `|`
+/// into individual command segments. Each segment is then subjected to the
+/// SAME first-token guardrail checks, because the verbatim command runs via
+/// `sh -c` (see `sandbox::shell_command`) and every operator-separated segment
+/// executes — so `true && rm -rf ~` must be caught on its second segment.
+///
+/// RESIDUAL GAP (intentional, agreed scope — Mattaññutā): this is a simple
+/// operator split, **not** a POSIX shell parser. It does not understand
+/// quoting (`'a && b'`), backticks / `$(...)` command substitution, `$IFS`
+/// tricks, heredocs, or `eval`. A first token hidden behind any of those can
+/// still slip a destructive command past the first-token checks. Closing that
+/// fully would require a real shell parser, which is out of scope here; the OS
+/// sandbox + path-allowlist (sandbox.rs) remain the backstop.
+fn split_shell_segments(cmd: &str) -> Vec<&str> {
+    let bytes = cmd.as_bytes();
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let two = if i + 1 < bytes.len() {
+            &cmd[i..i + 2]
+        } else {
+            ""
+        };
+        // Two-char operators first (`&&`, `||`), then single-char (`;`, `|`).
+        let op_len = if two == "&&" || two == "||" {
+            2
+        } else if bytes[i] == b';' || bytes[i] == b'|' {
+            1
+        } else {
+            0
+        };
+        if op_len > 0 {
+            segments.push(&cmd[start..i]);
+            i += op_len;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    segments.push(&cmd[start..]);
+    segments
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Resolve a raw path token (from a shell command) relative to the worktree.
@@ -635,6 +713,66 @@ mod tests {
     fn allows_rm_rf_subdir_not_root() {
         // Removing a subdirectory is OK at the guardrail level.
         let cmd = r#"{"command": "rm -rf build/artifacts"}"#;
+        assert!(check("run_command", cmd, &wt()).is_ok());
+    }
+
+    // ── Shell-operator awareness (C3) ────────────────────────────────────────
+    // The verbatim command runs via `sh -c`, so a destructive segment chained
+    // after a benign first token must still be caught.
+
+    #[test]
+    fn blocks_rm_rf_after_and_operator() {
+        // First token is `true`, but `rm -rf .` in the worktree wipes it.
+        let cmd = r#"{"command": "true && rm -rf ."}"#;
+        let err = check("run_command", cmd, &wt()).unwrap_err();
+        assert_eq!(err.rule, "sila_panatatipata");
+    }
+
+    #[test]
+    fn blocks_rm_rf_root_after_pipe() {
+        let cmd = r#"{"command": "echo hi | rm -rf /"}"#;
+        let err = check("run_command", cmd, &wt()).unwrap_err();
+        assert_eq!(err.rule, "sila_panatatipata");
+    }
+
+    #[test]
+    fn blocks_rm_rf_worktree_after_semicolon() {
+        let cmd = r#"{"command": "ls; rm -rf /tmp/agent-oracle/test-worktree"}"#;
+        let err = check("run_command", cmd, &wt()).unwrap_err();
+        assert_eq!(err.rule, "sila_panatatipata");
+    }
+
+    #[test]
+    fn blocks_sudo_after_or_operator() {
+        let cmd = r#"{"command": "false || sudo rm -rf /"}"#;
+        let err = check("run_command", cmd, &wt()).unwrap_err();
+        assert_eq!(err.rule, "bhava_tanha_escalation");
+    }
+
+    #[test]
+    fn blocks_no_verify_in_chained_segment() {
+        let cmd = r#"{"command": "echo start && git commit --no-verify -m x"}"#;
+        let err = check("run_command", cmd, &wt()).unwrap_err();
+        assert_eq!(err.rule, "sila_surameraya");
+    }
+
+    #[test]
+    fn blocks_force_push_in_chained_segment() {
+        let cmd = r#"{"command": "cargo build && git push -f origin main"}"#;
+        let err = check("run_command", cmd, &wt()).unwrap_err();
+        assert_eq!(err.rule, "sila_surameraya");
+    }
+
+    #[test]
+    fn allows_benign_chained_commands() {
+        // A benign chain must still pass — no false positive.
+        let cmd = r#"{"command": "echo a && echo b"}"#;
+        assert!(check("run_command", cmd, &wt()).is_ok());
+    }
+
+    #[test]
+    fn allows_benign_piped_commands() {
+        let cmd = r#"{"command": "cat README.md | grep title; ls -la"}"#;
         assert!(check("run_command", cmd, &wt()).is_ok());
     }
 
