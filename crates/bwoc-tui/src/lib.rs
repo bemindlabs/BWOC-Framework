@@ -250,6 +250,7 @@ impl App {
                 agent,
                 model,
                 backend,
+                ..
             } => {
                 self.conversation.clear();
                 self.conversation
@@ -623,6 +624,7 @@ mod tests {
             agent: "agent-pi".into(),
             model: "llama3".into(),
             backend: "ollama".into(),
+            tools: vec![],
         });
         let s = status_line(&app);
         assert!(s.contains("agent-pi"));

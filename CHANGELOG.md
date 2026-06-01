@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 ### Added
 
 - **The `bwoc-harness --chat` driver now streams token deltas.** Each assistant turn is generated via the provider's streaming API and emitted as `chat_proto` `Token` events as the tokens arrive (followed by the final `Message`), so frontends — `bwoc chat --tui` and the `bwoc-chat` desktop app — render the reply live instead of all-at-once. Tool calls + the interactive permission round-trip are unchanged.
+- **The `chat_proto` `Ready` event now carries the agent's tool names** (`tools: Vec<String>`, `#[serde(default)]` for backward compatibility), so a frontend can show what the agent can do (e.g. a `/tools` command).
 
 ### Fixed
 

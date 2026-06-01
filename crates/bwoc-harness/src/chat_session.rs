@@ -110,12 +110,17 @@ where
     let mut prompt_tokens: u64 = 0;
     let mut completion_tokens: u64 = 0;
 
+    // Sorted so the `Ready.tools` list is stable across runs (the registry is a
+    // HashMap → non-deterministic iteration order).
+    let mut tool_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
+    tool_names.sort();
     emit(
         &mut out,
         &ChatEvent::Ready {
             agent: config.agent.clone(),
             model: config.model.clone(),
             backend: config.backend.clone(),
+            tools: tool_names,
         },
     )
     .await?;
