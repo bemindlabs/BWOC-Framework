@@ -565,20 +565,22 @@ fn content_contains_secret(content: &str, pattern: &str) -> bool {
 /// fully would require a real shell parser, which is out of scope here; the OS
 /// sandbox + path-allowlist (sandbox.rs) remain the backstop.
 fn split_shell_segments(cmd: &str) -> Vec<&str> {
+    // Operators are all ASCII, so compare bytes directly and never index into
+    // the middle of a multibyte char. (A previous version sliced `&cmd[i..i+2]`
+    // to peek, which panics when `i+2` lands mid-char on non-ASCII input — a
+    // crash-on-every-run_command DoS.) Split points are always at single-byte
+    // ASCII operators or 0/len, so every `&cmd[start..i]` is on a char boundary.
     let bytes = cmd.as_bytes();
     let mut segments = Vec::new();
     let mut start = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
-        let two = if i + 1 < bytes.len() {
-            &cmd[i..i + 2]
-        } else {
-            ""
-        };
+        let b = bytes[i];
+        let next = bytes.get(i + 1).copied();
         // Two-char operators first (`&&`, `||`), then single-char (`;`, `|`).
-        let op_len = if two == "&&" || two == "||" {
+        let op_len = if (b == b'&' && next == Some(b'&')) || (b == b'|' && next == Some(b'|')) {
             2
-        } else if bytes[i] == b';' || bytes[i] == b'|' {
+        } else if b == b';' || b == b'|' {
             1
         } else {
             0
@@ -774,6 +776,28 @@ mod tests {
     fn allows_benign_piped_commands() {
         let cmd = r#"{"command": "cat README.md | grep title; ls -la"}"#;
         assert!(check("run_command", cmd, &wt()).is_ok());
+    }
+
+    #[test]
+    fn multibyte_chars_adjacent_to_operators_do_not_panic() {
+        // A multibyte char next to an operator must not crash the byte scanner
+        // (the slice would land mid-char). Benign chain passes…
+        assert!(
+            check(
+                "run_command",
+                r#"{"command": "echo café && echo ดี"}"#,
+                &wt()
+            )
+            .is_ok()
+        );
+        // …and a destructive segment after multibyte text is still caught.
+        let err = check(
+            "run_command",
+            r#"{"command": "echo café && rm -rf ."}"#,
+            &wt(),
+        )
+        .unwrap_err();
+        assert_eq!(err.rule, "sila_panatatipata");
     }
 
     // ── Windows destructive commands (#31) ───────────────────────────────────
