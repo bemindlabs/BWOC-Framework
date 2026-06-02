@@ -9,7 +9,7 @@ private identity key. Added the pattern to the shared template tail.
 ## What changed
 
 - `crates/bwoc-cli/src/init.rs` — `GITIGNORE_REST` gains an `agents/*/.bwoc/agent.key`
-  block (with prose: private key 0600, public key tracked in manifest). Placed in
+  block (with prose: private key 0600 on Unix, public key tracked in manifest). Placed in
   the shared tail so it applies to both the default and `--no-runtime` heads.
 - Two unit tests (`init_default_runtime_and_fleet`, `init_no_runtime_omits_daemon_gitignore`)
   gained an assertion that the key pattern is present. The exact-match assertion in

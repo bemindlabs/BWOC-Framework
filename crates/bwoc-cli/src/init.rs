@@ -269,7 +269,7 @@ const GITIGNORE_REST: &str = "\
 # BWOC agent signing keys (Trust v2 — SIGNING.en.md)
 #
 # `bwoc trust --keygen` writes an ed25519 PRIVATE key to
-# agents/<id>/.bwoc/agent.key (mode 0600). The matching PUBLIC key lives
+# agents/<id>/.bwoc/agent.key (mode 0600 on Unix). The matching PUBLIC key lives
 # in the agent's manifest (trust.signingPublicKey) and IS tracked. NEVER
 # commit the private key — it is the agent's identity (Sila — Adinnaadana).
 agents/*/.bwoc/agent.key

@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
-- **`bwoc init` now gitignores the Trust v2 agent signing private key.** The `.gitignore` template gained `agents/*/.bwoc/agent.key` — the ed25519 **private** key `bwoc trust --keygen` writes (mode `0600`). User workspaces track `agents/` (only daemon ephemerals were ignored), so without this pattern a `git add -A` after keygen would commit an agent's private identity key. The matching **public** key (manifest `trust.signingPublicKey`) stays tracked, as intended. The pattern lives in the shared tail, so it applies under `--no-runtime` too. (Sīla — Adinnādāna.)
+- **`bwoc init` now gitignores the Trust v2 agent signing private key.** The `.gitignore` template gained `agents/*/.bwoc/agent.key` — the ed25519 **private** key `bwoc trust --keygen` writes (mode `0600` on Unix; non-Unix sets no perm restriction). User workspaces track `agents/` (only daemon ephemerals were ignored), so without this pattern a `git add -A` after keygen would commit an agent's private identity key. The matching **public** key (manifest `trust.signingPublicKey`) stays tracked, as intended. The pattern lives in the shared tail, so it applies under `--no-runtime` too. (Sīla — Adinnādāna.)
 
 ## [v2026.6.1-1] — 2026-06-01 — 2.20.0
 
