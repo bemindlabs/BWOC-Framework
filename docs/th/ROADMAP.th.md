@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ที่ active:** Phase 3 — *วยะ + Interconnect* — **DoD บรรลุแล้ว** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya ship ครบ 2026-05-23) รายการ Phase 3 ที่เหลือ (Trust v2, Tier 2 memory) เลื่อนออก อยู่นอก DoD DoD ของ Phase 1 v2.0 และ Phase 2 ก็บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
+**Phase ที่ active:** Phase 3 — *วยะ + Interconnect* — **DoD บรรลุแล้ว** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya ship ครบ 2026-05-23) Trust v2 signed envelopes ship ไปแล้ว (crate `bwoc-signing`); รายการ Phase 3 ที่ยังเลื่อนออกคือ reference implementation ของ Tier 2 memory DoD ของ Phase 1 v2.0 และ Phase 2 ก็บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -117,11 +117,11 @@ nav_order: 6
 | Worktree lifecycle — Track B | util `git_worktree` แบบ shell-out (ไม่มี `git2`/`gitoxide`) hook `task-claimed` ของ Saṅgha ยิง `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>` ตอน claim; ไม่ขยาย `Task` struct — ตำแหน่ง worktree ตาม path convention `<worktreeBase>/<agentId>/<taskId>` ให้ cleanup deterministic ไม่ต้อง parse log |
 | `bwoc retire` full vaya | retire จบ agent อย่างสะอาด: worktree cleanup (worktree ใต้ `<worktreeBase>/<agentId>/` ลบผ่าน git util), branch release (`agent/<agentId>/*` — `-d`, escalate `-D` พร้อมแจ้งชื่อที่ force), interconnect deregister (`Routes::remove_agent_routes` ตัด route ที่ `agent` ชี้ไปยัง retiree ออกจาก `routes.toml`) idempotent; เคารพ file-mode flags; `--json` ขยายแบบ additive ปิดครึ่ง **วยะ** ของ DoD |
 
-### ที่เหลือสำหรับ Phase 3 — เลื่อน (อยู่นอก DoD)
+### Phase 3 — นอก DoD (Trust v2 ship แล้ว; Tier 2 เลื่อน)
 
-DoD ครบทั้งสองครึ่งแล้ว: *ประสานงานโดยไม่มีศูนย์กลาง* (interconnect routing) และ *ชีวิต agent จบอย่างสะอาด* (`bwoc retire` full vaya) — ship ทั้งคู่ข้างบน เหตุผลการเรียงลำดับ + การตัดสินใจ design ของ worktree-lifecycle / routing อยู่ใน [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md) ที่เหลือเลื่อนออกจาก DoD โดยตั้งใจ:
+DoD ครบทั้งสองครึ่งแล้ว: *ประสานงานโดยไม่มีศูนย์กลาง* (interconnect routing) และ *ชีวิต agent จบอย่างสะอาด* (`bwoc retire` full vaya) — ship ทั้งคู่ข้างบน เหตุผลการเรียงลำดับ + การตัดสินใจ design ของ worktree-lifecycle / routing อยู่ใน [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md) Trust v2 ship ไปแล้ว (bullet แรก); รายการเดียวที่ยังเลื่อนออกจาก DoD คือ reference implementation ของ Tier 2 memory:
 
-- **Trust v2** — signed envelopes / identity proof, warn-by-default refusal mode, cross-workspace messaging gate บน telemetry ของ v1; ส่วน cross-workspace สร้างบน routing layer
+- **Trust v2 — ship แล้ว** signed envelopes / identity proof ผ่าน crate `bwoc-signing` ที่ dep-quarantine (ed25519 บน canonical bytes ตาม RFC 8785 โดยผูก `nonce` / `ts` / `messageId` ไว้ในลายเซ็นเพื่อกัน replay) wire เข้า `bwoc send --from` (sign) และ trust gate ของ `bwoc-agent` (verify) `bwoc trust --keygen` สร้าง keypair ต่อ agent (private key `agents/<id>/.bwoc/agent.key`, `0600` บน Unix, gitignored; public key อยู่ใน manifest `trust.signingPublicKey`) มี mode `warn` / `enforce` ให้เลือก + escape hatch `BWOC_SIGNING_MODE=off` แบบ legacy ส่วน cross-workspace: gate resolve public key จาก manifest ของ peer ผ่าน routing layer และ **บังคับ** ให้ cross-workspace write ต้องมีลายเซ็นที่ valid (ถ้าขาดจะ refuse เป็น `unsigned_cross_workspace` ทั้งสอง mode) Spec: [`docs/en/SIGNING.en.md`](../en/SIGNING.en.md)
 - **Tier 2 memory** — สองชิ้นแยกกัน: *interface* ของ backend ที่ pluggable (อยู่ใน Phase 2 ที่เหลือด้วย) กับ *reference implementation* Tier 1 file-based memory เสร็จแล้ว
 
 ---
