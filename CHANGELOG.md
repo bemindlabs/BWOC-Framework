@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-backend validation workflow (`.github/workflows/cross-backend.yml`).** Proves Samānattatā by running one agent profile through the full uppāda → ṭhiti arc (`bwoc init` → `bwoc new` → `bwoc check` → `bwoc run`) on a non-Claude backend. v1 runs the **ollama** backend in full (no API key — installs Ollama + a tiny model, `qwen2.5:0.5b`, in the runner). The four vendor backends (claude / codex / kimi / antigravity) are scaffolded as a gated matrix that activates only when the `RUN_VENDOR_BACKENDS` repo variable is `true` and the matching `*_API_KEY` secrets exist. Runs on push-to-main + nightly + manual dispatch — not on every PR (the fast gate in `ci.yml` stays the PR gate), since model pulls are slow. Closes the "Cross-backend validation" item under Phase 2 "Remaining for ship" for the ollama backend.
+
 ### Security
 
 - **`bwoc init` now gitignores the Trust v2 agent signing private key.** The `.gitignore` template gained `agents/*/.bwoc/agent.key` — the ed25519 **private** key `bwoc trust --keygen` writes (mode `0600` on Unix; non-Unix sets no perm restriction). User workspaces track `agents/` (only daemon ephemerals were ignored), so without this pattern a `git add -A` after keygen would commit an agent's private identity key. The matching **public** key (manifest `trust.signingPublicKey`) stays tracked, as intended. The pattern lives in the shared tail, so it applies under `--no-runtime` too. (Sīla — Adinnādāna.)

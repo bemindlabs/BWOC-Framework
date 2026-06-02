@@ -1,0 +1,152 @@
+name: Cross-backend validation
+
+# Proves Samānattatā — the same agent profile runs end-to-end (uppāda →
+# ṭhiti) on a non-Claude backend. This is the "Cross-backend validation"
+# item under Phase 2 "Remaining for ship" in docs/en/ROADMAP.en.md.
+#
+# Scope (v1): the **ollama** backend runs in full here — it needs no API key,
+# so a self-hosted Ollama + a tiny model is installed in the runner. The four
+# vendor backends (claude / codex / kimi / antigravity) need real API-key
+# secrets the runner does not hold by default; their job is scaffolded but
+# gated OFF (see `vendor-backends` below) until an operator provisions the
+# secrets and flips the `RUN_VENDOR_BACKENDS` repo variable to `true`.
+#
+# Not a required PR gate: model pulls are slow and network-dependent, so this
+# runs on push-to-main + nightly + manual dispatch rather than on every PR
+# (the fast fmt/clippy/build/test gate in ci.yml stays the PR gate).
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 03:17 UTC nightly — off-peak, avoids the top-of-hour runner crush.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Small, fast model — enough to prove the agent loop talks to the backend.
+  OLLAMA_MODEL: "qwen2.5:0.5b"
+
+jobs:
+  # ── ollama: full uppāda → ṭhiti, no secrets required ──────────────────────
+  ollama:
+    name: ollama (uppāda → ṭhiti)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install + start Ollama, pull the test model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          # Wait for the API to answer before pulling.
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:11434/api/version >/dev/null 2>&1; then
+              echo "ollama up after ${i}s"; break
+            fi
+            sleep 1
+          done
+          ollama pull "$OLLAMA_MODEL"
+
+      - name: Build bwoc + the harness sibling
+        run: |
+          cargo build --bins --verbose
+          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
+      - name: uppāda — init a workspace and incarnate an ollama agent
+        run: |
+          WS="$RUNNER_TEMP/ws"
+          mkdir -p "$WS"
+          bwoc init "$WS"
+          cd "$WS"
+          bwoc new ci-ollama \
+            --backend ollama \
+            --role "CI cross-backend smoke agent" \
+            --primary-model "$OLLAMA_MODEL" \
+            --lint-cmd true --format-cmd true --test-cmd true --build-cmd true \
+            --target "$WS/agents/agent-ci-ollama"
+          bwoc list
+
+      - name: check — backend-neutrality audit must pass
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          bwoc check agents/agent-ci-ollama
+
+      - name: ṭhiti — run a headless task against the ollama backend
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          bwoc run agent-ci-ollama \
+            --task "Reply with exactly one word: pong" \
+            --timeout 180 \
+            --json | tee "$RUNNER_TEMP/run.json"
+          code=$(jq -r '.exit_code' "$RUNNER_TEMP/run.json")
+          out=$(jq -r '.output' "$RUNNER_TEMP/run.json")
+          test "$code" = "0" || { echo "agent exit_code=$code"; exit 1; }
+          test -n "$out" || { echo "agent produced no output"; exit 1; }
+          echo "ollama backend produced: $out"
+
+      - name: Ollama log (on failure)
+        if: failure()
+        run: cat "$RUNNER_TEMP/ollama.log" || true
+
+  # ── vendor backends: scaffolded, gated OFF until secrets exist ────────────
+  # Flip repo variable RUN_VENDOR_BACKENDS=true and add the matching
+  # *_API_KEY secrets to activate. Each backend execs the same uppāda → ṭhiti
+  # flow as the ollama job, only with --backend <vendor> and the vendor's key
+  # in the environment. Kept as one matrix so adding a backend is one row.
+  vendor-backends:
+    name: ${{ matrix.backend }} (uppāda → ṭhiti)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ vars.RUN_VENDOR_BACKENDS == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: claude
+            key_env: ANTHROPIC_API_KEY
+            model: claude-sonnet-4-6
+          - backend: codex
+            key_env: OPENAI_API_KEY
+            model: gpt-4o-mini
+          - backend: kimi
+            key_env: MOONSHOT_API_KEY
+            model: kimi-k2
+          - backend: antigravity
+            key_env: GEMINI_API_KEY
+            model: gemini-2.0-flash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build bwoc + the harness sibling
+        run: |
+          cargo build --bins
+          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+      - name: uppāda → ṭhiti against ${{ matrix.backend }}
+        env:
+          VENDOR_KEY: ${{ secrets[matrix.key_env] }}
+        run: |
+          if [ -z "$VENDOR_KEY" ]; then
+            echo "::warning::no ${{ matrix.key_env }} secret — skipping ${{ matrix.backend }}"
+            exit 0
+          fi
+          export ${{ matrix.key_env }}="$VENDOR_KEY"
+          WS="$RUNNER_TEMP/ws"
+          mkdir -p "$WS"; bwoc init "$WS"; cd "$WS"
+          bwoc new "ci-${{ matrix.backend }}" \
+            --backend "${{ matrix.backend }}" \
+            --role "CI cross-backend smoke agent" \
+            --primary-model "${{ matrix.model }}" \
+            --lint-cmd true --format-cmd true --test-cmd true --build-cmd true \
+            --target "$WS/agents/agent-ci-${{ matrix.backend }}"
+          bwoc check "agents/agent-ci-${{ matrix.backend }}"
+          bwoc run "agent-ci-${{ matrix.backend }}" \
+            --task "Reply with exactly one word: pong" \
+            --timeout 180 --json | tee "$RUNNER_TEMP/run.json"
+          test "$(jq -r '.exit_code' "$RUNNER_TEMP/run.json")" = "0"
