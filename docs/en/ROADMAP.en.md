@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Remaining Phase 3 items (Trust v2, Tier 2 memory) are deferred, off the DoD. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Trust v2 signed envelopes have since shipped (the `bwoc-signing` crate); the remaining deferred Phase 3 item is the Tier 2 memory reference implementation. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -117,11 +117,11 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 | Worktree lifecycle — Track B | `git_worktree` shell-out util (no `git2`/`gitoxide`). A `task-claimed` Saṅgha hook fires `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>` on claim; the `Task` struct is not extended — worktree location follows the `<worktreeBase>/<agentId>/<taskId>` path convention so cleanup is deterministic without parsing any agent log. |
 | `bwoc retire` full vaya | Retire now ends an agent cleanly: worktree cleanup (worktrees under `<worktreeBase>/<agentId>/` removed via the git util), branch release (`agent/<agentId>/*` — `-d`, escalating to `-D` with the forced names surfaced), interconnect deregister (`Routes::remove_agent_routes` strips routes whose `agent` targets the retiree from `routes.toml`). Idempotent; respects the file-mode flags; `--json` extended additively. Completes the **vaya** DoD half. |
 
-### Remaining for Phase 3 — deferred (off the DoD)
+### Phase 3 — beyond the DoD (Trust v2 shipped; Tier 2 deferred)
 
-Both halves of the DoD are met: *coordinate without a central authority* (interconnect routing) and *an agent's life ends cleanly* (`bwoc retire` full vaya) — both shipped above. The sequencing rationale and the worktree-lifecycle / routing design decisions are in [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md). What remains is deliberately off the DoD:
+Both halves of the DoD are met: *coordinate without a central authority* (interconnect routing) and *an agent's life ends cleanly* (`bwoc retire` full vaya) — both shipped above. The sequencing rationale and the worktree-lifecycle / routing design decisions are in [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md). Trust v2 has since shipped (first bullet); the only item still deferred off the DoD is the Tier 2 memory reference implementation:
 
-- **Trust v2** — signed envelopes / identity proof, warn-by-default refusal mode, cross-workspace messaging. Gated on v1 telemetry; the cross-workspace part builds on the routing layer.
+- **Trust v2 — shipped.** Signed envelopes / identity proof via the dep-quarantined `bwoc-signing` crate (ed25519 over RFC 8785 canonical bytes, with `nonce` / `ts` / `messageId` bound into the signature for replay rejection), wired into `bwoc send --from` (sign) and the `bwoc-agent` trust gate (verify). `bwoc trust --keygen` provisions the per-agent keypair (private key `agents/<id>/.bwoc/agent.key`, `0600` on Unix, gitignored; public key in manifest `trust.signingPublicKey`). Configurable `warn` / `enforce` signature-refusal modes, plus a `BWOC_SIGNING_MODE=off` legacy escape hatch. Cross-workspace identity: the gate resolves a peer sender's manifest public key via the routing layer and **requires** a valid signature for any cross-workspace write (a missing one is refused as `unsigned_cross_workspace` in both modes). Spec: [`docs/en/SIGNING.en.md`](SIGNING.en.md).
 - **Tier 2 memory** — two distinct pieces: the pluggable backend *interface* (also listed under Phase 2 remaining) and a *reference implementation*. Tier 1 file-based memory is complete.
 
 ---
