@@ -31,6 +31,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Small, fast model — enough to prove the agent loop talks to the backend.
   OLLAMA_MODEL: "qwen2.5:0.5b"
+  # Pinned Ollama version (reproducibility). Bump deliberately.
+  OLLAMA_VERSION: "0.30.0"
 
 jobs:
   # ── ollama: full uppāda → ṭhiti, no secrets required ──────────────────────
@@ -44,15 +46,26 @@ jobs:
 
       - name: Install + start Ollama, pull the test model
         run: |
+          # Pinned via OLLAMA_VERSION for reproducibility. The official
+          # installer is still piped to sh — an accepted tradeoff for an
+          # ephemeral, secret-less CI runner; the pin keeps runs deterministic.
           curl -fsSL https://ollama.com/install.sh | sh
           ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
-          # Wait for the API to answer before pulling.
+          # Wait for the API to answer, then fail fast with the serve log if it
+          # never came up — otherwise `ollama pull` errors with a confusing
+          # message that masks the real cause (serve never started).
+          ready=""
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:11434/api/version >/dev/null 2>&1; then
-              echo "ollama up after ${i}s"; break
+              echo "ollama up after ${i}s"; ready=1; break
             fi
             sleep 1
           done
+          if [ -z "$ready" ]; then
+            echo "::error::Ollama API did not become ready within 30s"
+            cat "$RUNNER_TEMP/ollama.log" || true
+            exit 1
+          fi
           ollama pull "$OLLAMA_MODEL"
 
       - name: Build bwoc + the harness sibling
