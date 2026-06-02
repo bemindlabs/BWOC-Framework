@@ -1,0 +1,110 @@
+name: Cross-backend validation
+
+# Proves Samānattatā — the same agent profile runs end-to-end (uppāda →
+# ṭhiti) on a non-Claude backend. This is the "Cross-backend validation"
+# item under Phase 2 "Remaining for ship" in docs/en/ROADMAP.en.md.
+#
+# Scope (v1): the **ollama** backend only — it needs no API key, so a
+# self-hosted Ollama + a tiny model is installed in the runner. The four
+# vendor backends (claude / codex / kimi / antigravity) need real API-key
+# secrets the runner does not hold; wiring them is a deliberate follow-up
+# (it must avoid exposing the whole `secrets` context to the step — likely
+# one job per backend, each referencing only its own secret) once an
+# operator provisions the keys.
+#
+# Not a required PR gate: model pulls are slow and network-dependent, so this
+# runs on push-to-main + nightly + manual dispatch rather than on every PR
+# (the fast fmt/clippy/build/test gate in ci.yml stays the PR gate).
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 03:17 UTC nightly — off-peak, avoids the top-of-hour runner crush.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Small, fast model — enough to prove the agent loop talks to the backend.
+  OLLAMA_MODEL: "qwen2.5:0.5b"
+  # Pinned Ollama version (reproducibility). Bump deliberately.
+  OLLAMA_VERSION: "0.30.0"
+
+jobs:
+  # ── ollama: full uppāda → ṭhiti, no secrets required ──────────────────────
+  ollama:
+    name: ollama (uppāda → ṭhiti)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install + start Ollama, pull the test model
+        run: |
+          # Pinned via OLLAMA_VERSION for reproducibility. The official
+          # installer is still piped to sh — an accepted tradeoff for an
+          # ephemeral, secret-less CI runner; the pin keeps runs deterministic.
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          # Wait for the API to answer, then fail fast with the serve log if it
+          # never came up — otherwise `ollama pull` errors with a confusing
+          # message that masks the real cause (serve never started).
+          ready=""
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:11434/api/version >/dev/null 2>&1; then
+              echo "ollama up after ${i}s"; ready=1; break
+            fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::Ollama API did not become ready within 30s"
+            cat "$RUNNER_TEMP/ollama.log" || true
+            exit 1
+          fi
+          ollama pull "$OLLAMA_MODEL"
+
+      - name: Build bwoc + the harness sibling
+        run: |
+          cargo build --bins --verbose
+          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
+      - name: uppāda — init a workspace and incarnate an ollama agent
+        run: |
+          WS="$RUNNER_TEMP/ws"
+          mkdir -p "$WS"
+          bwoc init "$WS"
+          cd "$WS"
+          bwoc new ci-ollama \
+            --backend ollama \
+            --role "CI cross-backend smoke agent" \
+            --primary-model "$OLLAMA_MODEL" \
+            --lint-cmd true --format-cmd true --test-cmd true --build-cmd true \
+            --target "$WS/agents/agent-ci-ollama"
+          bwoc list
+
+      - name: check — backend-neutrality audit must pass
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          bwoc check agents/agent-ci-ollama
+
+      - name: ṭhiti — run a headless task against the ollama backend
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          bwoc run agent-ci-ollama \
+            --task "Reply with exactly one word: pong" \
+            --timeout 180 \
+            --json | tee "$RUNNER_TEMP/run.json"
+          code=$(jq -r '.exit_code' "$RUNNER_TEMP/run.json")
+          out=$(jq -r '.output' "$RUNNER_TEMP/run.json")
+          test "$code" = "0" || { echo "agent exit_code=$code"; exit 1; }
+          test -n "$out" || { echo "agent produced no output"; exit 1; }
+          echo "ollama backend produced: $out"
+
+      - name: Ollama log (on failure)
+        if: failure()
+        run: cat "$RUNNER_TEMP/ollama.log" || true
