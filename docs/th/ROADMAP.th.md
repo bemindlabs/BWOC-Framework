@@ -117,7 +117,7 @@ nav_order: 6
 | Worktree lifecycle — Track B | util `git_worktree` แบบ shell-out (ไม่มี `git2`/`gitoxide`) hook `task-claimed` ของ Saṅgha ยิง `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>` ตอน claim; ไม่ขยาย `Task` struct — ตำแหน่ง worktree ตาม path convention `<worktreeBase>/<agentId>/<taskId>` ให้ cleanup deterministic ไม่ต้อง parse log |
 | `bwoc retire` full vaya | retire จบ agent อย่างสะอาด: worktree cleanup (worktree ใต้ `<worktreeBase>/<agentId>/` ลบผ่าน git util), branch release (`agent/<agentId>/*` — `-d`, escalate `-D` พร้อมแจ้งชื่อที่ force), interconnect deregister (`Routes::remove_agent_routes` ตัด route ที่ `agent` ชี้ไปยัง retiree ออกจาก `routes.toml`) idempotent; เคารพ file-mode flags; `--json` ขยายแบบ additive ปิดครึ่ง **วยะ** ของ DoD |
 
-### ที่เหลือสำหรับ Phase 3 — เลื่อน (อยู่นอก DoD)
+### Phase 3 — นอก DoD (Trust v2 ship แล้ว; Tier 2 เลื่อน)
 
 DoD ครบทั้งสองครึ่งแล้ว: *ประสานงานโดยไม่มีศูนย์กลาง* (interconnect routing) และ *ชีวิต agent จบอย่างสะอาด* (`bwoc retire` full vaya) — ship ทั้งคู่ข้างบน เหตุผลการเรียงลำดับ + การตัดสินใจ design ของ worktree-lifecycle / routing อยู่ใน [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md) Trust v2 ship ไปแล้ว (bullet แรก); รายการเดียวที่ยังเลื่อนออกจาก DoD คือ reference implementation ของ Tier 2 memory:
 

@@ -117,7 +117,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 | Worktree lifecycle — Track B | `git_worktree` shell-out util (no `git2`/`gitoxide`). A `task-claimed` Saṅgha hook fires `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>` on claim; the `Task` struct is not extended — worktree location follows the `<worktreeBase>/<agentId>/<taskId>` path convention so cleanup is deterministic without parsing any agent log. |
 | `bwoc retire` full vaya | Retire now ends an agent cleanly: worktree cleanup (worktrees under `<worktreeBase>/<agentId>/` removed via the git util), branch release (`agent/<agentId>/*` — `-d`, escalating to `-D` with the forced names surfaced), interconnect deregister (`Routes::remove_agent_routes` strips routes whose `agent` targets the retiree from `routes.toml`). Idempotent; respects the file-mode flags; `--json` extended additively. Completes the **vaya** DoD half. |
 
-### Remaining for Phase 3 — deferred (off the DoD)
+### Phase 3 — beyond the DoD (Trust v2 shipped; Tier 2 deferred)
 
 Both halves of the DoD are met: *coordinate without a central authority* (interconnect routing) and *an agent's life ends cleanly* (`bwoc retire` full vaya) — both shipped above. The sequencing rationale and the worktree-lifecycle / routing design decisions are in [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md). Trust v2 has since shipped (first bullet); the only item still deferred off the DoD is the Tier 2 memory reference implementation:
 
