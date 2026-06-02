@@ -266,6 +266,14 @@ const GITIGNORE_REST: &str = "\
 .bwoc/secrets/gcloud-sa.json
 .bwoc/secrets/gws-token.json
 
+# BWOC agent signing keys (Trust v2 — SIGNING.en.md)
+#
+# `bwoc trust --keygen` writes an ed25519 PRIVATE key to
+# agents/<id>/.bwoc/agent.key (mode 0600). The matching PUBLIC key lives
+# in the agent's manifest (trust.signingPublicKey) and IS tracked. NEVER
+# commit the private key — it is the agent's identity (Sila — Adinnaadana).
+agents/*/.bwoc/agent.key
+
 # Figma export cache (BWOC-64)
 #
 # The figma/figma-rest plugin renders Figma nodes into a content-addressable
@@ -490,6 +498,8 @@ mod tests {
         let gitignore = fs::read_to_string(dir.join(".gitignore")).unwrap();
         assert!(gitignore.contains("agents/*/.bwoc/agent.pid"));
         assert!(gitignore.contains("daemon ephemerals"));
+        // Trust v2 private signing key must never be committed (Adinnaadana).
+        assert!(gitignore.contains("agents/*/.bwoc/agent.key"));
         // Default head + shared tail reproduce the historical full template.
         assert_eq!(
             gitignore,
@@ -515,6 +525,9 @@ mod tests {
         assert!(gitignore.contains("runtime provisioning skipped"));
         // Shared tail (secret store etc.) is still present.
         assert!(gitignore.contains(".bwoc/secrets/"));
+        // The private signing key is a secret in the shared tail — ignored
+        // even when the daemon block is omitted.
+        assert!(gitignore.contains("agents/*/.bwoc/agent.key"));
         // Workspace stays valid.
         assert!(dir.join(".bwoc/workspace.toml").exists());
         assert!(dir.join(".bwoc/agents.toml").exists());
