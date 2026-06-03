@@ -65,6 +65,15 @@ pub fn mine(
     }
     let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
     let vectors = embedder.embed(&texts)?;
+    // Fail loudly if the embedder returned the wrong count — otherwise `zip`
+    // below would silently drop chunks or vectors and report success.
+    if vectors.len() != texts.len() {
+        return Err(EmbedError::CountMismatch {
+            asked: texts.len(),
+            got: vectors.len(),
+        }
+        .into());
+    }
 
     let mut sources = std::collections::HashSet::new();
     let mut stored = 0;

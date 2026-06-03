@@ -63,11 +63,18 @@ impl HttpEmbedder {
         model: impl Into<String>,
         api_key: Option<String>,
     ) -> Self {
+        // Bound each embed call so a hung endpoint can't stall `mine`/`search`
+        // forever. 60s covers a large batch; fall back to the default client if
+        // the builder somehow fails.
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new());
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             model: model.into(),
             api_key,
-            client: reqwest::blocking::Client::new(),
+            client,
         }
     }
 }

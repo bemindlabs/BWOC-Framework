@@ -137,11 +137,14 @@ fn flush(cur: &mut String, chunks: &mut Vec<String>) {
 fn hard_split(s: &str, cap: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
+    let mut count = 0; // track char count incrementally — avoid O(n²) re-counting.
     for ch in s.chars() {
-        if buf.chars().count() == cap {
+        if count == cap {
             out.push(std::mem::take(&mut buf));
+            count = 0;
         }
         buf.push(ch);
+        count += 1;
     }
     if !buf.is_empty() {
         out.push(buf);

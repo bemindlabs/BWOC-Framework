@@ -16,6 +16,9 @@ pub enum StoreError {
     /// Any underlying SQLite failure.
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    /// Filesystem failure preparing the store path (e.g. parent dir creation).
+    #[error("store I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// One stored memory plus, in query results, its similarity to the query.
@@ -44,7 +47,11 @@ impl Store {
     /// Open (creating if needed) the store at `path`, ensuring the schema.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            // Skip the empty parent of a bare filename (`create_dir_all("")`
+            // errors); surface real creation failures instead of masking them.
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
         }
         let conn = Connection::open(path)?;
         Self::init(conn)
@@ -156,8 +163,14 @@ fn vec_to_blob(v: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Unpack little-endian bytes back into an `f32` vector.
+/// Unpack little-endian bytes back into an `f32` vector. A length that is not a
+/// multiple of 4 means a corrupt/partial BLOB — return an empty vector so the
+/// row scores `NaN` (dimension mismatch) and is skipped, rather than silently
+/// decoding into a wrong-length vector that could mis-score.
 fn blob_to_vec(b: &[u8]) -> Vec<f32> {
+    if b.len() % 4 != 0 {
+        return Vec::new();
+    }
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
@@ -191,6 +204,13 @@ mod tests {
     fn blob_roundtrips() {
         let v = vec![1.0f32, -2.5, 3.25, 0.0];
         assert_eq!(blob_to_vec(&vec_to_blob(&v)), v);
+    }
+
+    #[test]
+    fn blob_non_multiple_of_four_is_empty() {
+        // 5 bytes → would otherwise decode to one f32 + dropped trailing byte,
+        // a wrong-length vector that could coincidentally match. Reject it.
+        assert!(blob_to_vec(&[0u8, 0, 0, 0, 7]).is_empty());
     }
 
     #[test]
