@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 ### Added
 
 - **Cross-backend validation workflow (`.github/workflows/cross-backend.yml`).** Proves Samānattatā by running one agent profile through the full uppāda → ṭhiti arc (`bwoc init` → `bwoc new` → `bwoc check` → `bwoc run`) on the **ollama** backend — the one needing no API key (installs Ollama + a tiny model, `qwen2.5:0.5b`, in the runner). Runs on push-to-main + nightly + manual dispatch — not on every PR (the fast gate in `ci.yml` stays the PR gate), since model pulls are slow. Closes the "Cross-backend validation" item under Phase 2 "Remaining for ship" for the ollama backend; the four vendor backends (claude / codex / kimi / antigravity) are a documented follow-up, gated on operator-provisioned API-key secrets.
+- **Cross-backend validation now also covers the `claude` backend** (it runs through `bwoc-harness` like ollama). A second job in `cross-backend.yml` runs the same uppāda → ṭhiti arc with `--backend claude` (Sonnet), gated on an `ANTHROPIC_API_KEY` secret — the job no-ops with a warning when the secret is absent (free until an operator provisions it), and the secret is referenced statically (no dynamic indexing) to satisfy CodeQL. The remaining vendor backends (codex / kimi / antigravity) are vendor-CLI execs, not harness/API-key, so their CI coverage needs the vendor CLI installed + authenticated — a separate follow-up.
 
 ### Security
 

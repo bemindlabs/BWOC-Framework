@@ -4,13 +4,18 @@ name: Cross-backend validation
 # ṭhiti) on a non-Claude backend. This is the "Cross-backend validation"
 # item under Phase 2 "Remaining for ship" in docs/en/ROADMAP.en.md.
 #
-# Scope (v1): the **ollama** backend only — it needs no API key, so a
-# self-hosted Ollama + a tiny model is installed in the runner. The four
-# vendor backends (claude / codex / kimi / antigravity) need real API-key
-# secrets the runner does not hold; wiring them is a deliberate follow-up
-# (it must avoid exposing the whole `secrets` context to the step — likely
-# one job per backend, each referencing only its own secret) once an
-# operator provisions the keys.
+# Backends covered here run through the self-hosted `bwoc-harness`:
+#   - **ollama** — no API key; installs Ollama + a tiny model in the runner.
+#   - **claude** — runs through the harness too (Anthropic Messages API). Gated
+#     on an `ANTHROPIC_API_KEY` secret: the job no-ops with a warning when the
+#     secret is absent, so it is free until an operator provisions the key.
+#     Referenced statically (`secrets.ANTHROPIC_API_KEY`) — never dynamic
+#     indexing — to keep CodeQL's secret-exposure rule satisfied.
+#
+# The other vendor backends (codex / kimi / antigravity) are **vendor-CLI**
+# backends — `bwoc run` execs the vendor's own CLI, not the harness — so CI
+# coverage needs that CLI installed and authenticated in the runner, a
+# separate (harder) follow-up, not an API-key job like the two above.
 #
 # Not a required PR gate: model pulls are slow and network-dependent, so this
 # runs on push-to-main + nightly + manual dispatch rather than on every PR
@@ -108,3 +113,48 @@ jobs:
       - name: Ollama log (on failure)
         if: failure()
         run: cat "$RUNNER_TEMP/ollama.log" || true
+
+  # ── claude: same arc through the harness, gated on the Anthropic key ───────
+  # No-ops (exit 0 with a warning) when ANTHROPIC_API_KEY is absent, so this is
+  # free until an operator adds the secret. Sonnet, not Opus, on the paid API.
+  claude:
+    name: claude (uppāda → ṭhiti)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build bwoc + the harness sibling
+        run: |
+          cargo build --bins --verbose
+          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
+      - name: uppāda → ṭhiti against the claude backend
+        env:
+          # Static single-secret reference (CodeQL-safe — no dynamic indexing).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: "claude-sonnet-4-6"
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::no ANTHROPIC_API_KEY secret — skipping the claude backend"
+            exit 0
+          fi
+          WS="$RUNNER_TEMP/ws"
+          mkdir -p "$WS"
+          bwoc init "$WS"
+          cd "$WS"
+          bwoc new ci-claude \
+            --backend claude \
+            --role "CI cross-backend smoke agent" \
+            --primary-model "$CLAUDE_MODEL" \
+            --lint-cmd true --format-cmd true --test-cmd true --build-cmd true \
+            --target "$WS/agents/agent-ci-claude"
+          bwoc check agents/agent-ci-claude
+          bwoc run agent-ci-claude \
+            --task "Reply with exactly one word: pong" \
+            --timeout 180 \
+            --json | tee "$RUNNER_TEMP/run.json"
+          test "$(jq -r '.exit_code' "$RUNNER_TEMP/run.json")" = "0" \
+            || { echo "claude agent failed"; exit 1; }
+          echo "claude backend produced: $(jq -r '.output' "$RUNNER_TEMP/run.json")"
