@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **New `bwoc-deep-memory` crate — the Tier 2 deep-memory reference implementation.** A self-contained binary that speaks the backend-neutral `bwoc-core::deep_memory` contract (`wake-up` | `search "<q>"` | `mine <path> --mode <m>`) over a local SQLite store with **semantic (embedding) recall**, so a fresh `bwoc new --deep-memory-cmd bwoc-deep-memory …` works out of the box instead of pointing at a tool the operator must supply. `mine` walks session files (`md/txt/jsonl/json/log`, 5 MiB/file cap), chunks at paragraph boundaries, embeds via any OpenAI-compatible `POST /v1/embeddings` endpoint (Ollama/llama.cpp/vLLM/OpenAI), and stores `f32` vectors as BLOBs; `search` ranks by **brute-force cosine** in Rust (no native-extension build risk — a `sqlite-vec` k-NN backend can swap in later behind the unchanged `Store` seam); `wake-up` emits the most-recent memories for session-start injection. The `Embedder` trait is injectable — a deterministic `StubEmbedder` keeps the verb logic unit-tested offline, mirroring the existing `RunnerFn` seam. Dep-quarantine preserved: `rusqlite` (`bundled`) + `reqwest` live only in this crate, never `bwoc-core`. **Closes the last item deferred off the Phase 3 DoD** (the interface — `bwoc-core::deep_memory` + the `bwoc memory wake-up|search|mine` CLI surface — already shipped; this is the reference backend it dispatches to). Config: `--db`/`--embed-url`/`--embed-model` flags > `BWOC_DEEP_MEMORY_DB`/`BWOC_EMBED_URL`/`BWOC_EMBED_MODEL`/`BWOC_EMBED_API_KEY` env > defaults.
+
 ## [v2026.6.3-0] — 2026-06-03 — 2.20.1
 
 ### Added

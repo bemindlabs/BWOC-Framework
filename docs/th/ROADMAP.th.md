@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ที่ active:** Phase 3 — *วยะ + Interconnect* — **DoD บรรลุแล้ว** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya ship ครบ 2026-05-23) Trust v2 signed envelopes ship ไปแล้ว (crate `bwoc-signing`); รายการ Phase 3 ที่ยังเลื่อนออกคือ reference implementation ของ Tier 2 memory DoD ของ Phase 1 v2.0 และ Phase 2 ก็บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
+**Phase ที่ active:** Phase 3 — *วยะ + Interconnect* — **DoD บรรลุแล้ว** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya ship ครบ 2026-05-23) Trust v2 signed envelopes ship ไปแล้ว (crate `bwoc-signing`) และ reference implementation ของ Tier 2 memory (`bwoc-deep-memory`) ก็ ship แล้วเช่นกัน — ปิดรายการ Phase 3 ที่ยังเลื่อนออกรายการสุดท้าย DoD ของ Phase 1 v2.0 และ Phase 2 ก็บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -93,7 +93,7 @@ nav_order: 6
 - **Cross-backend validation** — uppāda + ṭhiti เต็มกับ 5 backend CLI ใน CI (พิสูจน์ Samānattatā); `bwoc-harness` (ollama) คือตัวที่ห้า
 - **Code signing** — Apple notarization + Windows Authenticode สำหรับ release artifact (ต้องการ user-cert authorization)
 - **Build Linux musl** — `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` ship แล้ว; musl (Alpine / distroless) เพิ่มได้เมื่อมีความต้องการ
-- **เครื่องมือ memory mining และ interface Tier 2 backend ที่ pluggable**
+- ~~**เครื่องมือ memory mining และ interface Tier 2 backend ที่ pluggable**~~ — **ship แล้ว** ทั้ง interface (`bwoc-core::deep_memory`) และ reference implementation (`bwoc-deep-memory`); ดู "Ship นอก Phase 3" ด้านล่าง
 - **Daemon path สำหรับ Windows ผ่าน named-pipe** — แทน stub cfg-gated ด้วย implementation Windows จริง
 
 ---
@@ -119,10 +119,10 @@ nav_order: 6
 
 ### Phase 3 — นอก DoD (Trust v2 ship แล้ว; Tier 2 เลื่อน)
 
-DoD ครบทั้งสองครึ่งแล้ว: *ประสานงานโดยไม่มีศูนย์กลาง* (interconnect routing) และ *ชีวิต agent จบอย่างสะอาด* (`bwoc retire` full vaya) — ship ทั้งคู่ข้างบน เหตุผลการเรียงลำดับ + การตัดสินใจ design ของ worktree-lifecycle / routing อยู่ใน [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md) Trust v2 ship ไปแล้ว (bullet แรก); รายการเดียวที่ยังเลื่อนออกจาก DoD คือ reference implementation ของ Tier 2 memory:
+DoD ครบทั้งสองครึ่งแล้ว: *ประสานงานโดยไม่มีศูนย์กลาง* (interconnect routing) และ *ชีวิต agent จบอย่างสะอาด* (`bwoc retire` full vaya) — ship ทั้งคู่ข้างบน เหตุผลการเรียงลำดับ + การตัดสินใจ design ของ worktree-lifecycle / routing อยู่ใน [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md) Trust v2 ship ไปแล้ว (bullet แรก) และ reference implementation ของ Tier 2 memory ก็ ship แล้วเช่นกัน (`bwoc-deep-memory` ดู "Ship นอก Phase 3") — **ไม่มีอะไรเหลือเลื่อนออกจาก DoD ของ Phase 3 แล้ว**:
 
 - **Trust v2 — ship แล้ว** signed envelopes / identity proof ผ่าน crate `bwoc-signing` ที่ dep-quarantine (ed25519 บน canonical bytes ตาม RFC 8785 โดยผูก `nonce` / `ts` / `messageId` ไว้ในลายเซ็นเพื่อกัน replay) wire เข้า `bwoc send --from` (sign) และ trust gate ของ `bwoc-agent` (verify) `bwoc trust --keygen` สร้าง keypair ต่อ agent (private key `agents/<id>/.bwoc/agent.key`, `0600` บน Unix, gitignored; public key อยู่ใน manifest `trust.signingPublicKey`) มี mode `warn` / `enforce` ให้เลือก + escape hatch `BWOC_SIGNING_MODE=off` แบบ legacy ส่วน cross-workspace: gate resolve public key จาก manifest ของ peer ผ่าน routing layer และ **บังคับ** ให้ cross-workspace write ต้องมีลายเซ็นที่ valid (ถ้าขาดจะ refuse เป็น `unsigned_cross_workspace` ทั้งสอง mode) Spec: [`docs/en/SIGNING.en.md`](../en/SIGNING.en.md)
-- **Tier 2 memory** — สองชิ้นแยกกัน: *interface* ของ backend ที่ pluggable (อยู่ใน Phase 2 ที่เหลือด้วย) กับ *reference implementation* Tier 1 file-based memory เสร็จแล้ว
+- **Tier 2 memory — ship แล้ว** สองชิ้น: *interface* ของ backend ที่ pluggable (`bwoc-core::deep_memory` — trait `DeepMemory` + `ShellDeepMemory` shell-out + factory, wire เข้า `bwoc memory wake-up|search|mine` และ `bwoc new --deep-memory-cmd`) กับ *reference implementation* (`bwoc-deep-memory` ดู "Ship นอก Phase 3") Tier 1 file-based memory เสร็จอยู่ก่อนแล้ว
 
 ---
 
@@ -133,6 +133,7 @@ DoD ครบทั้งสองครึ่งแล้ว: *ประสา�
 | รายการ | หมายเหตุ |
 |---|---|
 | `bwoc-harness` — self-hosted agentic runtime | OpenAI-compatible model-API client + agentic loop; safety pipeline (guardrails → permission → sandbox); Unix-first v1 (build ได้บน Windows แต่ยังไม่ผ่านการทดสอบ) เพิ่ม **ollama** เป็น backend ตัวที่ห้าที่ประกาศ: `bwoc spawn --backend ollama` เปิด `bwoc-harness` กับ endpoint Ollama / OpenAI-compatible ใด ๆ 8 components ระดับ production Spec: [`docs/th/HARNESS.th.md`](HARNESS.th.md) |
+| `bwoc-deep-memory` — reference implementation ของ Tier 2 | binary ที่ self-contained พูด contract ของ `bwoc-core::deep_memory` (`wake-up` \| `search` \| `mine`) บน SQLite store ในเครื่อง พร้อม **semantic recall ด้วย embedding** v1 จัดอันดับด้วย cosine แบบ brute-force บน vector ที่เก็บเป็น `f32` BLOB (ไม่มีความเสี่ยง build native-extension; การ swap ไป `sqlite-vec` เลื่อนไว้หลัง seam ของ store ที่ไม่เปลี่ยน) embedding มาจาก endpoint `/v1/embeddings` ที่ OpenAI-compatible ใด ๆ หลัง trait `Embedder` ที่ inject ได้ (impl HTTP + `StubEmbedder` ที่ deterministic สำหรับ test แบบ offline) wire ผ่าน `deepMemoryCmd` ปิดรายการ Phase 3 ที่เลื่อนออกรายการสุดท้าย |
 
 ---
 
