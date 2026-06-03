@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.20.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `2.20.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.6.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.6.1-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.1-1) *(2026-06-01 — **2.20.0**; minor — native Anthropic (Claude) provider in `bwoc-harness` (`--backend` factory; key from `ANTHROPIC_API_KEY` or `~/.bwoc/secrets.toml`) + a big `--chat` upgrade (persistent memory, streaming, live permission modes incl. plan, context compaction, `--unrestricted` full-machine file access, whitespace-tolerant `edit_file`); new `bwoc-mqtt` crate + `routes.toml` MQTT transport target for cross-machine federation. Prior: `v2026.6.1-0` 2.19.0 — agentic chat TUI + `bwoc_run`)*
+**Latest release:** [`v2026.6.3-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.3-0) *(2026-06-03 — **2.20.1**; patch — security: `bwoc init` now gitignores the Trust v2 agent signing private key (`agents/*/.bwoc/agent.key`) so a user workspace never commits an agent's ed25519 private identity; plus a `cross-backend.yml` CI workflow proving Samānattatā end-to-end (uppāda → ṭhiti) on ollama (full) + claude (key-gated, Sonnet), and a roadmap doc-sync marking Trust v2 shipped. Prior: `v2026.6.1-1` 2.20.0 — native Anthropic provider in `bwoc-harness` + big `--chat` upgrade + `bwoc-mqtt` crate)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-06-01T16:26:32Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-06-03T00:53:26Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
