@@ -47,6 +47,11 @@ pub struct NewArgs {
     pub sessions_path: Option<String>,
     pub deep_memory_cmd: Option<String>,
     pub worktree_base: Option<String>,
+    /// Derive the agent bound to a base project (the "debase" relationship):
+    /// sets `worktreeBase` to `<project>/worktrees` and seeds the build/test/
+    /// lint/format gates from the project's detected stack, unless those are
+    /// given explicitly. The path is canonicalized to an absolute path.
+    pub project: Option<PathBuf>,
     /// Persona scope: 1-line "this agent does X". Fills `{{scopeDescription}}`.
     pub scope: Option<String>,
     /// Persona anti-scope: 1-line "this agent does NOT do Y". Fills `{{outOfScope}}`.
@@ -165,6 +170,8 @@ pub enum NewError {
         agent_id: String,
         workspace: PathBuf,
     },
+    #[error("--project path does not exist or is not a directory: {0}")]
+    ProjectNotFound(PathBuf),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error("manifest error: {0}")]
@@ -405,7 +412,7 @@ fn find_workspace_root_from(start: &Path) -> Option<PathBuf> {
 /// defaults for. Detected by looking for a manifest file in `cwd` or any
 /// ancestor up to (and including) a `.bwoc/workspace.toml` boundary.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum ProjectKind {
+pub(crate) enum ProjectKind {
     Rust,
     Node,
     Python,
@@ -416,7 +423,7 @@ enum ProjectKind {
 impl ProjectKind {
     /// User-facing name for the detected stack. Stays English (terms are
     /// the stack's own brand names — "Rust", "Node", etc.).
-    fn display_name(self) -> &'static str {
+    pub(crate) fn display_name(self) -> &'static str {
         match self {
             ProjectKind::Rust => "Rust",
             ProjectKind::Node => "Node",
@@ -429,7 +436,7 @@ impl ProjectKind {
 
 /// Detect the project kind from `start`, walking up to either a manifest
 /// hit or the enclosing workspace root (we don't escape the workspace).
-fn detect_project_kind(start: &Path) -> ProjectKind {
+pub(crate) fn detect_project_kind(start: &Path) -> ProjectKind {
     let mut cur = start.to_path_buf();
     loop {
         if cur.join("Cargo.toml").is_file() {
@@ -454,10 +461,44 @@ fn detect_project_kind(start: &Path) -> ProjectKind {
     }
 }
 
+/// Apply `--project` derivation onto `args`: canonicalize the project path,
+/// default `worktree_base` to its `<project>/worktrees` binding, and seed any
+/// unset build gate from the project's detected stack. Explicit flags win.
+fn apply_project_defaults(args: &mut NewArgs, project: &Path) -> Result<(), NewError> {
+    let abs = std::fs::canonicalize(project)
+        .map_err(|_| NewError::ProjectNotFound(project.to_path_buf()))?;
+    if !abs.is_dir() {
+        return Err(NewError::ProjectNotFound(project.to_path_buf()));
+    }
+
+    if args.worktree_base.is_none() {
+        args.worktree_base = Some(
+            crate::debase::worktree_base_for_project(&abs)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+
+    let kind = detect_project_kind(&abs);
+    for (field, slot) in [
+        ("lintCmd", &mut args.lint_cmd),
+        ("formatCmd", &mut args.format_cmd),
+        ("testCmd", &mut args.test_cmd),
+        ("buildCmd", &mut args.build_cmd),
+    ] {
+        if slot.is_none() {
+            if let Some(cmd) = suggested_cmd(kind, field) {
+                *slot = Some(cmd.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Suggested default command for one of the build-related manifest fields.
 /// Returns `None` if the stack is `Unknown` or the field has no sensible
 /// default for this stack (e.g. Python has no canonical `build`).
-fn suggested_cmd(kind: ProjectKind, field: &str) -> Option<&'static str> {
+pub(crate) fn suggested_cmd(kind: ProjectKind, field: &str) -> Option<&'static str> {
     match (kind, field) {
         (ProjectKind::Rust, "lintCmd") => Some("cargo clippy --all-targets -- -D warnings"),
         (ProjectKind::Rust, "formatCmd") => Some("cargo fmt --all -- --check"),
@@ -487,9 +528,17 @@ fn suggested_cmd(kind: ProjectKind, field: &str) -> Option<&'static str> {
 /// Fill in any missing required fields by interactive prompt (TTY) or fail
 /// fast with the list of missing fields (non-TTY).
 fn resolve(
-    args: NewArgs,
+    mut args: NewArgs,
     bundle: &fluent_bundle::FluentBundle<fluent_bundle::FluentResource>,
 ) -> Result<Resolved, NewError> {
+    // `--project` derives the agent bound to a base project (the "debase"
+    // relationship): default `worktreeBase` to `<project>/worktrees` and seed
+    // the four build gates from the project's detected stack — but only fill
+    // what the user did NOT pass explicitly (explicit flags always win).
+    if let Some(project) = args.project.clone() {
+        apply_project_defaults(&mut args, &project)?;
+    }
+
     let template = resolve_template(args.template.as_deref())?;
     let target = args
         .target
@@ -1254,6 +1303,7 @@ mod tests {
             sessions_path: None,
             deep_memory_cmd: None,
             worktree_base: None,
+            project: None,
             scope: None,
             out_of_scope: None,
             primary_capability: None,
@@ -1457,6 +1507,7 @@ mod tests {
             sessions_path: None,
             deep_memory_cmd: None,
             worktree_base: Some("/tmp".to_string()),
+            project: None,
             scope: Some("writes and maintains documentation".to_string()),
             out_of_scope: Some("does not write production code".to_string()),
             primary_capability: Some(

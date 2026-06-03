@@ -100,9 +100,14 @@ A workspace is **complete** iff all of:
 | `bwoc init [path]` | Create workspace structure at `path` (default: current directory). Idempotent — refuses to overwrite an existing `workspace.toml`. | Phase 1 v2.0 |
 | `bwoc workspace info [path]` | Print resolved workspace path, config, and agent count. | Phase 1 v2.0 |
 | `bwoc workspace validate [path]` | Run all validation rules; print findings; exit 0 if complete, 2 if incomplete. | Phase 1 v2.0 |
-| `bwoc new <name>` | Incarnate a new agent into the workspace (uses `agents_dir`). | Phase 1 v2.0 |
+| `bwoc new <name>` | Incarnate a new agent into the workspace (uses `agents_dir`). `--project <path>` derives the agent bound to a base project (sets `worktreeBase` + seeds build gates). | Phase 1 v2.0 |
 | `bwoc list` | List agents registered in the workspace (from `agents.toml`). | Phase 1 v2.0 |
 | `bwoc spawn <name>` | Validate workspace, then exec the agent's backend. | Phase 1 v2.0 |
+| `bwoc debase list \| show <agent> \| set <agent> <project>` | Manage the agent → base-project binding carried by `worktreeBase`. `list`/`show` are read-only (`--json`); `set` is a gated write that points an agent's `worktreeBase` at `<project>/worktrees`. | Phase 3 |
+
+### The debase binding
+
+An agent's **base project** — the project it derives from and builds — is recorded functionally by its manifest `worktreeBase`: an agent bound to project `P` carries `worktreeBase = <P>/worktrees`, and the framework places task worktrees at `<worktreeBase>/<agentId>/<taskId>`. `bwoc debase` makes that relationship a first-class, inspectable surface, and `bwoc new --project <path>` establishes it at incarnation time (also seeding the build/test/lint/format gates from the project's detected stack). An agent with no `worktreeBase` is **unbound** — it operates *on* targets rather than building a project (e.g. monitoring / audit agents).
 
 ### Workspace Resolution
 

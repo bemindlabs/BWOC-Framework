@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`bwoc debase` — manage the agent → base-project binding as a first-class surface.** An agent's *base project* (the one it derives from and builds) is carried functionally by its manifest `worktreeBase`: an agent bound to project `P` has `worktreeBase = <P>/worktrees`, and the framework places task worktrees at `<worktreeBase>/<agentId>/<taskId>`. The new command makes that relationship inspectable and editable: `bwoc debase list` (every agent → base project + buildable stack, `--json`), `bwoc debase show <agent>` (one agent's binding detail incl. the worktree pattern), and `bwoc debase set <agent> <project>` (a gated write — TTY confirm unless `--yes` — that points the agent's `worktreeBase` at `<project>/worktrees`; idempotent, canonicalizes the path, refuses a non-existent project). Unbound agents (no `worktreeBase` — e.g. monitoring/audit agents that operate *on* targets) show as `—`.
+- **`bwoc new --project <path>` — derive an agent already bound to a project.** Incarnates the agent and, in one step, sets `worktreeBase` to `<project>/worktrees` and seeds the build/test/lint/format gates from the project's detected stack (Rust/Node/Python/Go). Explicit gate flags (`--lint-cmd` etc.) and `--worktree-base` always win over the derived defaults. Pairs with `bwoc debase` for the lifecycle of the binding.
+
 ## [v2026.6.3-0] — 2026-06-03 — 2.20.1
 
 ### Added
