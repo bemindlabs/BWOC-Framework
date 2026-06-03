@@ -1,0 +1,23 @@
+[package]
+name = "bwoc-deep-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tier 2 deep-memory reference implementation for BWOC — speaks the wake-up | search | mine contract over a local SQLite store with semantic (embedding) recall."
+
+[[bin]]
+name = "bwoc-deep-memory"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# HTTP client for the OpenAI-compatible `/v1/embeddings` endpoint. `blocking`
+# keeps the binary synchronous — no tokio runtime for a single embed call.
+reqwest = { workspace = true, features = ["blocking"] }
+# Local vector store. `bundled` compiles SQLite from source (cross-platform CI).
+rusqlite = { workspace = true }
