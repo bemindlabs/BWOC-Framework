@@ -112,7 +112,7 @@ workspace **ครบถ้วน** เมื่อ:
 
 ### link ของ remote-control session
 
-**remote-control session** ทำให้ session แบบ interactive ของ agent ถูกควบคุมจากที่อื่นได้ — เช่น Claude Code Remote Control ที่เข้าถึงจาก claude.ai หรือมือถือ `bwoc remote` เป็น **bookkeeping ฝั่ง bwoc แบบ backend-neutral** บนความสัมพันธ์นั้น: บันทึกต่อ agent ว่า link กับ control session ภายนอกตัวไหน (ไม่ได้เปิดหรือ proxy session เอง) แต่ละ link เก็บที่ `.bwoc/remote/<agentId>.json` — `{ agentId, backend, kind, sessionRef, url?, linkedAt, note? }` — ตามแบบ convention ของ marker `.bwoc/sessions/` ฟิลด์ `kind` ระบุกลไก: `claude-remote-control` เป็นตัวแรก และ backend ใดก็ประกาศ kind ของตัวเองได้ (Samānattatā — Claude เป็น implementation แรก ไม่ใช่กรณีพิเศษ) `link` default `backend` จาก manifest ของ agent และ `kind` เป็น `claude-remote-control`
+**remote-control session** ทำให้ session แบบ interactive ของ agent ถูกควบคุมจากที่อื่นได้ — เช่น Claude Code Remote Control ที่เข้าถึงจาก claude.ai หรือมือถือ `bwoc remote` เป็น **bookkeeping ฝั่ง bwoc แบบ backend-neutral** บนความสัมพันธ์นั้น: บันทึกต่อ agent ว่า link กับ control session ภายนอกตัวไหน (ไม่ได้เปิดหรือ proxy session เอง) แต่ละ link เก็บที่ `.bwoc/remote/<agentId>.json` — `{ agentId, backend, kind, sessionRef, url?, linkedAt, note? }` — ตามแบบ convention ของ marker `.bwoc/sessions/` ฟิลด์ `kind` ระบุกลไก: `claude-remote-control` เป็นตัวแรก และ backend ใดก็ประกาศ kind ของตัวเองได้ (Samānattatā — Claude เป็น implementation แรก ไม่ใช่กรณีพิเศษ) `link` default `backend` จาก workspace registry (`agents.toml` ซึ่งบันทึกไว้เสมอ) และ `kind` เป็น `claude-remote-control`
 
 ### การ Resolve Workspace
 

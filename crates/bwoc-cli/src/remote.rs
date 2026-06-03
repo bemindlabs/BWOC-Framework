@@ -18,15 +18,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use bwoc_core::manifest::Manifest;
 use bwoc_core::workspace::{AgentEntry, AgentsRegistry};
 
 use crate::util::utc_now_iso8601;
 
 /// Default remote-control mechanism when `--kind` is not given.
 pub(crate) const DEFAULT_KIND: &str = "claude-remote-control";
-/// Backend assumed when an agent's manifest declares none.
-const DEFAULT_BACKEND: &str = "claude";
 
 /// One agent → remote-control session link. Serialized to
 /// `.bwoc/remote/<agentId>.json`.
@@ -160,14 +157,10 @@ fn link(
         return 2;
     };
 
-    // Default the backend from the agent's manifest when not given.
-    let backend = backend.unwrap_or_else(|| {
-        let manifest_path = workspace.join(&entry.path).join("config.manifest.json");
-        Manifest::load_from_path(&manifest_path)
-            .ok()
-            .and_then(|m| m.backend)
-            .unwrap_or_else(|| DEFAULT_BACKEND.to_string())
-    });
+    // Default the backend from the workspace registry (agents.toml), which
+    // always records it — the manifest's `backend` field is optional and
+    // usually absent, so reading it would mis-default non-Claude agents.
+    let backend = backend.unwrap_or_else(|| entry.backend.clone());
 
     let record = RemoteLink {
         agent_id: entry.id.clone(),
@@ -264,19 +257,24 @@ fn list(workspace: &Path, registry: &AgentsRegistry, json: bool) -> i32 {
 // ---------------------------------------------------------------------------
 
 fn status(workspace: &Path, registry: &AgentsRegistry, agent: &str, json: bool) -> i32 {
-    let id = canonical_id(agent);
+    // Reject unknown agents up-front (exit 2). Orphaned-link inspection is
+    // `bwoc remote list`'s job — `status` speaks only about registered agents.
+    let Some(entry) = find_agent(registry, agent) else {
+        eprintln!(
+            "bwoc remote: no agent named '{agent}' in {}. Try `bwoc list`.",
+            workspace.display()
+        );
+        return 2;
+    };
+    let id = entry.id.clone();
     let Some(link) = read_link(workspace, &id) else {
+        // Agent exists but is unlinked → not an error (exit 0).
         if json {
             println!("{}", serde_json::json!({ "agent": id, "linked": false }));
         } else {
             eprintln!("bwoc remote: {id} has no remote-control link.");
         }
-        // Distinguish "agent exists but unlinked" (0) from "no such agent" (2).
-        return if find_agent(registry, agent).is_some() {
-            0
-        } else {
-            2
-        };
+        return 0;
     };
 
     if json {

@@ -9,7 +9,7 @@ bookkeeping surface (option: CLI manager, not a daemon/RC-API integration).
 ## What changed
 
 - **New module `crates/bwoc-cli/src/remote.rs`** + `Commands::Remote` wiring in `main.rs`:
-  - `bwoc remote link <agent> <session-ref> [--backend --kind --url --note]` — write `.bwoc/remote/<agentId>.json`. `--backend` defaults from the agent manifest; `--kind` defaults to `claude-remote-control`.
+  - `bwoc remote link <agent> <session-ref> [--backend --kind --url --note]` — write `.bwoc/remote/<agentId>.json`. `--backend` defaults from the workspace registry (`agents.toml` `AgentEntry.backend`, always present); `--kind` defaults to `claude-remote-control`.
   - `bwoc remote list` — table of all links (`--json`); flags orphaned links (agent no longer registered).
   - `bwoc remote status <agent>` — one link's detail (`--json`); exit 2 if the agent doesn't exist, 0 if it exists but is unlinked.
   - `bwoc remote unlink <agent>` — gated remove (TTY confirm unless `--yes`); tolerant of an already-removed/orphaned link.
@@ -26,6 +26,7 @@ bookkeeping surface (option: CLI manager, not a daemon/RC-API integration).
 ## Bugs surfaced and fixed
 
 - First test run flaked: the `tmp_ws()` helper built its temp dir from `pid + ISO-8601 timestamp` (second resolution), so two parallel tests starting in the same second shared a directory and one's `remove_dir_all` raced the other. Fixed with a per-call `AtomicU32` counter; re-ran the suite 3× clean.
+- **Review (Copilot) — 2 real issues fixed before merge:** (1) `link` defaulted `backend` by reading the manifest's `backend` field, which is optional and usually *absent* — so non-Claude agents would silently record `claude`. Switched to the registry's `AgentEntry.backend` (always present). (2) `status` returned 0 for an orphaned link whose agent was no longer registered, violating the documented "exit 2 if the agent doesn't exist" contract. Now resolves the agent up-front (unknown → exit 2); orphan inspection stays in `list`. Docs (EN/TH/CHANGELOG) corrected to say `--backend` defaults from `agents.toml`, not the manifest.
 
 ## Status / deferred
 
