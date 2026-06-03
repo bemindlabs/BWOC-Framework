@@ -17,6 +17,7 @@ mod check;
 mod completion;
 mod council;
 mod dashboard;
+mod debase;
 mod deep_memory_cmd;
 mod doc_cmd;
 mod doctor;
@@ -113,6 +114,8 @@ enum Commands {
     Doctor(DoctorArgs),
     /// Retire an agent — remove it from the workspace's registry (vaya).
     Retire(RetireArgs),
+    /// Manage the agent → base-project binding (worktreeBase): list / show / set.
+    Debase(DebaseArgs),
     /// Show per-agent health + identity snapshot (read-only).
     Status(StatusArgs),
     /// Topic-specific help (backends, workspace, manifest, arc, getting-started).
@@ -1891,6 +1894,11 @@ struct NewArgs {
     /// Base directory for worktrees (truly optional). Default: /tmp
     #[arg(long)]
     worktree_base: Option<String>,
+    /// Derive the agent bound to a base project (the "debase" relationship):
+    /// sets worktreeBase to <project>/worktrees and seeds the build/test/lint/
+    /// format gates from the project's detected stack. Explicit gate flags win.
+    #[arg(long)]
+    project: Option<PathBuf>,
     /// Persona scope: one-line "this agent does X". Fills `{{scopeDescription}}`.
     #[arg(long)]
     scope: Option<String>,
@@ -1935,11 +1943,69 @@ impl NewArgs {
             test_cmd: self.test_cmd,
             build_cmd: self.build_cmd,
             worktree_base: self.worktree_base,
+            project: self.project,
             scope: self.scope,
             out_of_scope: self.out_of_scope,
             primary_capability: self.primary_capability,
             mindsets: self.mindsets,
             skills: self.skills,
+            json: self.json,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+struct DebaseArgs {
+    #[command(subcommand)]
+    command: DebaseCommand,
+    /// Workspace root. Default: --workspace > BWOC_WORKSPACE > ancestor walk.
+    #[arg(long = "workspace", global = true)]
+    workspace: Option<PathBuf>,
+    /// Emit JSON instead of the human-readable output.
+    #[arg(long, global = true)]
+    json: bool,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum DebaseCommand {
+    /// List every agent → its base project + buildable stack.
+    List,
+    /// Show one agent's binding detail.
+    Show {
+        /// Agent name (with or without the `agent-` prefix).
+        agent: String,
+    },
+    /// (Re)bind an agent to a base project — sets worktreeBase to
+    /// `<project>/worktrees`.
+    Set {
+        /// Agent name (with or without the `agent-` prefix).
+        agent: String,
+        /// Base project directory (must exist; canonicalized to absolute).
+        project: PathBuf,
+        /// Skip the TTY confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+impl DebaseArgs {
+    fn into_runtime(self) -> debase::DebaseArgs {
+        let action = match self.command {
+            DebaseCommand::List => debase::DebaseAction::List,
+            DebaseCommand::Show { agent } => debase::DebaseAction::Show { agent },
+            DebaseCommand::Set {
+                agent,
+                project,
+                yes,
+            } => debase::DebaseAction::Set {
+                agent,
+                project,
+                yes,
+            },
+        };
+        debase::DebaseArgs {
+            action,
+            workspace: self.workspace,
             json: self.json,
         }
     }
@@ -2061,6 +2127,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Retire(args)) => {
             let code = retire::run(args.into());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Debase(args)) => {
+            let code = debase::run(args.into_runtime());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Status(args)) => {
