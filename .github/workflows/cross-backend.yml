@@ -155,6 +155,8 @@ jobs:
             --task "Reply with exactly one word: pong" \
             --timeout 180 \
             --json | tee "$RUNNER_TEMP/run.json"
-          test "$(jq -r '.exit_code' "$RUNNER_TEMP/run.json")" = "0" \
-            || { echo "claude agent failed"; exit 1; }
-          echo "claude backend produced: $(jq -r '.output' "$RUNNER_TEMP/run.json")"
+          code=$(jq -r '.exit_code' "$RUNNER_TEMP/run.json")
+          out=$(jq -r '.output' "$RUNNER_TEMP/run.json")
+          test "$code" = "0" || { echo "claude agent exit_code=$code"; exit 1; }
+          test -n "$out" || { echo "claude agent produced no output"; exit 1; }
+          echo "claude backend produced: $out"
