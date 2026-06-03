@@ -39,6 +39,7 @@ mod okr;
 mod peer;
 mod ping;
 mod plugin;
+mod remote;
 mod retire;
 mod run;
 mod sangha;
@@ -116,6 +117,8 @@ enum Commands {
     Retire(RetireArgs),
     /// Manage the agent → base-project binding (worktreeBase): list / show / set.
     Debase(DebaseArgs),
+    /// Link agents to remote-control sessions and manage them: link / list / status / unlink.
+    Remote(RemoteArgs),
     /// Show per-agent health + identity snapshot (read-only).
     Status(StatusArgs),
     /// Topic-specific help (backends, workspace, manifest, arc, getting-started).
@@ -2012,6 +2015,86 @@ impl DebaseArgs {
 }
 
 #[derive(Args, Debug)]
+struct RemoteArgs {
+    #[command(subcommand)]
+    command: RemoteCommand,
+    /// Workspace root. Default: --workspace > BWOC_WORKSPACE > ancestor walk.
+    #[arg(long = "workspace", global = true)]
+    workspace: Option<PathBuf>,
+    /// Emit JSON instead of the human-readable output.
+    #[arg(long, global = true)]
+    json: bool,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum RemoteCommand {
+    /// Link an agent to a remote-control session (records bwoc-side bookkeeping).
+    Link {
+        /// Agent name (with or without the `agent-` prefix).
+        agent: String,
+        /// Opaque reference to the external session (id / token / handle).
+        session_ref: String,
+        /// Backend that exposes the session. Default: the agent's manifest backend.
+        #[arg(long)]
+        backend: Option<String>,
+        /// Remote-control mechanism. Default: `claude-remote-control`.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Optional control URL for the session.
+        #[arg(long)]
+        url: Option<String>,
+        /// Optional free-text note.
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// List every recorded remote-control link.
+    List,
+    /// Show one agent's remote-control link.
+    Status {
+        /// Agent name (with or without the `agent-` prefix).
+        agent: String,
+    },
+    /// Remove an agent's remote-control link.
+    Unlink {
+        /// Agent name (with or without the `agent-` prefix).
+        agent: String,
+        /// Skip the TTY confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+impl RemoteArgs {
+    fn into_runtime(self) -> remote::RemoteArgs {
+        let action = match self.command {
+            RemoteCommand::Link {
+                agent,
+                session_ref,
+                backend,
+                kind,
+                url,
+                note,
+            } => remote::RemoteAction::Link {
+                agent,
+                session_ref,
+                backend,
+                kind,
+                url,
+                note,
+            },
+            RemoteCommand::List => remote::RemoteAction::List,
+            RemoteCommand::Status { agent } => remote::RemoteAction::Status { agent },
+            RemoteCommand::Unlink { agent, yes } => remote::RemoteAction::Unlink { agent, yes },
+        };
+        remote::RemoteArgs {
+            action,
+            workspace: self.workspace,
+            json: self.json,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 struct SessionsArgs {
     /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
@@ -2131,6 +2214,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Debase(args)) => {
             let code = debase::run(args.into_runtime());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Remote(args)) => {
+            let code = remote::run(args.into_runtime());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Status(args)) => {

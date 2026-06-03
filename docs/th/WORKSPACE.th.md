@@ -104,10 +104,15 @@ workspace **ครบถ้วน** เมื่อ:
 | `bwoc list` | แสดง agent ที่ register ใน workspace (จาก `agents.toml`) | Phase 1 v2.0 |
 | `bwoc spawn <name>` | Validate workspace แล้ว exec backend ของ agent | Phase 1 v2.0 |
 | `bwoc debase list \| show <agent> \| set <agent> <project>` | จัดการ binding agent → base project ที่ถือไว้โดย `worktreeBase` `list`/`show` read-only (`--json`); `set` เป็น write ที่มี gate ชี้ `worktreeBase` ของ agent ไปที่ `<project>/worktrees` | Phase 3 |
+| `bwoc remote link \| list \| status \| unlink` | Link agent เข้ากับ **remote-control session** (เช่น Claude Code Remote Control) และจัดการ link เหล่านั้น เป็น bookkeeping ฝั่ง bwoc แบบ backend-neutral บันทึกที่ `.bwoc/remote/<agentId>.json`; `link` เขียน, `list`/`status` อ่าน (`--json`), `unlink` เป็น remove ที่มี gate | Phase 3 |
 
 ### binding แบบ debase
 
 **base project** ของ agent — project ที่มัน derive มาและ build — ถูกบันทึกเชิงฟังก์ชันด้วย `worktreeBase` ใน manifest: agent ที่ผูกกับ project `P` ถือ `worktreeBase = <P>/worktrees` และ framework วาง task worktree ที่ `<worktreeBase>/<agentId>/<taskId>` `bwoc debase` ทำความสัมพันธ์นี้ให้เป็น surface ที่ตรวจดูได้แบบ first-class และ `bwoc new --project <path>` สร้าง binding นี้ตอน incarnate (พร้อม seed gate build/test/lint/format จาก stack ที่ detect ได้ของ project) agent ที่ไม่มี `worktreeBase` คือ **unbound** — มันทำงาน *กับ* target แทนที่จะ build project (เช่น agent monitoring / audit)
+
+### link ของ remote-control session
+
+**remote-control session** ทำให้ session แบบ interactive ของ agent ถูกควบคุมจากที่อื่นได้ — เช่น Claude Code Remote Control ที่เข้าถึงจาก claude.ai หรือมือถือ `bwoc remote` เป็น **bookkeeping ฝั่ง bwoc แบบ backend-neutral** บนความสัมพันธ์นั้น: บันทึกต่อ agent ว่า link กับ control session ภายนอกตัวไหน (ไม่ได้เปิดหรือ proxy session เอง) แต่ละ link เก็บที่ `.bwoc/remote/<agentId>.json` — `{ agentId, backend, kind, sessionRef, url?, linkedAt, note? }` — ตามแบบ convention ของ marker `.bwoc/sessions/` ฟิลด์ `kind` ระบุกลไก: `claude-remote-control` เป็นตัวแรก และ backend ใดก็ประกาศ kind ของตัวเองได้ (Samānattatā — Claude เป็น implementation แรก ไม่ใช่กรณีพิเศษ) `link` default `backend` จาก workspace registry (`agents.toml` ซึ่งบันทึกไว้เสมอ) และ `kind` เป็น `claude-remote-control`
 
 ### การ Resolve Workspace
 
