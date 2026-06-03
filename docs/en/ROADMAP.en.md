@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Trust v2 signed envelopes have since shipped (the `bwoc-signing` crate); the remaining deferred Phase 3 item is the Tier 2 memory reference implementation. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Trust v2 signed envelopes have since shipped (the `bwoc-signing` crate), and the Tier 2 memory reference implementation (`bwoc-deep-memory`) has since shipped too — closing the last deferred Phase 3 item. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -93,7 +93,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 - **Cross-backend validation** — full uppāda + ṭhiti against all 5 backend CLIs in CI (proves Samānattatā); `bwoc-harness` (ollama) is the fifth.
 - **Code signing** — Apple notarization + Windows Authenticode for release artifacts (user-cert authorization required).
 - **Linux musl build** — `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` ship; musl (Alpine / distroless) can be added when demanded.
-- **Memory mining tooling and pluggable Tier 2 backend interface.**
+- ~~**Memory mining tooling and pluggable Tier 2 backend interface.**~~ — **shipped.** The interface (`bwoc-core::deep_memory`) and now its reference implementation (`bwoc-deep-memory`) both ship; see "Shipped beyond Phase 3" below.
 - **Windows named-pipe daemon path** — replace the cfg-gated stub with a real Windows implementation.
 
 ---
@@ -119,10 +119,10 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 
 ### Phase 3 — beyond the DoD (Trust v2 shipped; Tier 2 deferred)
 
-Both halves of the DoD are met: *coordinate without a central authority* (interconnect routing) and *an agent's life ends cleanly* (`bwoc retire` full vaya) — both shipped above. The sequencing rationale and the worktree-lifecycle / routing design decisions are in [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md). Trust v2 has since shipped (first bullet); the only item still deferred off the DoD is the Tier 2 memory reference implementation:
+Both halves of the DoD are met: *coordinate without a central authority* (interconnect routing) and *an agent's life ends cleanly* (`bwoc retire` full vaya) — both shipped above. The sequencing rationale and the worktree-lifecycle / routing design decisions are in [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md). Trust v2 has since shipped (first bullet), and the Tier 2 memory reference implementation has since shipped too (`bwoc-deep-memory`, see "Shipped beyond Phase 3") — **nothing remains deferred off the Phase 3 DoD**:
 
 - **Trust v2 — shipped.** Signed envelopes / identity proof via the dep-quarantined `bwoc-signing` crate (ed25519 over RFC 8785 canonical bytes, with `nonce` / `ts` / `messageId` bound into the signature for replay rejection), wired into `bwoc send --from` (sign) and the `bwoc-agent` trust gate (verify). `bwoc trust --keygen` provisions the per-agent keypair (private key `agents/<id>/.bwoc/agent.key`, `0600` on Unix, gitignored; public key in manifest `trust.signingPublicKey`). Configurable `warn` / `enforce` signature-refusal modes, plus a `BWOC_SIGNING_MODE=off` legacy escape hatch. Cross-workspace identity: the gate resolves a peer sender's manifest public key via the routing layer and **requires** a valid signature for any cross-workspace write (a missing one is refused as `unsigned_cross_workspace` in both modes). Spec: [`docs/en/SIGNING.en.md`](SIGNING.en.md).
-- **Tier 2 memory** — two distinct pieces: the pluggable backend *interface* (also listed under Phase 2 remaining) and a *reference implementation*. Tier 1 file-based memory is complete.
+- **Tier 2 memory — shipped.** Two pieces: the pluggable backend *interface* (`bwoc-core::deep_memory` — `DeepMemory` trait + `ShellDeepMemory` shell-out + factory, wired into `bwoc memory wake-up|search|mine` and `bwoc new --deep-memory-cmd`) and the *reference implementation* (`bwoc-deep-memory`, see "Shipped beyond Phase 3"). Tier 1 file-based memory was already complete.
 
 ---
 
@@ -133,6 +133,7 @@ The following shipped after the Phase 3 DoD was declared met.
 | Item | Notes |
 |---|---|
 | `bwoc-harness` — self-hosted agentic runtime | OpenAI-compatible model-API client + agentic loop; safety pipeline (guardrails → permission → sandbox); Unix-first v1 (compiles on Windows, untested there). Adds **ollama** as the fifth declared backend: `bwoc spawn --backend ollama` launches `bwoc-harness` against any Ollama / OpenAI-compatible endpoint. 8 production components. Spec: [`docs/en/HARNESS.en.md`](HARNESS.en.md). |
+| `bwoc-deep-memory` — Tier 2 reference implementation | Self-contained binary speaking the `bwoc-core::deep_memory` contract (`wake-up` \| `search` \| `mine`) over a local SQLite store with **semantic (embedding) recall**. v1 ranks by brute-force cosine over `f32`-BLOB vectors (no native-extension build risk; `sqlite-vec` swap-in deferred behind the unchanged store seam). Embeddings come from any OpenAI-compatible `/v1/embeddings` endpoint behind an injectable `Embedder` trait (HTTP impl + deterministic `StubEmbedder` for offline tests). Wire it via `deepMemoryCmd`. Closes the last deferred Phase 3 item. |
 
 ---
 

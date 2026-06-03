@@ -9,6 +9,7 @@ members = [
     "crates/bwoc-harness",
     "crates/bwoc-tui",
     "crates/bwoc-mqtt",
+    "crates/bwoc-deep-memory",
 ]
 
 [workspace.package]
@@ -47,6 +48,10 @@ async-stream = "0.3"
 futures-core = "0.3"
 # Outbound A2A client (#48 P4) — rustls so there's no system OpenSSL dependency.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Tier 2 deep-memory reference impl. Isolated to bwoc-deep-memory — NEVER
+# bwoc-core (dep-quarantine HARD RULE). `bundled` compiles SQLite from source so
+# the CI matrix needs no system libsqlite3.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
 lto = "thin"
