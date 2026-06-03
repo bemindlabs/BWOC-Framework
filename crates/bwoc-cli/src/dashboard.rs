@@ -694,8 +694,42 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
 
 // --- drawing --------------------------------------------------------------
 
+/// Minimum terminal the dashboard can render legibly. Below this the bordered
+/// banner + 60/40 panes collapse to unusable inner areas, so we show a hint
+/// instead of a garbled frame.
+const MIN_COLS: u16 = 60;
+const MIN_ROWS: u16 = 16;
+
 fn draw_frame(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
+
+    if area.width < MIN_COLS || area.height < MIN_ROWS {
+        let msg = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "terminal too small",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "need ≥ {MIN_COLS}×{MIN_ROWS} (have {}×{})",
+                    area.width, area.height
+                ),
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "resize, or press q to quit",
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+        ])
+        .alignment(Alignment::Center);
+        f.render_widget(msg, area);
+        return;
+    }
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -720,26 +754,7 @@ fn draw_frame(f: &mut ratatui::Frame, app: &mut App) {
 /// Centered modal listing every keybinding. Cleared on any keypress.
 fn draw_help_overlay(f: &mut ratatui::Frame, area: Rect) {
     use ratatui::style::{Modifier, Style};
-    use ratatui::widgets::{Clear, Paragraph};
-
-    // Center: 60% wide, 60% tall.
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(60),
-            Constraint::Percentage(20),
-        ])
-        .split(area);
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(60),
-            Constraint::Percentage(20),
-        ])
-        .split(v[1]);
-    let popup = h[1];
+    use ratatui::widgets::{Clear, Paragraph, Wrap};
 
     let body = "\
   ?           toggle this help overlay
@@ -765,12 +780,34 @@ fn draw_help_overlay(f: &mut ratatui::Frame, area: Rect) {
 
 Press any key to dismiss.";
 
+    // Size the popup to the content (+ borders), clamped to the available area,
+    // and centre it — a fixed 60%-tall popup clips the bottom lines (incl. the
+    // "press any key" hint) on short terminals.
+    let content_h = body.lines().count() as u16 + 2; // +2 for top/bottom border
+    let content_w = body
+        .lines()
+        .map(|l| l.chars().count() as u16)
+        .max()
+        .unwrap_or(40)
+        + 4; // +4 for borders + breathing room
+    let popup_h = content_h.min(area.height);
+    let popup_w = content_w.min(area.width);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+        width: popup_w,
+        height: popup_h,
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Hotkeys ")
         .border_style(Style::default().add_modifier(Modifier::BOLD));
     f.render_widget(Clear, popup);
-    f.render_widget(Paragraph::new(body).block(block), popup);
+    f.render_widget(
+        Paragraph::new(body).block(block).wrap(Wrap { trim: false }),
+        popup,
+    );
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -1119,7 +1156,9 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
 /// `bwoc-agent --serve`.
 fn activity_display(state: Option<&SessionState>) -> (&'static str, Color, &'static str) {
     match state {
-        Some(SessionState::Working) => ("●", Color::Green, "working"),
+        // Distinct glyph per state so the activity reads without relying on
+        // colour alone (a11y): working ◉, idle ◑, running ●, stale ○.
+        Some(SessionState::Working) => ("◉", Color::Green, "working"),
         Some(SessionState::Idle) => ("◑", Color::Yellow, "idle"),
         Some(SessionState::Running) => ("●", Color::Cyan, "running"),
         Some(SessionState::Stale) => ("○", Color::DarkGray, "stale"),
@@ -1374,29 +1413,50 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let nav = i18n::t(&app.bundle, "dash-footer-navigate");
     let refresh = i18n::t(&app.bundle, "dash-footer-refresh");
     let quit = i18n::t(&app.bundle, "dash-footer-quit");
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(count, Style::default().fg(Color::Cyan)),
-        Span::raw("    "),
-        Span::styled("↑↓/jk", bold),
-        Span::raw(format!(" {nav}    ")),
-        Span::styled("t", bold),
-        Span::raw(" talk    "),
-        Span::styled("l", bold),
-        Span::raw(" log    "),
-        Span::styled("i", bold),
-        Span::raw(" inbox    "),
-        Span::styled("s", bold),
-        Span::raw(" start    "),
-        Span::styled("x", bold),
-        Span::raw(" stop    "),
-        Span::styled("r", bold),
-        Span::raw(format!(" {refresh}    ")),
-        Span::styled("?", bold),
-        Span::raw(" help    "),
-        Span::styled("q/Esc", bold),
-        Span::raw(format!(" {quit}")),
-    ]))
-    .alignment(Alignment::Center);
+
+    // The full legend is one un-wrappable row (the footer is 1 line tall), so on
+    // a narrow terminal it would clip the rightmost hints — including `q/Esc`.
+    // Below a width threshold fall back to a core legend and let `?` carry the
+    // rest. The threshold accounts for the i18n labels being longer in some
+    // locales (e.g. Thai).
+    let spans = if area.width < 100 {
+        vec![
+            Span::styled(count, Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled("↑↓", bold),
+            Span::raw(format!(" {nav}  ")),
+            Span::styled("t", bold),
+            Span::raw(" talk  "),
+            Span::styled("?", bold),
+            Span::raw(" help  "),
+            Span::styled("q", bold),
+            Span::raw(format!(" {quit}")),
+        ]
+    } else {
+        vec![
+            Span::styled(count, Style::default().fg(Color::Cyan)),
+            Span::raw("    "),
+            Span::styled("↑↓/jk", bold),
+            Span::raw(format!(" {nav}    ")),
+            Span::styled("t", bold),
+            Span::raw(" talk    "),
+            Span::styled("l", bold),
+            Span::raw(" log    "),
+            Span::styled("i", bold),
+            Span::raw(" inbox    "),
+            Span::styled("s", bold),
+            Span::raw(" start    "),
+            Span::styled("x", bold),
+            Span::raw(" stop    "),
+            Span::styled("r", bold),
+            Span::raw(format!(" {refresh}    ")),
+            Span::styled("?", bold),
+            Span::raw(" help    "),
+            Span::styled("q/Esc", bold),
+            Span::raw(format!(" {quit}")),
+        ]
+    };
+    let footer = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
     f.render_widget(footer, area);
 }
 
@@ -1408,7 +1468,7 @@ mod tests {
     fn activity_display_covers_every_state_and_absence() {
         assert_eq!(
             activity_display(Some(&SessionState::Working)),
-            ("●", Color::Green, "working")
+            ("◉", Color::Green, "working")
         );
         assert_eq!(
             activity_display(Some(&SessionState::Idle)),
