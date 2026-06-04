@@ -264,15 +264,35 @@ async fn run() -> HarnessResult<()> {
     }
 
     // ── System prompt ─────────────────────────────────────────────────────
-    let system_prompt = load_system_prompt(&workdir).await;
+    let mut system_prompt = load_system_prompt(&workdir).await;
     if system_prompt.is_empty() {
         println!("  system prompt: (none — AGENTS.md / CLAUDE.md not found in workdir)");
     } else {
         println!("  system prompt: loaded ({} chars)", system_prompt.len());
     }
 
+    // ── Tier 2 deep memory (HV3-1) ────────────────────────────────────────
+    // When the manifest configures `deepMemoryCmd`: wake-up output joins the
+    // system prompt, a read-only `memory_search` tool is registered below,
+    // and the run's checkpoint is mined at the end. All best-effort.
+    let deep_memory = bwoc_harness::deep_memory::DeepMemoryCmd::from_workdir(&workdir);
+    if let Some(dm) = &deep_memory {
+        if let Some(prior) = dm.wake_up().await {
+            println!(
+                "  memory   : Tier 2 wake-up injected ({} chars)",
+                prior.len()
+            );
+            system_prompt.push_str(&bwoc_harness::deep_memory::wake_up_block(&prior));
+        } else {
+            println!("  memory   : Tier 2 configured (no prior context)");
+        }
+    }
+
     // ── Tool registry ─────────────────────────────────────────────────────
     let mut registry = default_registry();
+    if let Some(dm) = &deep_memory {
+        registry.register(bwoc_harness::deep_memory::MemorySearch::new(dm.clone()));
+    }
     // ── MCP tool servers (HV2-5) ──────────────────────────────────────────
     // Each --mcp launches an external MCP server and registers its tools.
     // Failures are warned, not fatal — the run proceeds with the built-in set.
@@ -356,6 +376,10 @@ async fn run() -> HarnessResult<()> {
         }
     };
 
+    // The run's checkpoint file doubles as the mining artifact: it carries the
+    // full history, so `mine` turns this session into tomorrow's memory.
+    let mine_artifact = checkpoint.as_ref().map(|c| c.path());
+
     // ── Loop config ───────────────────────────────────────────────────────
     let config = LoopConfig {
         model: resolved_model.clone(),
@@ -432,6 +456,36 @@ async fn run() -> HarnessResult<()> {
         &bwoc_harness::retrospective::RetroThresholds::default(),
     );
     eprint!("{}", retro.render());
+
+    // ── Tier 2 mine (HV3-1) ───────────────────────────────────────────────
+    // Session end: persist this run into deep memory. Best-effort — memory
+    // trouble never changes the run's outcome. Two shapes:
+    //   - success: the checkpoint dir was already cleaned up (finished runs
+    //     don't linger), so distil the run into a small transcript
+    //     (`.bwoc/last-run.md`, overwritten per run) and mine that — the
+    //     task → outcome pair is the memory-worthy distillate anyway;
+    //   - failure: the checkpoint survives for `--resume` — mine it as-is
+    //     (failed runs are exactly what's worth remembering).
+    if let Some(dm) = &deep_memory {
+        match (&outcome, &mine_artifact) {
+            (Ok(res), _) => {
+                let transcript = format!(
+                    "## Task\n\n{}\n\n## Outcome ({} turn(s))\n\n{}\n",
+                    args.task.as_deref().unwrap_or("(resumed run)"),
+                    res.turns,
+                    res.final_response
+                );
+                let bwoc_dir = workdir.join(".bwoc");
+                let path = bwoc_dir.join("last-run.md");
+                let _ = std::fs::create_dir_all(&bwoc_dir);
+                if std::fs::write(&path, transcript).is_ok() {
+                    dm.mine(&path, "run").await;
+                }
+            }
+            (Err(_), Some(artifact)) => dm.mine(artifact, "run").await,
+            (Err(_), None) => {}
+        }
+    }
 
     // Propagate an aborted run as an error — after the retrospective has been
     // recorded and printed.
@@ -558,10 +612,23 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
     }
 
     // System prompt (AGENTS.md / CLAUDE.md), same as run().
-    let system_prompt = load_system_prompt(workdir).await;
+    let mut system_prompt = load_system_prompt(workdir).await;
+
+    // Tier 2 deep memory (HV3-1) — same wiring as run(): wake-up into the
+    // system prompt, memory_search tool, mine on session end.
+    let deep_memory = bwoc_harness::deep_memory::DeepMemoryCmd::from_workdir(workdir);
+    if let Some(dm) = &deep_memory {
+        if let Some(prior) = dm.wake_up().await {
+            system_prompt.push_str(&bwoc_harness::deep_memory::wake_up_block(&prior));
+        }
+    }
 
     // Tool registry + context, same as run() (no MCP in the chat v1 driver).
-    let registry = Arc::new(default_registry());
+    let mut registry = default_registry();
+    if let Some(dm) = &deep_memory {
+        registry.register(bwoc_harness::deep_memory::MemorySearch::new(dm.clone()));
+    }
+    let registry = Arc::new(registry);
     let ctx = if args.unrestricted {
         ToolContext::unconfined(workdir)
     } else {
@@ -603,7 +670,17 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         max_context_tokens: bwoc_harness::chat_session::DEFAULT_MAX_CONTEXT_TOKENS,
     };
 
-    chat_session::run(provider, registry, ctx, config).await
+    let outcome = chat_session::run(provider, registry, ctx, config).await;
+
+    // Tier 2 mine (HV3-1): the persisted conversation becomes memory. The
+    // chat driver saves `.bwoc/chat-session.json` after each turn, so this
+    // captures the whole session regardless of how it ended.
+    if let Some(dm) = &deep_memory {
+        dm.mine(&workdir.join(".bwoc").join("chat-session.json"), "chat")
+            .await;
+    }
+
+    outcome
 }
 
 /// The fallback permission policy for `--chat` when the workdir has no
@@ -613,7 +690,13 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 /// default — and the one that makes file editing work without setup.
 fn chat_default_policy() -> Policy {
     use bwoc_harness::policy::permission::Mode;
-    let read_only = ["read_file", "list_dir", "grep", "memory_read"];
+    let read_only = [
+        "read_file",
+        "list_dir",
+        "grep",
+        "memory_read",
+        "memory_search",
+    ];
     let tools = read_only
         .iter()
         .map(|t| (t.to_string(), Mode::Allow))
