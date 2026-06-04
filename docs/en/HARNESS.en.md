@@ -156,6 +156,19 @@ All tools are registered in `tools/registry.rs` and dispatched through the safet
 | `bwoc_send` | Send a message to another agent via `interconnect/` |
 | `memory_read` | Read from the agent's `memories/` |
 | `memory_write` | Write to the agent's `memories/` |
+| `memory_search` | Semantic search over the Tier 2 deep-memory store (registered only when the manifest configures `deepMemoryCmd`; read-only) |
+
+---
+
+## Tier 2 Deep Memory (HV3-1)
+
+When the agent's manifest configures `deepMemoryCmd` (any tool speaking the `bwoc-core::deep_memory` contract — the reference is `bwoc-deep-memory`), the harness closes the memory loop around every session:
+
+1. **wake-up** — at session start (batch and `--chat`), `<cmd> wake-up` output is appended to the system prompt as a *"Prior context (Tier 2 memory)"* block.
+2. **memory_search** — a read-only tool (`<cmd> search "<q>"`) is registered so the model can recall past decisions mid-run; like every tool it flows through the guardrails → permission pipeline. Chat's default policy allows it alongside `memory_read`.
+3. **mine** — at session end the session becomes memory: `--chat` mines the persisted `.bwoc/chat-session.json`; a successful batch run distils *task → outcome* into `.bwoc/last-run.md` and mines that (the checkpoint is already cleaned up on success); a failed run mines its surviving checkpoint (failed runs are exactly what's worth remembering).
+
+Everything is **opt-in, best-effort, and bounded**: an absent/placeholder `deepMemoryCmd` disables all three (Tier 1 keeps working); failures degrade to warnings; every subprocess call carries a timeout (wake-up 10 s, search 15 s, mine 60 s) so a hung memory backend can never stall a run. *(Sati — the agent remembers across sessions.)*
 
 ---
 
@@ -333,7 +346,7 @@ The harness was validated end-to-end against a real Ollama instance before the d
 
 | Capability | Status |
 |---|---|
-| **OS-level sandbox** (macOS `sandbox-exec`, Linux landlock/seccomp) | **Stub.** The `OsSandbox` trait exists and is pluggable, but the only implementation is `NoopOsSandbox`. Worktree+allowlist confinement is active; OS-level syscall isolation is not. |
+| **OS-level sandbox** (macOS `sandbox-exec`, Linux landlock/seccomp) | **Shipped (2.3.0).** Real landlock (Linux ≥ 5.13) + `sandbox-exec` (macOS) via `make_os_sandbox()`, degrading gracefully to worktree-only confinement on unsupported kernels. *(This row previously claimed "stub" — stale since 2.3.0.)* |
 | **Streaming** | Wired and functional (SSE delta accumulation tested). Usage token counts are not available on the streaming path (the provider does not return `usage` in SSE deltas). |
 | **Vetted-model list** | Small. Currently only `gemma4` and `qwen2.5-coder:7b` are known-good for tool calling. Unvetted models emit a warning but are not hard-blocked. |
 | **Context compaction** | Active (truncate-with-marker strategy). LLM-summarise is the natural upgrade path but is not implemented in v1. |

@@ -32,6 +32,7 @@ pub mod budget;
 pub mod chat_session;
 pub mod checkpoint;
 pub mod compact;
+pub mod deep_memory;
 pub mod error;
 pub mod eval;
 pub mod lead;
