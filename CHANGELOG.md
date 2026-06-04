@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.4-0] — 2026-06-04 — 2.22.0
+
 ### Added
 
 - **Design system — `bwoc-core::design` tokens.** A single source of truth for the colours, glyphs, and spacing BWOC's three UIs render with (`bwoc dashboard`, `bwoc chat --tui`, the `bwoc-chat` desktop app), replacing per-UI hardcoded palettes that had drifted. Tokens are **plain data** (no ratatui/egui types — dep-quarantine intact): each `ColorToken` carries an `ansi` half (terminal UIs map it to *named* colours so the user's terminal theme keeps authority) and an `rgb` half (pixel UIs use it directly); glyphs are shared `&str`; spacing/typography are plain `f32` (`MESSAGE_GAP`, `LINE_HEIGHT_FACTOR` 1.4 for stacked Thai marks). Principles enforced by unit tests: activity glyphs pairwise distinct (state never reads by colour alone), selection hue ≠ idle/title hue (one meaning per colour per screen), muted floors at `Gray` (never `DarkGray`-on-dark). **Both framework TUIs now consume the tokens** — `bwoc dashboard` (incl. review fixes: selection moves from yellow to blue/white so yellow no longer means title+selection+idle at once; the navigable agents pane gets the accent border; muted text lifted from `DarkGray` to `Gray`) and `bwoc chat --tui` (status bar, borders, permission/outcome colours). Spec: `docs/en/DESIGN.en.md` (+ TH). The `bwoc-chat` desktop app (separate repo) is a follow-up.
