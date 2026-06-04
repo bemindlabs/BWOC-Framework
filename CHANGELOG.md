@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Fixed
 
+- **`bwoc dashboard` banner no longer clips its attention indicator.** The workspace line renders un-wrapped, so a long workspace path pushed the rightmost — most important — parts (`attention: N pending`, the counts) off-screen. The path now elides its *middle* against the pane width (the tail keeps the directory name); the counts and attention always render.
 - **`bwoc dashboard` TUI UX (P1s from the design review).** (1) The footer hotkey legend — one un-wrappable row — clipped its rightmost hints (incl. `q/Esc`) on narrow terminals, worse with longer i18n labels (e.g. Thai); below 100 cols it now falls back to a core legend (`↑↓ · t · ? · q`) with `?` carrying the full list. (2) The `?` help overlay (fixed 60% height) clipped its bottom lines on short terminals; it is now sized to its content (+ wrapped), centred and clamped. (3) Below 60×16 the bordered panes collapsed into garbage; a centred "terminal too small" hint renders instead. (4) a11y: `working` and `running` no longer share the `●` glyph — `working` is `◉`, so activity states read without relying on colour.
 
 ## [v2026.6.3-1] — 2026-06-03 — 2.21.0

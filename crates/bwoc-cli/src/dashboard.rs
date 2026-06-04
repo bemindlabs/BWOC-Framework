@@ -1224,6 +1224,25 @@ fn activity_display(state: Option<&SessionState>) -> (&'static str, Color, &'sta
 /// Render `last_activity` (epoch-seconds) as a human "N ago" age relative
 /// to now, reusing `livecheck::format_uptime` for the unit formatting.
 /// `None` → "unknown" (scan-sourced sessions have no activity signal).
+/// Elide the middle of `s` to fit `budget` chars, keeping a short head and the
+/// tail (for a path, the tail carries the directory name — the part worth
+/// reading). `budget` ≤ 1 degenerates to "…"; a fitting string is unchanged.
+fn elide_middle(s: &str, budget: usize) -> String {
+    let len = s.chars().count();
+    if len <= budget {
+        return s.to_string();
+    }
+    if budget <= 1 {
+        return "…".to_string();
+    }
+    let keep = budget - 1; // room for the ellipsis
+    let head = keep / 3;
+    let tail = keep - head;
+    let head_s: String = s.chars().take(head).collect();
+    let tail_s: String = s.chars().skip(len - tail).collect();
+    format!("{head_s}…{tail_s}")
+}
+
 fn format_activity_age(last_activity: Option<u64>) -> String {
     let Some(ts) = last_activity else {
         return "unknown".to_string();
@@ -1312,14 +1331,19 @@ fn draw_banner(f: &mut ratatui::Frame, area: Rect, app: &App) {
             } else {
                 String::new()
             };
-            format!(
-                "Workspace: {}  ·  projects: {}  ·  notes: {}  ·  memory: {}{}",
-                p.display(),
-                p_str,
-                n_str,
-                m_str,
-                attn_suffix
-            )
+            // Truncate the PATH, never the counts: the line renders without
+            // wrap, so on a long workspace path the rightmost part — the
+            // attention indicator, the most important bit — was the first to
+            // be clipped. Budget the path against the inner width and elide
+            // its middle (the tail carries the directory name).
+            let suffix = format!(
+                "  ·  projects: {p_str}  ·  notes: {n_str}  ·  memory: {m_str}{attn_suffix}"
+            );
+            let prefix = "Workspace: ";
+            let inner_w = area.width.saturating_sub(2) as usize; // borders
+            let budget = inner_w.saturating_sub(prefix.chars().count() + suffix.chars().count());
+            let path_shown = elide_middle(&p.display().to_string(), budget);
+            format!("{prefix}{path_shown}{suffix}")
         }
         None => "Workspace: (none — pass --workspace, set BWOC_WORKSPACE, or run `bwoc init`)"
             .to_string(),
@@ -1566,6 +1590,26 @@ mod tests {
             activity_display(None),
             (design::glyph::ACTIVITY_NONE, tone(design::color::MUTED), "")
         );
+    }
+
+    #[test]
+    fn elide_middle_keeps_fitting_strings() {
+        assert_eq!(elide_middle("/short/path", 40), "/short/path");
+    }
+
+    #[test]
+    fn elide_middle_fits_budget_and_keeps_tail() {
+        let p = "/Users/someone/workspaces/very/long/nested/workspace-root";
+        let e = elide_middle(p, 24);
+        assert_eq!(e.chars().count(), 24);
+        assert!(e.contains('…'));
+        assert!(e.ends_with("workspace-root") || e.ends_with("root"));
+    }
+
+    #[test]
+    fn elide_middle_tiny_budget_degenerates() {
+        assert_eq!(elide_middle("/whatever", 1), "…");
+        assert_eq!(elide_middle("/whatever", 0), "…");
     }
 
     #[test]
