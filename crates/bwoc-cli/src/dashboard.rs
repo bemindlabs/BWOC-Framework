@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::i18n;
 use crate::sessions::{ProcessScanRunner, Session, SessionState, collect_sessions};
+use bwoc_core::design;
 use bwoc_core::manifest::Manifest;
 use bwoc_core::workspace::{AgentEntry, AgentsRegistry};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -76,6 +77,25 @@ pub fn run(args: DashboardArgs) -> i32 {
 }
 
 // --- app state ------------------------------------------------------------
+
+/// Map a design token's ANSI half to ratatui's *named* colour, so the user's
+/// terminal theme keeps authority over the exact shade (design tokens carry
+/// the semantic choice; the terminal carries the rendering).
+fn tone(t: design::ColorToken) -> Color {
+    use design::Ansi;
+    match t.ansi {
+        Ansi::Black => Color::Black,
+        Ansi::Red => Color::Red,
+        Ansi::Green => Color::Green,
+        Ansi::Yellow => Color::Yellow,
+        Ansi::Blue => Color::Blue,
+        Ansi::Magenta => Color::Magenta,
+        Ansi::Cyan => Color::Cyan,
+        Ansi::Gray => Color::Gray,
+        Ansi::DarkGray => Color::DarkGray,
+        Ansi::White => Color::White,
+    }
+}
 
 /// How often the dashboard auto-refreshes the agents registry. Live-
 /// changing data (runtime indicators, uptime, inbox counts) re-reads
@@ -694,8 +714,42 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
 
 // --- drawing --------------------------------------------------------------
 
+/// Minimum terminal the dashboard can render legibly. Below this the bordered
+/// banner + 60/40 panes collapse to unusable inner areas, so we show a hint
+/// instead of a garbled frame.
+const MIN_COLS: u16 = 60;
+const MIN_ROWS: u16 = 16;
+
 fn draw_frame(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
+
+    if area.width < MIN_COLS || area.height < MIN_ROWS {
+        let msg = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "terminal too small",
+                Style::default()
+                    .fg(tone(design::color::WARNING))
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "need ≥ {MIN_COLS}×{MIN_ROWS} (have {}×{})",
+                    area.width, area.height
+                ),
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "resize, or press q / Esc to quit",
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+        ])
+        .alignment(Alignment::Center);
+        f.render_widget(msg, area);
+        return;
+    }
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -720,26 +774,7 @@ fn draw_frame(f: &mut ratatui::Frame, app: &mut App) {
 /// Centered modal listing every keybinding. Cleared on any keypress.
 fn draw_help_overlay(f: &mut ratatui::Frame, area: Rect) {
     use ratatui::style::{Modifier, Style};
-    use ratatui::widgets::{Clear, Paragraph};
-
-    // Center: 60% wide, 60% tall.
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(60),
-            Constraint::Percentage(20),
-        ])
-        .split(area);
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(60),
-            Constraint::Percentage(20),
-        ])
-        .split(v[1]);
-    let popup = h[1];
+    use ratatui::widgets::{Clear, Paragraph, Wrap};
 
     let body = "\
   ?           toggle this help overlay
@@ -765,12 +800,41 @@ fn draw_help_overlay(f: &mut ratatui::Frame, area: Rect) {
 
 Press any key to dismiss.";
 
+    // Size the popup to the content (+ borders), clamped to the available area,
+    // and centre it — a fixed 60%-tall popup clips the bottom lines (incl. the
+    // "press any key" hint) on short terminals.
+    let content_w = body
+        .lines()
+        .map(|l| l.chars().count() as u16)
+        .max()
+        .unwrap_or(40)
+        + 4; // +4 for borders + breathing room
+    let popup_w = content_w.min(area.width);
+    // Height must account for `Wrap`: when the width is clamped below the
+    // longest line, wrapped lines occupy extra rows — counting unwrapped
+    // lines alone would clip the bottom again on narrow terminals.
+    let inner_w = popup_w.saturating_sub(2).max(1) as usize; // borders
+    let wrapped_rows: u16 = body
+        .lines()
+        .map(|l| (l.chars().count().max(1)).div_ceil(inner_w) as u16)
+        .sum();
+    let popup_h = (wrapped_rows + 2).min(area.height); // +2 top/bottom border
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+        y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+        width: popup_w,
+        height: popup_h,
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Hotkeys ")
         .border_style(Style::default().add_modifier(Modifier::BOLD));
     f.render_widget(Clear, popup);
-    f.render_widget(Paragraph::new(body).block(block), popup);
+    f.render_widget(
+        Paragraph::new(body).block(block).wrap(Wrap { trim: false }),
+        popup,
+    );
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -816,7 +880,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
 
     let key_style = Style::default()
-        .fg(Color::Cyan)
+        .fg(tone(design::color::ACCENT))
         .add_modifier(Modifier::BOLD);
 
     lines.push(Line::from(vec![
@@ -843,16 +907,24 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
         match crate::livecheck::running_pid(root, entry) {
             Some(pid) => match crate::livecheck::query_uptime(root, entry) {
                 Some(secs) => (
-                    "●",
-                    Color::Green,
+                    design::glyph::RUNTIME_ALIVE,
+                    tone(design::color::SUCCESS),
                     format!(
                         "running (pid {pid}, uptime {})",
                         crate::livecheck::format_uptime(secs)
                     ),
                 ),
-                None => ("●", Color::Green, format!("running (pid {pid})")),
+                None => (
+                    design::glyph::RUNTIME_ALIVE,
+                    tone(design::color::SUCCESS),
+                    format!("running (pid {pid})"),
+                ),
             },
-            None => ("○", Color::DarkGray, "not running".to_string()),
+            None => (
+                design::glyph::RUNTIME_DEAD,
+                tone(design::color::MUTED),
+                "not running".to_string(),
+            ),
         };
     lines.push(Line::from(vec![
         Span::styled("runtime     ", key_style),
@@ -896,7 +968,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 Span::styled("session     ", key_style),
                 Span::styled(
                     "— no live backend session",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(tone(design::color::MUTED)),
                 ),
             ]));
         }
@@ -904,9 +976,9 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let count = crate::livecheck::inbox_count(root, entry);
     let inbox_color = if count == 0 {
-        Color::DarkGray
+        tone(design::color::MUTED)
     } else {
-        Color::Yellow
+        tone(design::color::WARNING)
     };
     lines.push(Line::from(vec![
         Span::styled("inbox       ", key_style),
@@ -921,7 +993,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Span::styled("refused     ", key_style),
             Span::styled(
                 format!("{refused_count} refusal(s)"),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(tone(design::color::WARNING)),
             ),
         ]));
         if let Some((reason, from)) = refused_detail {
@@ -938,16 +1010,16 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let teams = crate::livecheck::agent_team_summaries(root, &entry.id);
     for ts in &teams {
         let color = if ts.available > 0 {
-            Color::Green
+            tone(design::color::SUCCESS)
         } else {
-            Color::DarkGray
+            tone(design::color::MUTED)
         };
         lines.push(Line::from(vec![
             Span::styled("team        ", key_style),
             Span::raw(format!("{}: ", ts.team)),
             Span::styled(
                 format!("{} mine", ts.claimed_by_me),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(tone(design::color::ACCENT)),
             ),
             Span::raw(", "),
             Span::styled(
@@ -966,7 +1038,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
             lines.push(Line::from(Span::styled(
                 "manifest:",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(tone(design::color::WARNING))
                     .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(vec![
@@ -1011,7 +1083,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Err(e) => {
             lines.push(Line::from(Span::styled(
                 format!("manifest: failed ({e})"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(tone(design::color::DANGER)),
             )));
         }
     }
@@ -1038,7 +1110,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled(
             "resources:",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(tone(design::color::WARNING))
                 .add_modifier(Modifier::BOLD),
         )));
         for (label, n) in &counts_block {
@@ -1048,7 +1120,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 n.to_string()
             };
             let value_color = if *n == 0 {
-                Color::DarkGray
+                tone(design::color::MUTED)
             } else {
                 Color::Reset
             };
@@ -1064,9 +1136,13 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
     // Health probe — same shape as `bwoc doctor` / `bwoc status` per-agent
     // checks, returning one summarised verdict.
     let (mark, color, msg) = match probe(root, entry) {
-        Health::Ok => ("✓", Color::Green, "all probes passed".to_string()),
-        Health::Warn(m) => ("⚠", Color::Yellow, m),
-        Health::Fail(m) => ("✗", Color::Red, m),
+        Health::Ok => (
+            "✓",
+            tone(design::color::SUCCESS),
+            "all probes passed".to_string(),
+        ),
+        Health::Warn(m) => ("⚠", tone(design::color::WARNING), m),
+        Health::Fail(m) => ("✗", tone(design::color::DANGER), m),
     };
     lines.push(Line::from(vec![
         Span::styled("health      ", key_style),
@@ -1087,7 +1163,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
     lines.push(Line::from(Span::styled(
         format!("log (last {DETAIL_LOG_TAIL_LINES}):"),
         Style::default()
-            .fg(Color::Yellow)
+            .fg(tone(design::color::WARNING))
             .add_modifier(Modifier::BOLD),
     )));
     if let Some(note) = &app.detail_log_note {
@@ -1099,7 +1175,7 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
         for log_line in &app.detail_log {
             lines.push(Line::from(Span::styled(
                 format!("  {log_line}"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(tone(design::color::MUTED)),
             )));
         }
     }
@@ -1119,11 +1195,29 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
 /// `bwoc-agent --serve`.
 fn activity_display(state: Option<&SessionState>) -> (&'static str, Color, &'static str) {
     match state {
-        Some(SessionState::Working) => ("●", Color::Green, "working"),
-        Some(SessionState::Idle) => ("◑", Color::Yellow, "idle"),
-        Some(SessionState::Running) => ("●", Color::Cyan, "running"),
-        Some(SessionState::Stale) => ("○", Color::DarkGray, "stale"),
-        None => ("—", Color::DarkGray, ""),
+        // Glyph + colour + label come from the design tokens — distinct glyph
+        // per state so activity reads without relying on colour alone (a11y).
+        Some(SessionState::Working) => (
+            design::glyph::ACTIVITY_WORKING,
+            tone(design::color::WORKING),
+            "working",
+        ),
+        Some(SessionState::Idle) => (
+            design::glyph::ACTIVITY_IDLE,
+            tone(design::color::IDLE),
+            "idle",
+        ),
+        Some(SessionState::Running) => (
+            design::glyph::ACTIVITY_RUNNING,
+            tone(design::color::RUNNING),
+            "running",
+        ),
+        Some(SessionState::Stale) => (
+            design::glyph::ACTIVITY_STALE,
+            tone(design::color::STALE),
+            "stale",
+        ),
+        None => (design::glyph::ACTIVITY_NONE, tone(design::color::MUTED), ""),
     }
 }
 
@@ -1180,7 +1274,7 @@ fn probe(root: &std::path::Path, a: &AgentEntry) -> Health {
 
 fn draw_banner(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let title_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(tone(design::color::TITLE))
         .add_modifier(Modifier::BOLD);
     let workspace_line = match &app.workspace {
         Some(p) => {
@@ -1241,7 +1335,7 @@ fn draw_banner(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" dashboard ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(tone(design::color::ACCENT)));
     let p = Paragraph::new(lines)
         .alignment(Alignment::Center)
         .block(block);
@@ -1249,17 +1343,19 @@ fn draw_banner(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn draw_agents(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    // The agents pane is the navigable one — give it the accent border so the
+    // focus is visually distinct from the (DIM) read-only detail pane.
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" agents ")
-        .border_style(Style::default().add_modifier(Modifier::DIM));
+        .border_style(Style::default().fg(tone(design::color::ACCENT)));
 
     if let Some(err) = &app.last_refresh_error {
         let p = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
                 format!("failed to read agents: {err}"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(tone(design::color::DANGER)),
             )),
             Line::from(""),
             Line::from(Span::styled(
@@ -1301,7 +1397,7 @@ fn draw_agents(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     ])
     .style(
         Style::default()
-            .fg(Color::Cyan)
+            .fg(tone(design::color::ACCENT))
             .add_modifier(Modifier::BOLD),
     );
 
@@ -1339,9 +1435,11 @@ fn draw_agents(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .header(header)
         .block(block)
         .row_highlight_style(
+            // Selection deliberately avoids the idle/title yellow — one
+            // meaning per colour per screen (design::color::SELECTION_*).
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(tone(design::color::SELECTION_FG))
+                .bg(tone(design::color::SELECTION_BG))
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -1357,7 +1455,7 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if let Some(msg) = &app.last_action {
         let p = Paragraph::new(Line::from(Span::styled(
             msg.clone(),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tone(design::color::ACCENT)),
         )))
         .alignment(Alignment::Center);
         f.render_widget(p, area);
@@ -1374,29 +1472,51 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let nav = i18n::t(&app.bundle, "dash-footer-navigate");
     let refresh = i18n::t(&app.bundle, "dash-footer-refresh");
     let quit = i18n::t(&app.bundle, "dash-footer-quit");
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(count, Style::default().fg(Color::Cyan)),
-        Span::raw("    "),
-        Span::styled("↑↓/jk", bold),
-        Span::raw(format!(" {nav}    ")),
-        Span::styled("t", bold),
-        Span::raw(" talk    "),
-        Span::styled("l", bold),
-        Span::raw(" log    "),
-        Span::styled("i", bold),
-        Span::raw(" inbox    "),
-        Span::styled("s", bold),
-        Span::raw(" start    "),
-        Span::styled("x", bold),
-        Span::raw(" stop    "),
-        Span::styled("r", bold),
-        Span::raw(format!(" {refresh}    ")),
-        Span::styled("?", bold),
-        Span::raw(" help    "),
-        Span::styled("q/Esc", bold),
-        Span::raw(format!(" {quit}")),
-    ]))
-    .alignment(Alignment::Center);
+
+    // The full legend is one un-wrappable row (the footer is 1 line tall), so on
+    // a narrow terminal it would clip the rightmost hints — including `q/Esc`.
+    // Below a width threshold fall back to a core legend and let `?` carry the
+    // rest. The threshold leaves headroom for i18n label-length variation
+    // across locales (the shipped Thai labels happen to be shorter than the
+    // English ones, but future locales may not be).
+    let spans = if area.width < 100 {
+        vec![
+            Span::styled(count, Style::default().fg(tone(design::color::ACCENT))),
+            Span::raw("  "),
+            Span::styled("↑↓", bold),
+            Span::raw(format!(" {nav}  ")),
+            Span::styled("t", bold),
+            Span::raw(" talk  "),
+            Span::styled("?", bold),
+            Span::raw(" help  "),
+            Span::styled("q", bold),
+            Span::raw(format!(" {quit}")),
+        ]
+    } else {
+        vec![
+            Span::styled(count, Style::default().fg(tone(design::color::ACCENT))),
+            Span::raw("    "),
+            Span::styled("↑↓/jk", bold),
+            Span::raw(format!(" {nav}    ")),
+            Span::styled("t", bold),
+            Span::raw(" talk    "),
+            Span::styled("l", bold),
+            Span::raw(" log    "),
+            Span::styled("i", bold),
+            Span::raw(" inbox    "),
+            Span::styled("s", bold),
+            Span::raw(" start    "),
+            Span::styled("x", bold),
+            Span::raw(" stop    "),
+            Span::styled("r", bold),
+            Span::raw(format!(" {refresh}    ")),
+            Span::styled("?", bold),
+            Span::raw(" help    "),
+            Span::styled("q/Esc", bold),
+            Span::raw(format!(" {quit}")),
+        ]
+    };
+    let footer = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
     f.render_widget(footer, area);
 }
 
@@ -1406,24 +1526,46 @@ mod tests {
 
     #[test]
     fn activity_display_covers_every_state_and_absence() {
+        // Expectations come from the design tokens — the single source of
+        // truth — so a palette change doesn't break this test, while a
+        // mapping mistake (wrong token for a state) still does.
         assert_eq!(
             activity_display(Some(&SessionState::Working)),
-            ("●", Color::Green, "working")
+            (
+                design::glyph::ACTIVITY_WORKING,
+                tone(design::color::WORKING),
+                "working"
+            )
         );
         assert_eq!(
             activity_display(Some(&SessionState::Idle)),
-            ("◑", Color::Yellow, "idle")
+            (
+                design::glyph::ACTIVITY_IDLE,
+                tone(design::color::IDLE),
+                "idle"
+            )
         );
         assert_eq!(
             activity_display(Some(&SessionState::Running)),
-            ("●", Color::Cyan, "running")
+            (
+                design::glyph::ACTIVITY_RUNNING,
+                tone(design::color::RUNNING),
+                "running"
+            )
         );
         assert_eq!(
             activity_display(Some(&SessionState::Stale)),
-            ("○", Color::DarkGray, "stale")
+            (
+                design::glyph::ACTIVITY_STALE,
+                tone(design::color::STALE),
+                "stale"
+            )
         );
-        // No live session → dim em-dash, empty label.
-        assert_eq!(activity_display(None), ("—", Color::DarkGray, ""));
+        // No live session → muted em-dash, empty label.
+        assert_eq!(
+            activity_display(None),
+            (design::glyph::ACTIVITY_NONE, tone(design::color::MUTED), "")
+        );
     }
 
     #[test]

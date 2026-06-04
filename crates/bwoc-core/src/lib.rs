@@ -5,6 +5,7 @@
 
 pub mod chat_proto;
 pub mod deep_memory;
+pub mod design;
 pub mod doc_kind;
 pub mod env_scrub;
 pub mod error;
