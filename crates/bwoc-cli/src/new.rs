@@ -31,6 +31,9 @@ static EMBEDDED_TEMPLATE: Dir<'_> =
 pub struct NewArgs {
     pub name: String,
     pub target: Option<PathBuf>,
+    /// Workspace the agent lands in when `target` is not given. Standard
+    /// resolution: this flag > `BWOC_WORKSPACE` env > ancestor walk from cwd.
+    pub workspace: Option<PathBuf>,
     pub template: Option<PathBuf>,
     pub backend: Backend,
     pub lang: String,
@@ -360,18 +363,37 @@ fn resolve_template(explicit: Option<&Path>) -> Result<PathBuf, NewError> {
     Ok(tmp)
 }
 
-fn default_target(template: &Path, name: &str) -> PathBuf {
+/// Resolve the workspace the new agent should land in, following the standard
+/// precedence from WORKSPACE.en.md: explicit `--workspace` > `BWOC_WORKSPACE`
+/// env > ancestor walk from cwd. Previously only the ancestor walk ran, so
+/// `BWOC_WORKSPACE=/tmp/ws bwoc new …` silently created the agent in whatever
+/// workspace enclosed the *cwd* — e.g. the live fleet instead of a scratch one.
+fn resolve_target_workspace(explicit: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        return Some(p.to_path_buf());
+    }
+    if let Ok(env_path) = std::env::var("BWOC_WORKSPACE") {
+        if !env_path.is_empty() {
+            return Some(PathBuf::from(env_path));
+        }
+    }
+    let cwd = std::env::current_dir().ok()?;
+    find_workspace_root_from(&cwd)
+}
+
+fn default_target(template: &Path, name: &str, workspace: Option<&Path>) -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    // 1. Workspace-aware (highest priority): if cwd is inside a BWOC
-    //    workspace, place the new agent at
+    // 1. Workspace-aware (highest priority): place the new agent at
     //    `<workspace_root>/<defaults.agents_dir>/agent-<name>` per
-    //    WORKSPACE.en.md. Even when running from inside the framework
-    //    repo (which is itself a workspace), this wins — the previous
-    //    "framework-developer sibling" branch placed agents OUTSIDE
-    //    `agents/` and required users to manually `mv` after, then
-    //    left the registry pointing at the wrong relative path.
-    if let Some(ws_root) = find_workspace_root_from(&cwd) {
+    //    WORKSPACE.en.md. The workspace comes from the standard resolution
+    //    (--workspace > BWOC_WORKSPACE > ancestor walk from cwd). Even when
+    //    running from inside the framework repo (which is itself a
+    //    workspace), this wins — the previous "framework-developer sibling"
+    //    branch placed agents OUTSIDE `agents/` and required users to
+    //    manually `mv` after, then left the registry pointing at the wrong
+    //    relative path.
+    if let Some(ws_root) = workspace.map(Path::to_path_buf) {
         let agents_dir = Workspace::load(&ws_root)
             .map(|w| w.defaults.agents_dir)
             .unwrap_or_else(|_| "agents".to_string());
@@ -540,10 +562,10 @@ fn resolve(
     }
 
     let template = resolve_template(args.template.as_deref())?;
-    let target = args
-        .target
-        .clone()
-        .unwrap_or_else(|| default_target(&template, &args.name));
+    let target = args.target.clone().unwrap_or_else(|| {
+        let ws = resolve_target_workspace(args.workspace.as_deref());
+        default_target(&template, &args.name, ws.as_deref())
+    });
 
     let descriptions = read_descriptions(&template)?;
     let tty = io::stdin().is_terminal();
@@ -1289,6 +1311,7 @@ mod tests {
         NewArgs {
             name: "demo".to_string(),
             target: None,
+            workspace: None,
             template: None,
             backend: Backend::Claude,
             lang: "en".to_string(),
@@ -1311,6 +1334,28 @@ mod tests {
             skills: None,
             json: false,
         }
+    }
+
+    #[test]
+    fn resolve_target_workspace_prefers_explicit() {
+        // Explicit flag wins without consulting env/cwd (env-dependent paths
+        // are exercised by the CLI smoke tests — env mutation races parallel
+        // unit tests).
+        let p = std::path::Path::new("/explicit/ws");
+        assert_eq!(
+            resolve_target_workspace(Some(p)),
+            Some(std::path::PathBuf::from("/explicit/ws"))
+        );
+    }
+
+    #[test]
+    fn default_target_uses_workspace_override() {
+        let ws = std::env::temp_dir().join(format!("bwoc-newws-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let t = default_target(std::path::Path::new("/tpl"), "zeta", Some(&ws));
+        // No workspace.toml → agents_dir falls back to "agents".
+        assert_eq!(t, ws.join("agents").join("agent-zeta"));
+        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
@@ -1493,6 +1538,7 @@ mod tests {
         let args = NewArgs {
             name: "scribe".to_string(),
             target: Some(target.clone()),
+            workspace: None,
             template: Some(template),
             backend: Backend::Claude,
             lang: "en".to_string(),

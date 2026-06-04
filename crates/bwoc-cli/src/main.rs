@@ -1855,7 +1855,11 @@ impl SpawnArgs {
 struct NewArgs {
     /// Agent name (kebab-case, e.g. "database-schema").
     name: String,
-    /// Target directory for the new agent. Default: ../agent-<name>/ relative to template.
+    /// Workspace the agent lands in when --target is not given. Standard
+    /// resolution: this flag > BWOC_WORKSPACE env > ancestor walk from cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Target directory for the new agent. Default: <workspace>/<agents_dir>/agent-<name>.
     #[arg(long)]
     target: Option<PathBuf>,
     /// Path to the template directory. Default: auto-detect `modules/agent-template/` from cwd ancestors.
@@ -1932,6 +1936,7 @@ impl NewArgs {
         new::NewArgs {
             name: self.name,
             target: self.target,
+            workspace: self.workspace,
             template: self.template,
             backend: self.backend,
             lang,
