@@ -1859,7 +1859,9 @@ struct NewArgs {
     /// resolution: this flag > BWOC_WORKSPACE env > ancestor walk from cwd.
     #[arg(long = "workspace")]
     workspace: Option<PathBuf>,
-    /// Target directory for the new agent. Default: <workspace>/<agents_dir>/agent-<name>.
+    /// Target directory for the new agent. Default:
+    /// <workspace>/<agents_dir>/agent-<name> when a workspace resolves;
+    /// otherwise next to the template (fresh clone) or under cwd.
     #[arg(long)]
     target: Option<PathBuf>,
     /// Path to the template directory. Default: auto-detect `modules/agent-template/` from cwd ancestors.

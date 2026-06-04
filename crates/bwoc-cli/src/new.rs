@@ -1350,12 +1350,12 @@ mod tests {
 
     #[test]
     fn default_target_uses_workspace_override() {
-        let ws = std::env::temp_dir().join(format!("bwoc-newws-{}", std::process::id()));
-        std::fs::create_dir_all(&ws).unwrap();
-        let t = default_target(std::path::Path::new("/tpl"), "zeta", Some(&ws));
+        // tempfile guarantees cleanup even if an assertion panics.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let t = default_target(std::path::Path::new("/tpl"), "zeta", Some(ws));
         // No workspace.toml → agents_dir falls back to "agents".
         assert_eq!(t, ws.join("agents").join("agent-zeta"));
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
