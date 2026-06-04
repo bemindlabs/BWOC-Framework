@@ -22,3 +22,6 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # Signature-verification tests generate ephemeral keypairs in a tempdir.
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+interprocess = { workspace = true }

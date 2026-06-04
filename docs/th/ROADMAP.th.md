@@ -59,7 +59,7 @@ nav_order: 6
 
 | รายการ | หมายเหตุ |
 |---|---|
-| Daemon `bwoc-agent --serve` | Unix-only (`.bwoc/agent.pid` + `.bwoc/agent.sock`; stub cfg-gated บน Windows) |
+| Daemon `bwoc-agent --serve` | Unix: `.bwoc/agent.pid` + `.bwoc/agent.sock`; Windows: named pipe (`\\.\pipe\bwoc-agent-<hash>` บันทึกใน `.bwoc/agent.pipe`) |
 | IPC control socket — protocol แบบ line-text | `PING`/`STATUS`/`STOP` ผ่าน Unix domain socket; debug ได้ด้วย `nc -U` |
 | `bwoc status [name]` | health + runtime indicator (●/○) + uptime ผ่าน socket query; `--all` พิมพ์ detail block ของทุก agent (loop ของ single-agent view; `[name]` กับ `--all` เป็น clap-mutex) |
 | `bwoc list` | registry view + runtime indicator + UPTIME column (5m12s เมื่อ alive) + INBOX count; filter `--running` / `--status` / `--backend` / `--inbox-pending` (รวมกันได้); `--sort id\|inbox\|incarnated\|backend` (stable; default = registry order); `--count` (เฉพาะจำนวนแถว) / `--names-only` (bare ids สำหรับ shell loop); JSON มี `uptime_seconds` ต่อ agent (nullable); ใช้ทั้ง human + `--json` |
@@ -80,7 +80,7 @@ nav_order: 6
 | `bwoc new --json` | Emit `{ agent_id, target, registered_in, symlinks, mindset_stubs, skill_stubs, persona_filled }` แทน human report สำหรับ scripted multi-agent setup |
 | `bwoc init --json` | Emit `{ workspace, name, version, defaults, files_created }` แทน human creation report ใช้คู่กับ `bwoc new --json` สำหรับ script chain end-to-end: `PATH=$(bwoc init /p --json \| jq -r .workspace) && bwoc new alpha --workspace "$PATH" --json …` entry-point สุดท้ายที่ยังไม่มี `--json` — JSON-everywhere matrix ครอบทุก read+write surface แล้ว (interactive — spawn / chat / dashboard — งดเว้นโดยตั้งใจ) |
 | Module `livecheck` ที่ใช้ร่วม | รวม 5 copy ของ `signal_zero_alive` / `running_pid` / `query_uptime` / `format_uptime` / `inbox_count` |
-| Stub `bwoc-agent --serve` สำหรับ Windows | build + run default mode ได้; `--serve` exit 2 พร้อมข้อความ "Unix-only" |
+| `bwoc-agent --serve` บน Windows | daemon named-pipe จริง (เดิม: stub exit 2) protocol line-text เดิม; client (`ping`/`status`/`stop`) คุยผ่าน pipe; liveness/kill ผ่าน `tasklist`/`taskkill` |
 | `bwoc workspace info --path-only` | print workspace root ที่ resolved ออกมาบรรทัดเดียว ไม่มีตกแต่ง — สำหรับ shell idiom `cd "$(bwoc workspace info --path-only)"` |
 | `bwoc log <agent>` | Tail daemon stderr จาก `<agent>/.bwoc/agent.log`; `-f`/`--follow` สำหรับ live stream; `-n N` สำหรับ N บรรทัดล่าสุด; `--clear` truncate ในที่ |
 | Per-workspace memory scaffold | `bwoc init` สร้าง `.bwoc/memory/` พร้อม README อธิบาย 4-tier scope hierarchy (per-agent / per-workspace / per-user / Tier 2) |
@@ -94,7 +94,7 @@ nav_order: 6
 - **Code signing** — Apple notarization + Windows Authenticode สำหรับ release artifact (ต้องการ user-cert authorization)
 - **Build Linux musl** — `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` ship แล้ว; musl (Alpine / distroless) เพิ่มได้เมื่อมีความต้องการ
 - ~~**เครื่องมือ memory mining และ interface Tier 2 backend ที่ pluggable**~~ — **ship แล้ว** ทั้ง interface (`bwoc-core::deep_memory`) และ reference implementation (`bwoc-deep-memory`); ดู "Ship นอก Phase 3" ด้านล่าง
-- **Daemon path สำหรับ Windows ผ่าน named-pipe** — แทน stub cfg-gated ด้วย implementation Windows จริง
+- ~~**Daemon path สำหรับ Windows ผ่าน named-pipe**~~ — **ship แล้ว** `bwoc-agent --serve` รัน daemon named-pipe จริงบน Windows; client `ping`/`status`/`stop` คุยผ่าน pipe (ดูตาราง Phase 2)
 
 ---
 

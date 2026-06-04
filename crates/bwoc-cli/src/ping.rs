@@ -55,19 +55,34 @@ pub fn run(args: PingArgs) -> i32 {
         return 2;
     };
 
-    let sock_path = workspace.join(&entry.path).join(".bwoc/agent.sock");
-    if !sock_path.exists() {
+    let marker = endpoint_marker(&workspace.join(&entry.path));
+    if !marker.exists() {
         eprintln!(
-            "bwoc ping: agent socket missing at {}. Is `bwoc-agent --serve` running in that dir?",
-            sock_path.display()
+            "bwoc ping: agent endpoint missing at {}. Is `bwoc-agent --serve` running in that dir?",
+            marker.display()
         );
         return 2;
     }
 
-    match ping_one(&sock_path, &entry.id) {
+    match ping_one(&marker, &entry.id) {
         Ok(true) => 0,
         Ok(false) => 1,
         Err(code) => code,
+    }
+}
+
+/// The on-disk marker showing a daemon serves this agent: the Unix domain
+/// socket itself, or — Windows, where the pipe lives in a global namespace,
+/// not the filesystem — the `.bwoc/agent.pipe` name file the daemon writes on
+/// start and removes on clean exit.
+fn endpoint_marker(agent_dir: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        agent_dir.join(".bwoc/agent.pipe")
+    }
+    #[cfg(not(windows))]
+    {
+        agent_dir.join(".bwoc/agent.sock")
     }
 }
 
@@ -105,9 +120,32 @@ fn ping_one(sock_path: &std::path::Path, id: &str) -> Result<bool, i32> {
     Ok(response == "PONG")
 }
 
-#[cfg(not(unix))]
+/// Windows: PING over the agent's named pipe. `sock_path` is the Unix-shaped
+/// `<agent>/.bwoc/agent.sock` the caller computed — the agent dir (its
+/// grandparent) is what names the pipe.
+#[cfg(windows)]
+fn ping_one(sock_path: &std::path::Path, id: &str) -> Result<bool, i32> {
+    let Some(agent_dir) = sock_path.parent().and_then(|p| p.parent()) else {
+        eprintln!(
+            "bwoc ping: cannot derive agent dir from {}",
+            sock_path.display()
+        );
+        return Err(1);
+    };
+    let Some(response) = crate::livecheck::pipe_request(agent_dir, "PING") else {
+        eprintln!(
+            "bwoc ping: failed to connect to the named pipe for {}",
+            agent_dir.display()
+        );
+        return Err(2);
+    };
+    println!("{id} → {response}");
+    Ok(response == "PONG")
+}
+
+#[cfg(not(any(unix, windows)))]
 fn ping_one(_sock_path: &std::path::Path, _id: &str) -> Result<bool, i32> {
-    eprintln!("bwoc ping: Unix domain sockets only (Windows support: Phase 2 sub-task)");
+    eprintln!("bwoc ping: no IPC transport for this platform");
     Err(1)
 }
 
@@ -129,13 +167,13 @@ fn ping_all(workspace: &std::path::Path, registry: &AgentsRegistry) -> i32 {
     let mut protocol_drift = 0u32;
     println!();
     for entry in &registry.agents {
-        let sock_path = workspace.join(&entry.path).join(".bwoc/agent.sock");
-        if !sock_path.exists() {
+        let marker = endpoint_marker(&workspace.join(&entry.path));
+        if !marker.exists() {
             println!("{} → not running", entry.id);
             not_running += 1;
             continue;
         }
-        match ping_one(&sock_path, &entry.id) {
+        match ping_one(&marker, &entry.id) {
             Ok(true) => pong += 1,
             Ok(false) => protocol_drift += 1,
             Err(_) => failed += 1,

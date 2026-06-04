@@ -366,15 +366,56 @@ fn escalating_shutdown(agent_path: &std::path::Path) -> StopOutcome {
     StopOutcome::CouldNotKill
 }
 
-#[cfg(not(unix))]
+/// Windows escalation, mirroring the Unix ladder: pipe STOP (daemon's clean
+/// path) → `taskkill /PID` (polite, the WM_CLOSE analogue of SIGTERM) →
+/// `taskkill /F /PID` (TerminateProcess, the SIGKILL analogue — daemon leaves
+/// debris that doctor sweeps later).
+#[cfg(windows)]
+fn escalating_shutdown(agent_path: &std::path::Path) -> StopOutcome {
+    use std::time::Duration;
+
+    let pid_path = agent_path.join(".bwoc/agent.pid");
+    let Ok(raw) = std::fs::read_to_string(&pid_path) else {
+        return StopOutcome::NotRunning;
+    };
+    let Ok(pid) = raw.trim().parse::<u32>() else {
+        return StopOutcome::NotRunning;
+    };
+    if !crate::livecheck::signal_zero_alive(pid) {
+        return StopOutcome::NotRunning;
+    }
+
+    // Step 1 — pipe STOP. Daemon removes its own PID + pipe-name files.
+    if try_signal_stop(agent_path) && wait_for_exit(pid, Duration::from_secs(3)) {
+        return StopOutcome::SocketOk;
+    }
+
+    // Step 2 — polite taskkill (no /F): close-message escalation.
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string()])
+        .output();
+    if wait_for_exit(pid, Duration::from_secs(3)) {
+        return StopOutcome::Sigterm;
+    }
+
+    // Step 3 — forced taskkill: TerminateProcess; no handler runs.
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output();
+    if wait_for_exit(pid, Duration::from_secs(1)) {
+        return StopOutcome::Sigkill;
+    }
+    StopOutcome::CouldNotKill
+}
+
+#[cfg(not(any(unix, windows)))]
 fn escalating_shutdown(_agent_path: &std::path::Path) -> StopOutcome {
-    // Windows path is the cfg-not-unix stub — daemon never runs on Windows yet.
     StopOutcome::NotRunning
 }
 
-/// Poll signal-0 every 100ms for up to `deadline`. Returns true once
+/// Poll liveness every 100ms for up to `deadline`. Returns true once
 /// the process is gone, false if it's still alive past the window.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn wait_for_exit(pid: u32, deadline: std::time::Duration) -> bool {
     use std::time::{Duration, Instant};
     let until = Instant::now() + deadline;
@@ -416,7 +457,15 @@ fn try_signal_stop(agent_path: &std::path::Path) -> bool {
     response.trim().starts_with("OK")
 }
 
-#[cfg(not(unix))]
+/// Windows: STOP over the agent's named pipe (see `livecheck::pipe_request`).
+#[cfg(windows)]
+fn try_signal_stop(agent_path: &std::path::Path) -> bool {
+    crate::livecheck::pipe_request(agent_path, "STOP")
+        .map(|r| r.starts_with("OK"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn try_signal_stop(_agent_path: &std::path::Path) -> bool {
     false
 }

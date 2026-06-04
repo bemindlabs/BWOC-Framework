@@ -18,9 +18,7 @@ use std::time::{Duration, Instant};
 use bwoc_core::manifest::Manifest;
 
 mod i18n;
-#[cfg(unix)]
 mod task_watch;
-#[cfg(unix)]
 mod trust;
 
 fn main() -> ExitCode {
@@ -78,9 +76,10 @@ USAGE:
     bwoc-agent [FLAGS]
 
 FLAGS:
-    --serve         Run as daemon: write .bwoc/agent.pid, open Unix socket
-                    at .bwoc/agent.sock, watch inbox, block on SIGTERM/SIGINT.
-                    Unix-only (Windows named-pipe path queued).
+    --serve         Run as daemon: write .bwoc/agent.pid, open the control
+                    endpoint (Unix: socket at .bwoc/agent.sock; Windows: named
+                    pipe recorded in .bwoc/agent.pipe), watch inbox, block
+                    until SIGTERM/SIGINT (Ctrl-C).
 
     --version, -V   Print version and exit
     --help, -h      Print this message and exit
@@ -98,48 +97,52 @@ SEE ALSO:
     );
 }
 
-/// Non-Unix stub. The full `--serve` daemon mode relies on Unix domain
-/// sockets, signal handling via signal-0, and ctrlc — none of which
-/// have shipped on the Windows path yet. Document the gap clearly so
-/// users hitting `bwoc start` on Windows see the right error rather
-/// than a cryptic compile-or-runtime failure.
-#[cfg(not(unix))]
+/// Fallback stub for platforms with neither Unix domain sockets nor Windows
+/// named pipes (none of the supported targets today — kept so the match on
+/// platforms stays total).
+#[cfg(not(any(unix, windows)))]
 fn serve_loop(_cwd: &std::path::Path, _manifest: &Manifest) -> ExitCode {
-    eprintln!(
-        "bwoc-agent --serve: daemon mode is currently Unix-only \
-         (uses Unix domain sockets + signal-0 liveness). \
-         Windows named-pipe support is queued; see ROADMAP."
-    );
+    eprintln!("bwoc-agent --serve: no IPC transport for this platform.");
     ExitCode::from(2)
 }
 
-/// `--serve` mode: write a PID file at `.bwoc/agent.pid`, open a Unix
-/// domain socket at `.bwoc/agent.sock`, and accept simple line-based
-/// requests until SIGTERM / SIGINT. Removes both files on exit.
+/// One poll of the platform listener, as seen by [`serve_core`].
+enum Accepted<S> {
+    /// A client connected.
+    Conn(S),
+    /// Nothing waiting (non-blocking accept would block) — idle tick.
+    Idle,
+    /// The listener broke; the daemon exits its loop.
+    Fatal(std::io::Error),
+}
+
+/// `--serve` mode, transport-independent core: write a PID file at
+/// `.bwoc/agent.pid`, accept simple line-based requests from `try_accept`
+/// until SIGTERM / SIGINT (Ctrl-C), watching the inbox + Saṅgha tasks on idle
+/// ticks. The platform `serve_loop`s own the endpoint (Unix domain socket /
+/// Windows named pipe) and pass an accept closure + endpoint cleanup.
 ///
 /// Phase 0 IPC protocol — line-based, one request per connection:
 ///   `PING\n`       → `PONG\n`
+///   `STATUS\n`     → `OK uptime_secs=N pid=P\n`
+///   `STOP\n`       → `OK shutting down\n` (then exits)
 ///   anything else  → `ERR unknown command\n`
 ///
-/// Future commands (STATUS / LOG / SEND / STOP) will slot in here as
-/// they're spec'd. Keeping it line-text instead of binary so it's
-/// debuggable with `nc -U`.
-#[cfg(unix)]
-fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
-    use std::io::ErrorKind;
-    use std::os::unix::net::UnixListener;
-
+/// Kept line-text instead of binary so it's debuggable with `nc -U` on Unix.
+fn serve_core<S, A, C>(
+    cwd: &std::path::Path,
+    manifest: &Manifest,
+    endpoint_line: &str,
+    mut try_accept: A,
+    cleanup_endpoint: C,
+) -> ExitCode
+where
+    S: std::io::Read + std::io::Write,
+    A: FnMut() -> Accepted<S>,
+    C: Fn(),
+{
     let bwoc_dir = cwd.join(".bwoc");
-    if let Err(e) = std::fs::create_dir_all(&bwoc_dir) {
-        eprintln!("bwoc-agent --serve: failed to create .bwoc/: {e}");
-        return ExitCode::from(1);
-    }
     let pid_path = bwoc_dir.join("agent.pid");
-    let sock_path = bwoc_dir.join("agent.sock");
-
-    // If a previous run left a socket behind, remove it (the pid file is
-    // handled by the doctor stale-sweep separately).
-    let _ = std::fs::remove_file(&sock_path);
 
     let pid = std::process::id();
     if let Err(e) = std::fs::write(&pid_path, format!("{pid}\n")) {
@@ -147,28 +150,12 @@ fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
             "bwoc-agent --serve: failed to write {}: {e}",
             pid_path.display()
         );
-        return ExitCode::from(1);
-    }
-    let listener = match UnixListener::bind(&sock_path) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!(
-                "bwoc-agent --serve: failed to bind {}: {e}",
-                sock_path.display()
-            );
-            let _ = std::fs::remove_file(&pid_path);
-            return ExitCode::from(1);
-        }
-    };
-    if let Err(e) = listener.set_nonblocking(true) {
-        eprintln!("bwoc-agent --serve: failed to set non-blocking: {e}");
-        let _ = std::fs::remove_file(&pid_path);
-        let _ = std::fs::remove_file(&sock_path);
+        cleanup_endpoint();
         return ExitCode::from(1);
     }
 
     eprintln!("bwoc-agent --serve: pid {pid} → {}", pid_path.display());
-    eprintln!("bwoc-agent --serve: socket → {}", sock_path.display());
+    eprintln!("bwoc-agent --serve: {endpoint_line}");
     eprintln!("bwoc-agent --serve: blocking on SIGTERM / SIGINT (Ctrl-C)");
 
     let running = Arc::new(AtomicBool::new(true));
@@ -178,7 +165,7 @@ fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
     }) {
         eprintln!("bwoc-agent --serve: failed to install signal handler: {e}");
         let _ = std::fs::remove_file(&pid_path);
-        let _ = std::fs::remove_file(&sock_path);
+        cleanup_endpoint();
         return ExitCode::from(1);
     }
 
@@ -266,9 +253,9 @@ fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
     // Single-threaded accept loop with poll. Each accept is non-blocking
     // and yields control quickly so the signal check stays responsive.
     while running.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok((stream, _addr)) => handle_client(stream, &running, &start),
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+        match try_accept() {
+            Accepted::Conn(stream) => handle_client(stream, &running, &start),
+            Accepted::Idle => {
                 // Idle: check the inbox for new envelopes since last poll.
                 let new_pos =
                     check_inbox_for_new(&inbox_path, inbox_pos, &trust_ctx, &refusals_path);
@@ -284,34 +271,151 @@ fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => {
+            Accepted::Fatal(e) => {
                 eprintln!("bwoc-agent --serve: accept error: {e}");
                 break;
             }
         }
     }
 
-    // Graceful exit — remove PID file + socket.
+    // Graceful exit — remove PID file + endpoint artifacts.
     if let Err(e) = std::fs::remove_file(&pid_path) {
         eprintln!(
             "bwoc-agent --serve: warning — failed to remove {}: {e}",
             pid_path.display()
         );
     }
-    if let Err(e) = std::fs::remove_file(&sock_path) {
-        eprintln!(
-            "bwoc-agent --serve: warning — failed to remove {}: {e}",
-            sock_path.display()
-        );
-    }
+    cleanup_endpoint();
     eprintln!("bwoc-agent --serve: stopped cleanly");
     ExitCode::SUCCESS
+}
+
+/// Unix transport: a Unix domain socket at `.bwoc/agent.sock` (debuggable with
+/// `nc -U`). The path contract is stable — clients connect to the same file.
+#[cfg(unix)]
+fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
+    use std::io::ErrorKind;
+    use std::os::unix::net::UnixListener;
+
+    let bwoc_dir = cwd.join(".bwoc");
+    if let Err(e) = std::fs::create_dir_all(&bwoc_dir) {
+        eprintln!("bwoc-agent --serve: failed to create .bwoc/: {e}");
+        return ExitCode::from(1);
+    }
+    let sock_path = bwoc_dir.join("agent.sock");
+
+    // If a previous run left a socket behind, remove it (the pid file is
+    // handled by the doctor stale-sweep separately).
+    let _ = std::fs::remove_file(&sock_path);
+
+    let listener = match UnixListener::bind(&sock_path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!(
+                "bwoc-agent --serve: failed to bind {}: {e}",
+                sock_path.display()
+            );
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = listener.set_nonblocking(true) {
+        eprintln!("bwoc-agent --serve: failed to set non-blocking: {e}");
+        let _ = std::fs::remove_file(&sock_path);
+        return ExitCode::from(1);
+    }
+
+    let endpoint_line = format!("socket → {}", sock_path.display());
+    let cleanup_sock = sock_path.clone();
+    serve_core::<std::os::unix::net::UnixStream, _, _>(
+        cwd,
+        manifest,
+        &endpoint_line,
+        move || match listener.accept() {
+            Ok((stream, _addr)) => Accepted::Conn(stream),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => Accepted::Idle,
+            Err(e) => Accepted::Fatal(e),
+        },
+        move || {
+            if let Err(e) = std::fs::remove_file(&cleanup_sock) {
+                if e.kind() != ErrorKind::NotFound {
+                    eprintln!(
+                        "bwoc-agent --serve: warning — failed to remove {}: {e}",
+                        cleanup_sock.display()
+                    );
+                }
+            }
+        },
+    )
+}
+
+/// Windows transport: a named pipe at `\\.\pipe\bwoc-agent-<hash>`, where the
+/// hash derives deterministically from the agent directory
+/// (`bwoc_core::ipc::pipe_name`) so clients compute the same name without any
+/// rendezvous. The name is also recorded in `.bwoc/agent.pipe` for `doctor`
+/// and humans.
+#[cfg(windows)]
+fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
+    use interprocess::local_socket::{
+        GenericNamespaced, ListenerNonblockingMode, ListenerOptions, prelude::*,
+    };
+    use std::io::ErrorKind;
+
+    let bwoc_dir = cwd.join(".bwoc");
+    if let Err(e) = std::fs::create_dir_all(&bwoc_dir) {
+        eprintln!("bwoc-agent --serve: failed to create .bwoc/: {e}");
+        return ExitCode::from(1);
+    }
+
+    let pipe = bwoc_core::ipc::pipe_name(cwd);
+    let ns_name = match pipe.clone().to_ns_name::<GenericNamespaced>() {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("bwoc-agent --serve: invalid pipe name '{pipe}': {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let listener = match ListenerOptions::new()
+        .name(ns_name)
+        .nonblocking(ListenerNonblockingMode::Accept)
+        .create_sync()
+    {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("bwoc-agent --serve: failed to create pipe '{pipe}': {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    // Record the pipe name so doctor/status and humans can find it — the
+    // Windows analogue of the agent.sock path being visible on disk.
+    let pipe_file = bwoc_dir.join("agent.pipe");
+    if let Err(e) = std::fs::write(&pipe_file, format!("{pipe}\n")) {
+        eprintln!(
+            "bwoc-agent --serve: warning — failed to write {}: {e}",
+            pipe_file.display()
+        );
+    }
+
+    let endpoint_line = format!(r"pipe → \\.\pipe\{pipe}");
+    let cleanup_pipe_file = pipe_file.clone();
+    serve_core::<interprocess::local_socket::Stream, _, _>(
+        cwd,
+        manifest,
+        &endpoint_line,
+        move || match listener.accept() {
+            Ok(stream) => Accepted::Conn(stream),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => Accepted::Idle,
+            Err(e) => Accepted::Fatal(e),
+        },
+        move || {
+            let _ = std::fs::remove_file(&cleanup_pipe_file);
+        },
+    )
 }
 
 /// Load the persisted inbox cursor (byte offset into inbox.jsonl).
 /// Returns None if the file is missing, unreadable, or malformed —
 /// callers treat that as "first run; start at current EOF".
-#[cfg(unix)]
 fn load_cursor(path: &std::path::Path) -> Option<u64> {
     let raw = std::fs::read_to_string(path).ok()?;
     raw.trim().parse::<u64>().ok()
@@ -320,7 +424,6 @@ fn load_cursor(path: &std::path::Path) -> Option<u64> {
 /// Save the inbox cursor. Best-effort — failure logs to stderr but
 /// doesn't bring down the daemon (cursor staleness costs at-most one
 /// redundant message announcement on next restart).
-#[cfg(unix)]
 fn save_cursor(path: &std::path::Path, pos: u64) {
     if let Err(e) = std::fs::write(path, format!("{pos}\n")) {
         eprintln!(
@@ -335,7 +438,6 @@ fn save_cursor(path: &std::path::Path, pos: u64) {
 /// after consumption. Idempotent on no-change — returns the same offset.
 /// Tolerant of: missing file (offset stays), file truncation (resets to
 /// EOF), partial last-line (only consumes complete `\n`-terminated lines).
-#[cfg(unix)]
 fn check_inbox_for_new(
     path: &std::path::Path,
     from_offset: u64,
@@ -400,7 +502,6 @@ fn check_inbox_for_new(
 /// Best-effort — failure logs a warning and continues. The inbox cursor
 /// still advances even if the sidecar write fails, since we'd rather
 /// drop a refusal note than reread the envelope forever.
-#[cfg(unix)]
 fn record_refusal(path: &std::path::Path, refusal: &trust::Refusal) {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -427,7 +528,6 @@ fn record_refusal(path: &std::path::Path, refusal: &trust::Refusal) {
 
 /// Variant of `announce` for refused envelopes — flags REFUSED + lists
 /// missing qualities so the operator sees the policy fire on `bwoc log -f`.
-#[cfg(unix)]
 fn announce_refused(line: &str, refusal: &trust::Refusal) {
     let from = serde_json::from_str::<serde_json::Value>(line)
         .ok()
@@ -445,14 +545,12 @@ fn announce_refused(line: &str, refusal: &trust::Refusal) {
 /// already been announced via `announce`; this is the policy-level note.
 ///
 /// Task (f): daemon emits this line on Warn and does NOT record a refusal.
-#[cfg(unix)]
 fn announce_warned(from: &str, missing: &[String]) {
     eprintln!("bwoc-agent: trust_warn ← {from}: missing={missing:?}");
 }
 
 /// Print one inbox envelope to stderr in a one-line form. Tries to parse
 /// as JSON and pretty-print {from, message}; falls back to raw line.
-#[cfg(unix)]
 fn announce(line: &str) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
         let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("?");
@@ -463,17 +561,21 @@ fn announce(line: &str) {
     }
 }
 
-#[cfg(unix)]
-fn handle_client(
-    mut stream: std::os::unix::net::UnixStream,
+fn handle_client<S: std::io::Read + std::io::Write>(
+    mut stream: S,
     running: &Arc<AtomicBool>,
     start: &Instant,
 ) {
-    use std::io::{BufRead, BufReader, Write};
-    let mut reader = BufReader::new(&stream);
+    use std::io::{BufRead, BufReader};
+    // `&mut stream` (not `&stream`): `&mut R: Read` follows from `R: Read`
+    // for any transport, while `&R: Read` only exists for concrete types
+    // like UnixStream — and the borrow ends before we write the response.
     let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return;
+    {
+        let mut reader = BufReader::new(&mut stream);
+        if reader.read_line(&mut line).is_err() {
+            return;
+        }
     }
     let cmd = line.trim();
 
@@ -543,6 +645,55 @@ fn liveness_banner(
         &[("version", m.version.as_str())],
     ));
     lines.join("\n")
+}
+
+#[cfg(all(test, windows))]
+mod windows_ipc_tests {
+    use super::*;
+    use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, prelude::*};
+    use std::io::{BufRead, BufReader, Write};
+
+    /// End-to-end protocol roundtrip over a real Windows named pipe —
+    /// PING / STATUS / STOP against the same `handle_client` the daemon
+    /// serves with. Runs on the windows-latest CI leg; compiled (not run)
+    /// everywhere else via `cargo check --target x86_64-pc-windows-msvc`.
+    #[test]
+    fn named_pipe_roundtrip_ping_status_stop() {
+        let pipe = format!("bwoc-agent-test-{}", std::process::id());
+        let name = pipe.clone().to_ns_name::<GenericNamespaced>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let r2 = running.clone();
+        let server = std::thread::spawn(move || {
+            let start = Instant::now();
+            // Serve exactly three blocking accepts: PING, STATUS, STOP.
+            for _ in 0..3 {
+                let conn = listener.accept().expect("accept");
+                handle_client(conn, &r2, &start);
+            }
+        });
+
+        let req = |cmd: &str| -> String {
+            let name = pipe.clone().to_ns_name::<GenericNamespaced>().unwrap();
+            let mut s = Stream::connect(name).expect("connect");
+            s.write_all(format!("{cmd}\n").as_bytes()).expect("write");
+            let mut line = String::new();
+            BufReader::new(&mut s).read_line(&mut line).expect("read");
+            line.trim().to_string()
+        };
+
+        assert_eq!(req("PING"), "PONG");
+        let status = req("STATUS");
+        assert!(status.starts_with("OK uptime_secs="), "got: {status}");
+        assert!(status.contains("pid="), "got: {status}");
+        assert_eq!(req("STOP"), "OK shutting down");
+        assert!(
+            !running.load(Ordering::SeqCst),
+            "STOP must flip the running flag"
+        );
+        server.join().unwrap();
+    }
 }
 
 #[cfg(test)]

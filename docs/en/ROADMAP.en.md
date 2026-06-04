@@ -59,7 +59,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 
 | Item | Notes |
 |---|---|
-| `bwoc-agent --serve` daemon | Unix-only (`.bwoc/agent.pid` + `.bwoc/agent.sock`; cfg-gated stub on Windows) |
+| `bwoc-agent --serve` daemon | Unix: `.bwoc/agent.pid` + `.bwoc/agent.sock`; Windows: named pipe (`\\.\pipe\bwoc-agent-<hash>`, recorded in `.bwoc/agent.pipe`) |
 | IPC control socket — line-text protocol | `PING`/`STATUS`/`STOP` over Unix domain socket; debuggable with `nc -U` |
 | `bwoc status [name]` | Per-agent health + runtime indicator (●/○) + uptime via socket query; `--all` prints full detail block per agent (loop of single-agent view; `[name]` and `--all` are clap-mutex) |
 | `bwoc list` | Registry view with runtime indicator + UPTIME column (5m12s when alive) + INBOX count; filters `--running` / `--status` / `--backend` / `--inbox-pending` (combinable); `--sort id\|inbox\|incarnated\|backend` (stable; default = registry order); `--count` (row count) / `--names-only` (bare ids for shell iteration); JSON gains `uptime_seconds` per agent (nullable); honored by both human + `--json` |
@@ -80,7 +80,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 | `bwoc new --json` | Emits `{ agent_id, target, registered_in, symlinks, mindset_stubs, skill_stubs, persona_filled }` instead of the human report. Useful for scripted multi-agent setup. |
 | `bwoc init --json` | Emits `{ workspace, name, version, defaults, files_created }` instead of the human creation report. Pairs with `bwoc new --json` for end-to-end script chaining: `PATH=$(bwoc init /p --json \| jq -r .workspace) && bwoc new alpha --workspace "$PATH" --json …`. Last entry-point command to gain `--json` — JSON-everywhere matrix now covers every read AND write surface (interactive ones — spawn / chat / dashboard — excluded by design). |
 | Shared `livecheck` module | Consolidated 5 copies of `signal_zero_alive` / `running_pid` / `query_uptime` / `format_uptime` / `inbox_count` |
-| `bwoc-agent --serve` Windows stub | Compiles + runs default mode; `--serve` returns exit 2 with "Unix-only" message |
+| `bwoc-agent --serve` on Windows | Real named-pipe daemon (was: exit-2 stub). Same line-text protocol; clients (`ping`/`status`/`stop`) speak the pipe; liveness/kill via `tasklist`/`taskkill` |
 | `bwoc workspace info --path-only` | Emit just the resolved workspace root (one line, no decoration) — pairs with `cd "$(bwoc workspace info --path-only)"` shell idiom |
 | `bwoc log <agent>` | Tails daemon stderr from `<agent>/.bwoc/agent.log`; `-f`/`--follow` for live streaming; `-n N` for last-N lines; `--clear` truncates in place |
 | Per-workspace memory scaffold | `bwoc init` creates `.bwoc/memory/` with a README documenting the 4-tier scope hierarchy (per-agent / per-workspace / per-user / Tier 2) |
@@ -94,7 +94,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 - **Code signing** — Apple notarization + Windows Authenticode for release artifacts (user-cert authorization required).
 - **Linux musl build** — `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` ship; musl (Alpine / distroless) can be added when demanded.
 - ~~**Memory mining tooling and pluggable Tier 2 backend interface.**~~ — **shipped.** The interface (`bwoc-core::deep_memory`) and now its reference implementation (`bwoc-deep-memory`) both ship; see "Shipped beyond Phase 3" below.
-- **Windows named-pipe daemon path** — replace the cfg-gated stub with a real Windows implementation.
+- ~~**Windows named-pipe daemon path**~~ — **shipped.** `bwoc-agent --serve` runs a real named-pipe daemon on Windows; the `ping`/`status`/`stop` clients speak it (see Phase 2 table).
 
 ---
 

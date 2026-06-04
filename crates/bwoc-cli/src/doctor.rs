@@ -524,12 +524,13 @@ fn check_stale_pids(root: &Path, auto: bool) -> Vec<CheckResult> {
 
 // signal_zero_alive moved to crate::livecheck.
 
-/// Detect `<agent>/.bwoc/agent.sock` files that no live process owns.
-/// A socket is considered stale when ANY of:
-///   - sibling `agent.pid` missing  (orphan socket from a crash)
+/// Detect `<agent>/.bwoc/agent.sock` files (Unix) and `agent.pipe` name
+/// files (Windows daemon) that no live process owns. An endpoint artifact is
+/// considered stale when ANY of:
+///   - sibling `agent.pid` missing  (orphan from a crash)
 ///   - sibling `agent.pid` exists but the pid isn't alive
 ///
-/// With `--auto`, remove the stale socket. Live sockets are left alone.
+/// With `--auto`, remove the stale artifact. Live ones are left alone.
 fn check_stale_sockets(root: &Path, auto: bool) -> Vec<CheckResult> {
     let Ok(registry) = AgentsRegistry::load(root) else {
         return vec![];
@@ -537,46 +538,51 @@ fn check_stale_sockets(root: &Path, auto: bool) -> Vec<CheckResult> {
     let mut out = Vec::new();
     for a in &registry.agents {
         let bwoc = root.join(&a.path).join(".bwoc");
-        let sock_path = bwoc.join("agent.sock");
-        if !sock_path.exists() {
-            continue;
-        }
-        // Is there a live owning process?
-        let pid_path = bwoc.join("agent.pid");
-        let owner_alive = std::fs::read_to_string(&pid_path)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .map(crate::livecheck::signal_zero_alive)
-            .unwrap_or(false);
-        if owner_alive {
-            continue; // Socket has a live owner; not stale.
-        }
-        // Stale.
-        if auto {
-            if std::fs::remove_file(&sock_path).is_ok() {
-                out.push(CheckResult {
-                    name: format!("agent sock: {}", a.id),
-                    status: Status::Fixed(
-                        "removed stale socket (no live owning process)".to_string(),
-                    ),
-                });
+        // The Windows daemon records its pipe name in agent.pipe and removes
+        // it on clean exit — a forced kill leaves it behind, exactly like a
+        // stale agent.sock. Same liveness rule, same sweep.
+        for ep in ["agent.sock", "agent.pipe"] {
+            let sock_path = bwoc.join(ep);
+            if !sock_path.exists() {
+                continue;
+            }
+            // Is there a live owning process?
+            let pid_path = bwoc.join("agent.pid");
+            let owner_alive = std::fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .map(crate::livecheck::signal_zero_alive)
+                .unwrap_or(false);
+            if owner_alive {
+                continue; // Socket has a live owner; not stale.
+            }
+            // Stale.
+            if auto {
+                if std::fs::remove_file(&sock_path).is_ok() {
+                    out.push(CheckResult {
+                        name: format!("agent sock: {}", a.id),
+                        status: Status::Fixed(
+                            "removed stale socket (no live owning process)".to_string(),
+                        ),
+                    });
+                } else {
+                    out.push(CheckResult {
+                        name: format!("agent sock: {}", a.id),
+                        status: Status::Fail(format!(
+                            "stale socket at {} but couldn't remove",
+                            sock_path.display()
+                        )),
+                    });
+                }
             } else {
                 out.push(CheckResult {
                     name: format!("agent sock: {}", a.id),
                     status: Status::Fail(format!(
-                        "stale socket at {} but couldn't remove",
+                        "stale socket at {} (no live owner; rerun with --auto to remove)",
                         sock_path.display()
                     )),
                 });
             }
-        } else {
-            out.push(CheckResult {
-                name: format!("agent sock: {}", a.id),
-                status: Status::Fail(format!(
-                    "stale socket at {} (no live owner; rerun with --auto to remove)",
-                    sock_path.display()
-                )),
-            });
         }
     }
     out
