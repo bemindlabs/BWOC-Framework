@@ -3,11 +3,11 @@
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
 **Software-Version:** `2.23.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.6.0`   *(canonical here — bumped on `.md` edits)*
+**Document-Version:** `1.6.1`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.6.3-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.3-0) *(2026-06-03 — **2.20.1**; patch — security: `bwoc init` now gitignores the Trust v2 agent signing private key (`agents/*/.bwoc/agent.key`) so a user workspace never commits an agent's ed25519 private identity; plus a `cross-backend.yml` CI workflow proving Samānattatā end-to-end (uppāda → ṭhiti) on ollama (full) + claude (key-gated, Sonnet), and a roadmap doc-sync marking Trust v2 shipped. Prior: `v2026.6.1-1` 2.20.0 — native Anthropic provider in `bwoc-harness` + big `--chat` upgrade + `bwoc-mqtt` crate)*
+**Latest release:** [`v2026.6.5-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.5-0) *(2026-06-05 — **2.23.0**; minor — Windows named-pipe daemon for `bwoc-agent --serve` + the `ping`/`status`/`stop` clients, and `bwoc new` standard workspace resolution (`--workspace` > `BWOC_WORKSPACE` > ancestor walk). Prior: `v2026.6.4-0` 2.22.0 — `bwoc remote`, `bwoc-core::design` tokens + both TUIs, dashboard TUI UX fixes)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-06-04T21:31:31Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-06-04T22:39:53Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
