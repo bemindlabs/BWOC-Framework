@@ -27,9 +27,44 @@ pub fn signal_zero_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
-#[cfg(not(unix))]
+/// Windows liveness: `tasklist /FI "PID eq N" /NH` prints the process row iff
+/// the pid is alive ("INFO: No tasks…" otherwise). A shell-out keeps the
+/// Windows path dependency-free; callers hit this at human cadence (status /
+/// dashboard ticks), not in tight loops.
+#[cfg(windows)]
+pub fn signal_zero_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!(" {pid} ")))
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn signal_zero_alive(_pid: u32) -> bool {
     false
+}
+
+/// Windows IPC client: one line-request / one line-reply over the agent's
+/// named pipe. The pipe name derives deterministically from the agent dir
+/// (`bwoc_core::ipc::pipe_name`) — same derivation the daemon uses, so no
+/// rendezvous file is needed. `None` on connect/IO failure. The sync pipe
+/// stream has no read-timeout API, so a hung-but-connected daemon blocks the
+/// caller — accepted for the v1 Windows path (the daemon replies in
+/// microseconds when healthy).
+#[cfg(windows)]
+pub(crate) fn pipe_request(agent_dir: &Path, cmd: &str) -> Option<String> {
+    use interprocess::local_socket::{GenericNamespaced, Stream, prelude::*};
+    use std::io::{BufRead, BufReader, Write};
+
+    let name = bwoc_core::ipc::pipe_name(agent_dir)
+        .to_ns_name::<GenericNamespaced>()
+        .ok()?;
+    let mut stream = Stream::connect(name).ok()?;
+    stream.write_all(format!("{cmd}\n").as_bytes()).ok()?;
+    let mut line = String::new();
+    BufReader::new(&mut stream).read_line(&mut line).ok()?;
+    Some(line.trim().to_string())
 }
 
 /// Read `<agent>/.bwoc/agent.pid` and return the pid iff it's alive.
@@ -75,7 +110,20 @@ pub fn query_uptime(root: &Path, a: &AgentEntry) -> Option<u64> {
     None
 }
 
-#[cfg(not(unix))]
+/// Windows: STATUS over the agent's named pipe (see [`pipe_request`]).
+#[cfg(windows)]
+pub fn query_uptime(root: &Path, a: &AgentEntry) -> Option<u64> {
+    let line = pipe_request(&root.join(&a.path), "STATUS")?;
+    // Expected reply: `OK uptime_secs=<N> pid=<N>`
+    for token in line.split_whitespace() {
+        if let Some(rest) = token.strip_prefix("uptime_secs=") {
+            return rest.parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn query_uptime(_root: &Path, _a: &AgentEntry) -> Option<u64> {
     None
 }

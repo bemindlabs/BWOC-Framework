@@ -105,9 +105,32 @@ fn ping_one(sock_path: &std::path::Path, id: &str) -> Result<bool, i32> {
     Ok(response == "PONG")
 }
 
-#[cfg(not(unix))]
+/// Windows: PING over the agent's named pipe. `sock_path` is the Unix-shaped
+/// `<agent>/.bwoc/agent.sock` the caller computed — the agent dir (its
+/// grandparent) is what names the pipe.
+#[cfg(windows)]
+fn ping_one(sock_path: &std::path::Path, id: &str) -> Result<bool, i32> {
+    let Some(agent_dir) = sock_path.parent().and_then(|p| p.parent()) else {
+        eprintln!(
+            "bwoc ping: cannot derive agent dir from {}",
+            sock_path.display()
+        );
+        return Err(1);
+    };
+    let Some(response) = crate::livecheck::pipe_request(agent_dir, "PING") else {
+        eprintln!(
+            "bwoc ping: failed to connect to the named pipe for {}",
+            agent_dir.display()
+        );
+        return Err(2);
+    };
+    println!("{id} → {response}");
+    Ok(response == "PONG")
+}
+
+#[cfg(not(any(unix, windows)))]
 fn ping_one(_sock_path: &std::path::Path, _id: &str) -> Result<bool, i32> {
-    eprintln!("bwoc ping: Unix domain sockets only (Windows support: Phase 2 sub-task)");
+    eprintln!("bwoc ping: no IPC transport for this platform");
     Err(1)
 }
 

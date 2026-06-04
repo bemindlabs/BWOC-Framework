@@ -35,3 +35,6 @@ sha2 = { workspace = true }
 # Integration smoke test (crates/bwoc-cli/tests/smoke.rs) — isolates the
 # end-to-end init/new/list path against a real tempdir.
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+interprocess = { workspace = true }
