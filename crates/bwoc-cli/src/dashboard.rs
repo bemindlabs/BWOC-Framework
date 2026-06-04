@@ -1221,28 +1221,53 @@ fn activity_display(state: Option<&SessionState>) -> (&'static str, Color, &'sta
     }
 }
 
-/// Render `last_activity` (epoch-seconds) as a human "N ago" age relative
-/// to now, reusing `livecheck::format_uptime` for the unit formatting.
-/// `None` → "unknown" (scan-sourced sessions have no activity signal).
-/// Elide the middle of `s` to fit `budget` chars, keeping a short head and the
-/// tail (for a path, the tail carries the directory name — the part worth
-/// reading). `budget` ≤ 1 degenerates to "…"; a fitting string is unchanged.
+/// Elide the middle of `s` to fit `budget` **display columns** (measured with
+/// `unicode-width`, since `area.width` is terminal columns — char counts
+/// under-measure wide glyphs). Keeps a short head and the tail (for a path,
+/// the tail carries the directory name — the part worth reading). `budget == 0`
+/// → empty; `budget == 1` → "…"; a fitting string is unchanged.
 fn elide_middle(s: &str, budget: usize) -> String {
-    let len = s.chars().count();
-    if len <= budget {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= budget {
         return s.to_string();
     }
-    if budget <= 1 {
+    if budget == 0 {
+        return String::new();
+    }
+    if budget == 1 {
         return "…".to_string();
     }
-    let keep = budget - 1; // room for the ellipsis
-    let head = keep / 3;
-    let tail = keep - head;
-    let head_s: String = s.chars().take(head).collect();
-    let tail_s: String = s.chars().skip(len - tail).collect();
+    let keep = budget - 1; // one column for the ellipsis
+    let head_budget = keep / 3;
+    let tail_budget = keep - head_budget;
+
+    let mut head_s = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if w + cw > head_budget {
+            break;
+        }
+        head_s.push(ch);
+        w += cw;
+    }
+    let mut tail_rev: Vec<char> = Vec::new();
+    let mut tw = 0usize;
+    for ch in s.chars().rev() {
+        let cw = ch.width().unwrap_or(0);
+        if tw + cw > tail_budget {
+            break;
+        }
+        tail_rev.push(ch);
+        tw += cw;
+    }
+    let tail_s: String = tail_rev.into_iter().rev().collect();
     format!("{head_s}…{tail_s}")
 }
 
+/// Render `last_activity` (epoch-seconds) as a human "N ago" age relative
+/// to now, reusing `livecheck::format_uptime` for the unit formatting.
+/// `None` → "unknown" (scan-sourced sessions have no activity signal).
 fn format_activity_age(last_activity: Option<u64>) -> String {
     let Some(ts) = last_activity else {
         return "unknown".to_string();
@@ -1599,17 +1624,30 @@ mod tests {
 
     #[test]
     fn elide_middle_fits_budget_and_keeps_tail() {
+        use unicode_width::UnicodeWidthStr;
         let p = "/Users/someone/workspaces/very/long/nested/workspace-root";
         let e = elide_middle(p, 24);
-        assert_eq!(e.chars().count(), 24);
+        // Budget is in display columns — assert on visual width, not chars.
+        assert!(e.width() <= 24, "width {} exceeds budget", e.width());
         assert!(e.contains('…'));
         assert!(e.ends_with("workspace-root") || e.ends_with("root"));
     }
 
     #[test]
+    fn elide_middle_respects_columns_for_wide_glyphs() {
+        use unicode_width::UnicodeWidthStr;
+        // CJK glyphs are 2 columns each — a char-counted budget would overflow.
+        let p = "/ワークスペース/プロジェクト/とても/長い/パス/ディレクトリ";
+        let e = elide_middle(p, 20);
+        assert!(e.width() <= 20, "width {} exceeds budget", e.width());
+        assert!(e.contains('…'));
+    }
+
+    #[test]
     fn elide_middle_tiny_budget_degenerates() {
         assert_eq!(elide_middle("/whatever", 1), "…");
-        assert_eq!(elide_middle("/whatever", 0), "…");
+        // Zero columns → nothing fits, not even the ellipsis.
+        assert_eq!(elide_middle("/whatever", 0), "");
     }
 
     #[test]
