@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bwoc new` now honours the standard workspace resolution for its default target.** Previously only the ancestor walk from *cwd* ran, so `BWOC_WORKSPACE=/scratch/ws bwoc new …` silently created and registered the agent in whatever workspace enclosed the current directory — e.g. the live fleet instead of the scratch one. The default target now resolves per WORKSPACE.en.md precedence: the new `--workspace <path>` flag > `BWOC_WORKSPACE` env > ancestor walk. An explicit `--target` still wins outright.
+
 ## [v2026.6.4-0] — 2026-06-04 — 2.22.0
 
 ### Added
