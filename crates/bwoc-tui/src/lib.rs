@@ -35,6 +35,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
 use bwoc_core::chat_proto::{ChatEvent, ChatInput};
+use bwoc_core::design;
 use bwoc_core::manifest::Manifest;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -466,13 +467,31 @@ fn draw_frame(f: &mut ratatui::Frame, app: &App) {
     draw_input(f, layout[2], app);
 }
 
+/// Map a design token's ANSI half to ratatui's *named* colour, so the user's
+/// terminal theme keeps authority over the exact shade.
+fn tone(t: design::ColorToken) -> Color {
+    use design::Ansi;
+    match t.ansi {
+        Ansi::Black => Color::Black,
+        Ansi::Red => Color::Red,
+        Ansi::Green => Color::Green,
+        Ansi::Yellow => Color::Yellow,
+        Ansi::Blue => Color::Blue,
+        Ansi::Magenta => Color::Magenta,
+        Ansi::Cyan => Color::Cyan,
+        Ansi::Gray => Color::Gray,
+        Ansi::DarkGray => Color::DarkGray,
+        Ansi::White => Color::White,
+    }
+}
+
 fn draw_status(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let text = status_line(app);
     let p = Paragraph::new(Line::from(Span::styled(
         text,
         Style::default()
             .fg(Color::Black)
-            .bg(Color::Cyan)
+            .bg(tone(design::color::ACCENT))
             .add_modifier(Modifier::BOLD),
     )));
     f.render_widget(p, area);
@@ -527,7 +546,7 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" conversation ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(tone(design::color::ACCENT)));
     let p = Paragraph::new(visible)
         .block(block)
         .wrap(Wrap { trim: false });
@@ -544,12 +563,12 @@ fn draw_activity(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .map(|l| {
             let style = if l.starts_with('⚠') {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(tone(design::color::WARNING))
                     .add_modifier(Modifier::BOLD)
             } else if l.starts_with('✗') {
-                Style::default().fg(Color::Red)
+                Style::default().fg(tone(design::color::DANGER))
             } else if l.starts_with('✓') {
-                Style::default().fg(Color::Green)
+                Style::default().fg(tone(design::color::SUCCESS))
             } else {
                 Style::default()
             };
@@ -572,12 +591,12 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Some(p) => (
             format!(" permission: {} ({}) — [a]llow / [d]eny ", p.tool, p.detail),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(tone(design::color::WARNING))
                 .add_modifier(Modifier::BOLD),
         ),
         None => (
             " input — Enter send · q/Esc/Ctrl-C quit ".to_string(),
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(tone(design::color::ACCENT)),
         ),
     };
     let block = Block::default()
