@@ -774,7 +774,10 @@ mod tests {
         fs::write(
             recip.path().join(".bwoc/interconnect/routes.toml"),
             format!(
-                "[[route]]\nagent = \"agent-peer\"\nworkspace = \"{}\"\n",
+                // Single-quoted TOML literal string: Windows temp paths contain
+                // backslashes, which a basic (double-quoted) TOML string would
+                // treat as (invalid) escapes.
+                "[[route]]\nagent = \"agent-peer\"\nworkspace = '{}'\n",
                 peer.path().display()
             ),
         )

@@ -47,6 +47,21 @@ exercised by a protocol roundtrip test on the windows-latest CI leg.
   sent rustc into an E0275 candidate-enumeration overflow (via a macOS
   `dispatch2` impl). `&mut S: Read` follows from `S: Read` by blanket impl.
 
+## Review / CI fixes (post-PR)
+
+- **Reachability (Copilot):** `bwoc ping`'s callers gated on `agent.sock`
+  existing before calling `ping_one`, so the Windows path was dead code. Fixed
+  with a platform-aware `endpoint_marker()` — Unix gates on the socket,
+  Windows on the `.bwoc/agent.pipe` name file the daemon writes/removes.
+- **Doctor sweep parity:** a force-killed Windows daemon leaves a stale
+  `agent.pipe` exactly like a stale `agent.sock`; the doctor stale sweep now
+  covers both with the same liveness rule.
+- **First real Windows run of the trust tests** (un-gating `mod trust` put
+  them on the windows-latest leg): `cross_workspace_signed_sender_verifies_via_routes`
+  wrote a Windows temp path into a double-quoted TOML string — backslashes
+  parse as (invalid) escapes. The test now writes a single-quoted TOML
+  literal string.
+
 ## Gotchas surfaced
 
 - **Homebrew Rust shadows rustup on this machine** — `rustup run stable`
