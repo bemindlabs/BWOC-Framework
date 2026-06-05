@@ -297,14 +297,19 @@ where
                 // Keep the conversation under the context budget: summarize the
                 // oldest turns when needed, before the provider sees them.
                 if config.max_context_tokens > 0 {
-                    let removed = crate::compact::maybe_compact(
+                    // Unified context engine (HV3-2): summarize-first with a
+                    // truncate fallback; folded content is mined into Tier 2
+                    // when the manifest configures deepMemoryCmd.
+                    let outcome = crate::compact::compact_context(
                         &*provider,
                         &config.model,
                         config.max_context_tokens,
                         &mut history,
+                        &ctx.workdir,
                     )
-                    .await?;
-                    if let Some(removed) = removed {
+                    .await;
+                    let removed = outcome.removed();
+                    if removed > 0 {
                         emit(&mut out, &ChatEvent::Compacted { removed }).await?;
                     }
                 }

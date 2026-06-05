@@ -349,7 +349,7 @@ The harness was validated end-to-end against a real Ollama instance before the d
 | **OS-level sandbox** (macOS `sandbox-exec`, Linux landlock/seccomp) | **Shipped (2.3.0).** Real landlock (Linux ≥ 5.13) + `sandbox-exec` (macOS) via `make_os_sandbox()`, degrading gracefully to worktree-only confinement on unsupported kernels. *(This row previously claimed "stub" — stale since 2.3.0.)* |
 | **Streaming** | Wired and functional (SSE delta accumulation tested). Usage token counts are not available on the streaming path (the provider does not return `usage` in SSE deltas). |
 | **Vetted-model list** | Small. Currently only `gemma4` and `qwen2.5-coder:7b` are known-good for tool calling. Unvetted models emit a warning but are not hard-blocked. |
-| **Context compaction** | Active (truncate-with-marker strategy). LLM-summarise is the natural upgrade path but is not implemented in v1. |
+| **Context compaction** | **Unified engine (HV3-2).** Summarize-first via one provider call, truncate-with-marker fallback on summarizer failure — one policy for the batch loop and `--chat`. Folded content is mined into Tier 2 when `deepMemoryCmd` is configured. |
 | **Tool authentication broker** | Implemented (P3) but not wired into every tool by default. Tools that need OS keyring credentials must declare `CredentialRequest` explicitly. |
 | **Concurrent tool execution** | Sequential in P1/P2. Parallel tool dispatch is a P3 item. |
 | **Identity spoofing detection** | Conservative: only fires when the `from`/`sender` field literally contains the words `spoof`, `impersonate`, or `fake`. A proper agent-identity proof system is a v2 item (trust step 5 in the roadmap). |

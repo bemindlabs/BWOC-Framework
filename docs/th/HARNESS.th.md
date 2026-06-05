@@ -348,7 +348,7 @@ harness ถูก validate end-to-end กับ Ollama จริงก่อน�
 | **OS-level sandbox** (macOS `sandbox-exec`, Linux landlock/seccomp) | **Ship แล้ว (2.3.0)** landlock จริง (Linux ≥ 5.13) + `sandbox-exec` (macOS) ผ่าน `make_os_sandbox()` degrade เป็น worktree-only บน kernel ที่ไม่รองรับ *(แถวนี้เคยบอก "stub" — stale ตั้งแต่ 2.3.0)* |
 | **Streaming** | เชื่อมและทำงานได้ (SSE delta accumulation test ผ่าน) token count ใน `usage` ไม่มีบน streaming path (provider ไม่ return `usage` ใน SSE delta) |
 | **Vetted-model list** | เล็ก ขณะนี้รู้ว่า `gemma4` และ `qwen2.5-coder:7b` ใช้ tool calling ได้ดี model ที่ไม่ได้ vetted จะ warning แต่ไม่ hard-block |
-| **Context compaction** | Active (truncate-with-marker strategy) LLM-summarise คือ upgrade path ที่ชัดเจนแต่ยังไม่ implement ใน v1 |
+| **Context compaction** | **engine รวม (HV3-2)** summarize ก่อนด้วย provider หนึ่ง call, fallback เป็น truncate-with-marker เมื่อ summarizer ล้ม — policy เดียวทั้ง batch loop และ `--chat` เนื้อหาที่ถูกพับถูก mine ลง Tier 2 เมื่อ manifest ตั้ง `deepMemoryCmd` |
 | **Tool authentication broker** | Implement แล้ว (P3) แต่ยังไม่ wire เข้าทุก tool โดยค่าเริ่มต้น tool ที่ต้องการ OS keyring credential ต้อง declare `CredentialRequest` เอง |
 | **Concurrent tool execution** | Sequential ใน P1/P2 parallel tool dispatch เป็น P3 item |
 | **Identity spoofing detection** | Conservative: fire เฉพาะเมื่อ field `from`/`sender` มีคำว่า `spoof`, `impersonate`, หรือ `fake` ตรงๆ ระบบ agent-identity proof ที่แท้จริงเป็น v2 item |
