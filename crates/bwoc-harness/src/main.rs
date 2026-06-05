@@ -58,6 +58,12 @@ struct Args {
     #[arg(long, requires = "lead")]
     tasks: Option<PathBuf>,
 
+    /// Path to a team's shared chat log (`chat.jsonl`) for `--chat` broadcast
+    /// (HV3-3a). When set, teammate messages are injected into context before
+    /// each turn and this agent's replies are appended. Unset = solo session.
+    #[arg(long, requires = "chat")]
+    team_chat: Option<PathBuf>,
+
     /// Agent id the lead claims tasks as (lead mode).
     #[arg(long, default_value = "agent-lead")]
     agent: String,
@@ -688,6 +694,10 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         policy,
         max_turn_iterations: args.max_iterations,
         max_context_tokens: bwoc_harness::chat_session::DEFAULT_MAX_CONTEXT_TOKENS,
+        // Team chat broadcast (HV3-3a): `--team-chat <path>` opts this session
+        // into a team's shared `chat.jsonl`. The host (`bwoc chat --team`)
+        // resolves the workspace-relative path; unset = solo session.
+        team_chat_log: args.team_chat.clone(),
     };
 
     let outcome = chat_session::run(provider, registry, ctx, config).await;

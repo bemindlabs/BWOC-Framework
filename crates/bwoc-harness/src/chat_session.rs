@@ -25,6 +25,7 @@
 //! checkpoint / eval / budget — those belong to the batch `run_loop`, not this
 //! interactive driver.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bwoc_core::chat_proto::{ChatEvent, ChatInput};
@@ -33,7 +34,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use crate::error::{HarnessError, HarnessResult};
 use crate::policy::permission::{self, Mode};
 use crate::policy::{Policy, guardrail_check};
-use crate::provider::{ChatMessage, ProviderClient, ToolCall};
+use crate::provider::{ChatMessage, ProviderClient, Role, ToolCall};
 use crate::tools::registry::dispatch;
 use crate::tools::{ToolContext, ToolRegistry};
 
@@ -57,6 +58,11 @@ pub struct ChatConfig {
     /// this, the oldest turns are summarized before the next provider call. `0`
     /// disables compaction.
     pub max_context_tokens: usize,
+    /// Team chat broadcast log (HV3-3a). `Some(path)` opts this session into a
+    /// team's shared `chat.jsonl`: peer messages are injected into context
+    /// before each user turn, and this agent's reply is appended after. `None`
+    /// (the default) keeps the session solo — no broadcast, no behaviour change.
+    pub team_chat_log: Option<PathBuf>,
 }
 
 /// Default chat context budget (heuristic tokens) — conservative for the local
@@ -73,6 +79,7 @@ impl Default for ChatConfig {
             policy: Policy::default(),
             max_turn_iterations: 20,
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
+            team_chat_log: None,
         }
     }
 }
@@ -197,6 +204,11 @@ where
     // Session permission mode (live-toggled via `SetMode`); only relaxes `ask`.
     let mut session_mode = SessionMode::Default;
 
+    // Team chat broadcast cursor (HV3-3a): how many lines of the shared log
+    // this session has already injected. Starts at 0 so the first user turn
+    // pulls in any backlog of peer messages already on the log.
+    let mut team_seen: usize = 0;
+
     // Sorted so the `Ready.tools` list is stable across runs (the registry is a
     // HashMap → non-deterministic iteration order).
     let mut tool_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
@@ -293,6 +305,12 @@ where
                 }
             },
             ChatInput::User { text } => {
+                // Team chat (HV3-3a): pull in any teammate messages posted
+                // since the last turn as a system note, before the new user
+                // message, so the agent answers with the team's context.
+                if let Some(log) = &config.team_chat_log {
+                    inject_peer_messages(&mut history, log, &config.agent, &mut team_seen);
+                }
                 history.push(ChatMessage::user(text));
                 // Keep the conversation under the context budget: summarize the
                 // oldest turns when needed, before the provider sees them.
@@ -330,6 +348,13 @@ where
                 // Persist the conversation after the turn settles (incl. tool
                 // results) so the next launch resumes with full context.
                 save_session(&session_path, &history);
+                // Team chat (HV3-3a): broadcast this agent's reply to the
+                // shared log so teammates see it on their next turn.
+                if let Some(log) = &config.team_chat_log {
+                    if let Some(reply) = last_assistant_text(&history) {
+                        append_team_message(log, &config.agent, &reply);
+                    }
+                }
             }
         }
     }
@@ -365,11 +390,81 @@ fn save_session(path: &std::path::Path, history: &[ChatMessage]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Team chat broadcast (HV3-3a)
+// ---------------------------------------------------------------------------
+
+/// Inject team-chat messages that have appeared since `seen` into `history` as
+/// one system note, skipping this agent's own messages, and advance `seen` to
+/// the current log length. Best-effort: a missing/unparseable log injects
+/// nothing. Returns the number of peer messages injected (for tests/logging).
+fn inject_peer_messages(
+    history: &mut Vec<ChatMessage>,
+    log: &Path,
+    agent: &str,
+    seen: &mut usize,
+) -> usize {
+    let Ok(raw) = std::fs::read_to_string(log) else {
+        return 0;
+    };
+    let Ok(msgs) = bwoc_core::team::parse_chat(&raw) else {
+        return 0;
+    };
+    let total = msgs.len();
+    if total <= *seen {
+        // Log truncated or rewritten shorter — resync the cursor, inject nothing.
+        *seen = total;
+        return 0;
+    }
+    let fresh: Vec<&bwoc_core::team::TeamChatMessage> =
+        msgs[*seen..].iter().filter(|m| m.from != agent).collect();
+    *seen = total;
+    if fresh.is_empty() {
+        return 0;
+    }
+    let mut block = String::from(
+        "## Team conversation (Saṅgha)\n\nMessages from teammates since your last turn:\n",
+    );
+    for m in &fresh {
+        block.push_str(&format!("\n- **{}**: {}", m.from, m.text));
+    }
+    history.push(ChatMessage::system(block));
+    fresh.len()
+}
+
+/// Append this agent's reply to the team chat log (best-effort; creates the
+/// parent dir). Opened in append mode so a concurrent teammate's line is never
+/// clobbered — the same shared-file discipline as the task list.
+fn append_team_message(log: &Path, agent: &str, text: &str) {
+    let Ok(line) = bwoc_core::team::TeamChatMessage::new(agent, text).to_line() else {
+        return;
+    };
+    if let Some(parent) = log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// The final assistant reply of the last turn — the text to broadcast. `None`
+/// if the turn produced no non-empty assistant message (e.g. tool-calls only).
+fn last_assistant_text(history: &[ChatMessage]) -> Option<String> {
+    history.iter().rev().find_map(|m| match &m.content {
+        Some(c) if matches!(m.role, Role::Assistant) && !c.trim().is_empty() => Some(c.clone()),
+        _ => None,
+    })
+}
+
 /// The `(role, text)` to replay for a restored message — `Some` only for
 /// user/assistant messages that carry visible content (skip the system prompt,
 /// tool-result messages, and tool-call-only assistant turns).
 fn restored_display(msg: &ChatMessage) -> Option<(&'static str, String)> {
-    use crate::provider::Role;
     let content = msg.content.as_ref().filter(|c| !c.is_empty())?;
     match msg.role {
         Role::User => Some(("user", content.clone())),
@@ -1011,6 +1106,7 @@ mod tests {
             // Disabled by default so existing scripted tests are unaffected; the
             // compaction tests set their own budget.
             max_context_tokens: 0,
+            team_chat_log: None,
         }
     }
 
@@ -1440,5 +1536,100 @@ mod tests {
                 .any(|e| matches!(e, ChatEvent::Compacted { removed } if *removed > 0)),
             "an oversized history should emit Compacted before the turn"
         );
+    }
+
+    // ── Team chat broadcast (HV3-3a) ─────────────────────────────────────────
+
+    #[test]
+    fn inject_peer_messages_skips_self_and_advances_cursor() {
+        use bwoc_core::team::TeamChatMessage;
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("chat.jsonl");
+        let body = format!(
+            "{}\n{}\n",
+            TeamChatMessage::new("agent-a", "peer says hi")
+                .to_line()
+                .unwrap(),
+            TeamChatMessage::new("agent-self", "my own earlier line")
+                .to_line()
+                .unwrap(),
+        );
+        std::fs::write(&log, body).unwrap();
+
+        let mut history = vec![ChatMessage::system("sys")];
+        let mut seen = 0usize;
+        let n = inject_peer_messages(&mut history, &log, "agent-self", &mut seen);
+
+        assert_eq!(n, 1, "only the peer message injects, not self");
+        assert_eq!(seen, 2, "cursor advances past every line read");
+        let note = history.last().unwrap().content.as_deref().unwrap();
+        assert!(note.contains("agent-a") && note.contains("peer says hi"));
+        assert!(
+            !note.contains("my own earlier line"),
+            "self message excluded"
+        );
+
+        // No new lines → no injection, cursor steady, no extra history entry.
+        let len_before = history.len();
+        assert_eq!(
+            inject_peer_messages(&mut history, &log, "agent-self", &mut seen),
+            0
+        );
+        assert_eq!(history.len(), len_before);
+    }
+
+    #[test]
+    fn append_then_peer_sees_it_but_sender_does_not() {
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("nested").join("chat.jsonl"); // parent created
+        append_team_message(&log, "agent-a", "found the root cause");
+
+        // Peer B injects and sees A's line.
+        let mut hist_b = vec![ChatMessage::system("sys")];
+        let mut seen_b = 0usize;
+        assert_eq!(
+            inject_peer_messages(&mut hist_b, &log, "agent-b", &mut seen_b),
+            1
+        );
+
+        // Sender A injects and sees nothing (its own line is filtered).
+        let mut hist_a = vec![ChatMessage::system("sys")];
+        let mut seen_a = 0usize;
+        assert_eq!(
+            inject_peer_messages(&mut hist_a, &log, "agent-a", &mut seen_a),
+            0
+        );
+    }
+
+    #[test]
+    fn inject_missing_log_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let mut history = vec![ChatMessage::system("sys")];
+        let mut seen = 0usize;
+        let n = inject_peer_messages(
+            &mut history,
+            &tmp.path().join("absent.jsonl"),
+            "agent-x",
+            &mut seen,
+        );
+        assert_eq!(n, 0);
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn last_assistant_text_picks_final_nonempty_reply() {
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("q"),
+            ChatMessage::assistant(Some("first answer".into()), None),
+            ChatMessage::user("q2"),
+            ChatMessage::assistant(Some("  ".into()), None), // blank — skipped
+            ChatMessage::tool_result("c1", "tool output"),
+        ];
+        assert_eq!(
+            last_assistant_text(&history).as_deref(),
+            Some("first answer")
+        );
+        assert!(last_assistant_text(&[ChatMessage::system("only sys")]).is_none());
     }
 }
