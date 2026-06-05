@@ -222,6 +222,12 @@ pub async fn run_lead(
                         task.id
                     );
                 }
+                // Collect the worker's structured result envelope (HV3-3b)
+                // before teardown — it lives in the worktree. A worker that
+                // wrote none degrades silently to the exit code we already have.
+                if let Some(r) = crate::result::WorkerResult::read(&worktree) {
+                    eprintln!("[bwoc-harness] lead: `{}` done — {}", task.id, r.one_line());
+                }
                 // Worker succeeded — tear down its worktree (Anattā).
                 let _ = git_worktree_remove(&cfg.repo_root, &worktree);
                 summary.completed += 1;
@@ -366,6 +372,46 @@ mod tests {
 
     fn pending(id: &str) -> Task {
         Task::new(id, format!("task {id}"), vec![])
+    }
+
+    /// Runner that writes a real result envelope into the worktree before
+    /// returning Ok — exercises the lead's HV3-3b read-and-log path and proves
+    /// the read doesn't block worktree teardown.
+    struct EnvelopeRunner;
+    #[async_trait]
+    impl SpawnRunner for EnvelopeRunner {
+        async fn run(&self, spec: &WorkerSpec) -> HarnessResult<()> {
+            crate::result::WorkerResult::new(
+                spec.prompt.clone(),
+                true,
+                2,
+                0,
+                0,
+                "mock",
+                crate::result::DiffSummary {
+                    files_changed: 1,
+                    insertions: 3,
+                    deletions: 0,
+                },
+                "wrote the envelope",
+            )
+            .write(&spec.worktree)
+            .map_err(|e| HarnessError::Other(e.to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn lead_reads_envelope_and_still_tears_down_worktree() {
+        let repo = temp_repo();
+        let source = InMemoryTaskSource::new(vec![pending("a")]);
+        let runner = Arc::new(EnvelopeRunner);
+
+        let summary = run_lead(&source, runner, &lead_cfg(&repo)).await.unwrap();
+
+        assert_eq!(summary.completed, 1);
+        // Envelope was read pre-teardown, then the worktree (and its
+        // `.bwoc/worker-result.json`) was removed on success.
+        assert!(!repo.path().join(".worktrees").join("a").exists());
     }
 
     #[tokio::test]

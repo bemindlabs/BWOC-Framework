@@ -487,6 +487,26 @@ async fn run() -> HarnessResult<()> {
         }
     }
 
+    // ── Worker result envelope (HV3-3b) ───────────────────────────────────
+    // Leave a structured outcome in the worktree for a Saṅgha lead to collect
+    // (it can't read this process's return value). Written on success AND
+    // failure, before the abort propagates below; best-effort like the mine.
+    {
+        use bwoc_harness::result::{DiffSummary, WorkerResult};
+        let task = args
+            .task
+            .clone()
+            .unwrap_or_else(|| "(resumed run)".to_string());
+        let diff = DiffSummary::from_worktree(&workdir);
+        let envelope = match &outcome {
+            Ok(res) => WorkerResult::completed(task, res, diff),
+            Err(e) => WorkerResult::aborted(task, args.model.clone(), diff, &e.to_string()),
+        };
+        if let Err(e) = envelope.write(&workdir) {
+            eprintln!("[bwoc-harness] warning: could not write worker result: {e}");
+        }
+    }
+
     // Propagate an aborted run as an error — after the retrospective has been
     // recorded and printed.
     let result = outcome?;
