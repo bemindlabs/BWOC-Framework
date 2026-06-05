@@ -1,7 +1,9 @@
 # 2026-06-05 — Harness v3 plan ("run together, remember, improve")
 
 Planning note for the third major `bwoc-harness` iteration. Grounded in a full
-survey of the current 17 modules and the v1/v2 history; no code in this note.
+survey of the harness modules (17 at survey time; 18 once HV3-1's
+`deep_memory` landed — see below) and the v1/v2 history; no code in this
+note.
 
 **Arc:** v1 (2026-05-24) = *run safely* — agentic loop + the
 guardrails→permission→sandbox pipeline. v2 (#39, 2026-05-27 → refined through
@@ -13,7 +15,7 @@ across sessions, and runs that leave the agent measurably better.**
 
 ## Workstreams
 
-- **HV3-1 — Memory in the loop (Sati).** Wire `bwoc-deep-memory` into the
+- **HV3-1 — Memory in the loop (Sati).** *(Shipped while this note was in review — #205.)* Wire `bwoc-deep-memory` into the
   runtime: `wake-up` output injected as session-start context, `mine` fired on
   session end, and a `memory_search` tool (Tier-2 semantic) beside
   `memory_read`/`memory_write`. Driven by the manifest's `deepMemoryCmd`;
@@ -76,7 +78,8 @@ v1 safety pipeline, demonstrated on ≥ 2 backends.
 
 ## Related
 
-- Survey basis: `crates/bwoc-harness/src/*` (17 modules), `HARNESS.en.md`,
+- Survey basis: `crates/bwoc-harness/src/*` (17 modules at survey time; 18
+  after HV3-1 added `deep_memory`), `HARNESS.en.md`,
   `notes/2026-05-25_harness-v2-planning.md`, CHANGELOG v2.2.0 → 2.23.0.
 - Known stale doc flagged en route: HARNESS.en.md "Not Yet" row on the OS
   sandbox (landlock/sandbox-exec shipped 2.3.0) — fix with HV3 docs pass.
