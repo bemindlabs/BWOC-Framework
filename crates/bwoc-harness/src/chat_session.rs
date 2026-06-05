@@ -411,10 +411,15 @@ fn inject_peer_messages(
         return 0;
     };
     let total = msgs.len();
-    if total <= *seen {
-        // Log truncated or rewritten shorter — resync the cursor, inject nothing.
-        *seen = total;
-        return 0;
+    if total < *seen {
+        // The log is shorter than our cursor — it was rotated/compacted/rewritten
+        // out from under us. Treat it as a fresh log and re-read from the start
+        // so post-rotation messages aren't silently skipped (re-injecting some
+        // already-seen peer context once is harmless; missing new messages is not).
+        *seen = 0;
+    }
+    if total == *seen {
+        return 0; // nothing new since the last turn
     }
     let fresh: Vec<&bwoc_core::team::TeamChatMessage> =
         msgs[*seen..].iter().filter(|m| m.from != agent).collect();
@@ -433,12 +438,20 @@ fn inject_peer_messages(
 }
 
 /// Append this agent's reply to the team chat log (best-effort; creates the
-/// parent dir). Opened in append mode so a concurrent teammate's line is never
-/// clobbered — the same shared-file discipline as the task list.
+/// parent dir).
+///
+/// The line (one JSON record + `\n`) is built first and written in a **single**
+/// `write_all` to a file opened `O_APPEND`. On a local filesystem an O_APPEND
+/// write of a small buffer (a chat line is well under `PIPE_BUF`) lands
+/// atomically, so concurrent teammates' lines never interleave mid-record —
+/// the same shared-file discipline the task list relies on (a host-layer
+/// advisory lock, like `tasks.lock`, is the future hardening for high-contention
+/// or network filesystems; one append per human-paced turn doesn't warrant it).
 fn append_team_message(log: &Path, agent: &str, text: &str) {
-    let Ok(line) = bwoc_core::team::TeamChatMessage::new(agent, text).to_line() else {
+    let Ok(mut line) = bwoc_core::team::TeamChatMessage::new(agent, text).to_line() else {
         return;
     };
+    line.push('\n');
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -448,7 +461,8 @@ fn append_team_message(log: &Path, agent: &str, text: &str) {
         .append(true)
         .open(log)
     {
-        let _ = writeln!(f, "{line}");
+        // One syscall-sized buffer, not a formatting macro that may write in parts.
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
@@ -1576,6 +1590,55 @@ mod tests {
             0
         );
         assert_eq!(history.len(), len_before);
+    }
+
+    #[test]
+    fn inject_resyncs_when_log_rotated_shorter() {
+        use bwoc_core::team::TeamChatMessage;
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("chat.jsonl");
+        // Two peer messages seen first → cursor at 2.
+        std::fs::write(
+            &log,
+            format!(
+                "{}\n{}\n",
+                TeamChatMessage::new("agent-a", "one").to_line().unwrap(),
+                TeamChatMessage::new("agent-a", "two").to_line().unwrap(),
+            ),
+        )
+        .unwrap();
+        let mut history = vec![ChatMessage::system("sys")];
+        let mut seen = 0usize;
+        assert_eq!(
+            inject_peer_messages(&mut history, &log, "agent-self", &mut seen),
+            2
+        );
+        assert_eq!(seen, 2);
+
+        // Log rotated to a single NEW message (len 1 < cursor 2): must re-read
+        // from the start, not silently skip it.
+        std::fs::write(
+            &log,
+            format!(
+                "{}\n",
+                TeamChatMessage::new("agent-a", "post-rotation")
+                    .to_line()
+                    .unwrap()
+            ),
+        )
+        .unwrap();
+        let n = inject_peer_messages(&mut history, &log, "agent-self", &mut seen);
+        assert_eq!(n, 1, "post-rotation message must be injected, not skipped");
+        assert_eq!(seen, 1);
+        assert!(
+            history
+                .last()
+                .unwrap()
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("post-rotation")
+        );
     }
 
     #[test]
