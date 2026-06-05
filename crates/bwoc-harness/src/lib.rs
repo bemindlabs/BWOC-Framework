@@ -41,6 +41,7 @@ pub mod model_select;
 pub mod policy;
 pub mod provider;
 pub mod queue;
+pub mod result;
 pub mod retrospective;
 pub mod sandbox;
 pub mod telemetry;
