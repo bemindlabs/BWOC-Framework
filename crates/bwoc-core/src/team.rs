@@ -355,6 +355,71 @@ pub fn render_tasks(tasks: &[Task]) -> Result<String, TeamError> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Team chat (HV3-3a) — the shared broadcast channel
+// ---------------------------------------------------------------------------
+
+/// One message on a team's shared chat log.
+///
+/// Append-only, one JSON object per line in
+/// `.bwoc/teams/<team-id>/chat.jsonl` — the same storage model as the task
+/// list, so members in a team see each other's replies through the shared
+/// filesystem with no pub/sub infrastructure. As with `tasks.jsonl`, the file
+/// lock that makes concurrent appends race-safe is the CLI/host layer's
+/// concern; this module owns only the data model.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TeamChatMessage {
+    /// Agent id that sent the message (the human lead may use a reserved id).
+    pub from: String,
+    /// The message body.
+    pub text: String,
+    /// UTC ISO 8601 send stamp.
+    pub ts: String,
+}
+
+impl TeamChatMessage {
+    pub fn new(from: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            from: from.into(),
+            text: text.into(),
+            ts: utc_now_iso8601(),
+        }
+    }
+
+    /// Serialize as one `chat.jsonl` line (no trailing newline — the caller
+    /// appends `\n`). Lets a host append a single message without rewriting
+    /// the whole log.
+    pub fn to_line(&self) -> Result<String, TeamError> {
+        serde_json::to_string(self).map_err(|e| TeamError::Serialize(e.to_string()))
+    }
+}
+
+/// Parse a `chat.jsonl` body into a message vector. Blank lines are skipped;
+/// a malformed line is an error (machine-written, like the task list).
+pub fn parse_chat(jsonl: &str) -> Result<Vec<TeamChatMessage>, TeamError> {
+    let mut out = Vec::new();
+    for line in jsonl.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let msg: TeamChatMessage =
+            serde_json::from_str(trimmed).map_err(|e| TeamError::Parse(e.to_string()))?;
+        out.push(msg);
+    }
+    Ok(out)
+}
+
+/// Serialize a message vector to a `chat.jsonl` body (one per line).
+pub fn render_chat(msgs: &[TeamChatMessage]) -> Result<String, TeamError> {
+    let mut out = String::new();
+    for m in msgs {
+        out.push_str(&m.to_line()?);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 /// Guard: the actor must be a team member to act on its tasks.
 pub fn ensure_member(team: &Team, agent: &str) -> Result<(), TeamError> {
     if team.has_member(agent) {
@@ -546,5 +611,45 @@ mod tests {
             ensure_member(&team, "agent-x").unwrap_err(),
             TeamError::NotAMember(_)
         ));
+    }
+
+    #[test]
+    fn team_chat_line_roundtrips() {
+        let m = TeamChatMessage::new("agent-pi", "found the bug in the parser");
+        let line = m.to_line().unwrap();
+        assert!(!line.contains('\n'), "to_line is a single JSONL line");
+        let back: TeamChatMessage = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn parse_chat_skips_blanks_and_preserves_order() {
+        let body = format!(
+            "{}\n\n{}\n",
+            TeamChatMessage::new("agent-a", "first").to_line().unwrap(),
+            TeamChatMessage::new("agent-b", "second").to_line().unwrap(),
+        );
+        let msgs = parse_chat(&body).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].from, "agent-a");
+        assert_eq!(msgs[1].text, "second");
+    }
+
+    #[test]
+    fn parse_chat_rejects_malformed_line() {
+        assert!(matches!(
+            parse_chat("{not json}\n").unwrap_err(),
+            TeamError::Parse(_)
+        ));
+    }
+
+    #[test]
+    fn render_chat_then_parse_chat_round_trip() {
+        let msgs = vec![
+            TeamChatMessage::new("agent-a", "alpha"),
+            TeamChatMessage::new("agent-b", "beta"),
+        ];
+        let back = parse_chat(&render_chat(&msgs).unwrap()).unwrap();
+        assert_eq!(back, msgs);
     }
 }
