@@ -61,6 +61,10 @@ pub struct TuiArgs {
     /// line until the harness's `Ready` event delivers the authoritative value.
     /// A plain `String` so this crate needs no `bwoc-cli` `Backend` dependency.
     pub backend_name: String,
+    /// Team chat broadcast log (HV3-3a). `Some(path)` forwards `--team-chat
+    /// <path>` to the harness so this session joins a team's shared channel;
+    /// `None` keeps it solo. The caller (`bwoc chat --team`) resolves the path.
+    pub team_chat: Option<PathBuf>,
 }
 
 pub fn run(args: TuiArgs) -> i32 {
@@ -92,7 +96,12 @@ pub fn run(args: TuiArgs) -> i32 {
         .and_then(|m| m.base_url.clone())
         .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
 
-    let argv = harness_argv(&args.agent_path, model.as_deref(), &endpoint);
+    let argv = harness_argv(
+        &args.agent_path,
+        model.as_deref(),
+        &endpoint,
+        args.team_chat.as_deref(),
+    );
 
     let mut child = match Command::new(&harness)
         .args(&argv)
@@ -174,7 +183,13 @@ pub fn run(args: TuiArgs) -> i32 {
 ///
 /// `model = None` omits `--model`, letting the harness use its own default
 /// (the manifest had no `primaryModel`, which is unusual but not fatal).
-fn harness_argv(agent_path: &std::path::Path, model: Option<&str>, endpoint: &str) -> Vec<String> {
+/// `team_chat = Some(path)` appends `--team-chat <path>` (HV3-3a broadcast).
+fn harness_argv(
+    agent_path: &std::path::Path,
+    model: Option<&str>,
+    endpoint: &str,
+    team_chat: Option<&std::path::Path>,
+) -> Vec<String> {
     let mut argv = vec![
         "--chat".to_string(),
         "--workdir".to_string(),
@@ -186,6 +201,10 @@ fn harness_argv(agent_path: &std::path::Path, model: Option<&str>, endpoint: &st
     }
     argv.push("--endpoint".to_string());
     argv.push(endpoint.to_string());
+    if let Some(log) = team_chat {
+        argv.push("--team-chat".to_string());
+        argv.push(log.to_string_lossy().into_owned());
+    }
     argv
 }
 
@@ -617,6 +636,7 @@ mod tests {
             std::path::Path::new("/ws/agent-pi"),
             Some("gpt-5.5"),
             "https://api.openai.com/v1",
+            None,
         );
         assert_eq!(
             argv,
@@ -634,7 +654,12 @@ mod tests {
 
     #[test]
     fn harness_argv_omits_model_when_none() {
-        let argv = harness_argv(std::path::Path::new("/ws/agent-pi"), None, DEFAULT_ENDPOINT);
+        let argv = harness_argv(
+            std::path::Path::new("/ws/agent-pi"),
+            None,
+            DEFAULT_ENDPOINT,
+            None,
+        );
         assert_eq!(
             argv,
             [
@@ -646,6 +671,25 @@ mod tests {
             ]
         );
         assert!(!argv.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn harness_argv_appends_team_chat_when_set() {
+        let argv = harness_argv(
+            std::path::Path::new("/ws/agent-pi"),
+            None,
+            DEFAULT_ENDPOINT,
+            Some(std::path::Path::new("/ws/.bwoc/teams/squad/chat.jsonl")),
+        );
+        // `--team-chat <path>` is appended as a trailing pair.
+        let i = argv
+            .iter()
+            .position(|a| a == "--team-chat")
+            .expect("flag present");
+        assert_eq!(
+            argv.get(i + 1).map(String::as_str),
+            Some("/ws/.bwoc/teams/squad/chat.jsonl")
+        );
     }
 
     #[test]

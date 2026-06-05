@@ -56,9 +56,15 @@ architect's reviewer-selection decision.
 
 ## Status / deferred
 
-- HV3-3a (engine slice) done. **Deferred slices:** (1) `bwoc chat --team` CLI
-  wiring to resolve + pass `--team-chat`; (2) chat-protocol `Broadcast` /
-  `TeamMessage` variants + TUI rendering of peer messages.
+- HV3-3a (engine slice) done. **Slice (1) — `bwoc chat --team` CLI wiring —
+  now also done** (separate PR): `ChatArgs.team` → membership-checked
+  `crate::sangha::load_team` + `team_chat_jsonl_path` → `bwoc_tui::TuiArgs.
+  team_chat` → harness `--team-chat`. Only harness-backed `--tui` sessions can
+  use it (vendor CLIs speak their own protocol); `--team` elsewhere warns and
+  runs solo. `bwoc-tui::harness_argv` gained the trailing `--team-chat` pair.
+  **Still deferred:** (2) chat-protocol `Broadcast` / `TeamMessage` variants +
+  TUI rendering of peer messages as distinct events (today peer context reaches
+  the agent's context but the human sees it only via the agent's replies).
 - Remaining in HV3-3: **(c) peer-review gate** — needs the reviewer-selection
   decision (fixed / round-robin / manifest-declared). HV3-5 MCP-vs-A2A still open.
 
