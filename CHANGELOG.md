@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Harness v3 begins — HV3-1 "Memory in the loop" (Sati).** When the agent's manifest configures `deepMemoryCmd`, `bwoc-harness` closes the Tier 2 memory loop around every session: **wake-up** output joins the system prompt at session start (batch *and* `--chat`) as a "Prior context (Tier 2 memory)" block; a read-only **`memory_search`** tool (`<cmd> search`) lets the model recall past decisions mid-run through the normal guardrails → permission pipeline (chat's default policy allows it beside `memory_read`); and at session end the session is **mined** back into memory — chat mines its persisted `.bwoc/chat-session.json`, a successful batch run distils *task → outcome* into `.bwoc/last-run.md` and mines that (the checkpoint is cleaned up on success), and a failed run mines its surviving checkpoint. Strictly opt-in and best-effort: absent/placeholder `deepMemoryCmd` disables everything, failures degrade to warnings, and every call is timeout-bounded (10/15/60 s) so a hung backend can never stall a run. Verified live end-to-end: run 1 mined its distillate, run 2 woke with run 1's memory injected.
+
 ## [v2026.6.5-0] — 2026-06-05 — 2.23.0
 
 ### Added

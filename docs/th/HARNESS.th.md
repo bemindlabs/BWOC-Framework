@@ -159,6 +159,18 @@ Tool ทุกตัวลงทะเบียนใน `tools/registry.rs` แ
 
 ---
 
+## Tier 2 Deep Memory (HV3-1)
+
+เมื่อ manifest ของ agent ตั้ง `deepMemoryCmd` (เครื่องมือใดก็ได้ที่พูด contract ของ `bwoc-core::deep_memory` — ตัวอ้างอิงคือ `bwoc-deep-memory`) harness จะปิดวงจรความจำรอบทุก session:
+
+1. **wake-up** — ตอนเริ่ม session (ทั้ง batch และ `--chat`) output ของ `<cmd> wake-up` ถูกต่อท้าย system prompt เป็นบล็อก *"Prior context (Tier 2 memory)"*
+2. **memory_search** — register tool แบบ read-only (`<cmd> search "<q>"`) ให้โมเดล recall การตัดสินใจเก่ากลางงาน; ผ่าน pipeline guardrails → permission เหมือน tool อื่นทุกตัว; policy default ของ chat อนุญาตคู่กับ `memory_read`
+3. **mine** — ตอนจบ session ตัว session กลายเป็นความจำ: `--chat` mine `.bwoc/chat-session.json` ที่ persist ไว้; batch run ที่สำเร็จกลั่น *task → outcome* ลง `.bwoc/last-run.md` แล้ว mine (checkpoint ถูกลบไปแล้วตอนสำเร็จ); run ที่ล้มเหลว mine checkpoint ที่ยังอยู่ (run ที่พังคือสิ่งที่ควรจำที่สุด)
+
+ทั้งหมด **opt-in, best-effort และมีขอบเขตเวลา**: ไม่มี/เป็น placeholder `deepMemoryCmd` = ปิดทั้งสามอย่าง (Tier 1 ทำงานต่อ); ความล้มเหลว degrade เป็น warning; ทุก subprocess มี timeout (wake-up 10 วิ, search 15 วิ, mine 60 วิ) — memory backend ที่ค้างทำให้ run สะดุดไม่ได้ *(สติ — agent จำข้าม session)*
+
+---
+
 ## Schema ของ `.bwoc/harness-policy.toml`
 
 วางไฟล์นี้ที่ workspace root ของ agent harness โหลดตอน startup ถ้าไม่มีไฟล์ `default_mode = "deny"` ใช้งาน (fail-safe)
@@ -333,7 +345,7 @@ harness ถูก validate end-to-end กับ Ollama จริงก่อน�
 
 | ความสามารถ | สถานะ |
 |---|---|
-| **OS-level sandbox** (macOS `sandbox-exec`, Linux landlock/seccomp) | **Stub** trait `OsSandbox` มีอยู่และ pluggable แต่ implement เดียวคือ `NoopOsSandbox` worktree+allowlist confinement active; OS-level syscall isolation ยังไม่มี |
+| **OS-level sandbox** (macOS `sandbox-exec`, Linux landlock/seccomp) | **Ship แล้ว (2.3.0)** landlock จริง (Linux ≥ 5.13) + `sandbox-exec` (macOS) ผ่าน `make_os_sandbox()` degrade เป็น worktree-only บน kernel ที่ไม่รองรับ *(แถวนี้เคยบอก "stub" — stale ตั้งแต่ 2.3.0)* |
 | **Streaming** | เชื่อมและทำงานได้ (SSE delta accumulation test ผ่าน) token count ใน `usage` ไม่มีบน streaming path (provider ไม่ return `usage` ใน SSE delta) |
 | **Vetted-model list** | เล็ก ขณะนี้รู้ว่า `gemma4` และ `qwen2.5-coder:7b` ใช้ tool calling ได้ดี model ที่ไม่ได้ vetted จะ warning แต่ไม่ hard-block |
 | **Context compaction** | Active (truncate-with-marker strategy) LLM-summarise คือ upgrade path ที่ชัดเจนแต่ยังไม่ implement ใน v1 |
