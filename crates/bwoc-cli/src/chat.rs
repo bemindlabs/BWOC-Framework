@@ -35,6 +35,11 @@ pub struct ChatArgs {
     /// Full-screen ratatui chat client driving `bwoc-harness --chat`. Harness
     /// backends only; falls back to the default exec path otherwise.
     pub tui: bool,
+    /// Join a team's shared chat channel (HV3-3a): teammate replies are
+    /// injected into context and this agent's replies broadcast back. Requires
+    /// `--tui` with a harness backend (ollama / openai-compatible); ignored
+    /// otherwise. The agent must be a member of the team.
+    pub team: Option<String>,
 }
 
 pub fn run(args: ChatArgs) -> i32 {
@@ -79,6 +84,38 @@ pub fn run(args: ChatArgs) -> i32 {
     };
     let agent_path = workspace.join(&entry.path);
 
+    // Team chat broadcast (HV3-3a): resolve + validate the shared log when
+    // `--team` is given. Membership is required; the path lives beside the
+    // team's task list. Only harness-backed `--tui` sessions can use it (vendor
+    // CLIs speak their own protocol), so warn-and-proceed-solo otherwise rather
+    // than failing an otherwise-valid chat.
+    let team_chat = match &args.team {
+        None => None,
+        Some(team_id) => match crate::sangha::load_team(&workspace, team_id) {
+            Ok(team) => {
+                if !team.has_member(&entry.id) {
+                    eprintln!(
+                        "bwoc chat: agent '{}' is not a member of team '{}' — \
+                         add it with `bwoc team` or pick another team.",
+                        entry.id, team_id
+                    );
+                    return 1;
+                }
+                Some(crate::sangha::team_chat_jsonl_path(&workspace, team_id))
+            }
+            Err(e) => {
+                eprintln!("bwoc chat: {e}");
+                return 1;
+            }
+        },
+    };
+    if team_chat.is_some() && !(args.tui && backend.uses_harness()) {
+        eprintln!(
+            "bwoc chat: --team needs --tui with a harness backend \
+             (ollama / openai-compatible); running this session solo."
+        );
+    }
+
     if args.tui {
         // The ratatui client only knows how to drive a `bwoc-harness --chat`
         // subprocess (the chat_proto wire format). Vendor backends (claude /
@@ -89,6 +126,7 @@ pub fn run(args: ChatArgs) -> i32 {
                 agent_id: entry.id.clone(),
                 agent_path,
                 backend_name: backend.display_name().to_string(),
+                team_chat,
             });
         }
         eprintln!(

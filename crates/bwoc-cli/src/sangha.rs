@@ -42,6 +42,12 @@ fn team_task_dir(workspace: &Path, team_id: &str) -> PathBuf {
     teams_dir(workspace).join(team_id)
 }
 
+/// Path to a team's shared chat broadcast log (HV3-3a). Lives beside
+/// `tasks.jsonl` under the team's directory.
+pub(crate) fn team_chat_jsonl_path(workspace: &Path, team_id: &str) -> PathBuf {
+    team_task_dir(workspace, team_id).join("chat.jsonl")
+}
+
 fn tasks_jsonl_path(workspace: &Path, team_id: &str) -> PathBuf {
     team_task_dir(workspace, team_id).join("tasks.jsonl")
 }
@@ -135,7 +141,7 @@ fn lock_is_stale(path: &Path) -> bool {
 
 // --- shared loaders --------------------------------------------------------
 
-fn load_team(workspace: &Path, team_id: &str) -> Result<Team, String> {
+pub(crate) fn load_team(workspace: &Path, team_id: &str) -> Result<Team, String> {
     let path = team_toml_path(workspace, team_id);
     let body = fs::read_to_string(&path).map_err(|_| {
         format!(

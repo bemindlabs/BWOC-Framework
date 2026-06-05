@@ -1286,6 +1286,11 @@ struct ChatArgs {
     /// openai-compatible); other backends print a hint and fall back to exec.
     #[arg(long, conflicts_with_all = ["tmux", "ghostty"])]
     tui: bool,
+    /// Join a team's shared chat channel (HV3-3a): teammate replies are injected
+    /// into context and this agent's replies broadcast to the team. Requires
+    /// `--tui` with a harness backend; the agent must be a team member.
+    #[arg(long)]
+    team: Option<String>,
 }
 
 impl ChatArgs {
@@ -1297,6 +1302,7 @@ impl ChatArgs {
             tmux: self.tmux,
             ghostty: self.ghostty,
             tui: self.tui,
+            team: self.team,
         }
     }
 }
