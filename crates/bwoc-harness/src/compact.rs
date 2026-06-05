@@ -17,7 +17,6 @@
 //! need exactness — only "are we near the ceiling". The provider's real usage
 //! counts still drive the per-turn display.
 
-use crate::error::HarnessResult;
 use crate::provider::{ChatMessage, ProviderClient, Role};
 
 /// Rough chars-per-token divisor for the size heuristic.
@@ -132,30 +131,62 @@ concise note (under ~200 words) that preserves: decisions made, facts learned,
 files created or edited, commands run, and any unfinished task or open question.
 Write in compact prose or bullets. Output ONLY the summary — no preamble.";
 
-/// Compact `history` in place if it is over `max_tokens`.
+/// Outcome of one [`compact_context`] pass — the unified engine's report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compaction {
+    /// Under budget (or nothing worth folding) — history untouched.
+    None,
+    /// Folded `removed` messages into an LLM summary note.
+    Summarized { removed: usize },
+    /// Summarizer unavailable — folded `removed` messages behind a plain
+    /// truncation marker (the v1 batch strategy, now the shared fallback).
+    Truncated { removed: usize },
+}
+
+impl Compaction {
+    /// Messages folded by this pass (0 for `None`).
+    pub fn removed(&self) -> usize {
+        match self {
+            Compaction::None => 0,
+            Compaction::Summarized { removed } | Compaction::Truncated { removed } => *removed,
+        }
+    }
+}
+
+/// Unified context engine (HV3-2): compact `history` in place when it is over
+/// `max_tokens`. One policy for both the batch loop and `--chat`:
 ///
-/// On compaction: messages `1..split` are summarized (via a single provider
-/// call) into one `system` note that replaces them, the recent tail is kept, and
-/// the number of folded messages is returned as `Some(removed)`. Returns
-/// `Ok(None)` when no compaction was needed. A summarizer failure is **not**
-/// fatal — it returns `Ok(None)` so the turn proceeds uncompacted (the provider
-/// may still reject an over-long prompt, but we never crash the session here).
-pub async fn maybe_compact(
+/// 1. **Summarize-first** — messages `1..split` are folded into one `system`
+///    note via a single provider call (decisions, files, commands, open
+///    questions survive in prose).
+/// 2. **Truncate fallback** — if the summarizer fails or returns nothing, the
+///    same span is folded behind a plain marker instead, so an over-long
+///    history is *always* brought back under budget (no new failure mode —
+///    this was the batch loop's v1 strategy).
+/// 3. **Tier 2 synergy** — what falls out of the window falls into memory:
+///    when the workdir's manifest configures `deepMemoryCmd`, the folded
+///    content (the summary, or the raw excerpt on fallback) is written to
+///    `.bwoc/compacted-context.md` and mined (`--mode compaction`), so
+///    `memory_search` can still recall it later. Best-effort, like all of
+///    Tier 2.
+pub async fn compact_context(
     provider: &dyn ProviderClient,
     model: &str,
     max_tokens: usize,
     history: &mut Vec<ChatMessage>,
-) -> HarnessResult<Option<usize>> {
+    workdir: &std::path::Path,
+) -> Compaction {
     let Some(split) = plan_compaction(history, max_tokens) else {
-        return Ok(None);
+        return Compaction::None;
     };
 
     let excerpt = render(&history[1..split]);
+    let removed = split - 1;
+
     let messages = vec![
         ChatMessage::system(SUMMARIZE_SYSTEM),
         ChatMessage::user(format!("Conversation excerpt to summarize:\n\n{excerpt}")),
     ];
-
     let summary = match provider.complete(messages, Vec::new(), model).await {
         Ok(c) => c
             .choices
@@ -163,25 +194,45 @@ pub async fn maybe_compact(
             .next()
             .and_then(|ch| ch.message.content)
             .unwrap_or_default(),
-        // Summarizer call failed — leave history untouched, proceed uncompacted.
-        Err(_) => return Ok(None),
+        Err(_) => String::new(),
     };
-    if summary.trim().is_empty() {
-        return Ok(None);
-    }
 
-    let removed = split - 1;
-    let note = ChatMessage::system(format!(
-        "[Summary of {removed} earlier messages — the conversation continues below]\n{}",
-        summary.trim()
-    ));
+    let (note, outcome, mined_text) = if summary.trim().is_empty() {
+        (
+            ChatMessage::user(format!(
+                "[context compacted: {removed} messages truncated to fit context window]"
+            )),
+            Compaction::Truncated { removed },
+            excerpt,
+        )
+    } else {
+        let trimmed = summary.trim().to_string();
+        (
+            ChatMessage::system(format!(
+                "[Summary of {removed} earlier messages — the conversation continues below]\n{trimmed}"
+            )),
+            Compaction::Summarized { removed },
+            trimmed,
+        )
+    };
+
     let mut compacted = Vec::with_capacity(history.len() - removed + 1);
     compacted.push(history[0].clone()); // original system prompt
     compacted.push(note);
     compacted.extend_from_slice(&history[split..]);
     *history = compacted;
 
-    Ok(Some(removed))
+    // Tier 2 synergy — best-effort, opt-in via the manifest.
+    if let Some(dm) = crate::deep_memory::DeepMemoryCmd::from_workdir(workdir) {
+        let bwoc_dir = workdir.join(".bwoc");
+        let artifact = bwoc_dir.join("compacted-context.md");
+        let _ = std::fs::create_dir_all(&bwoc_dir);
+        if std::fs::write(&artifact, &mined_text).is_ok() {
+            dm.mine(&artifact, "compaction").await;
+        }
+    }
+
+    outcome
 }
 
 #[cfg(test)]
@@ -250,5 +301,161 @@ mod tests {
                 "tail must not begin with a tool result"
             );
         }
+    }
+
+    // ── Unified engine tests (HV3-2) ─────────────────────────────────────────
+
+    use crate::error::HarnessError;
+    use crate::provider::{ChatCompletion, Choice, FinishReason, StreamChunk, Tool, Usage};
+    use async_trait::async_trait;
+    use futures_util::Stream;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+
+    /// Mock provider: pops queued results; `stream` is never used by the engine.
+    struct EngineMock {
+        responses: Mutex<Vec<Result<ChatCompletion, HarnessError>>>,
+    }
+
+    impl EngineMock {
+        fn summarizing(text: &str) -> Self {
+            Self {
+                responses: Mutex::new(vec![Ok(ChatCompletion {
+                    id: "mock".to_string(),
+                    choices: vec![Choice {
+                        index: 0,
+                        message: ChatMessage::assistant(Some(text.to_string()), None),
+                        finish_reason: Some(FinishReason::Stop),
+                    }],
+                    usage: Some(Usage {
+                        prompt_tokens: 1,
+                        completion_tokens: 1,
+                        total_tokens: 2,
+                    }),
+                })]),
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                responses: Mutex::new(vec![Err(HarnessError::Provider("down".to_string()))]),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ProviderClient for EngineMock {
+        async fn complete(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Vec<Tool>,
+            _model: &str,
+        ) -> Result<ChatCompletion, HarnessError> {
+            let mut lock = self.responses.lock().unwrap();
+            if lock.is_empty() {
+                return Err(HarnessError::Provider("mock exhausted".to_string()));
+            }
+            lock.remove(0)
+        }
+
+        async fn stream(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _tools: Vec<Tool>,
+            _model: &str,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>>,
+            HarnessError,
+        > {
+            Err(HarnessError::Provider("stream unused".to_string()))
+        }
+
+        async fn validate_model(&self, _model: &str) -> Result<(), HarnessError> {
+            Ok(())
+        }
+    }
+
+    /// system + n chunky user messages — comfortably over a small budget.
+    fn over_budget_history(n: usize) -> Vec<ChatMessage> {
+        let mut h = vec![ChatMessage::system("sys prompt")];
+        for i in 0..n {
+            h.push(ChatMessage::user(format!(
+                "message {i} {}",
+                "x".repeat(120)
+            )));
+        }
+        h
+    }
+
+    #[tokio::test]
+    async fn engine_under_budget_is_none() {
+        let mock = EngineMock::summarizing("unused");
+        let mut h = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("hi"),
+            ChatMessage::user("there"),
+            ChatMessage::user("ok"),
+        ];
+        let before = h.len();
+        let out = compact_context(&mock, "m", 100_000, &mut h, std::path::Path::new("/tmp")).await;
+        assert_eq!(out, Compaction::None);
+        assert_eq!(h.len(), before, "history untouched under budget");
+    }
+
+    #[tokio::test]
+    async fn engine_summarizes_when_provider_succeeds() {
+        let mock = EngineMock::summarizing("DECISIONS: kept rustls; edited foo.rs");
+        let mut h = over_budget_history(12);
+        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        let removed = match out {
+            Compaction::Summarized { removed } => removed,
+            other => panic!("expected Summarized, got {other:?}"),
+        };
+        assert!(removed >= 2);
+        assert_eq!(h[0].content.as_deref(), Some("sys prompt"));
+        let note = h[1].content.as_deref().unwrap_or("");
+        assert!(note.contains("Summary of"), "got note: {note}");
+        assert!(note.contains("kept rustls"));
+    }
+
+    #[tokio::test]
+    async fn engine_falls_back_to_truncation_on_summarizer_failure() {
+        let mock = EngineMock::failing();
+        let mut h = over_budget_history(12);
+        let before = h.len();
+        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        let removed = match out {
+            Compaction::Truncated { removed } => removed,
+            other => panic!("expected Truncated fallback, got {other:?}"),
+        };
+        assert!(removed >= 2);
+        assert!(h.len() < before, "fallback must still shrink the history");
+        let note = h[1].content.as_deref().unwrap_or("");
+        assert!(note.contains("context compacted"), "got note: {note}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn engine_mines_folded_content_when_tier2_configured() {
+        // Workdir with a manifest whose deepMemoryCmd is `true` (exit 0, no
+        // output) — asserts the synergy path writes the artifact and doesn't
+        // disturb the outcome.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.manifest.json"),
+            r#"{"name":"t","agentId":"agent-t","agentRole":"r","primaryModel":"m",
+                "memoryPath":"memories/","lintCmd":"true","formatCmd":"true",
+                "testCmd":"true","buildCmd":"true","deepMemoryCmd":"true",
+                "version":"1"}"#,
+        )
+        .unwrap();
+        let mock = EngineMock::summarizing("THE SUMMARY");
+        let mut h = over_budget_history(12);
+        let out = compact_context(&mock, "m", 60, &mut h, dir.path()).await;
+        assert!(matches!(out, Compaction::Summarized { .. }));
+        let artifact = dir.path().join(".bwoc/compacted-context.md");
+        assert!(artifact.is_file(), "folded content must be persisted");
+        let body = std::fs::read_to_string(artifact).unwrap();
+        assert!(body.contains("THE SUMMARY"));
     }
 }

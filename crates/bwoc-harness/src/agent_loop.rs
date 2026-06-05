@@ -40,21 +40,19 @@
 //!
 //! When the estimated context token count approaches
 //! `LoopConfig::context_limit` (leaving a `CONTEXT_HEADROOM` margin), the
-//! loop compacts the history by:
+//! loop hands the history to the **unified context engine**
+//! (`crate::compact::compact_context`, HV3-2) — the same policy `--chat`
+//! uses:
 //!
-//! 1. Retaining the system message (index 0) and the last
-//!    `COMPACTION_KEEP_RECENT` messages unchanged.
-//! 2. Replacing the middle section with a single user message that acts as a
-//!    summary marker: `[context compacted: N messages truncated]`.
-//!
-//! **Why truncate-with-marker rather than LLM-summarise?**
-//! - Zero extra latency / cost — no second model call needed.
-//! - No new failure mode (summarisation model could fail too).
-//! - Sufficient for v1: the model sees the recent turns and knows older
-//!   context was cut.  An operator can tune `context_limit` down to force
-//!   more frequent but smaller compactions.
-//! - LLM-summarise is a clear upgrade path; the design doc records this as
-//!   "P5 / operator-opt-in via config flag".
+//! 1. **Summarize-first** — the oldest span is folded into one LLM summary
+//!    note (decisions, files, commands, open questions survive in prose).
+//! 2. **Truncate fallback** — if the summarizer fails, the same span is
+//!    folded behind a plain `[context compacted: …]` marker instead, so the
+//!    history always shrinks (this was the v1 batch strategy; it remains the
+//!    no-new-failure-mode floor).
+//! 3. **Tier 2 synergy** — when the manifest configures `deepMemoryCmd`, the
+//!    folded content is mined into deep memory, so `memory_search` can still
+//!    recall what fell out of the window.
 //!
 //! ## Telemetry (P3 deferral resolved)
 //!
@@ -105,10 +103,6 @@ const MAX_BACKOFF_MS: u64 = 3_200;
 /// How many consecutive malformed-tool-call responses from a model before
 /// triggering fallback to the next model in the chain.
 const MALFORMED_TOOL_CALL_THRESHOLD: u32 = 2;
-
-/// How many messages to keep at the tail of the history during compaction.
-/// The system prompt is always kept; these are the most-recent turns.
-const COMPACTION_KEEP_RECENT: usize = 6;
 
 /// Leave this fraction of the context limit as headroom before compacting.
 /// Compaction triggers when `context_tokens > context_limit * (1 - headroom)`.
@@ -488,8 +482,20 @@ pub async fn run_loop(
                 let estimated = estimate_context_tokens(&history);
                 let threshold = (compact_limit as f64 * (1.0 - CONTEXT_HEADROOM_FRAC)) as u32;
                 if estimated >= threshold {
-                    compact_history(&mut history);
-                    compactions += 1;
+                    // Unified context engine (HV3-2): summarize-first with a
+                    // truncate fallback — and what falls out of the window is
+                    // mined into Tier 2 memory when configured.
+                    let outcome = crate::compact::compact_context(
+                        provider.as_ref(),
+                        &active_model,
+                        threshold as usize,
+                        &mut history,
+                        &ctx.workdir,
+                    )
+                    .await;
+                    if outcome.removed() > 0 {
+                        compactions += 1;
+                    }
                 }
             }
         }
@@ -822,43 +828,6 @@ fn estimate_context_tokens(history: &[ChatMessage]) -> u32 {
         .map(|m| m.content.as_deref().map_or(0, |c| c.len()))
         .sum();
     (total_chars / 4) as u32
-}
-
-/// Compact history in-place using the truncate-with-marker strategy.
-///
-/// Keeps:
-/// - `history[0]` — the system message (always retained).
-/// - The last `COMPACTION_KEEP_RECENT` messages.
-///
-/// Replaces the middle section with a single user message:
-/// `[context compacted: N messages truncated]`
-///
-/// This is the v1 strategy chosen over LLM-summarise for two reasons:
-/// - Zero extra latency (no second model call).
-/// - No new failure mode (summarisation model could fail or add hallucinations).
-///
-/// LLM-summarise is the natural upgrade path when the operator opts in.
-fn compact_history(history: &mut Vec<ChatMessage>) {
-    // Need at least: system + something to compact + the recent tail.
-    let min_len = 1 + COMPACTION_KEEP_RECENT + 1;
-    if history.len() <= min_len {
-        return; // nothing to compact
-    }
-
-    let system = history[0].clone();
-    let tail_start = history.len().saturating_sub(COMPACTION_KEEP_RECENT);
-    let truncated = tail_start - 1; // messages between system and tail
-
-    let tail: Vec<ChatMessage> = history[tail_start..].to_vec();
-
-    let marker = ChatMessage::user(format!(
-        "[context compacted: {truncated} messages truncated to fit context window]"
-    ));
-
-    history.clear();
-    history.push(system);
-    history.push(marker);
-    history.extend(tail);
 }
 
 /// Return the effective context-window token limit for `model`.
@@ -1790,125 +1759,26 @@ mod tests {
         assert_eq!(result.final_response, "still works");
     }
 
-    // ── Context compaction tests ─────────────────────────────────────────────
-
-    #[test]
-    fn compact_history_reduces_length() {
-        let mut history: Vec<ChatMessage> = Vec::new();
-        // system + 20 user messages
-        history.push(ChatMessage::system("sys"));
-        for i in 0..20 {
-            history.push(ChatMessage::user(format!("message {i}")));
-        }
-        let original_len = history.len();
-        compact_history(&mut history);
-        assert!(
-            history.len() < original_len,
-            "compact should reduce history length"
-        );
-    }
-
-    #[test]
-    fn compact_history_retains_system_message() {
-        let mut history = vec![
-            ChatMessage::system("system prompt"),
-            ChatMessage::user("old message 1"),
-            ChatMessage::user("old message 2"),
-            ChatMessage::user("old message 3"),
-            ChatMessage::user("old message 4"),
-            ChatMessage::user("old message 5"),
-            ChatMessage::user("old message 6"),
-            ChatMessage::user("old message 7"),
-            ChatMessage::user("old message 8"),
-            ChatMessage::user("recent 1"),
-            ChatMessage::user("recent 2"),
-        ];
-        compact_history(&mut history);
-
-        // First message must be the system prompt.
-        assert_eq!(
-            history[0].content.as_deref(),
-            Some("system prompt"),
-            "system message must be retained at index 0"
-        );
-    }
-
-    #[test]
-    fn compact_history_inserts_marker() {
-        let mut history = vec![
-            ChatMessage::system("sys"),
-            ChatMessage::user("old 1"),
-            ChatMessage::user("old 2"),
-            ChatMessage::user("old 3"),
-            ChatMessage::user("old 4"),
-            ChatMessage::user("old 5"),
-            ChatMessage::user("old 6"),
-            ChatMessage::user("old 7"),
-            ChatMessage::user("recent tail"),
-        ];
-        compact_history(&mut history);
-
-        // Index 1 should be the compaction marker.
-        let marker = &history[1];
-        assert!(
-            marker
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .contains("context compacted"),
-            "index 1 must be the compaction marker; got: {:?}",
-            marker.content
-        );
-    }
-
-    #[test]
-    fn compact_history_retains_recent_tail() {
-        let mut history = vec![
-            ChatMessage::system("sys"),
-            ChatMessage::user("old 1"),
-            ChatMessage::user("old 2"),
-            ChatMessage::user("old 3"),
-            ChatMessage::user("old 4"),
-            ChatMessage::user("old 5"),
-            ChatMessage::user("old 6"),
-            ChatMessage::user("old 7"),
-            ChatMessage::user("tail_message"), // should survive compaction
-        ];
-        compact_history(&mut history);
-
-        let last = history.last().unwrap();
-        assert_eq!(
-            last.content.as_deref(),
-            Some("tail_message"),
-            "most recent message must survive compaction"
-        );
-    }
-
-    #[test]
-    fn compact_history_noop_if_too_short() {
-        // History shorter than min_len must not be modified.
-        let original = vec![ChatMessage::system("sys"), ChatMessage::user("only")];
-        let mut history = original.clone();
-        compact_history(&mut history);
-        assert_eq!(
-            history.len(),
-            original.len(),
-            "short history must not be compacted"
-        );
-    }
-
     #[tokio::test]
     async fn context_compaction_triggers_in_loop() {
         let tmp = TempDir::new().unwrap();
 
-        // Build a history that will exceed a tiny context_limit.
-        // Each message is ~50 chars → 50/4 ≈ 12 tokens.
-        // With context_limit=10, compaction should fire.
-        let initial = vec![ChatMessage::user(
-            "This is a moderately long initial message that pushes the context over the tiny limit set for testing compaction behaviour.".to_string(),
-        )];
+        // Build a history long + chunky enough that the unified engine
+        // actually folds messages (plan_compaction needs ≥4 messages and a
+        // genuine over-budget estimate). The engine's summarizer consumes the
+        // first queued mock response; the real turn consumes the second.
+        let mut initial = Vec::new();
+        for i in 0..10 {
+            initial.push(ChatMessage::user(format!(
+                "message {i}: {}",
+                "padding ".repeat(20)
+            )));
+        }
 
-        let provider = Arc::new(MockProvider::new(vec![make_final_response("compacted")]));
+        let provider = Arc::new(MockProvider::new(vec![
+            make_final_response("SUMMARY of the early conversation"),
+            make_final_response("compacted"),
+        ]));
         let registry = Arc::new(default_registry());
         let ctx = ToolContext::new(tmp.path());
         let mut telem = noop_telemetry();
@@ -1930,7 +1800,9 @@ mod tests {
         .await
         .unwrap();
 
-        // The loop completes successfully — compaction is transparent.
+        // The loop completes successfully — compaction is transparent — and
+        // `compactions` now counts passes that actually folded messages
+        // (the engine reports removed(); a no-op pass no longer increments).
         assert_eq!(result.final_response, "compacted");
         assert!(result.compactions >= 1, "expected at least one compaction");
     }
@@ -2206,9 +2078,22 @@ mod tests {
     async fn token_pressure_no_candidate_falls_back_to_compaction() {
         let tmp = TempDir::new().unwrap();
 
-        let long_user_msg: String = "x".repeat(500);
+        // Engine semantics (HV3-2): compaction only counts when messages are
+        // actually folded, and plan_compaction needs ≥4 messages — so feed a
+        // real multi-message over-budget history, and queue a summarizer
+        // response ahead of the turn's final response.
+        let mut initial = Vec::new();
+        for i in 0..10 {
+            initial.push(ChatMessage::user(format!(
+                "message {i}: {}",
+                "padding ".repeat(20)
+            )));
+        }
 
-        let provider = Arc::new(MockProvider::new(vec![make_final_response("compacted")]));
+        let provider = Arc::new(MockProvider::new(vec![
+            make_final_response("SUMMARY"),
+            make_final_response("compacted"),
+        ]));
         let registry = Arc::new(default_registry());
         let ctx = ToolContext::new(tmp.path());
         let mut telem = noop_telemetry();
@@ -2230,7 +2115,7 @@ mod tests {
             ctx,
             config,
             "system prompt".to_string(),
-            vec![ChatMessage::user(long_user_msg)],
+            initial,
             &mut telem,
         )
         .await
@@ -2448,9 +2333,22 @@ mod tests {
     async fn token_pressure_unvetted_candidate_does_not_switch() {
         let tmp = TempDir::new().unwrap();
 
-        let long_user_msg: String = "x".repeat(500);
+        // Engine semantics (HV3-2): compaction only counts when messages are
+        // actually folded, and plan_compaction needs ≥4 messages — so feed a
+        // real multi-message over-budget history, and queue a summarizer
+        // response ahead of the turn's final response.
+        let mut initial = Vec::new();
+        for i in 0..10 {
+            initial.push(ChatMessage::user(format!(
+                "message {i}: {}",
+                "padding ".repeat(20)
+            )));
+        }
 
-        let provider = Arc::new(MockProvider::new(vec![make_final_response("compacted")]));
+        let provider = Arc::new(MockProvider::new(vec![
+            make_final_response("SUMMARY"),
+            make_final_response("compacted"),
+        ]));
         let registry = Arc::new(default_registry());
         let ctx = ToolContext::new(tmp.path());
         let mut telem = noop_telemetry();
@@ -2474,7 +2372,7 @@ mod tests {
             ctx,
             config,
             "system prompt".to_string(),
-            vec![ChatMessage::user(long_user_msg)],
+            initial,
             &mut telem,
         )
         .await
