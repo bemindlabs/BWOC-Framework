@@ -100,10 +100,13 @@ async fn run() -> Result<(), ConnectError> {
         Some(log) => Some(HarnessSessionFactory::new(&agent_dir)?.with_team_chat(log.clone())),
         None => None,
     };
+    // Short platform tag for logged-peer `from` fields (tg:<id> / dc:<id>).
+    let peer_prefix = if platform == "discord" { "dc" } else { "tg" };
     let group_bridge = match (group_factory.as_ref(), group_chat_log.as_ref()) {
         (Some(f), Some(log)) => Some(GroupBridge {
             factory: f,
             chat_log: log.clone(),
+            peer_prefix: peer_prefix.to_string(),
         }),
         _ => None,
     };
