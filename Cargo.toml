@@ -10,6 +10,7 @@ members = [
     "crates/bwoc-tui",
     "crates/bwoc-mqtt",
     "crates/bwoc-deep-memory",
+    "crates/bwoc-connect",
 ]
 
 [workspace.package]
