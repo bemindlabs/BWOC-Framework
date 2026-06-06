@@ -17,8 +17,10 @@ use std::time::{Duration, Instant};
 const RESPAWN_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Connector platforms `bwoc-agent` knows how to supervise, by config filename.
-/// (PR3: Telegram only; Discord joins in PR4.)
-const KNOWN: &[(&str, &str)] = &[("telegram", "connectors/telegram.toml")];
+const KNOWN: &[(&str, &str)] = &[
+    ("telegram", "connectors/telegram.toml"),
+    ("discord", "connectors/discord.toml"),
+];
 
 pub struct ConnectorSupervisor {
     /// Resolved `bwoc-connect` binary; `None` ⇒ none enabled, or not found.

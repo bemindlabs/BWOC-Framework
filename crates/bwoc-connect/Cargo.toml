@@ -26,8 +26,11 @@ async-trait = "0.1"
 # Network deps live HERE (dep-quarantine): nothing on the `bwoc` CLI / agent /
 # core path pulls these in. `tokio` is the workspace base + the extra features
 # this crate needs (subprocess management + piped stdio).
-tokio = { workspace = true, features = ["rt-multi-thread", "process", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "process", "io-util", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Discord gateway (websocket). rustls-only — no native TLS, matches reqwest.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 [dev-dependencies]
 tempfile = "3"

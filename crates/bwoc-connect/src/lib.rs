@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+pub mod discord;
 pub mod session;
 pub mod telegram;
 
@@ -80,8 +81,12 @@ fn default_true() -> bool {
     true
 }
 
+/// The connector config shape is platform-agnostic (enabled / allow_from /
+/// group), so Discord reuses it from `connectors/discord.toml`.
+pub type ConnectorConfig = TelegramConfig;
+
 impl TelegramConfig {
-    /// Parse a `telegram.toml` body.
+    /// Parse a connector config body (`telegram.toml` / `discord.toml`).
     pub fn parse(toml_src: &str) -> Result<Self, ConnectError> {
         toml::from_str(toml_src).map_err(|e| ConnectError::Config(e.to_string()))
     }
