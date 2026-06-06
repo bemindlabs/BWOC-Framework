@@ -33,6 +33,12 @@ pub struct Team {
     /// Agent ids that belong to the team. The human operator is the
     /// implicit lead and is never listed here.
     pub members: Vec<String>,
+    /// Designated peer-review agent (HV3-3c). When set, the lead routes a
+    /// worker's diff to this agent before completing the task; a rejection
+    /// re-queues the task. `None` = no review gate (workers complete directly).
+    /// By convention a team member, and never reviews its own work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<String>,
     /// UTC ISO 8601 creation stamp.
     pub created_at: String,
 }
@@ -42,6 +48,7 @@ impl Team {
         Self {
             id: id.into(),
             members,
+            reviewer: None,
             created_at: utc_now_iso8601(),
         }
     }
@@ -611,6 +618,21 @@ mod tests {
             ensure_member(&team, "agent-x").unwrap_err(),
             TeamError::NotAMember(_)
         ));
+    }
+
+    #[test]
+    fn team_reviewer_is_optional_and_roundtrips() {
+        // Default: no reviewer, and the field stays out of the serialized toml.
+        let plain = Team::new("squad", vec!["agent-pi".into()]);
+        assert!(plain.reviewer.is_none());
+        assert!(!plain.to_toml().unwrap().contains("reviewer"));
+
+        // With a reviewer set, it roundtrips through toml.
+        let mut t = Team::new("squad", vec!["agent-pi".into(), "agent-yanluo".into()]);
+        t.reviewer = Some("agent-yanluo".into());
+        let back = Team::from_toml(&t.to_toml().unwrap()).unwrap();
+        assert_eq!(back.reviewer.as_deref(), Some("agent-yanluo"));
+        assert_eq!(back, t);
     }
 
     #[test]
