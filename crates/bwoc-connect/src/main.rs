@@ -3,8 +3,9 @@
 //!
 //! Args are hand-parsed (no `clap` — this crate stays minimal; its weight is
 //! the network stack, not the CLI). Token resolution is the **OS keyring**
-//! (`bwoc/<platform>` · agent-dir basename) with the platform env var
-//! (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) as the headless-server fallback.
+//! (`bwoc/<platform>` · agent-dir basename) on macOS/Windows, with the platform
+//! env var (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) as the fallback — and
+//! the only path on Linux (no Secret Service dep; the headless target uses env).
 
 use std::path::PathBuf;
 
@@ -152,10 +153,10 @@ fn team_chat_path(agent_dir: &std::path::Path, team: &str) -> PathBuf {
         .join("chat.jsonl")
 }
 
-/// Resolve the bot token: **OS keyring first** (service `bwoc/<platform>`,
-/// account = the agent dir's basename), **env var fallback**. The keyring is
-/// the default at-rest store; the env var is the documented headless-server
-/// path — a missing/locked keyring is never fatal, it just falls through.
+/// Resolve the bot token: **OS keyring first** (macOS/Windows; service
+/// `bwoc/<platform>`, account = the agent dir's basename), **env var fallback**
+/// (every platform; the only path on Linux — see `keyring_lookup`). A
+/// missing/locked/absent keyring is never fatal — it falls through to the env.
 fn resolve_token(
     platform: &str,
     agent_dir: &std::path::Path,
@@ -166,20 +167,32 @@ fn resolve_token(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "agent".to_string());
     let service = format!("bwoc/{platform}");
-    if let Ok(entry) = keyring::Entry::new(&service, &account) {
-        if let Ok(tok) = entry.get_password() {
-            if !tok.trim().is_empty() {
-                eprintln!("[bwoc-connect] token: keyring {service}·{account}");
-                return Ok(tok);
-            }
-        }
+    if let Some(tok) = keyring_lookup(&service, &account) {
+        eprintln!("[bwoc-connect] token: keyring {service}·{account}");
+        return Ok(tok);
     }
     match std::env::var(token_env) {
         Ok(tok) if !tok.trim().is_empty() => Ok(tok),
         _ => Err(ConnectError::NoToken(format!(
-            "{token_env} (or keyring entry {service}·{account})"
+            "{token_env} (or, on macOS/Windows, keyring entry {service}·{account})"
         ))),
     }
+}
+
+/// Non-empty token from the OS keyring, or `None`. macOS/Windows query the
+/// native store; Linux has no keyring backend (env-only — see Cargo.toml).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn keyring_lookup(service: &str, account: &str) -> Option<String> {
+    let tok = keyring::Entry::new(service, account)
+        .ok()?
+        .get_password()
+        .ok()?;
+    (!tok.trim().is_empty()).then_some(tok)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn keyring_lookup(_service: &str, _account: &str) -> Option<String> {
+    None
 }
 
 /// A team id safe to use as a single filesystem path segment.
