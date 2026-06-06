@@ -2,9 +2,9 @@
 //! BWOC agent: `bwoc-connect <telegram|discord> --agent <dir>`.
 //!
 //! Args are hand-parsed (no `clap` — this crate stays minimal; its weight is
-//! the network stack, not the CLI). Token resolution is the platform env var
-//! (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) — the documented headless-server
-//! path; keyring resolution is a follow-up.
+//! the network stack, not the CLI). Token resolution is the **OS keyring**
+//! (`bwoc/<platform>` · agent-dir basename) with the platform env var
+//! (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) as the headless-server fallback.
 
 use std::path::PathBuf;
 
@@ -66,7 +66,7 @@ async fn run() -> Result<(), ConnectError> {
         );
     }
 
-    let token = std::env::var(token_env).map_err(|_| ConnectError::NoToken(token_env.into()))?;
+    let token = resolve_token(platform, &agent_dir, token_env)?;
     // Build the platform transport. Telegram resolves its @username up front
     // (validates the token + enables group mention-gating); Discord connects
     // its gateway. Both expose the same `Transport`.
@@ -150,6 +150,36 @@ fn team_chat_path(agent_dir: &std::path::Path, team: &str) -> PathBuf {
         .join("teams")
         .join(team)
         .join("chat.jsonl")
+}
+
+/// Resolve the bot token: **OS keyring first** (service `bwoc/<platform>`,
+/// account = the agent dir's basename), **env var fallback**. The keyring is
+/// the default at-rest store; the env var is the documented headless-server
+/// path — a missing/locked keyring is never fatal, it just falls through.
+fn resolve_token(
+    platform: &str,
+    agent_dir: &std::path::Path,
+    token_env: &str,
+) -> Result<String, ConnectError> {
+    let account = agent_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "agent".to_string());
+    let service = format!("bwoc/{platform}");
+    if let Ok(entry) = keyring::Entry::new(&service, &account) {
+        if let Ok(tok) = entry.get_password() {
+            if !tok.trim().is_empty() {
+                eprintln!("[bwoc-connect] token: keyring {service}·{account}");
+                return Ok(tok);
+            }
+        }
+    }
+    match std::env::var(token_env) {
+        Ok(tok) if !tok.trim().is_empty() => Ok(tok),
+        _ => Err(ConnectError::NoToken(format!(
+            "{token_env} (or keyring entry {service}·{account})"
+        ))),
+    }
 }
 
 /// A team id safe to use as a single filesystem path segment.

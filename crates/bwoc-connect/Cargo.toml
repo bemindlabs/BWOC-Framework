@@ -34,3 +34,16 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 
 [dev-dependencies]
 tempfile = "3"
+
+# Token resolution via the OS keyring (chat-connectors). Per-OS backends so the
+# crate compiles on all three CI legs; the secret-service (Linux) backend is
+# pure-Rust (zbus + rust-crypto) — no system libdbus/openssl. env var stays the
+# fallback, so a missing/locked keyring is never fatal.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
