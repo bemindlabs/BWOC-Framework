@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`bwoc handbook` — bundled offline quick guide.** A new command rendering a terminal-sized, task-oriented guide straight from the binary (no network, no files to locate). `bwoc handbook` lists sections; `bwoc handbook <section>` prints one — **start · agents · spawn · teams · harness · release**. Bilingual: the resolved language (`--lang` / `BWOC_LANG` / `LANG`) selects the Thai body, falling back to English. Content is purpose-written for getting moving; the full reference stays in `docs/`.
+- **`bwoc info` — one-card system status.** Version + release identity (CalVer when a release build) + phase + workspace path + registered-agent count + update-drift status, in one card (`--json` for the machine-readable form). The update line is **read-only and offline** — it reuses the throttle cache the background version-check already maintains (no extra network), surfacing explicitly what bare `bwoc` already prints as a drift notice. New `update::info_status_line()` exposes that cached status.
+
 ## [v2026.6.6-0] — 2026-06-06 — 2.24.0
 
 ### Added

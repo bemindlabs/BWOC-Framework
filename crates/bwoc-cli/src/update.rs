@@ -540,6 +540,23 @@ pub fn drift_notice(current: &str, latest_seen: &str) -> Option<(String, String)
     (lat > cur).then(|| (cur.to_tag(), lat.to_tag()))
 }
 
+/// A one-line update status for `bwoc info` — read-only and **cache-only** (no
+/// network; reads the same throttle cache the background check maintains).
+/// `None` on source builds (no embedded CalVer to compare against).
+pub fn info_status_line() -> Option<String> {
+    let current = option_env!("BWOC_RELEASE_CALVER")?;
+    let home = crate::user_home::bwoc_home().ok()?;
+    match read_cache(&home.join(CACHE_FILE)) {
+        Some(cache) => match drift_notice(current, &cache.latest_seen) {
+            Some((cur, lat)) => Some(format!(
+                "{lat} available (you have {cur}) — run 'bwoc update'"
+            )),
+            None => Some(format!("up to date ✓ ({current})")),
+        },
+        None => Some(format!("{current} (not yet checked)")),
+    }
+}
+
 // ── Guard decision (pure) ─────────────────────────────────────────────────────────
 
 /// Everything that decides whether the startup check runs at all. Gathered
