@@ -50,7 +50,7 @@ version = "0.1.0"                # ต้องมี, SemVer ของ BWOC fra
 created = "2026-05-22T05:50:00Z" # ต้องมี, ISO 8601 UTC
 
 [defaults]
-backend = "claude"               # ทางเลือก: claude | agy | codex | kimi | ollama
+backend = "claude"               # ทางเลือก: claude | agy | codex | kimi | copilot | ollama
 lang = "th"                      # ทางเลือก: BCP 47 / ISO 639-1
 agents_dir = "agents"            # ทางเลือก, default "agents" (สัมพัทธ์กับ workspace root)
 ```

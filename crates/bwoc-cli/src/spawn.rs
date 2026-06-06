@@ -43,6 +43,7 @@ use crate::sessions::{SessionMarker, remove_marker, write_marker};
 /// - `"agy"` → `Antigravity`
 /// - `"codex"` → `Codex`
 /// - `"kimi"` → `Kimi`
+/// - `"copilot"` → `Copilot`
 /// - `"ollama"` → `Ollama`
 /// - `"openai-compatible"` → `OpenAiCompatible`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -51,6 +52,11 @@ pub enum Backend {
     Antigravity,
     Codex,
     Kimi,
+    /// GitHub Copilot CLI (`copilot`). Agentic vendor CLI; reads `AGENTS.md`
+    /// natively for custom instructions, so the agent's source of truth works
+    /// without a backend-named file. Spawn execs it interactively; `bwoc run`
+    /// uses its programmatic mode (`copilot -p … --no-ask-user`).
+    Copilot,
     /// Self-hosted Ollama.  Execs the `bwoc-harness` sibling binary with the
     /// default endpoint `http://localhost:11434/v1`, or with `baseUrl` from
     /// `config.manifest.json` when that field is present.
@@ -75,6 +81,7 @@ impl Backend {
             Backend::Antigravity => Some("agy"),
             Backend::Codex => Some("codex"),
             Backend::Kimi => Some("kimi"),
+            Backend::Copilot => Some("copilot"),
             Backend::Ollama | Backend::OpenAiCompatible => None,
         }
     }
@@ -86,6 +93,7 @@ impl Backend {
             Backend::Antigravity => "agy",
             Backend::Codex => "codex",
             Backend::Kimi => "kimi",
+            Backend::Copilot => "copilot",
             Backend::Ollama => "ollama",
             Backend::OpenAiCompatible => "openai-compatible",
         }
@@ -105,8 +113,9 @@ impl Backend {
     /// - Claude — `--effort <v>` (`low|medium|high|xhigh|max`).
     /// - Codex — `-c model_reasoning_effort=<v>` (a `~/.codex/config.toml`
     ///   override; `minimal|low|medium|high`).
-    /// - Antigravity / Kimi — no effort-*level* flag (Kimi has only a boolean
-    ///   `--thinking`; Antigravity has none), so nothing is passed.
+    /// - Antigravity / Kimi / Copilot — no effort-*level* flag (Kimi has only a
+    ///   boolean `--thinking`; Antigravity and Copilot have none), so nothing
+    ///   is passed.
     ///
     /// The value is forwarded verbatim — `reasoningEffort`'s value space is
     /// backend-specific by design, so the operator supplies a level their
@@ -116,9 +125,11 @@ impl Backend {
         match self {
             Backend::Claude => vec!["--effort".to_string(), effort.to_string()],
             Backend::Codex => vec!["-c".to_string(), format!("model_reasoning_effort={effort}")],
-            Backend::Antigravity | Backend::Kimi | Backend::Ollama | Backend::OpenAiCompatible => {
-                Vec::new()
-            }
+            Backend::Antigravity
+            | Backend::Kimi
+            | Backend::Copilot
+            | Backend::Ollama
+            | Backend::OpenAiCompatible => Vec::new(),
         }
     }
 
@@ -149,6 +160,15 @@ impl Backend {
             ],
             Backend::Codex => &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
             Backend::Kimi => &["kimi-k2", "kimi-k1.5"],
+            // Copilot CLI is multi-model (Anthropic + OpenAI behind GitHub's
+            // menu); slugs follow its `/model` picker. Best-effort list — the
+            // vendor's menu evolves, and free-text input is always accepted.
+            Backend::Copilot => &[
+                "claude-sonnet-4.6",
+                "claude-haiku-4-5",
+                "gpt-5.5",
+                "gpt-5.5-codex",
+            ],
             Backend::Ollama => &[
                 "qwen2.5-coder:7b",
                 "qwen2.5-coder:14b",
