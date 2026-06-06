@@ -124,7 +124,12 @@ impl ConnectorSupervisor {
             let _ = std::fs::create_dir_all(parent);
         }
         let body = serde_json::json!({ "platform": platform, "state": state, "pid": pid });
-        let _ = std::fs::write(path, body.to_string());
+        // Atomic: write a temp sibling then rename, so `bwoc status` never reads
+        // a half-written marker (rename is atomic on the same filesystem).
+        let tmp = path.with_extension("status.tmp");
+        if std::fs::write(&tmp, body.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
     }
 
     /// Kill the connector child on daemon shutdown (best-effort).
@@ -132,8 +137,10 @@ impl ConnectorSupervisor {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
             let _ = c.wait();
-            self.write_status("stopped", None);
         }
+        // Unconditionally mark stopped (even if the child had already exited),
+        // so a stale `running` marker can't linger after the daemon is down.
+        self.write_status("stopped", None);
     }
 }
 

@@ -471,8 +471,9 @@ fn read_primary_model(root: &Path, a: &AgentEntry) -> Option<String> {
 }
 
 /// Read an agent's connector health marker (`<agent>/.bwoc/connector.status`,
-/// written by `bwoc-agent --serve`) → `(platform, state, pid)`. `None` when no
-/// connector is running / the marker is absent or malformed.
+/// written by `bwoc-agent --serve`) → `(platform, state, pid)`. `None` only when
+/// the marker is absent or malformed; a present marker returns `Some` for every
+/// state (`running` / `exited` / `stopped`).
 fn read_connector_status(agent_path: &Path) -> Option<(String, String, Option<u64>)> {
     let raw = std::fs::read_to_string(agent_path.join(".bwoc").join("connector.status")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -480,6 +481,38 @@ fn read_connector_status(agent_path: &Path) -> Option<(String, String, Option<u6
     let state = v.get("state")?.as_str()?.to_string();
     let pid = v.get("pid").and_then(serde_json::Value::as_u64);
     Some((platform, state, pid))
+}
+
+#[cfg(test)]
+mod connector_status_tests {
+    use super::read_connector_status;
+    use tempfile::TempDir;
+
+    #[test]
+    fn reads_marker_and_handles_absent_or_malformed() {
+        let tmp = TempDir::new().unwrap();
+        let bwoc = tmp.path().join(".bwoc");
+        std::fs::create_dir_all(&bwoc).unwrap();
+
+        // Absent marker ⇒ None.
+        assert!(read_connector_status(tmp.path()).is_none());
+
+        // Well-formed marker ⇒ parsed tuple (any state, incl. stopped).
+        std::fs::write(
+            bwoc.join("connector.status"),
+            r#"{"platform":"discord","state":"stopped","pid":null}"#,
+        )
+        .unwrap();
+        let (plat, state, pid) = read_connector_status(tmp.path()).unwrap();
+        assert_eq!(
+            (plat.as_str(), state.as_str(), pid),
+            ("discord", "stopped", None)
+        );
+
+        // Malformed JSON ⇒ None (status hides it rather than crashing).
+        std::fs::write(bwoc.join("connector.status"), "{not json").unwrap();
+        assert!(read_connector_status(tmp.path()).is_none());
+    }
 }
 
 fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
