@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.7-0] — 2026-06-07 — 2.25.0
+
 ### Added
 
 - **Chat connectors — keyring token resolution (the architect's "keyring default").** `bwoc-connect` resolves the bot token from the **OS keyring first on macOS/Windows** (service `bwoc/<platform>`, account = the agent dir's basename), falling back to the platform env var (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`). **Linux is env-only** by design — wiring Secret Service pulls system libdbus (absent on CI) or a second async runtime, heavy for a feature the headless deployment target doesn't use (no Secret Service daemon → env anyway). The env var is the fallback on every platform; a missing/locked keyring is never fatal.
