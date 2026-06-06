@@ -42,7 +42,7 @@ pub enum ConnectError {
     Transport(String),
     #[error("agent session error: {0}")]
     Session(String),
-    #[error("no bot token: set the {0} environment variable (keyring resolution lands in PR3)")]
+    #[error("no bot token: set the {0} environment variable (keyring resolution is a follow-up)")]
     NoToken(String),
 }
 
@@ -150,6 +150,9 @@ pub trait SessionFactory: Send + Sync {
 pub struct GroupBridge<'a> {
     pub factory: &'a dyn SessionFactory,
     pub chat_log: std::path::PathBuf,
+    /// Short platform tag for the peer `from` field in the team `chat.jsonl`
+    /// (e.g. `"tg"` / `"dc"`), so a logged peer reads `tg:<id>` / `dc:<id>`.
+    pub peer_prefix: String,
 }
 
 /// Run the relay: poll → allow-list filter → per-chat session → reply.
@@ -214,7 +217,11 @@ pub async fn run_bridge(
                 // context (so the agent sees it on its next addressed turn) but
                 // draws no reply.
                 if mention_only && !msg.mentions_bot {
-                    append_peer(&gb.chat_log, &format!("tg:{}", msg.from_user_id), &msg.text);
+                    append_peer(
+                        &gb.chat_log,
+                        &format!("{}:{}", gb.peer_prefix, msg.from_user_id),
+                        &msg.text,
+                    );
                     continue;
                 }
                 // Addressed: serve via the --team-chat group session, which
@@ -572,6 +579,7 @@ mod tests {
         let gb = GroupBridge {
             factory: &gf,
             chat_log: log.clone(),
+            peer_prefix: "tg".into(),
         };
         run_bridge(&t, &dmf, Some(gb), &group_cfg(&[111], true), Some(1))
             .await
@@ -603,6 +611,7 @@ mod tests {
         let gb = GroupBridge {
             factory: &gf,
             chat_log: log.clone(),
+            peer_prefix: "tg".into(),
         };
         run_bridge(&t, &dmf, Some(gb), &group_cfg(&[111], true), Some(1))
             .await

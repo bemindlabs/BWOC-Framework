@@ -30,7 +30,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "process", "io-util",
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Discord gateway (websocket). rustls-only — no native TLS, matches reqwest.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 
 [dev-dependencies]
 tempfile = "3"
