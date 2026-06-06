@@ -68,6 +68,14 @@ struct Args {
     #[arg(long, default_value = "agent-lead")]
     agent: String,
 
+    /// Peer-review agent for the lead's review gate (HV3-3c). When set (and
+    /// different from `--agent`), each successful worker's diff is routed to
+    /// this agent before completion; a rejection re-queues the task. Unset =
+    /// no review gate. (`bwoc chat`/team tooling resolves this from the team's
+    /// `reviewer` field.)
+    #[arg(long, requires = "lead")]
+    reviewer: Option<String>,
+
     /// Max tasks to process this lead invocation; `0` = drain all.
     #[arg(long, default_value_t = 0)]
     max_tasks: usize,
@@ -531,6 +539,7 @@ async fn run() -> HarnessResult<()> {
 /// Run the lead loop: drain `--tasks` and spawn a worker subprocess per task.
 async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<()> {
     use bwoc_harness::lead::{JsonlTaskSource, LeadConfig, run_lead};
+    use bwoc_harness::review::SubprocessReviewer;
     use bwoc_harness::worker::{SubprocessRunner, WorkerConfig};
 
     let tasks_path = args.tasks.as_ref().ok_or_else(|| {
@@ -560,21 +569,34 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         },
         capacity: args.concurrency,
         max_tasks: args.max_tasks,
+        // Peer-review gate (HV3-3c): operator-supplied reviewer agent. Filtered
+        // through the same placeholder rule so an unset/blank flag = no gate.
+        reviewer: args
+            .reviewer
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     };
+    let reviewer = std::sync::Arc::new(SubprocessReviewer::new()?);
 
     println!(
-        "  mode     : Saṅgha lead (agent={}, tasks={})",
+        "  mode     : Saṅgha lead (agent={}, tasks={}{})",
         cfg.agent_id,
-        tasks_path.display()
+        tasks_path.display(),
+        cfg.reviewer
+            .as_deref()
+            .map(|r| format!(", reviewer={r}"))
+            .unwrap_or_default()
     );
     println!("─────────────────────────────────────────────");
 
-    let summary = run_lead(&source, runner, &cfg).await?;
+    let summary = run_lead(&source, runner, reviewer, &cfg).await?;
 
     println!("─────────────────────────────────────────────");
     println!(
-        "lead done: {} claimed, {} completed, {} failed.",
-        summary.claimed, summary.completed, summary.failed
+        "lead done: {} claimed, {} completed, {} rejected, {} failed.",
+        summary.claimed, summary.completed, summary.rejected, summary.failed
     );
     Ok(())
 }
