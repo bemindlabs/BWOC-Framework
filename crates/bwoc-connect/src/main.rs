@@ -1,18 +1,17 @@
 //! `bwoc-connect` — run a chat connector that bridges an external platform to a
-//! BWOC agent. PR1: `bwoc-connect telegram --agent <dir>`.
+//! BWOC agent: `bwoc-connect <telegram|discord> --agent <dir>`.
 //!
 //! Args are hand-parsed (no `clap` — this crate stays minimal; its weight is
-//! the network stack, not the CLI). Token resolution in PR1 is the
-//! `TELEGRAM_BOT_TOKEN` env var (the documented headless-server path); keyring
-//! resolution lands with the CredentialBroker wiring in PR3.
+//! the network stack, not the CLI). Token resolution is the platform env var
+//! (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) — the documented headless-server
+//! path; keyring resolution is a follow-up.
 
 use std::path::PathBuf;
 
+use bwoc_connect::discord::DiscordTransport;
 use bwoc_connect::session::HarnessSessionFactory;
 use bwoc_connect::telegram::TelegramTransport;
-use bwoc_connect::{ConnectError, GroupBridge, TelegramConfig, run_bridge};
-
-const TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
+use bwoc_connect::{ConnectError, ConnectorConfig, GroupBridge, Transport, run_bridge};
 
 #[tokio::main]
 async fn main() {
@@ -25,18 +24,20 @@ async fn main() {
 async fn run() -> Result<(), ConnectError> {
     let args: Vec<String> = std::env::args().collect();
 
-    match args.get(1).map(String::as_str) {
-        Some("telegram") => {}
+    // platform → (config filename, token env var)
+    let (platform, token_env) = match args.get(1).map(String::as_str) {
+        Some("telegram") => ("telegram", "TELEGRAM_BOT_TOKEN"),
+        Some("discord") => ("discord", "DISCORD_BOT_TOKEN"),
         Some(other) => {
             return Err(ConnectError::Config(format!(
-                "unknown connector '{other}' (only 'telegram' in PR1)"
+                "unknown connector '{other}' (supported: telegram, discord)"
             )));
         }
         None => {
-            eprintln!("usage: bwoc-connect telegram --agent <dir> [--max-polls N]");
+            eprintln!("usage: bwoc-connect <telegram|discord> --agent <dir> [--max-polls N]");
             return Err(ConnectError::Config("missing connector".into()));
         }
-    }
+    };
 
     let agent_dir = flag(&args, "--agent")
         .map(PathBuf::from)
@@ -44,11 +45,13 @@ async fn run() -> Result<(), ConnectError> {
     // `--max-polls N` bounds the loop (manual smoke testing); absent = forever.
     let max_polls = flag(&args, "--max-polls").and_then(|s| s.parse::<usize>().ok());
 
-    // Config: <agent>/connectors/telegram.toml
-    let cfg_path = agent_dir.join("connectors").join("telegram.toml");
+    // Config: <agent>/connectors/<platform>.toml
+    let cfg_path = agent_dir
+        .join("connectors")
+        .join(format!("{platform}.toml"));
     let raw = std::fs::read_to_string(&cfg_path)
         .map_err(|e| ConnectError::Config(format!("read {}: {e}", cfg_path.display())))?;
-    let cfg = TelegramConfig::parse(&raw)?;
+    let cfg = ConnectorConfig::parse(&raw)?;
     if !cfg.enabled {
         return Err(ConnectError::Config(format!(
             "connector disabled (set enabled = true in {})",
@@ -63,11 +66,19 @@ async fn run() -> Result<(), ConnectError> {
         );
     }
 
-    let token = std::env::var(TOKEN_ENV).map_err(|_| ConnectError::NoToken(TOKEN_ENV.into()))?;
-    let mut transport = TelegramTransport::new(&token)?;
-    // Resolve the bot's @username up front (validates the token early + needed
-    // for group mention-gating).
-    transport.resolve_identity().await?;
+    let token = std::env::var(token_env).map_err(|_| ConnectError::NoToken(token_env.into()))?;
+    // Build the platform transport. Telegram resolves its @username up front
+    // (validates the token + enables group mention-gating); Discord connects
+    // its gateway. Both expose the same `Transport`.
+    let transport: Box<dyn Transport> = match platform {
+        "telegram" => {
+            let mut t = TelegramTransport::new(&token)?;
+            t.resolve_identity().await?;
+            Box::new(t)
+        }
+        "discord" => Box::new(DiscordTransport::connect(&token).await?),
+        _ => unreachable!("platform validated above"),
+    };
     let dm_factory = HarnessSessionFactory::new(&agent_dir)?;
 
     // Group binding (PR2): if `[group].team` is set, resolve the team's shared
@@ -98,7 +109,7 @@ async fn run() -> Result<(), ConnectError> {
     };
 
     eprintln!(
-        "[bwoc-connect] telegram bridge up for agent {} (allow_from: {:?}{})",
+        "[bwoc-connect] {platform} bridge up for agent {} (allow_from: {:?}{})",
         agent_dir.display(),
         cfg.allow_from,
         group_chat_log
@@ -106,7 +117,14 @@ async fn run() -> Result<(), ConnectError> {
             .map(|p| format!(", team-chat: {}", p.display()))
             .unwrap_or_default()
     );
-    run_bridge(&transport, &dm_factory, group_bridge, &cfg, max_polls).await
+    run_bridge(
+        transport.as_ref(),
+        &dm_factory,
+        group_bridge,
+        &cfg,
+        max_polls,
+    )
+    .await
 }
 
 /// Resolve a team's shared chat log: walk up from the agent dir to the
