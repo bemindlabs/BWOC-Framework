@@ -72,11 +72,19 @@ async fn run() -> Result<(), ConnectError> {
 
     // Group binding (PR2): if `[group].team` is set, resolve the team's shared
     // chat.jsonl and build a --team-chat factory for group rooms.
-    let group_chat_log = cfg
-        .group
-        .as_ref()
-        .and_then(|g| g.team.as_deref())
-        .map(|team| team_chat_path(&agent_dir, team));
+    let group_chat_log = match cfg.group.as_ref().and_then(|g| g.team.as_deref()) {
+        Some(team) => {
+            // Defence in depth: the team id becomes a path segment, so reject
+            // anything that isn't a plain kebab/snake token (no `/`, `..`, etc.).
+            if !valid_team_id(team) {
+                return Err(ConnectError::Config(format!(
+                    "invalid team id '{team}' (allowed: letters, digits, '-', '_')"
+                )));
+            }
+            Some(team_chat_path(&agent_dir, team))
+        }
+        None => None,
+    };
     let group_factory = match &group_chat_log {
         Some(log) => Some(HarnessSessionFactory::new(&agent_dir)?.with_team_chat(log.clone())),
         None => None,
@@ -121,6 +129,14 @@ fn team_chat_path(agent_dir: &std::path::Path, team: &str) -> PathBuf {
         .join("teams")
         .join(team)
         .join("chat.jsonl")
+}
+
+/// A team id safe to use as a single filesystem path segment.
+fn valid_team_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Value of `--flag <value>` from argv, or `None`.

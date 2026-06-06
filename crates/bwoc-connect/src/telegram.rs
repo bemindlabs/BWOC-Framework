@@ -37,11 +37,27 @@ impl TelegramTransport {
     /// startup; required for group mention-gating).
     pub async fn resolve_identity(&mut self) -> Result<(), ConnectError> {
         let body = self.get_json("getMe", &[]).await?;
+        // Telegram returns HTTP 200 with `{"ok":false}` for a bad token — treat
+        // that as a hard startup error rather than silently leaving no username.
+        if body.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(ConnectError::Transport(format!(
+                "getMe failed (check {}): {}",
+                "TELEGRAM_BOT_TOKEN",
+                body.get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("invalid token?")
+            )));
+        }
         self.bot_username = body
             .get("result")
             .and_then(|r| r.get("username"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        if self.bot_username.is_none() {
+            return Err(ConnectError::Transport(
+                "getMe returned no bot username — cannot mention-gate groups".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -114,12 +130,32 @@ pub fn parse_updates(body: &Value, bot_username: Option<&str>) -> Vec<Incoming> 
     out
 }
 
-/// Does `text` @mention the bot? Case-insensitive `@<username>` match (the
-/// common Telegram mention form). `None` username never matches.
+/// Does `text` @mention the bot? Case-insensitive, **word-boundaried**
+/// `@<username>` match: the `@` must start a token and the username must not be
+/// followed by another username char — so `@mybotany` and `email@mybot.com` do
+/// NOT count (Telegram usernames are `[A-Za-z0-9_]`). `None` never matches.
 fn mentions(text: &str, bot_username: Option<&str>) -> bool {
     let Some(u) = bot_username else { return false };
+    let hay = text.to_ascii_lowercase();
     let needle = format!("@{}", u.to_ascii_lowercase());
-    text.to_ascii_lowercase().contains(&needle)
+    let bytes = hay.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(&needle) {
+        let at = from + rel;
+        let before_ok = at == 0 || !is_username_byte(bytes[at - 1]);
+        let after = at + needle.len();
+        let after_ok = after >= bytes.len() || !is_username_byte(bytes[after]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// A byte that can appear in a Telegram username (`[A-Za-z0-9_]`).
+fn is_username_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 #[async_trait::async_trait]
@@ -211,11 +247,25 @@ mod tests {
     }
 
     #[test]
-    fn mentions_is_case_insensitive_and_none_never_matches() {
+    fn mentions_is_case_insensitive_word_boundaried_and_none_never_matches() {
         assert!(mentions("yo @MyBot", Some("mybot")));
         assert!(mentions("yo @mybot now", Some("MyBot")));
+        assert!(mentions("@mybot", Some("mybot")));
+        assert!(
+            mentions("hi @mybot.", Some("mybot")),
+            "trailing punctuation ok"
+        );
         assert!(!mentions("no mention here", Some("mybot")));
         assert!(!mentions("@mybot", None));
+        // Boundary: must not match a longer username or an email-ish substring.
+        assert!(
+            !mentions("@mybotany", Some("mybot")),
+            "longer username not a match"
+        );
+        assert!(
+            !mentions("email@mybot.com", Some("mybot")),
+            "not a standalone mention"
+        );
     }
 
     #[test]
