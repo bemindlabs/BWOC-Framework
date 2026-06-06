@@ -85,11 +85,18 @@ impl Transport for DiscordTransport {
         if !resp.status().is_success() {
             let status = resp.status();
             // Discord returns a JSON error body (missing perms, invalid form,
-            // rate limit, …) — include it so failures are diagnosable.
-            let body = resp.text().await.unwrap_or_default();
+            // rate limit, …) — include it (capped, so a huge/HTML page can't
+            // bloat the error) so failures are diagnosable.
+            let body: String = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .take(300)
+                .collect();
             return Err(ConnectError::Transport(format!(
-                "createMessage HTTP {status}: {}",
-                body.trim()
+                "createMessage HTTP {status}: {body}"
             )));
         }
         Ok(())
@@ -147,7 +154,9 @@ async fn run_gateway_once(token: &str, tx: &mpsc::Sender<Incoming>) -> Result<()
     // beat (don't beat immediately after IDENTIFY). `interval`'s first tick is
     // immediate, so start it half an interval out — a fixed, dependency-free
     // jitter that avoids thundering-herd without needing an RNG.
-    let period = Duration::from_millis(interval_ms);
+    // `.max(1)` — `interval_at` panics on a zero period, which a malformed
+    // HELLO (heartbeat_interval: 0) would otherwise trigger.
+    let period = Duration::from_millis(interval_ms.max(1));
     let mut hb = tokio::time::interval_at(tokio::time::Instant::now() + period / 2, period);
     let mut seq: Option<u64> = None;
     let mut bot_id: Option<String> = None;
