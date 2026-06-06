@@ -192,7 +192,7 @@ const GETTING_STARTED: &str = "\
 
 See also:
   bwoc help workspace    — what each directory means
-  bwoc help backends     — switching between claude/agy/codex/kimi/ollama
+  bwoc help backends     — switching between claude/agy/codex/kimi/copilot/ollama
   bwoc help arc          — uppāda · ṭhiti · vaya mapping
   examples/howto/        — full walkthroughs
 ";
@@ -206,6 +206,7 @@ BWOC supports 6 declared backends (Samānattatā — equal treatment, no lock-in
   | Antigravity | agy           | gemini-3.5-flash-*, gemini-3.1-pro-*, claude-*-thinking, gpt-oss-120b-* |
   | Codex       | codex         | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex          |
   | Kimi        | kimi          | kimi-k2, kimi-k1.5                                     |
+  | Copilot     | copilot       | claude-sonnet-4.6, claude-haiku-4-5, gpt-5.5, gpt-5.5-codex |
   | Ollama      | bwoc-harness  | qwen2.5-coder:7b, llama3.1:8b, mistral-nemo, gemma4:8b |
   | OpenAI-compatible | bwoc-harness | gpt-5.5, gpt-5.5-pro, gpt-5.4, gpt-5.4-mini       |
 
@@ -678,7 +679,7 @@ Checks (run automatically; no flag selection):
   Environment
     ~/.bwoc/                    Per-user config directory (created on
                                 first run; --auto bootstraps it)
-    backends on PATH            At least one of claude/agy/codex/kimi
+    backends on PATH            At least one of claude/agy/codex/kimi/copilot
                                 discoverable (WARN if none — `bwoc spawn`
                                 will fail without one)
 

@@ -61,7 +61,7 @@ Agents are created by the CLI, never by hand-editing .bwoc/agents.toml:
 
 Each agent is agents/agent-<name>/ with slot dirs (persona/ mindsets/ skills/
 interconnect/ memories/) plus AGENTS.md — the single backend-neutral source of
-truth, symlinked to CLAUDE.md / CODEX.md / KIMI.md / AGY.md / OLLAMA.md.
+truth, symlinked to CLAUDE.md / CODEX.md / KIMI.md / AGY.md / COPILOT.md / OLLAMA.md.
 
 Keep AGENTS.md neutral: no YAML frontmatter, no model IDs/vendor names (use
 {{camelCase}} placeholders). `bwoc check` enforces this.",
@@ -75,7 +75,7 @@ agent ถูกสร้างผ่าน CLI เท่านั้น ห้�
 
 แต่ละ agent คือ agents/agent-<name>/ มี slot dirs (persona/ mindsets/ skills/
 interconnect/ memories/) และ AGENTS.md — แหล่งความจริงเดียวที่ backend-neutral
-symlink ไปยัง CLAUDE.md / CODEX.md / KIMI.md / AGY.md / OLLAMA.md
+symlink ไปยัง CLAUDE.md / CODEX.md / KIMI.md / AGY.md / COPILOT.md / OLLAMA.md
 
 ให้ AGENTS.md เป็นกลาง: ไม่มี YAML frontmatter, ไม่ฮาร์ดโค้ด model ID/ชื่อ vendor
 (ใช้ placeholder {{camelCase}}) — `bwoc check` บังคับกฎนี้",
@@ -86,24 +86,24 @@ symlink ไปยัง CLAUDE.md / CODEX.md / KIMI.md / AGY.md / OLLAMA.md
         en: "\
 Run an agent interactively against its declared backend:
 
-  bwoc spawn <agent>               # exec the backend CLI (claude/agy/codex/kimi)
+  bwoc spawn <agent>               # exec the backend CLI (claude/agy/codex/kimi/copilot)
   bwoc chat <agent>                # shortcut: spawn with the resolved backend
   bwoc chat <agent> --tui          # full-screen client (harness backends only)
   bwoc chat <agent> --tui --team <id>   # join the team's shared chat channel
 
 Ollama / OpenAI-compatible backends have no vendor CLI — bwoc supplies the
 agentic loop itself via bwoc-harness (see `bwoc handbook harness`). Vendor
-backends (claude/agy/codex/kimi) speak their own interactive protocol.",
+backends (claude/agy/codex/kimi/copilot) speak their own interactive protocol.",
         th: "\
 รัน agent แบบโต้ตอบกับ backend ที่ประกาศไว้:
 
-  bwoc spawn <agent>               # exec backend CLI (claude/agy/codex/kimi)
+  bwoc spawn <agent>               # exec backend CLI (claude/agy/codex/kimi/copilot)
   bwoc chat <agent>                # ทางลัด: spawn ด้วย backend ที่ resolve ได้
   bwoc chat <agent> --tui          # client เต็มจอ (เฉพาะ backend แบบ harness)
   bwoc chat <agent> --tui --team <id>   # เข้าร่วม chat channel ของทีม
 
 Ollama / OpenAI-compatible ไม่มี vendor CLI — bwoc จัดหา agentic loop เองผ่าน
-bwoc-harness (ดู `bwoc handbook harness`) ส่วน vendor (claude/agy/codex/kimi)
+bwoc-harness (ดู `bwoc handbook harness`) ส่วน vendor (claude/agy/codex/kimi/copilot)
 ใช้โปรโตคอลโต้ตอบของตัวเอง",
     },
     Section {

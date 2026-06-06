@@ -76,7 +76,7 @@ pub fn run(args: ChatArgs) -> i32 {
         None => {
             eprintln!(
                 "bwoc chat: agent '{}' has unknown backend '{}' in registry — \
-                 edit .bwoc/agents.toml to one of: claude, agy, codex, kimi, ollama",
+                 edit .bwoc/agents.toml to one of: claude, agy, codex, kimi, copilot, ollama",
                 entry.id, entry.backend
             );
             return 1;
@@ -314,6 +314,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "agy" => Some(Backend::Antigravity),
         "codex" => Some(Backend::Codex),
         "kimi" => Some(Backend::Kimi),
+        "copilot" => Some(Backend::Copilot),
         "ollama" => Some(Backend::Ollama),
         "openai-compatible" => Some(Backend::OpenAiCompatible),
         _ => None,
