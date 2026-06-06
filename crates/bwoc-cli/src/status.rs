@@ -288,6 +288,28 @@ fn print_all(root: &Path, registry: &AgentsRegistry) -> i32 {
         );
     }
     println!();
+
+    // Connector health (chat-connectors): any agent running a bwoc-connect
+    // bridge writes `.bwoc/connector.status` from `bwoc-agent --serve` — surface
+    // it as its own section so the fixed-width table above stays intact.
+    let connectors: Vec<String> = registry
+        .agents
+        .iter()
+        .filter_map(|a| {
+            read_connector_status(&root.join(&a.path)).map(|(plat, state, pid)| {
+                let pid = pid.map(|n| format!(" (pid {n})")).unwrap_or_default();
+                format!("  {:<22} {plat:<9} {state}{pid}", a.id)
+            })
+        })
+        .collect();
+    if !connectors.is_empty() {
+        println!("Connectors:");
+        for line in &connectors {
+            println!("{line}");
+        }
+        println!();
+    }
+
     if unhealthy > 0 {
         println!(
             "{unhealthy} agent(s) need attention. Run `bwoc status <name>` for details, or `bwoc doctor` to scan + auto-fix safe issues."
@@ -446,6 +468,18 @@ fn read_primary_model(root: &Path, a: &AgentEntry) -> Option<String> {
     Manifest::load_from_path(&manifest)
         .ok()
         .map(|m| m.primary_model)
+}
+
+/// Read an agent's connector health marker (`<agent>/.bwoc/connector.status`,
+/// written by `bwoc-agent --serve`) → `(platform, state, pid)`. `None` when no
+/// connector is running / the marker is absent or malformed.
+fn read_connector_status(agent_path: &Path) -> Option<(String, String, Option<u64>)> {
+    let raw = std::fs::read_to_string(agent_path.join(".bwoc").join("connector.status")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let platform = v.get("platform")?.as_str()?.to_string();
+    let state = v.get("state")?.as_str()?.to_string();
+    let pid = v.get("pid").and_then(serde_json::Value::as_u64);
+    Some((platform, state, pid))
 }
 
 fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
