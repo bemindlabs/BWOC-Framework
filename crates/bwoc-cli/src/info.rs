@@ -32,28 +32,17 @@ pub fn run(args: InfoArgs) -> i32 {
         .unwrap_or_else(|| "source build (no release identity)".to_string());
 
     if args.json {
-        // Hand-rolled JSON keeps `info` dependency-free of serde derive here.
-        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-        let ws_json = match &ws {
-            Some(w) => format!("\"{}\"", esc(&w.display().to_string())),
-            None => "null".to_string(),
-        };
-        let agents_json = agents
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "null".to_string());
-        let release_json = match release {
-            Some(r) => format!("\"{}\"", esc(r)),
-            None => "null".to_string(),
-        };
-        println!(
-            "{{\"version\":\"{}\",\"release\":{},\"phase\":\"{}\",\"workspace\":{},\"agents\":{},\"update\":\"{}\"}}",
-            esc(version),
-            release_json,
-            esc(CURRENT_PHASE),
-            ws_json,
-            agents_json,
-            esc(&update),
-        );
+        // serde_json handles all escaping (control characters included) —
+        // bwoc-cli already depends on it, so no hand-rolled encoder.
+        let payload = serde_json::json!({
+            "version": version,
+            "release": release,
+            "phase": CURRENT_PHASE,
+            "workspace": ws.as_ref().map(|w| w.display().to_string()),
+            "agents": agents,
+            "update": update,
+        });
+        println!("{payload}");
         return 0;
     }
 
@@ -69,7 +58,10 @@ pub fn run(args: InfoArgs) -> i32 {
             w.display(),
             if n == 1 { "" } else { "s" }
         ),
-        _ => println!("Workspace: (none — run `bwoc init`)"),
+        // A workspace that resolved but whose registry can't be read is NOT
+        // "no workspace" — show the path and say what's wrong.
+        (Some(w), None) => println!("Workspace: {}  (agents registry unreadable)", w.display()),
+        (None, _) => println!("Workspace: (none — run `bwoc init`)"),
     }
     println!("Update: {update}   ·   handbook: bwoc handbook");
     0

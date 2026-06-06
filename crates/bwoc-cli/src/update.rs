@@ -545,7 +545,11 @@ pub fn drift_notice(current: &str, latest_seen: &str) -> Option<(String, String)
 /// `None` on source builds (no embedded CalVer to compare against).
 pub fn info_status_line() -> Option<String> {
     let current = option_env!("BWOC_RELEASE_CALVER")?;
-    let home = crate::user_home::bwoc_home().ok()?;
+    // A release build with an unreadable ~/.bwoc is NOT a source build — say
+    // "unavailable" rather than letting the caller's None-fallback mislabel it.
+    let Ok(home) = crate::user_home::bwoc_home() else {
+        return Some(format!("{current} (update status unavailable)"));
+    };
     match read_cache(&home.join(CACHE_FILE)) {
         Some(cache) => match drift_notice(current, &cache.latest_seen) {
             Some((cur, lat)) => Some(format!(
