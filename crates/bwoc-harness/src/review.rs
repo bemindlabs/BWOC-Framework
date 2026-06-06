@@ -82,13 +82,16 @@ pub fn parse_verdict(text: &str) -> ReviewVerdict {
             continue;
         };
         let rest = rest.trim();
-        if rest.eq_ignore_ascii_case("APPROVE") || rest.to_ascii_uppercase().starts_with("APPROVE")
-        {
+        // Exact APPROVE only — an ambiguous/qualified line ("APPROVE BUT …",
+        // "APPROVE? not sure") must NOT auto-approve; it falls through to the
+        // fail-safe reject below (Sīla).
+        if rest.eq_ignore_ascii_case("APPROVE") {
             return ReviewVerdict::approve("approved by reviewer");
         }
         if let Some(reason) = rest
-            .strip_prefix("REJECT:")
-            .or_else(|| rest.strip_prefix("reject:"))
+            .get(..7)
+            .filter(|p| p.eq_ignore_ascii_case("REJECT:"))
+            .map(|_| &rest[7..])
         {
             return ReviewVerdict::reject(reason.trim().to_string());
         }
@@ -99,11 +102,13 @@ pub fn parse_verdict(text: &str) -> ReviewVerdict {
     ReviewVerdict::reject("no parseable VERDICT line in the reviewer's response")
 }
 
-/// The review prompt handed to the reviewer subprocess.
-fn review_prompt(task_title: &str) -> String {
+/// The review prompt handed to the reviewer subprocess. `reviewer_agent` names
+/// the identity the reviewer acts as (the spawned harness loads its persona /
+/// policy from the worktree, so the identity is conveyed here in the prompt).
+fn review_prompt(reviewer_agent: &str, task_title: &str) -> String {
     format!(
-        "You are the peer reviewer for a Saṅgha team. A teammate just finished this task \
-         in the current working directory:\n\n  {task_title}\n\n\
+        "You are {reviewer_agent}, the peer reviewer for a Saṅgha team. A teammate just \
+         finished this task in the current working directory:\n\n  {task_title}\n\n\
          Review their changes: inspect the working-tree diff (run `git diff HEAD` and read \
          the changed files) and judge whether the work correctly and safely accomplishes the \
          task — correctness, safety, and no obvious regressions. Do NOT modify any files.\n\n\
@@ -112,6 +117,11 @@ fn review_prompt(task_title: &str) -> String {
          Then explain your reasoning."
     )
 }
+
+/// Where the worker's HV3-3b envelope is preserved before the reviewer (itself
+/// a harness run) writes its own to the canonical path. Keeps both on a
+/// kept-for-inspection REJECT worktree.
+const WORKER_ENVELOPE_BACKUP: &str = ".bwoc/worker-result.worker.json";
 
 /// Spawns a `bwoc-harness` subprocess as the reviewer, in the worker's worktree.
 pub struct SubprocessReviewer {
@@ -148,9 +158,18 @@ impl SubprocessReviewer {
 #[async_trait]
 impl Reviewer for SubprocessReviewer {
     async fn review(&self, spec: &ReviewSpec) -> ReviewVerdict {
+        // Preserve the worker's HV3-3b envelope: the reviewer is a harness run
+        // that will write its own to the canonical path, clobbering the
+        // worker's. Move it aside so a kept-for-inspection REJECT worktree keeps
+        // both (worker's at `…worker.json`, reviewer's at the canonical path).
+        let worker_env = spec.worktree.join(crate::result::RESULT_FILE);
+        if worker_env.exists() {
+            let _ = std::fs::rename(&worker_env, spec.worktree.join(WORKER_ENVELOPE_BACKUP));
+        }
+
         let mut cmd = tokio::process::Command::new(&self.exe);
         cmd.arg("--task")
-            .arg(review_prompt(&spec.task_title))
+            .arg(review_prompt(&spec.reviewer_agent, &spec.task_title))
             .arg("--workdir")
             .arg(&spec.worktree)
             .arg("--model")
@@ -214,6 +233,18 @@ mod tests {
     fn parse_verdict_approve() {
         let v = parse_verdict("VERDICT: APPROVE\nLooks correct and safe.");
         assert!(v.approved);
+    }
+
+    #[test]
+    fn parse_verdict_qualified_approve_is_not_approval() {
+        // Only an exact APPROVE approves; a hedged/qualified line fails safe.
+        for s in [
+            "VERDICT: APPROVE BUT fix the naming first",
+            "VERDICT: APPROVE? I'm not sure",
+            "VERDICT: APPROVED",
+        ] {
+            assert!(!parse_verdict(s).approved, "must not approve: {s:?}");
+        }
     }
 
     #[test]
