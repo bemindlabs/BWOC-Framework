@@ -307,9 +307,21 @@ where
             ChatInput::User { text } => {
                 // Team chat (HV3-3a): pull in any teammate messages posted
                 // since the last turn as a system note, before the new user
-                // message, so the agent answers with the team's context.
+                // message, so the agent answers with the team's context — and
+                // surface each to the frontend as a TeamMessage event.
                 if let Some(log) = &config.team_chat_log {
-                    inject_peer_messages(&mut history, log, &config.agent, &mut team_seen);
+                    for m in inject_peer_messages(&mut history, log, &config.agent, &mut team_seen)
+                    {
+                        emit(
+                            &mut out,
+                            &ChatEvent::TeamMessage {
+                                from: m.from,
+                                text: m.text,
+                                ts: m.ts,
+                            },
+                        )
+                        .await?;
+                    }
                 }
                 history.push(ChatMessage::user(text));
                 // Keep the conversation under the context budget: summarize the
@@ -397,18 +409,19 @@ fn save_session(path: &std::path::Path, history: &[ChatMessage]) {
 /// Inject team-chat messages that have appeared since `seen` into `history` as
 /// one system note, skipping this agent's own messages, and advance `seen` to
 /// the current log length. Best-effort: a missing/unparseable log injects
-/// nothing. Returns the number of peer messages injected (for tests/logging).
+/// nothing. Returns the fresh peer messages it injected so the caller can also
+/// surface them to the frontend (as `TeamMessage` events).
 fn inject_peer_messages(
     history: &mut Vec<ChatMessage>,
     log: &Path,
     agent: &str,
     seen: &mut usize,
-) -> usize {
+) -> Vec<bwoc_core::team::TeamChatMessage> {
     let Ok(raw) = std::fs::read_to_string(log) else {
-        return 0;
+        return Vec::new();
     };
     let Ok(msgs) = bwoc_core::team::parse_chat(&raw) else {
-        return 0;
+        return Vec::new();
     };
     let total = msgs.len();
     if total < *seen {
@@ -419,13 +432,16 @@ fn inject_peer_messages(
         *seen = 0;
     }
     if total == *seen {
-        return 0; // nothing new since the last turn
+        return Vec::new(); // nothing new since the last turn
     }
-    let fresh: Vec<&bwoc_core::team::TeamChatMessage> =
-        msgs[*seen..].iter().filter(|m| m.from != agent).collect();
+    let fresh: Vec<bwoc_core::team::TeamChatMessage> = msgs[*seen..]
+        .iter()
+        .filter(|m| m.from != agent)
+        .cloned()
+        .collect();
     *seen = total;
     if fresh.is_empty() {
-        return 0;
+        return Vec::new();
     }
     let mut block = String::from(
         "## Team conversation (Saṅgha)\n\nMessages from teammates since your last turn:\n",
@@ -434,7 +450,7 @@ fn inject_peer_messages(
         block.push_str(&format!("\n- **{}**: {}", m.from, m.text));
     }
     history.push(ChatMessage::system(block));
-    fresh.len()
+    fresh
 }
 
 /// Append this agent's reply to the team chat log (best-effort; creates the
@@ -1572,9 +1588,12 @@ mod tests {
 
         let mut history = vec![ChatMessage::system("sys")];
         let mut seen = 0usize;
-        let n = inject_peer_messages(&mut history, &log, "agent-self", &mut seen);
+        let injected = inject_peer_messages(&mut history, &log, "agent-self", &mut seen);
 
-        assert_eq!(n, 1, "only the peer message injects, not self");
+        assert_eq!(injected.len(), 1, "only the peer message injects, not self");
+        // The returned messages are what the caller surfaces as TeamMessage events.
+        assert_eq!(injected[0].from, "agent-a");
+        assert_eq!(injected[0].text, "peer says hi");
         assert_eq!(seen, 2, "cursor advances past every line read");
         let note = history.last().unwrap().content.as_deref().unwrap();
         assert!(note.contains("agent-a") && note.contains("peer says hi"));
@@ -1585,10 +1604,7 @@ mod tests {
 
         // No new lines → no injection, cursor steady, no extra history entry.
         let len_before = history.len();
-        assert_eq!(
-            inject_peer_messages(&mut history, &log, "agent-self", &mut seen),
-            0
-        );
+        assert!(inject_peer_messages(&mut history, &log, "agent-self", &mut seen).is_empty());
         assert_eq!(history.len(), len_before);
     }
 
@@ -1610,7 +1626,7 @@ mod tests {
         let mut history = vec![ChatMessage::system("sys")];
         let mut seen = 0usize;
         assert_eq!(
-            inject_peer_messages(&mut history, &log, "agent-self", &mut seen),
+            inject_peer_messages(&mut history, &log, "agent-self", &mut seen).len(),
             2
         );
         assert_eq!(seen, 2);
@@ -1628,7 +1644,11 @@ mod tests {
         )
         .unwrap();
         let n = inject_peer_messages(&mut history, &log, "agent-self", &mut seen);
-        assert_eq!(n, 1, "post-rotation message must be injected, not skipped");
+        assert_eq!(
+            n.len(),
+            1,
+            "post-rotation message must be injected, not skipped"
+        );
         assert_eq!(seen, 1);
         assert!(
             history
@@ -1651,17 +1671,14 @@ mod tests {
         let mut hist_b = vec![ChatMessage::system("sys")];
         let mut seen_b = 0usize;
         assert_eq!(
-            inject_peer_messages(&mut hist_b, &log, "agent-b", &mut seen_b),
+            inject_peer_messages(&mut hist_b, &log, "agent-b", &mut seen_b).len(),
             1
         );
 
         // Sender A injects and sees nothing (its own line is filtered).
         let mut hist_a = vec![ChatMessage::system("sys")];
         let mut seen_a = 0usize;
-        assert_eq!(
-            inject_peer_messages(&mut hist_a, &log, "agent-a", &mut seen_a),
-            0
-        );
+        assert!(inject_peer_messages(&mut hist_a, &log, "agent-a", &mut seen_a).is_empty());
     }
 
     #[test]
@@ -1675,7 +1692,7 @@ mod tests {
             "agent-x",
             &mut seen,
         );
-        assert_eq!(n, 0);
+        assert!(n.is_empty());
         assert_eq!(history.len(), 1);
     }
 
