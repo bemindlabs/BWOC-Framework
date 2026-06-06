@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **HV3-3c — peer-review gate (Kalyāṇamitta).** Completes HV3-3: a Saṅgha lead can route a successful worker's diff to a designated reviewer agent before completing the task. `bwoc-core::team::Team` gains a `reviewer` field (decided shape: **fixed reviewer per team**); new `bwoc-harness::review` defines a `Reviewer` trait + `ReviewVerdict` + a pure `parse_verdict` + `SubprocessReviewer` (spawns a `bwoc-harness` in the worker's worktree to inspect the diff, reads the verdict from the HV3-3b result envelope). The lead's success path now gates on it: **APPROVE** → complete + tear down; **REJECT** → unclaim (re-queue) keeping the worktree + feedback for the next claimer, counted in a new `LeadSummary.rejected`. Wired via `bwoc-harness --lead --reviewer <agent>`; a reviewer equal to the claiming agent (self-review) is skipped, and the gate is **fail-safe** — a reviewer spawn/timeout/unparseable-verdict resolves to REJECT, so unreviewed work never auto-completes (Sīla). CLI resolution of the team's `reviewer` field into `--reviewer` is a follow-up slice.
+
 ## [v2026.6.6-0] — 2026-06-06 — 2.24.0
 
 ### Added

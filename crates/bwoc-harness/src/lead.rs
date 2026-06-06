@@ -126,6 +126,11 @@ pub struct LeadConfig {
     pub capacity: usize,
     /// Maximum tasks to process this invocation; `0` = no cap (drain).
     pub max_tasks: usize,
+    /// Designated peer reviewer agent id (HV3-3c). When `Some` and different
+    /// from `agent_id`, each successful worker's diff is routed to the injected
+    /// [`Reviewer`] before completion; a rejection re-queues the task. `None`
+    /// (or self) = no review gate.
+    pub reviewer: Option<String>,
 }
 
 /// Outcome counts from a [`run_lead`] invocation.
@@ -134,6 +139,9 @@ pub struct LeadSummary {
     pub claimed: usize,
     pub completed: usize,
     pub failed: usize,
+    /// Workers that succeeded but whose diff the reviewer rejected — re-queued
+    /// (HV3-3c). Distinct from `failed` (worker errored).
+    pub rejected: usize,
 }
 
 /// Drain claimable tasks from `source`, spawning a worker per task via `runner`.
@@ -144,6 +152,7 @@ pub struct LeadSummary {
 pub async fn run_lead(
     source: &dyn TaskSource,
     runner: Arc<dyn SpawnRunner>,
+    reviewer: Arc<dyn crate::review::Reviewer>,
     cfg: &LeadConfig,
 ) -> HarnessResult<LeadSummary> {
     let cancel = CancellationToken::new();
@@ -216,21 +225,58 @@ pub async fn run_lead(
         };
         match res {
             Ok(Ok(())) => {
-                if let Err(e) = source.complete(&task.id, &cfg.agent_id) {
-                    eprintln!(
-                        "[bwoc-harness] lead: complete failed for `{}`: {e}",
-                        task.id
-                    );
-                }
                 // Collect the worker's structured result envelope (HV3-3b)
                 // before teardown — it lives in the worktree. A worker that
                 // wrote none degrades silently to the exit code we already have.
                 if let Some(r) = crate::result::WorkerResult::read(&worktree) {
                     eprintln!("[bwoc-harness] lead: `{}` done — {}", task.id, r.one_line());
                 }
-                // Worker succeeded — tear down its worktree (Anattā).
-                let _ = git_worktree_remove(&cfg.repo_root, &worktree);
-                summary.completed += 1;
+
+                // Peer-review gate (HV3-3c): if a reviewer (≠ the author) is
+                // configured, route the worktree's diff to it before completing.
+                // A rejection re-queues the task (worktree kept for the next
+                // claimer + inspection); fail-safe — the Reviewer impl maps a
+                // spawn/timeout/parse failure to a rejection.
+                let verdict = match &cfg.reviewer {
+                    Some(rid) if rid != &cfg.agent_id => {
+                        let spec = crate::review::ReviewSpec {
+                            task_id: task.id.clone(),
+                            task_title: task.title.clone(),
+                            worktree: worktree.clone(),
+                            reviewer_agent: rid.clone(),
+                            model: cfg.worker.model.clone(),
+                            endpoint: cfg.worker.endpoint.clone(),
+                        };
+                        Some(reviewer.review(&spec).await)
+                    }
+                    _ => None, // no gate (unset, or would be a self-review)
+                };
+
+                match verdict {
+                    Some(v) if !v.approved => {
+                        eprintln!(
+                            "[bwoc-harness] lead: `{}` REJECTED by reviewer `{}` — {} (re-queued)",
+                            task.id,
+                            cfg.reviewer.as_deref().unwrap_or(""),
+                            v.feedback
+                        );
+                        let _ = source.unclaim(&task.id, &cfg.agent_id);
+                        // Keep the worktree so the next claimer (and a human) can
+                        // see the rejected diff and the feedback.
+                        summary.rejected += 1;
+                    }
+                    _ => {
+                        // Approved, or no gate — complete and tear down (Anattā).
+                        if let Err(e) = source.complete(&task.id, &cfg.agent_id) {
+                            eprintln!(
+                                "[bwoc-harness] lead: complete failed for `{}`: {e}",
+                                task.id
+                            );
+                        }
+                        let _ = git_worktree_remove(&cfg.repo_root, &worktree);
+                        summary.completed += 1;
+                    }
+                }
             }
             Ok(Err(e)) => {
                 eprintln!("[bwoc-harness] lead: worker for `{}` failed: {e}", task.id);
@@ -306,7 +352,14 @@ mod tests {
         });
         let mut cfg = lead_cfg(&repo);
         cfg.capacity = 3;
-        let summary = run_lead(&source, runner, &cfg).await.unwrap();
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(crate::review::AlwaysApprove),
+            &cfg,
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.completed, 4);
         let peak = max_seen.load(SeqCst);
         assert!(peak >= 2, "expected parallel workers, peak was {peak}");
@@ -324,7 +377,14 @@ mod tests {
         });
         let mut cfg = lead_cfg(&repo);
         cfg.capacity = 1;
-        let summary = run_lead(&source, runner, &cfg).await.unwrap();
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(crate::review::AlwaysApprove),
+            &cfg,
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.completed, 3);
         assert_eq!(
             max_seen.load(SeqCst),
@@ -367,6 +427,7 @@ mod tests {
             worker: WorkerConfig::default(),
             capacity: 2,
             max_tasks: 0,
+            reviewer: None,
         }
     }
 
@@ -406,7 +467,14 @@ mod tests {
         let source = InMemoryTaskSource::new(vec![pending("a")]);
         let runner = Arc::new(EnvelopeRunner);
 
-        let summary = run_lead(&source, runner, &lead_cfg(&repo)).await.unwrap();
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(crate::review::AlwaysApprove),
+            &lead_cfg(&repo),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(summary.completed, 1);
         // Envelope was read pre-teardown, then the worktree (and its
@@ -420,14 +488,22 @@ mod tests {
         let source = InMemoryTaskSource::new(vec![pending("a"), pending("b")]);
         let runner = Arc::new(ScriptedRunner { fail_ids: vec![] });
 
-        let summary = run_lead(&source, runner, &lead_cfg(&repo)).await.unwrap();
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(crate::review::AlwaysApprove),
+            &lead_cfg(&repo),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             summary,
             LeadSummary {
                 claimed: 2,
                 completed: 2,
-                failed: 0
+                failed: 0,
+                rejected: 0,
             }
         );
         // Both tasks marked completed.
@@ -446,7 +522,14 @@ mod tests {
             fail_ids: vec!["bad".to_string()],
         });
 
-        let summary = run_lead(&source, runner, &lead_cfg(&repo)).await.unwrap();
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(crate::review::AlwaysApprove),
+            &lead_cfg(&repo),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(summary.completed, 1);
         assert_eq!(summary.failed, 1);
@@ -473,7 +556,14 @@ mod tests {
         let mut cfg = lead_cfg(&repo);
         cfg.max_tasks = 1;
 
-        let summary = run_lead(&source, runner, &cfg).await.unwrap();
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(crate::review::AlwaysApprove),
+            &cfg,
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.claimed, 1);
         assert_eq!(summary.completed, 1);
     }
@@ -506,5 +596,105 @@ mod tests {
             src.unclaim("t1", "agent-lead").is_err(),
             "not claimed anymore"
         );
+    }
+
+    // ── Peer-review gate (HV3-3c) ─────────────────────────────────────────────
+
+    /// A reviewer with a fixed verdict (no real subprocess).
+    struct ScriptedReviewer {
+        approve: bool,
+    }
+    #[async_trait]
+    impl crate::review::Reviewer for ScriptedReviewer {
+        async fn review(&self, _spec: &crate::review::ReviewSpec) -> crate::review::ReviewVerdict {
+            crate::review::ReviewVerdict {
+                approved: self.approve,
+                feedback: "scripted".to_string(),
+            }
+        }
+    }
+
+    /// A different reviewer agent that approves → the task completes and its
+    /// worktree is torn down (the no-gate path with the gate present-but-passing).
+    #[tokio::test]
+    async fn lead_review_approve_completes_and_cleans_worktree() {
+        let repo = temp_repo();
+        let source = InMemoryTaskSource::new(vec![pending("a")]);
+        let runner = Arc::new(ScriptedRunner { fail_ids: vec![] });
+        let mut cfg = lead_cfg(&repo);
+        cfg.reviewer = Some("agent-yanluo".to_string()); // ≠ agent-lead
+
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(ScriptedReviewer { approve: true }),
+            &cfg,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.rejected, 0);
+        assert_eq!(source.list_tasks()[0].state, TaskState::Completed);
+        assert!(!repo.path().join(".worktrees").join("a").exists());
+    }
+
+    /// A rejection re-queues the task (back to Pending), keeps the worktree for
+    /// inspection, and counts as `rejected` — not `completed` or `failed`.
+    #[tokio::test]
+    async fn lead_review_reject_requeues_and_keeps_worktree() {
+        let repo = temp_repo();
+        let source = InMemoryTaskSource::new(vec![pending("a")]);
+        let runner = Arc::new(ScriptedRunner { fail_ids: vec![] });
+        let mut cfg = lead_cfg(&repo);
+        cfg.reviewer = Some("agent-yanluo".to_string());
+
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(ScriptedReviewer { approve: false }),
+            &cfg,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.rejected, 1);
+        assert_eq!(
+            source.list_tasks()[0].state,
+            TaskState::Pending,
+            "rejected task is re-queued"
+        );
+        assert!(
+            repo.path().join(".worktrees").join("a").exists(),
+            "rejected worktree kept for the next claimer / inspection"
+        );
+    }
+
+    /// A reviewer equal to the claiming agent is a self-review — the gate is
+    /// skipped and the task completes (no `Reviewer` call is made).
+    #[tokio::test]
+    async fn lead_review_skips_self_review() {
+        let repo = temp_repo();
+        let source = InMemoryTaskSource::new(vec![pending("a")]);
+        let runner = Arc::new(ScriptedRunner { fail_ids: vec![] });
+        let mut cfg = lead_cfg(&repo);
+        cfg.reviewer = Some(cfg.agent_id.clone()); // self → no gate
+
+        // Pass a reviewer that would REJECT if called; completion proves it wasn't.
+        let summary = run_lead(
+            &source,
+            runner,
+            Arc::new(ScriptedReviewer { approve: false }),
+            &cfg,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            summary.completed, 1,
+            "self-review is skipped, task completes"
+        );
+        assert_eq!(summary.rejected, 0);
     }
 }

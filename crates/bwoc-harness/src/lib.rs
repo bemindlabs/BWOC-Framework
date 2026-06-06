@@ -43,6 +43,7 @@ pub mod provider;
 pub mod queue;
 pub mod result;
 pub mod retrospective;
+pub mod review;
 pub mod sandbox;
 pub mod telemetry;
 pub mod tools;
