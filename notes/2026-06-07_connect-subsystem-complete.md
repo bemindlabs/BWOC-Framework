@@ -10,13 +10,13 @@ decisions + the two CI saves from the final hardening session.
 | PR | Stage | Note |
 |----|-------|------|
 | #217 | design | `2026-06-06_chat-connectors-design.md` |
-| #218 | PR1 — Telegram DM + the crate | `…_connect-pr1-telegram-dm.md` |
-| #219 | PR2 — Telegram group ⇄ team chat | `…_connect-pr2-telegram-group.md` |
-| #220 | PR3 — daemon supervision | `…_connect-pr3-daemon-supervision.md` |
-| #221 | PR4 — Discord gateway | `…_connect-pr4-discord.md` |
+| #218 | PR1 — Telegram DM + the crate | `2026-06-06_connect-pr1-telegram-dm.md` |
+| #219 | PR2 — Telegram group ⇄ team chat | `2026-06-06_connect-pr2-telegram-group.md` |
+| #220 | PR3 — daemon supervision | `2026-06-06_connect-pr3-daemon-supervision.md` |
+| #221 | PR4 — Discord gateway | `2026-06-06_connect-pr4-discord.md` |
 | #222 | hardening (review follow-ups) | *(this note)* |
-| #223 | `bwoc status` connector health | `…_connect-status-health.md` |
-| #224 | keyring token resolution | `…_connect-keyring.md` |
+| #223 | `bwoc status` connector health | `2026-06-06_connect-status-health.md` |
+| #224 | keyring token resolution | `2026-06-06_connect-keyring.md` |
 
 ## Architecture (the through-line)
 
