@@ -9,6 +9,7 @@
 //! | Backend     | Command                                                  | Headless? |
 //! |-------------|----------------------------------------------------------|-----------|
 //! | `claude`    | `claude -p "<task>"`                                     | Real       |
+//! | `copilot`   | `copilot -p "<task>" --no-ask-user`                      | Real       |
 //! | `ollama`    | `bwoc-harness --workdir <dir> --task "<task>" --model <model>` | Real |
 //! | `codex`     | `RunError::HeadlessUnsupported`                          | Deferred  |
 //! | `agy`       | `RunError::HeadlessUnsupported`                          | Deferred  |
