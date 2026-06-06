@@ -15,6 +15,9 @@ pub struct TelegramTransport {
     /// `https://api.telegram.org/bot<token>` — the token is in the URL, never
     /// logged (Debug is not derived).
     api_base: String,
+    /// Bot's `@username` (without the `@`), resolved via `getMe`, used for
+    /// mention detection in groups. `None` ⇒ mentions never match (DM-only).
+    bot_username: Option<String>,
 }
 
 impl TelegramTransport {
@@ -26,7 +29,20 @@ impl TelegramTransport {
         Ok(Self {
             client,
             api_base: format!("https://api.telegram.org/bot{token}"),
+            bot_username: None,
         })
+    }
+
+    /// Resolve and cache the bot's `@username` via `getMe` (call once at
+    /// startup; required for group mention-gating).
+    pub async fn resolve_identity(&mut self) -> Result<(), ConnectError> {
+        let body = self.get_json("getMe", &[]).await?;
+        self.bot_username = body
+            .get("result")
+            .and_then(|r| r.get("username"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Ok(())
     }
 
     async fn get_json(
@@ -48,10 +64,11 @@ impl TelegramTransport {
     }
 }
 
-/// Parse a `getUpdates` JSON body into [`Incoming`] messages. Only text
-/// messages with a sender are kept; everything else (edits, joins, stickers,
-/// channel posts) is skipped. Pure — unit-tested without the network.
-pub fn parse_updates(body: &Value) -> Vec<Incoming> {
+/// Parse a `getUpdates` JSON body into [`Incoming`] messages. Keeps text
+/// messages (DM + group/supergroup) with a sender; skips edits, stickers,
+/// channels, and anon posts. `bot_username` (no `@`) drives group
+/// mention-detection. Pure — unit-tested without the network.
+pub fn parse_updates(body: &Value, bot_username: Option<&str>) -> Vec<Incoming> {
     let mut out = Vec::new();
     let Some(results) = body.get("result").and_then(Value::as_array) else {
         return out;
@@ -60,20 +77,19 @@ pub fn parse_updates(body: &Value) -> Vec<Incoming> {
         let Some(update_id) = u.get("update_id").and_then(Value::as_i64) else {
             continue;
         };
-        // Only private/direct text messages in PR1 (group handling is PR2).
         let Some(msg) = u.get("message") else {
-            continue;
+            continue; // edits / non-message updates
         };
-        // PR1 is DM-only: skip group/supergroup/channel chats so a group
-        // message never gets the agent's reply broadcast to the room.
-        if msg
+        let chat_type = msg
             .get("chat")
             .and_then(|c| c.get("type"))
             .and_then(Value::as_str)
-            != Some("private")
-        {
-            continue;
-        }
+            .unwrap_or("");
+        let is_group = match chat_type {
+            "private" => false,
+            "group" | "supergroup" => true,
+            _ => continue, // channels / unknown — skip
+        };
         let (Some(chat_id), Some(from_user_id), Some(text)) = (
             msg.get("chat")
                 .and_then(|c| c.get("id"))
@@ -85,14 +101,25 @@ pub fn parse_updates(body: &Value) -> Vec<Incoming> {
         ) else {
             continue;
         };
+        let mentions_bot = is_group && mentions(text, bot_username);
         out.push(Incoming {
             update_id,
             chat_id,
             from_user_id,
             text: text.to_string(),
+            is_group,
+            mentions_bot,
         });
     }
     out
+}
+
+/// Does `text` @mention the bot? Case-insensitive `@<username>` match (the
+/// common Telegram mention form). `None` username never matches.
+fn mentions(text: &str, bot_username: Option<&str>) -> bool {
+    let Some(u) = bot_username else { return false };
+    let needle = format!("@{}", u.to_ascii_lowercase());
+    text.to_ascii_lowercase().contains(&needle)
 }
 
 #[async_trait::async_trait]
@@ -116,7 +143,7 @@ impl Transport for TelegramTransport {
                     .unwrap_or("?")
             )));
         }
-        Ok(parse_updates(&body))
+        Ok(parse_updates(&body, self.bot_username.as_deref()))
     }
 
     async fn send(&self, chat_id: i64, text: &str) -> Result<(), ConnectError> {
@@ -144,11 +171,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn parse_updates_keeps_text_dms_skips_the_rest() {
+    fn parse_updates_classifies_dm_and_group_and_skips_noise() {
         let body = json!({
             "ok": true,
             "result": [
-                { "update_id": 10, "message": {
+                { "update_id": 10, "message": {  // private DM
                     "chat": {"id": 42, "type": "private"}, "from": {"id": 111}, "text": "hello" }},
                 { "update_id": 11, "message": {  // no text (sticker) → skipped
                     "chat": {"id": 42, "type": "private"}, "from": {"id": 111}, "sticker": {} }},
@@ -156,26 +183,44 @@ mod tests {
                     "chat": {"id": 42, "type": "private"}, "from": {"id": 111}, "text": "edit" }},
                 { "update_id": 13, "message": {  // no from → skipped
                     "chat": {"id": 9, "type": "private"}, "text": "anon" }},
-                { "update_id": 14, "message": {  // group chat → skipped in PR1 (DM-only)
-                    "chat": {"id": -100, "type": "supergroup"}, "from": {"id": 111}, "text": "grp" }},
+                { "update_id": 14, "message": {  // group, no mention
+                    "chat": {"id": -100, "type": "supergroup"}, "from": {"id": 222}, "text": "hi team" }},
+                { "update_id": 15, "message": {  // group, mentions the bot
+                    "chat": {"id": -100, "type": "supergroup"}, "from": {"id": 222}, "text": "hey @MyBot ping" }},
+                { "update_id": 16, "channel_post": {  // channel → skipped
+                    "chat": {"id": -200, "type": "channel"}, "text": "broadcast" }},
             ]
         });
-        let msgs = parse_updates(&body);
-        assert_eq!(msgs.len(), 1, "only the private text DM survives");
+        let msgs = parse_updates(&body, Some("mybot")); // case-insensitive
+        assert_eq!(msgs.len(), 3, "DM + 2 group messages survive");
         assert_eq!(
             msgs[0],
             Incoming {
                 update_id: 10,
                 chat_id: 42,
                 from_user_id: 111,
-                text: "hello".into()
+                text: "hello".into(),
+                is_group: false,
+                mentions_bot: false
             }
         );
+        // group, no mention
+        assert!(msgs[1].is_group && !msgs[1].mentions_bot);
+        // group, mentions @MyBot (matched case-insensitively)
+        assert!(msgs[2].is_group && msgs[2].mentions_bot);
+    }
+
+    #[test]
+    fn mentions_is_case_insensitive_and_none_never_matches() {
+        assert!(mentions("yo @MyBot", Some("mybot")));
+        assert!(mentions("yo @mybot now", Some("MyBot")));
+        assert!(!mentions("no mention here", Some("mybot")));
+        assert!(!mentions("@mybot", None));
     }
 
     #[test]
     fn parse_updates_empty_result_is_empty() {
-        assert!(parse_updates(&json!({"ok": true, "result": []})).is_empty());
-        assert!(parse_updates(&json!({"ok": true})).is_empty());
+        assert!(parse_updates(&json!({"ok": true, "result": []}), None).is_empty());
+        assert!(parse_updates(&json!({"ok": true}), None).is_empty());
     }
 }

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use bwoc_connect::session::HarnessSessionFactory;
 use bwoc_connect::telegram::TelegramTransport;
-use bwoc_connect::{ConnectError, TelegramConfig, run_bridge};
+use bwoc_connect::{ConnectError, GroupBridge, TelegramConfig, run_bridge};
 
 const TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
 
@@ -64,15 +64,63 @@ async fn run() -> Result<(), ConnectError> {
     }
 
     let token = std::env::var(TOKEN_ENV).map_err(|_| ConnectError::NoToken(TOKEN_ENV.into()))?;
-    let transport = TelegramTransport::new(&token)?;
-    let factory = HarnessSessionFactory::new(&agent_dir)?;
+    let mut transport = TelegramTransport::new(&token)?;
+    // Resolve the bot's @username up front (validates the token early + needed
+    // for group mention-gating).
+    transport.resolve_identity().await?;
+    let dm_factory = HarnessSessionFactory::new(&agent_dir)?;
+
+    // Group binding (PR2): if `[group].team` is set, resolve the team's shared
+    // chat.jsonl and build a --team-chat factory for group rooms.
+    let group_chat_log = cfg
+        .group
+        .as_ref()
+        .and_then(|g| g.team.as_deref())
+        .map(|team| team_chat_path(&agent_dir, team));
+    let group_factory = match &group_chat_log {
+        Some(log) => Some(HarnessSessionFactory::new(&agent_dir)?.with_team_chat(log.clone())),
+        None => None,
+    };
+    let group_bridge = match (group_factory.as_ref(), group_chat_log.as_ref()) {
+        (Some(f), Some(log)) => Some(GroupBridge {
+            factory: f,
+            chat_log: log.clone(),
+        }),
+        _ => None,
+    };
 
     eprintln!(
-        "[bwoc-connect] telegram bridge up for agent {} (allow_from: {:?})",
+        "[bwoc-connect] telegram bridge up for agent {} (allow_from: {:?}{})",
         agent_dir.display(),
-        cfg.allow_from
+        cfg.allow_from,
+        group_chat_log
+            .as_ref()
+            .map(|p| format!(", team-chat: {}", p.display()))
+            .unwrap_or_default()
     );
-    run_bridge(&transport, &factory, &cfg, max_polls).await
+    run_bridge(&transport, &dm_factory, group_bridge, &cfg, max_polls).await
+}
+
+/// Resolve a team's shared chat log: walk up from the agent dir to the
+/// workspace root (`.bwoc/workspace.toml`) and join
+/// `.bwoc/teams/<team>/chat.jsonl`. Falls back to the agent dir's parent if no
+/// workspace marker is found (best-effort; the harness creates the file).
+fn team_chat_path(agent_dir: &std::path::Path, team: &str) -> PathBuf {
+    let mut cur = agent_dir;
+    let workspace = loop {
+        if cur.join(".bwoc/workspace.toml").is_file() {
+            break cur.to_path_buf();
+        }
+        match cur.parent() {
+            Some(p) => cur = p,
+            None => break agent_dir.parent().unwrap_or(agent_dir).to_path_buf(),
+        }
+    };
+    workspace
+        .join(".bwoc")
+        .join("teams")
+        .join(team)
+        .join("chat.jsonl")
 }
 
 /// Value of `--flag <value>` from argv, or `None`.

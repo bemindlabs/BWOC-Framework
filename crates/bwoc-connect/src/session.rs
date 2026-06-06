@@ -26,6 +26,9 @@ pub struct HarnessSessionFactory {
     agent_dir: PathBuf,
     model: Option<String>,
     endpoint: Option<String>,
+    /// When set, sessions are spawned with `--team-chat <path>` so they join
+    /// the team's shared `chat.jsonl` (group rooms, PR2). `None` = solo (DM).
+    team_chat: Option<PathBuf>,
 }
 
 impl HarnessSessionFactory {
@@ -44,7 +47,14 @@ impl HarnessSessionFactory {
             agent_dir,
             model,
             endpoint,
+            team_chat: None,
         })
+    }
+
+    /// Spawn sessions joined to a team's shared `chat.jsonl` (group rooms).
+    pub fn with_team_chat(mut self, chat_log: impl Into<PathBuf>) -> Self {
+        self.team_chat = Some(chat_log.into());
+        self
     }
 }
 
@@ -56,6 +66,7 @@ impl SessionFactory for HarnessSessionFactory {
             &self.agent_dir,
             self.model.as_deref(),
             self.endpoint.as_deref(),
+            self.team_chat.as_deref(),
         )
         .await?;
         Ok(Box::new(s))
@@ -74,6 +85,7 @@ impl HarnessSession {
         agent_dir: &Path,
         model: Option<&str>,
         endpoint: Option<&str>,
+        team_chat: Option<&Path>,
     ) -> Result<Self, ConnectError> {
         let mut cmd = Command::new(harness);
         cmd.arg("--chat").arg("--workdir").arg(agent_dir);
@@ -82,6 +94,9 @@ impl HarnessSession {
         }
         if let Some(e) = endpoint {
             cmd.arg("--endpoint").arg(e);
+        }
+        if let Some(tc) = team_chat {
+            cmd.arg("--team-chat").arg(tc);
         }
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
