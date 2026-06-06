@@ -26,9 +26,11 @@ mod fleet;
 mod gcloud;
 mod git_worktree;
 mod gws;
+mod handbook;
 mod help;
 mod i18n;
 mod inbox;
+mod info;
 mod init;
 mod jira;
 mod livecheck;
@@ -123,6 +125,11 @@ enum Commands {
     Status(StatusArgs),
     /// Topic-specific help (backends, workspace, manifest, arc, getting-started).
     Help(HelpArgs),
+    /// Bundled offline quick guide. `bwoc handbook` lists sections; `bwoc
+    /// handbook <section>` prints one (start, agents, spawn, teams, harness, release).
+    Handbook(HandbookCliArgs),
+    /// One-card system status: version, release, phase, workspace + agents, update.
+    Info(InfoCliArgs),
     /// Emit a shell completion script (bash, zsh, fish, powershell, elvish).
     Completion(CompletionArgs),
     /// Launch the interactive TUI dashboard (agents list with navigation; refresh with `r`).
@@ -1596,6 +1603,23 @@ impl From<CompletionArgs> for completion::CompletionArgs {
 }
 
 #[derive(Args, Debug)]
+struct HandbookCliArgs {
+    /// Section to print (start, agents, spawn, teams, harness, release).
+    /// Omit to list all sections.
+    section: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct InfoCliArgs {
+    /// Workspace root (defaults to BWOC_WORKSPACE or the ancestor walk from cwd).
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Emit machine-readable JSON instead of the human card.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct HelpArgs {
     /// Topic name. Run `bwoc help` (no arg) to list available topics.
     /// Mutually exclusive with `--all`.
@@ -2241,6 +2265,20 @@ fn main() -> ExitCode {
         }
         Some(Commands::Help(args)) => {
             let code = help::run(args.into());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Handbook(args)) => {
+            let code = handbook::run(handbook::HandbookArgs {
+                section: args.section,
+                lang: lang.clone(),
+            });
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Info(args)) => {
+            let code = info::run(info::InfoArgs {
+                workspace: args.workspace,
+                json: args.json,
+            });
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Completion(args)) => {
