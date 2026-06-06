@@ -104,7 +104,7 @@ impl ShellRunner for ProcessShellRunner {
 
 // ── Fetch latest tag ──────────────────────────────────────────────────────────
 
-const GITHUB_REPO: &str = "bemindlabs/BWOC-Framework";
+pub(crate) const GITHUB_REPO: &str = "bemindlabs/BWOC-Framework";
 const GITHUB_API_URL: &str =
     "https://api.github.com/repos/bemindlabs/BWOC-Framework/releases/latest";
 
