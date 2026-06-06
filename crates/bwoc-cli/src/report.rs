@@ -25,7 +25,8 @@ pub struct ReportArgs {
     pub kind: String,
     /// Print the prefilled browser URL instead of creating via `gh`.
     pub web: bool,
-    /// Skip the interactive confirmation (still requires a resolvable `gh`).
+    /// Skip the confirmation prompt (interactive terminals only — a non-TTY
+    /// session always falls back to the URL, `--yes` or not).
     pub yes: bool,
 }
 
@@ -56,16 +57,25 @@ fn run_inner(args: ReportArgs, runner: &dyn ShellRunner, tty: bool) -> i32 {
     let body = build_body(args.body.as_deref());
     let url = issue_url(GITHUB_REPO, title, &body, label);
 
+    // --web wants the URL outright — no need to consult `gh` at all.
+    if args.web {
+        println!("{url}");
+        return 0;
+    }
+
+    // Fail-safe to the browser URL on any non-interactive session — even with
+    // --yes. Creating a public issue is strictly an attended act; --yes only
+    // skips the prompt on a real terminal. Scripts get the prefilled URL.
+    if !tty {
+        println!("{url}");
+        return 0;
+    }
+
     // `gh auth status` exits 0 only when a usable login exists.
     let gh_ok = runner.run("gh", &["auth", "status"]).exit_code == 0;
-
-    // Fail-safe to the browser URL: requested, no usable gh, or unattended
-    // without an explicit --yes (a public issue is never filed unattended).
-    if args.web || !gh_ok || (!tty && !args.yes) {
+    if !gh_ok {
         println!("{url}");
-        if !gh_ok && !args.web {
-            eprintln!("(gh is not available/authenticated — open the URL above to submit)");
-        }
+        eprintln!("(gh is not available/authenticated — open the URL above to submit)");
         return 0;
     }
 
@@ -263,29 +273,23 @@ mod tests {
         a.web = true;
         assert_eq!(run_inner(a, &r, true), 0);
         assert!(
-            !r.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|c| c.contains("issue create")),
-            "must not create when --web"
+            r.calls.lock().unwrap().is_empty(),
+            "--web makes no shell-outs at all"
         );
     }
 
     #[test]
-    fn non_tty_without_yes_falls_back_to_url() {
-        let r = mock(true);
-        let mut a = args("title");
-        a.yes = false;
-        assert_eq!(run_inner(a, &r, false), 0);
-        assert!(
-            !r.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|c| c.contains("issue create")),
-            "unattended sessions never file issues"
-        );
+    fn non_tty_never_creates_even_with_yes() {
+        for yes in [false, true] {
+            let r = mock(true);
+            let mut a = args("title");
+            a.yes = yes;
+            assert_eq!(run_inner(a, &r, false), 0);
+            assert!(
+                r.calls.lock().unwrap().is_empty(),
+                "unattended sessions never file issues nor probe gh (yes={yes})"
+            );
+        }
     }
 
     #[test]
