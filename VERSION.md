@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.24.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.6.2`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.25.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.6.3`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.6.6-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.6-0) *(2026-06-06 — **2.24.0**; minor — Harness v3 batch: HV3-1 Tier 2 memory in the loop (wake-up/search/mine), HV3-2 unified context engine (summarize-first + Tier 2 synergy), HV3-3a team chat broadcast (shared `chat.jsonl` + `bwoc chat --team` + `TeamMessage` TUI rendering), HV3-3b worker result envelope. Prior: `v2026.6.5-0` 2.23.0 — Windows named-pipe daemon for `bwoc-agent --serve` + `ping`/`status`/`stop` clients, `bwoc new` workspace resolution)*
+**Latest release:** [`v2026.6.7-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.7-0) *(2026-06-07 — **2.25.0**; minor — chat-connector subsystem: `bwoc-connect` bridging Telegram + Discord to agents (DM + group⇄Saṅgha-team chat), daemon-supervised by `bwoc-agent --serve`, `bwoc status` connector health, keyring/env token resolution — dep-quarantined. Also: GitHub Copilot CLI as the 6th backend, `bwoc handbook`/`info`/`report`, HV3-3c peer-review gate. Prior: `v2026.6.6-0` 2.24.0 — Harness v3 batch HV3-1/2/3a/3b)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-06-06T03:44:18Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-06-06T19:20:50Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
