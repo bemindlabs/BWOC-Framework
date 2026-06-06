@@ -69,12 +69,20 @@ v1 safety pipeline, demonstrated on ≥ 2 backends.
 - Autonomous self-modification — improvement lands only via human-gated PRs.
 - TUI/interactive parity for vendor-CLI backends.
 
-## Open decisions (need the architect)
+## Decisions (resolved by the architect, 2026-06-06)
 
-1. HV3-5 transport: MCP-server-first or A2A-first?
-2. HV3-3 reviewer selection: fixed reviewer agent per team vs round-robin vs
-   manifest-declared (`reviewerOf` style)?
-3. HV3-4 patch surface: policy + prompt only, or also mindset/skill stubs?
+1. **HV3-5 transport: MCP-server-first (stdio).** Loopback HTTP later; honors
+   the no-ports invariant and reaches the broadest ecosystem before extending
+   the A2A listener.
+2. **HV3-3c reviewer selection: fixed reviewer per team.** One designated
+   reviewer agent per team (e.g. a `reviewer` field on the team toml) — smallest
+   that works (Mattaññutā), extensible to round-robin / manifest-declared later.
+3. **HV3-4 patch surface: policy + prompt only.** Draft-patch PRs may touch
+   `harness-policy.toml` and the agent's prompt/`AGENTS.md` only — narrowest
+   blast radius, easiest to eval-gate and human-review; widen if it proves out.
+
+(Status: HV3-1/2/3a/3b shipped and released as 2.24.0 / `v2026.6.6-0`. HV3-3c,
+HV3-4, HV3-5 now unblocked by the above; HV3-6/7 remain demand-driven.)
 
 ## Related
 

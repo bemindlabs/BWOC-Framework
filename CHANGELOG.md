@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.6-0] — 2026-06-06 — 2.24.0
+
 ### Added
 
 - **HV3-3a — team chat broadcast (Kalyāṇamitta).** Agents in a Saṅgha team can now see each other's chat replies through a shared append-only log. `bwoc-core::team` gains `TeamChatMessage` + `parse_chat`/`render_chat` — one JSON object per line in `.bwoc/teams/<team-id>/chat.jsonl`, the same storage model as the task list (no pub/sub, no broker). A `bwoc-harness --chat --team-chat <path>` session opts in: teammate messages posted since the last turn are injected as a "Team conversation (Saṅgha)" system note before each user turn, and the agent's reply is appended to the log afterward (append-mode, so concurrent teammates never clobber each other). Strictly opt-in and best-effort: no `--team-chat` keeps the session solo (zero behaviour change), a missing/unparseable log injects nothing, an agent never sees its own messages echoed back, and the cursor resyncs if the log is rotated/rewritten shorter (append is a single `O_APPEND write_all`). Reachable from the CLI as **`bwoc chat <agent> --tui --team <id>`**: it validates the agent's team membership, resolves `.bwoc/teams/<id>/chat.jsonl`, and forwards it to the harness (warn-and-run-solo if `--team` is given without a harness-backed `--tui` session, since vendor CLIs speak their own protocol). Teammate messages are also surfaced to the frontend: the harness emits a new `ChatEvent::TeamMessage { from, text, ts }` (additive, forward-compatible) for each previously-unseen peer message, and the `--tui` client renders it distinctly (`📢 <from>: <text>`) so the human follows the team thread, not only the agent's replies.
