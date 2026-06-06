@@ -1,0 +1,33 @@
+[package]
+name = "bwoc-connect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Chat connectors (Telegram first) bridging external platforms to BWOC agents. Quarantines the network deps so bwoc-cli/agent/core stay lean."
+
+[[bin]]
+name = "bwoc-connect"
+path = "src/main.rs"
+
+[lib]
+name = "bwoc_connect"
+path = "src/lib.rs"
+
+[dependencies]
+# Lean shared types (chat_proto + team) — bwoc-core carries only serde/toml/thiserror.
+bwoc-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+# Network deps live HERE (dep-quarantine): nothing on the `bwoc` CLI / agent /
+# core path pulls these in. `tokio` is the workspace base + the extra features
+# this crate needs (subprocess management + piped stdio).
+tokio = { workspace = true, features = ["rt-multi-thread", "process", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"
