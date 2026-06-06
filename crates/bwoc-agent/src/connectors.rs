@@ -37,7 +37,9 @@ impl ConnectorSupervisor {
             .iter()
             .find(|(_, file)| connector_enabled(&cwd.join(file)))
             .map(|(name, _)| *name);
-        let exe = platform.and(bwoc_core::exec::sibling_binary("bwoc-connect"));
+        // Lazy: only probe for the binary when a connector is actually enabled
+        // (the common "no connector" startup does no path lookup).
+        let exe = platform.and_then(|_| bwoc_core::exec::sibling_binary("bwoc-connect"));
         Self {
             exe,
             agent_dir: cwd.to_path_buf(),
@@ -54,8 +56,9 @@ impl ConnectorSupervisor {
                 eprintln!("bwoc-agent --serve: supervising connector '{p}' (bwoc-connect)")
             }
             (Some(p), None) => eprintln!(
-                "bwoc-agent --serve: connector '{p}' enabled but `bwoc-connect` not found on \
-                 PATH — not supervising (install it / add to PATH)"
+                "bwoc-agent --serve: connector '{p}' enabled but the `bwoc-connect` binary \
+                 could not be resolved (sibling of bwoc-agent / CARGO_BIN_EXE / PATH) — not \
+                 supervising. Install it or put it on PATH."
             ),
             (None, _) => {} // no connector configured — silent
         }
@@ -71,9 +74,7 @@ impl ConnectorSupervisor {
             match child.try_wait() {
                 Ok(None) => return, // still running
                 Ok(Some(status)) => {
-                    eprintln!(
-                        "bwoc-agent --serve: connector '{platform}' exited ({status}); respawning"
-                    );
+                    eprintln!("bwoc-agent --serve: connector '{platform}' exited ({status})");
                     self.child = None;
                 }
                 Err(e) => {
@@ -82,9 +83,13 @@ impl ConnectorSupervisor {
                 }
             }
         }
+        // Crash-loop throttle: refuse to (re)spawn within RESPAWN_BACKOFF of the
+        // last spawn. A child that ran healthily for a while (last_spawn long
+        // ago) respawns promptly; one that exits within the window waits — so a
+        // misconfigured connector can't spin spawn→exit→spawn hot.
         if let Some(t) = self.last_spawn {
             if t.elapsed() < RESPAWN_BACKOFF {
-                return; // still backing off
+                return;
             }
         }
         self.last_spawn = Some(Instant::now());
