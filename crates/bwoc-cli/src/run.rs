@@ -9,6 +9,7 @@
 //! | Backend     | Command                                                  | Headless? |
 //! |-------------|----------------------------------------------------------|-----------|
 //! | `claude`    | `claude -p "<task>"`                                     | Real       |
+//! | `copilot`   | `copilot -p "<task>" --no-ask-user`                      | Real       |
 //! | `ollama`    | `bwoc-harness --workdir <dir> --task "<task>" --model <model>` | Real |
 //! | `codex`     | `RunError::HeadlessUnsupported`                          | Deferred  |
 //! | `agy`       | `RunError::HeadlessUnsupported`                          | Deferred  |
@@ -308,6 +309,22 @@ pub fn build_command(
             ];
             Ok((harness.to_string_lossy().into_owned(), args))
         }
+        Backend::Copilot => {
+            // `copilot -p "<task>" --no-ask-user` — Copilot CLI's programmatic
+            // mode. `--no-ask-user` is required headless (no TTY to answer
+            // approval prompts); tool calls that would ask are refused rather
+            // than hanging the run. The permissive `--allow-all-tools` is
+            // deliberately NOT passed — GitHub's own guidance scopes it to
+            // sandboxed/container environments (matches our fail-safe posture).
+            Ok((
+                "copilot".to_string(),
+                vec![
+                    "-p".to_string(),
+                    task.to_string(),
+                    "--no-ask-user".to_string(),
+                ],
+            ))
+        }
         Backend::Codex => Err(RunError::HeadlessUnsupported {
             backend: "codex".to_string(),
         }),
@@ -426,6 +443,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "agy" => Some(Backend::Antigravity),
         "codex" => Some(Backend::Codex),
         "kimi" => Some(Backend::Kimi),
+        "copilot" => Some(Backend::Copilot),
         "ollama" => Some(Backend::Ollama),
         "openai-compatible" => Some(Backend::OpenAiCompatible),
         _ => None,

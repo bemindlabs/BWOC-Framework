@@ -218,7 +218,7 @@ fn check_user_home(auto: bool) -> CheckResult {
 
 fn check_backends() -> CheckResult {
     // Vendor CLIs (external programs on PATH).
-    let vendor_backends = ["claude", "agy", "codex", "kimi"];
+    let vendor_backends = ["claude", "agy", "codex", "kimi", "copilot"];
     let mut available = Vec::new();
     for b in vendor_backends {
         if which(b).is_some() {
@@ -230,7 +230,8 @@ fn check_backends() -> CheckResult {
         CheckResult {
             name,
             status: Status::Warn(
-                "no backend CLI on PATH (claude/agy/codex/kimi). `bwoc spawn` will fail.".into(),
+                "no backend CLI on PATH (claude/agy/codex/kimi/copilot). `bwoc spawn` will fail."
+                    .into(),
             ),
         }
     } else {
@@ -299,7 +300,7 @@ fn check_ollama() -> Vec<CheckResult> {
 /// `cargo install --path crates/bwoc-harness` (the ollama harness path
 /// already hinted by `check_ollama`). Both checks are informational
 /// (WARN, never FAIL) — users who only `bwoc spawn` against a vendor
-/// backend (claude/agy/codex/kimi) don't need the Rust toolchain. Mirrors
+/// backend (claude/agy/codex/kimi/copilot) don't need the Rust toolchain. Mirrors
 /// the WARN policy of `check_backends` and the ollama probes.
 ///
 /// Read-only invariant: the only commands issued are `rustup --version`
