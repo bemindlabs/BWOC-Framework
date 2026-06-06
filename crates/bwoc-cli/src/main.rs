@@ -42,6 +42,7 @@ mod peer;
 mod ping;
 mod plugin;
 mod remote;
+mod report;
 mod retire;
 mod run;
 mod sangha;
@@ -130,6 +131,9 @@ enum Commands {
     Handbook(HandbookCliArgs),
     /// One-card system status: version, release, phase, workspace + agents, update.
     Info(InfoCliArgs),
+    /// Report a bug/feature/question to the BWOC issue tracker (preview +
+    /// confirm; falls back to a prefilled browser URL when unattended).
+    Report(ReportCliArgs),
     /// Emit a shell completion script (bash, zsh, fish, powershell, elvish).
     Completion(CompletionArgs),
     /// Launch the interactive TUI dashboard (agents list with navigation; refresh with `r`).
@@ -1620,6 +1624,24 @@ struct InfoCliArgs {
 }
 
 #[derive(Args, Debug)]
+struct ReportCliArgs {
+    /// Issue title (required).
+    title: Option<String>,
+    /// Issue body; an Environment block (version/release/OS) is appended.
+    #[arg(long)]
+    body: Option<String>,
+    /// Report kind → GitHub label (feature maps to `enhancement`).
+    #[arg(long, default_value = "bug", value_parser = ["bug", "feature", "question"])]
+    kind: String,
+    /// Print a prefilled browser URL instead of creating via `gh`.
+    #[arg(long)]
+    web: bool,
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args, Debug)]
 struct HelpArgs {
     /// Topic name. Run `bwoc help` (no arg) to list available topics.
     /// Mutually exclusive with `--all`.
@@ -2278,6 +2300,16 @@ fn main() -> ExitCode {
             let code = info::run(info::InfoArgs {
                 workspace: args.workspace,
                 json: args.json,
+            });
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Report(args)) => {
+            let code = report::run(report::ReportArgs {
+                title: args.title,
+                body: args.body,
+                kind: args.kind,
+                web: args.web,
+                yes: args.yes,
             });
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
