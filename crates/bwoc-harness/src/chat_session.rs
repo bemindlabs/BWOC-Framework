@@ -434,10 +434,12 @@ fn inject_peer_messages(
     if total == *seen {
         return Vec::new(); // nothing new since the last turn
     }
-    let fresh: Vec<bwoc_core::team::TeamChatMessage> = msgs[*seen..]
-        .iter()
+    // `parse_chat` already returns owned messages — consume the tail rather than
+    // re-cloning each one.
+    let fresh: Vec<bwoc_core::team::TeamChatMessage> = msgs
+        .into_iter()
+        .skip(*seen)
         .filter(|m| m.from != agent)
-        .cloned()
         .collect();
     *seen = total;
     if fresh.is_empty() {
