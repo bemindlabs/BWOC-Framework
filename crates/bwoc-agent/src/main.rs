@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use bwoc_core::manifest::Manifest;
 
+mod connectors;
 mod i18n;
 mod task_watch;
 mod trust;
@@ -250,6 +251,12 @@ where
     const TASK_POLL_EVERY: Duration = Duration::from_secs(2);
     let mut last_task_poll = Instant::now();
 
+    // Connector supervision (chat-connectors PR3): if this agent declares an
+    // enabled connector, spawn + keep alive the `bwoc-connect` subprocess.
+    let mut connectors = connectors::ConnectorSupervisor::detect(cwd);
+    connectors.announce();
+    connectors.tick(); // initial spawn (if active)
+
     // Single-threaded accept loop with poll. Each accept is non-blocking
     // and yields control quickly so the signal check stays responsive.
     while running.load(Ordering::SeqCst) {
@@ -269,6 +276,8 @@ where
                     task_watch.poll();
                     last_task_poll = Instant::now();
                 }
+                // Keep the connector child alive (respawn on exit, backoff-bounded).
+                connectors.tick();
                 std::thread::sleep(Duration::from_millis(100));
             }
             Accepted::Fatal(e) => {
@@ -278,7 +287,8 @@ where
         }
     }
 
-    // Graceful exit — remove PID file + endpoint artifacts.
+    // Graceful exit — stop the connector child, then remove PID file + endpoint.
+    connectors.shutdown();
     if let Err(e) = std::fs::remove_file(&pid_path) {
         eprintln!(
             "bwoc-agent --serve: warning — failed to remove {}: {e}",

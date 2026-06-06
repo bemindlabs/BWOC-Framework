@@ -1,0 +1,182 @@
+//! Connector supervision (chat-connectors PR3).
+//!
+//! When an agent declares an **enabled** connector (e.g.
+//! `connectors/telegram.toml` with `enabled = true`), `bwoc-agent --serve`
+//! spawns the `bwoc-connect` subprocess and keeps it alive: respawn on exit
+//! (with a backoff so a crash-loop can't spin hot), kill on daemon shutdown.
+//!
+//! `bwoc-connect` carries the network deps (reqwest/tokio); the daemon only
+//! *supervises* it as a child — exactly the `bwoc-harness` spawn pattern, so
+//! the dep-quarantine HARD RULE holds (`bwoc-agent` stays lean).
+
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
+
+/// Wait between a child exit and a respawn (avoids a crash-loop spinning hot).
+const RESPAWN_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Connector platforms `bwoc-agent` knows how to supervise, by config filename.
+/// (PR3: Telegram only; Discord joins in PR4.)
+const KNOWN: &[(&str, &str)] = &[("telegram", "connectors/telegram.toml")];
+
+pub struct ConnectorSupervisor {
+    /// Resolved `bwoc-connect` binary; `None` ⇒ none enabled, or not found.
+    exe: Option<PathBuf>,
+    agent_dir: PathBuf,
+    /// Enabled connector platform (PR3 supervises the first one).
+    platform: Option<&'static str>,
+    child: Option<Child>,
+    last_spawn: Option<Instant>,
+}
+
+impl ConnectorSupervisor {
+    /// Inspect `cwd` for an enabled connector config and resolve the binary.
+    pub fn detect(cwd: &Path) -> Self {
+        let platform = KNOWN
+            .iter()
+            .find(|(_, file)| connector_enabled(&cwd.join(file)))
+            .map(|(name, _)| *name);
+        let exe = platform.and(bwoc_core::exec::sibling_binary("bwoc-connect"));
+        Self {
+            exe,
+            agent_dir: cwd.to_path_buf(),
+            platform,
+            child: None,
+            last_spawn: None,
+        }
+    }
+
+    /// Log what (if anything) will be supervised — called once at startup.
+    pub fn announce(&self) {
+        match (self.platform, &self.exe) {
+            (Some(p), Some(_)) => {
+                eprintln!("bwoc-agent --serve: supervising connector '{p}' (bwoc-connect)")
+            }
+            (Some(p), None) => eprintln!(
+                "bwoc-agent --serve: connector '{p}' enabled but `bwoc-connect` not found on \
+                 PATH — not supervising (install it / add to PATH)"
+            ),
+            (None, _) => {} // no connector configured — silent
+        }
+    }
+
+    /// Idle-tick hook: (re)spawn the connector child if it isn't running.
+    /// Cheap (`try_wait`) and backoff-bounded — safe to call on every poll.
+    pub fn tick(&mut self) {
+        let (Some(exe), Some(platform)) = (self.exe.as_ref(), self.platform) else {
+            return;
+        };
+        if let Some(child) = &mut self.child {
+            match child.try_wait() {
+                Ok(None) => return, // still running
+                Ok(Some(status)) => {
+                    eprintln!(
+                        "bwoc-agent --serve: connector '{platform}' exited ({status}); respawning"
+                    );
+                    self.child = None;
+                }
+                Err(e) => {
+                    eprintln!("bwoc-agent --serve: connector wait error: {e}");
+                    self.child = None;
+                }
+            }
+        }
+        if let Some(t) = self.last_spawn {
+            if t.elapsed() < RESPAWN_BACKOFF {
+                return; // still backing off
+            }
+        }
+        self.last_spawn = Some(Instant::now());
+        match Command::new(exe)
+            .arg(platform)
+            .arg("--agent")
+            .arg(&self.agent_dir)
+            .spawn()
+        {
+            Ok(c) => {
+                eprintln!(
+                    "bwoc-agent --serve: spawned connector '{platform}' (pid {})",
+                    c.id()
+                );
+                self.child = Some(c);
+            }
+            Err(e) => eprintln!("bwoc-agent --serve: failed to spawn connector '{platform}': {e}"),
+        }
+    }
+
+    /// Kill the connector child on daemon shutdown (best-effort).
+    pub fn shutdown(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+/// Is a connector config present AND `enabled = true`? Best-effort: a missing
+/// or malformed file (or `enabled` absent/false) ⇒ not enabled.
+fn connector_enabled(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        .and_then(|v| v.get("enabled").and_then(toml::Value::as_bool))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write(dir: &Path, body: &str) -> PathBuf {
+        let p = dir.join("connectors");
+        fs::create_dir_all(&p).unwrap();
+        let f = p.join("telegram.toml");
+        fs::write(&f, body).unwrap();
+        f
+    }
+
+    #[test]
+    fn connector_enabled_reads_the_flag() {
+        let tmp = TempDir::new().unwrap();
+        let f = write(tmp.path(), "enabled = true\nallow_from = [1]\n");
+        assert!(connector_enabled(&f));
+    }
+
+    #[test]
+    fn connector_enabled_false_or_absent_or_malformed() {
+        let tmp = TempDir::new().unwrap();
+        assert!(!connector_enabled(&write(tmp.path(), "enabled = false\n")));
+        assert!(
+            !connector_enabled(&write(tmp.path(), "allow_from = [1]\n")),
+            "no flag ⇒ false"
+        );
+        assert!(!connector_enabled(&write(
+            tmp.path(),
+            "this is not toml {{{"
+        )));
+        assert!(!connector_enabled(
+            &tmp.path().join("connectors/absent.toml")
+        ));
+    }
+
+    #[test]
+    fn detect_finds_enabled_telegram() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "enabled = true\n");
+        let sup = ConnectorSupervisor::detect(tmp.path());
+        assert_eq!(sup.platform, Some("telegram"));
+        // is_active depends on whether a bwoc-connect binary resolves in the
+        // test env, so we only assert the platform was detected here.
+    }
+
+    #[test]
+    fn detect_none_when_disabled() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "enabled = false\n");
+        let sup = ConnectorSupervisor::detect(tmp.path());
+        assert_eq!(sup.platform, None);
+    }
+}
