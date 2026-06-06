@@ -62,9 +62,14 @@ architect's reviewer-selection decision.
   team_chat` → harness `--team-chat`. Only harness-backed `--tui` sessions can
   use it (vendor CLIs speak their own protocol); `--team` elsewhere warns and
   runs solo. `bwoc-tui::harness_argv` gained the trailing `--team-chat` pair.
-  **Still deferred:** (2) chat-protocol `Broadcast` / `TeamMessage` variants +
-  TUI rendering of peer messages as distinct events (today peer context reaches
-  the agent's context but the human sees it only via the agent's replies).
+  **Slice (2) — peer-message visibility — now also done** (separate PR): a new
+  additive `ChatEvent::TeamMessage { from, text, ts }` is emitted by the harness
+  for each previously-unseen peer message (`inject_peer_messages` now returns the
+  fresh messages so `drive()` emits them), and the `--tui` client renders them
+  distinctly (`📢 <from>: <text>`). So the human now follows the team thread, not
+  only the agent's replies. **Still deferred:** an explicit `ChatInput::Broadcast`
+  verb (human posting to the team without running a turn) — it overlaps the
+  auto-broadcast-on-reply model and needs UX thought; not built until wanted.
 - Remaining in HV3-3: **(c) peer-review gate** — needs the reviewer-selection
   decision (fixed / round-robin / manifest-declared). HV3-5 MCP-vs-A2A still open.
 

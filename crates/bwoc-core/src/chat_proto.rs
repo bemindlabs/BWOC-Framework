@@ -79,6 +79,16 @@ pub enum ChatEvent {
         prompt_tokens: u64,
         completion_tokens: u64,
     },
+    /// A teammate's message from the shared team chat log (HV3-3a), surfaced so
+    /// the frontend can render it distinctly from this agent's own turns.
+    /// Emitted once per previously-unseen peer message before a turn proceeds;
+    /// only when the session joined a team channel (`--team-chat`). Purely
+    /// informational — the agent already has the same text in its context.
+    TeamMessage {
+        from: String,
+        text: String,
+        ts: String,
+    },
     /// A recoverable error surfaced to the user (the session stays alive).
     Error { message: String },
     /// The session is exiting (after [`ChatInput::Quit`] or a fatal error).
@@ -204,6 +214,18 @@ mod tests {
         };
         let line = ev.to_line().unwrap();
         assert!(line.contains(r#""type":"mode_changed""#));
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
+    }
+
+    #[test]
+    fn team_message_roundtrips() {
+        let ev = ChatEvent::TeamMessage {
+            from: "agent-a".into(),
+            text: "found the root cause".into(),
+            ts: "2026-06-06T00:00:00Z".into(),
+        };
+        let line = ev.to_line().unwrap();
+        assert!(line.contains(r#""type":"team_message""#));
         assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
     }
 

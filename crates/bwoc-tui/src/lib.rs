@@ -330,6 +330,11 @@ impl App {
                 }
                 self.usage = Some((prompt_tokens, completion_tokens));
             }
+            ChatEvent::TeamMessage { from, text, .. } => {
+                // A teammate's broadcast (HV3-3a) — render distinctly from this
+                // agent's own turns so the human can follow the team thread.
+                self.conversation.push(format!("📢 {from}: {text}"));
+            }
             ChatEvent::Error { message } => {
                 self.activity.push(format!("✗ error: {message}"));
             }
@@ -731,6 +736,23 @@ mod tests {
             app.conversation
                 .iter()
                 .any(|l| l == "assistant: final answer")
+        );
+    }
+
+    #[test]
+    fn apply_team_message_renders_with_broadcast_marker() {
+        let mut app = App::new("agent-pi".into(), "ollama");
+        app.apply(ChatEvent::TeamMessage {
+            from: "agent-a".into(),
+            text: "found the root cause".into(),
+            ts: "2026-06-06T00:00:00Z".into(),
+        });
+        assert!(
+            app.conversation
+                .iter()
+                .any(|l| l == "📢 agent-a: found the root cause"),
+            "team message renders distinctly: {:?}",
+            app.conversation
         );
     }
 
