@@ -64,6 +64,16 @@ pub fn parse_updates(body: &Value) -> Vec<Incoming> {
         let Some(msg) = u.get("message") else {
             continue;
         };
+        // PR1 is DM-only: skip group/supergroup/channel chats so a group
+        // message never gets the agent's reply broadcast to the room.
+        if msg
+            .get("chat")
+            .and_then(|c| c.get("type"))
+            .and_then(Value::as_str)
+            != Some("private")
+        {
+            continue;
+        }
         let (Some(chat_id), Some(from_user_id), Some(text)) = (
             msg.get("chat")
                 .and_then(|c| c.get("id"))
@@ -139,17 +149,19 @@ mod tests {
             "ok": true,
             "result": [
                 { "update_id": 10, "message": {
-                    "chat": {"id": 42}, "from": {"id": 111}, "text": "hello" }},
+                    "chat": {"id": 42, "type": "private"}, "from": {"id": 111}, "text": "hello" }},
                 { "update_id": 11, "message": {  // no text (sticker) → skipped
-                    "chat": {"id": 42}, "from": {"id": 111}, "sticker": {} }},
+                    "chat": {"id": 42, "type": "private"}, "from": {"id": 111}, "sticker": {} }},
                 { "update_id": 12, "edited_message": {  // not a fresh message → skipped
-                    "chat": {"id": 42}, "from": {"id": 111}, "text": "edit" }},
+                    "chat": {"id": 42, "type": "private"}, "from": {"id": 111}, "text": "edit" }},
                 { "update_id": 13, "message": {  // no from → skipped
-                    "chat": {"id": 9}, "text": "anon" }},
+                    "chat": {"id": 9, "type": "private"}, "text": "anon" }},
+                { "update_id": 14, "message": {  // group chat → skipped in PR1 (DM-only)
+                    "chat": {"id": -100, "type": "supergroup"}, "from": {"id": 111}, "text": "grp" }},
             ]
         });
         let msgs = parse_updates(&body);
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 1, "only the private text DM survives");
         assert_eq!(
             msgs[0],
             Incoming {

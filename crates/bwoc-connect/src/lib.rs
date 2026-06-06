@@ -25,6 +25,10 @@ use serde::Deserialize;
 pub mod session;
 pub mod telegram;
 
+/// Seconds to wait after a poll error before retrying (avoids a hot loop / log
+/// flood when the platform is unreachable or rate-limiting).
+const POLL_BACKOFF_SECS: u64 = 2;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -37,12 +41,12 @@ pub enum ConnectError {
     Transport(String),
     #[error("agent session error: {0}")]
     Session(String),
-    #[error("no bot token: set it in the keyring (bwoc/telegram · <agent>) or {0}")]
+    #[error("no bot token: set the {0} environment variable (keyring resolution lands in PR3)")]
     NoToken(String),
 }
 
 // ---------------------------------------------------------------------------
-// Config — .bwoc/connectors/telegram.toml
+// Config — <agent>/connectors/telegram.toml
 // ---------------------------------------------------------------------------
 
 /// Per-agent Telegram connector config. The token is **not** here — it
@@ -157,7 +161,10 @@ pub async fn run_bridge(
         let messages = match transport.poll(offset).await {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("[bwoc-connect] poll error (continuing): {e}");
+                // Back off before retrying so an unreachable / rate-limiting
+                // endpoint can't spin the loop hot or flood the log.
+                eprintln!("[bwoc-connect] poll error (retrying in {POLL_BACKOFF_SECS}s): {e}");
+                tokio::time::sleep(std::time::Duration::from_secs(POLL_BACKOFF_SECS)).await;
                 continue;
             }
         };
@@ -201,6 +208,9 @@ pub async fn run_bridge(
                 }
                 Err(e) => {
                     eprintln!("[bwoc-connect] agent error: {e}");
+                    // Drop the (likely dead) session so the next message for this
+                    // chat respawns a fresh one rather than failing forever.
+                    sessions.remove(&msg.chat_id);
                     let _ = transport
                         .send(msg.chat_id, &format!("⚠️ agent error: {e}"))
                         .await;
@@ -323,6 +333,72 @@ mod tests {
             created.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "no session spawned"
+        );
+    }
+
+    /// A session that always errors (simulates a harness that died).
+    struct DeadSession;
+    #[async_trait]
+    impl AgentSession for DeadSession {
+        async fn ask(&mut self, _text: &str) -> Result<String, ConnectError> {
+            Err(ConnectError::Session("harness died".into()))
+        }
+    }
+    /// First `create()` yields a dead session, later ones a working echo —
+    /// models "the first subprocess died, the respawn is healthy".
+    struct FlakyFactory {
+        created: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait]
+    impl SessionFactory for FlakyFactory {
+        async fn create(&self) -> Result<Box<dyn AgentSession>, ConnectError> {
+            let n = self
+                .created
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Ok(Box::new(DeadSession))
+            } else {
+                Ok(Box::new(EchoSession))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dead_session_is_dropped_and_respawned() {
+        // Two polls, each delivering one message to the same chat. First ask
+        // errors (session removed); second poll respawns + succeeds.
+        let t = MockTransport {
+            batches: Mutex::new(vec![
+                vec![Incoming {
+                    update_id: 2,
+                    chat_id: 7,
+                    from_user_id: 111,
+                    text: "b".into(),
+                }],
+                vec![Incoming {
+                    update_id: 1,
+                    chat_id: 7,
+                    from_user_id: 111,
+                    text: "a".into(),
+                }],
+            ]),
+            sent: Mutex::new(vec![]),
+        };
+        let created = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let f = FlakyFactory {
+            created: created.clone(),
+        };
+        run_bridge(&t, &f, &cfg(&[111]), Some(2)).await.unwrap();
+        // Two sessions created (one per message, because the first died).
+        assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let sent = t.sent.lock().unwrap();
+        assert!(
+            sent.iter().any(|(_, m)| m.contains("agent error")),
+            "1st msg errored"
+        );
+        assert!(
+            sent.iter().any(|(_, m)| m == "echo: b"),
+            "2nd msg recovered via respawn"
         );
     }
 
