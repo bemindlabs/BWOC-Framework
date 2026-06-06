@@ -106,6 +106,11 @@ pub struct Incoming {
     /// Sender's platform user id (checked against the allow-list).
     pub from_user_id: i64,
     pub text: String,
+    /// `true` for a group/supergroup chat, `false` for a private DM (PR2).
+    pub is_group: bool,
+    /// `true` if this group message @mentions the bot (drives the
+    /// mention-gate; always `false`/ignored for DMs). (PR2)
+    pub mentions_bot: bool,
 }
 
 /// A platform transport: long-poll for messages, send replies.
@@ -135,20 +140,33 @@ pub trait SessionFactory: Send + Sync {
 // Bridge loop (the testable core)
 // ---------------------------------------------------------------------------
 
+/// Group-bridge wiring (PR2): a team's shared `chat.jsonl` (HV3-3a) plus the
+/// factory that spawns `--team-chat` sessions for group rooms.
+pub struct GroupBridge<'a> {
+    pub factory: &'a dyn SessionFactory,
+    pub chat_log: std::path::PathBuf,
+}
+
 /// Run the relay: poll → allow-list filter → per-chat session → reply.
 ///
-/// One `AgentSession` is held per `chat_id` (DM continuity). `max_polls`
-/// bounds the loop for tests (`None` = run forever). Per-message errors are
-/// logged and skipped — one bad message never tears the bridge down.
+/// DMs go through `dm_factory`. When `group` is set, group/supergroup messages
+/// from allow-listed senders are bridged to a Saṅgha team (HV3-3a): a
+/// mention (or a non-mention-gated room) is served by a `--team-chat` session
+/// and the reply is sent back; a non-mention message is just appended to the
+/// team `chat.jsonl` as peer context. A group message with no `group` binding
+/// is ignored. One `AgentSession` is held per `chat_id` (DM/room continuity).
+/// `max_polls` bounds the loop for tests (`None` = forever).
 pub async fn run_bridge(
     transport: &dyn Transport,
-    factory: &dyn SessionFactory,
+    dm_factory: &dyn SessionFactory,
+    group: Option<GroupBridge<'_>>,
     config: &TelegramConfig,
     max_polls: Option<usize>,
 ) -> Result<(), ConnectError> {
     let mut offset: i64 = 0;
     let mut sessions: HashMap<i64, Box<dyn AgentSession>> = HashMap::new();
     let mut polls = 0usize;
+    let mention_only = config.group.as_ref().is_none_or(|g| g.mention_only);
 
     loop {
         if let Some(max) = max_polls {
@@ -180,43 +198,87 @@ pub async fn run_bridge(
                 continue;
             }
 
-            // Lazily spawn one session per chat (DM continuity).
-            if let std::collections::hash_map::Entry::Vacant(slot) = sessions.entry(msg.chat_id) {
-                match factory.create().await {
-                    Ok(s) => {
-                        slot.insert(s);
-                    }
-                    Err(e) => {
-                        eprintln!("[bwoc-connect] could not start agent session: {e}");
-                        let _ = transport
-                            .send(
-                                msg.chat_id,
-                                "⚠️ couldn't start the agent session; try again.",
-                            )
-                            .await;
-                        continue;
-                    }
+            if msg.is_group {
+                let Some(gb) = group.as_ref() else {
+                    eprintln!(
+                        "[bwoc-connect] group message but no team binding configured; ignoring"
+                    );
+                    continue;
+                };
+                // Mention-gated rooms: a non-mention message is logged as peer
+                // context (so the agent sees it on its next addressed turn) but
+                // draws no reply.
+                if mention_only && !msg.mentions_bot {
+                    append_peer(&gb.chat_log, &format!("tg:{}", msg.from_user_id), &msg.text);
+                    continue;
                 }
-            }
-            let session = sessions.get_mut(&msg.chat_id).expect("inserted above");
-
-            match session.ask(&msg.text).await {
-                Ok(reply) => {
-                    if let Err(e) = transport.send(msg.chat_id, &reply).await {
-                        eprintln!("[bwoc-connect] send failed: {e}");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[bwoc-connect] agent error: {e}");
-                    // Drop the (likely dead) session so the next message for this
-                    // chat respawns a fresh one rather than failing forever.
-                    sessions.remove(&msg.chat_id);
-                    let _ = transport
-                        .send(msg.chat_id, &format!("⚠️ agent error: {e}"))
-                        .await;
-                }
+                // Addressed: serve via the --team-chat group session, which
+                // injects the room's peer messages and broadcasts its reply.
+                serve_turn(&mut sessions, gb.factory, transport, msg.chat_id, &msg.text).await;
+            } else {
+                serve_turn(&mut sessions, dm_factory, transport, msg.chat_id, &msg.text).await;
             }
         }
+    }
+}
+
+/// Spawn-or-reuse the `chat_id`'s session, deliver `text`, relay the reply.
+/// On an agent error the (likely dead) session is dropped so the next message
+/// respawns a fresh one rather than failing forever.
+async fn serve_turn(
+    sessions: &mut HashMap<i64, Box<dyn AgentSession>>,
+    factory: &dyn SessionFactory,
+    transport: &dyn Transport,
+    chat_id: i64,
+    text: &str,
+) {
+    if let std::collections::hash_map::Entry::Vacant(slot) = sessions.entry(chat_id) {
+        match factory.create().await {
+            Ok(s) => {
+                slot.insert(s);
+            }
+            Err(e) => {
+                eprintln!("[bwoc-connect] could not start agent session: {e}");
+                let _ = transport
+                    .send(chat_id, "⚠️ couldn't start the agent session; try again.")
+                    .await;
+                return;
+            }
+        }
+    }
+    let session = sessions.get_mut(&chat_id).expect("inserted above");
+    match session.ask(text).await {
+        Ok(reply) => {
+            if let Err(e) = transport.send(chat_id, &reply).await {
+                eprintln!("[bwoc-connect] send failed: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("[bwoc-connect] agent error: {e}");
+            sessions.remove(&chat_id);
+            let _ = transport
+                .send(chat_id, &format!("⚠️ agent error: {e}"))
+                .await;
+        }
+    }
+}
+
+/// Append a human's group message to the team's `chat.jsonl` as peer context
+/// (same append-only `TeamChatMessage` shape + atomic write as HV3-3a).
+fn append_peer(chat_log: &std::path::Path, from: &str, text: &str) {
+    use std::io::Write;
+    let Ok(line) = bwoc_core::team::TeamChatMessage::new(from, text).to_line() else {
+        return;
+    };
+    if let Some(parent) = chat_log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(chat_log)
+    {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
     }
 }
 
@@ -224,6 +286,7 @@ pub async fn run_bridge(
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use tempfile::TempDir;
 
     #[test]
     fn parse_config_and_closed_allow_list() {
@@ -297,6 +360,9 @@ mod tests {
                 chat_id: 42,
                 from_user_id: 111,
                 text: "hi".into(),
+
+                is_group: false,
+                mentions_bot: false,
             }]]),
             sent: Mutex::new(vec![]),
         };
@@ -304,7 +370,9 @@ mod tests {
         let f = EchoFactory {
             created: created.clone(),
         };
-        run_bridge(&t, &f, &cfg(&[111]), Some(1)).await.unwrap();
+        run_bridge(&t, &f, None, &cfg(&[111]), Some(1))
+            .await
+            .unwrap();
         assert_eq!(
             t.sent.lock().unwrap().as_slice(),
             &[(42, "echo: hi".to_string())]
@@ -320,6 +388,9 @@ mod tests {
                 chat_id: 9,
                 from_user_id: 999, // not allowed
                 text: "spam".into(),
+
+                is_group: false,
+                mentions_bot: false,
             }]]),
             sent: Mutex::new(vec![]),
         };
@@ -327,7 +398,9 @@ mod tests {
         let f = EchoFactory {
             created: created.clone(),
         };
-        run_bridge(&t, &f, &cfg(&[111]), Some(1)).await.unwrap();
+        run_bridge(&t, &f, None, &cfg(&[111]), Some(1))
+            .await
+            .unwrap();
         assert!(t.sent.lock().unwrap().is_empty(), "no reply to a stranger");
         assert_eq!(
             created.load(std::sync::atomic::Ordering::SeqCst),
@@ -374,12 +447,18 @@ mod tests {
                     chat_id: 7,
                     from_user_id: 111,
                     text: "b".into(),
+
+                    is_group: false,
+                    mentions_bot: false,
                 }],
                 vec![Incoming {
                     update_id: 1,
                     chat_id: 7,
                     from_user_id: 111,
                     text: "a".into(),
+
+                    is_group: false,
+                    mentions_bot: false,
                 }],
             ]),
             sent: Mutex::new(vec![]),
@@ -388,7 +467,9 @@ mod tests {
         let f = FlakyFactory {
             created: created.clone(),
         };
-        run_bridge(&t, &f, &cfg(&[111]), Some(2)).await.unwrap();
+        run_bridge(&t, &f, None, &cfg(&[111]), Some(2))
+            .await
+            .unwrap();
         // Two sessions created (one per message, because the first died).
         assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 2);
         let sent = t.sent.lock().unwrap();
@@ -411,12 +492,18 @@ mod tests {
                     chat_id: 7,
                     from_user_id: 111,
                     text: "a".into(),
+
+                    is_group: false,
+                    mentions_bot: false,
                 },
                 Incoming {
                     update_id: 2,
                     chat_id: 7,
                     from_user_id: 111,
                     text: "b".into(),
+
+                    is_group: false,
+                    mentions_bot: false,
                 },
             ]]),
             sent: Mutex::new(vec![]),
@@ -425,12 +512,115 @@ mod tests {
         let f = EchoFactory {
             created: created.clone(),
         };
-        run_bridge(&t, &f, &cfg(&[111]), Some(1)).await.unwrap();
+        run_bridge(&t, &f, None, &cfg(&[111]), Some(1))
+            .await
+            .unwrap();
         assert_eq!(t.sent.lock().unwrap().len(), 2);
         assert_eq!(
             created.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "one session reused across the DM"
         );
+    }
+
+    // ── Group ⇄ team chat (PR2) ──────────────────────────────────────────────
+
+    fn group_cfg(allow: &[i64], mention_only: bool) -> TelegramConfig {
+        TelegramConfig {
+            enabled: true,
+            allow_from: allow.to_vec(),
+            group: Some(GroupConfig {
+                team: Some("squad".into()),
+                mention_only,
+            }),
+        }
+    }
+
+    fn group_msg(update_id: i64, user: i64, text: &str, mentions: bool) -> Incoming {
+        Incoming {
+            update_id,
+            chat_id: -100,
+            from_user_id: user,
+            text: text.into(),
+            is_group: true,
+            mentions_bot: mentions,
+        }
+    }
+
+    fn ctr() -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    #[tokio::test]
+    async fn group_mention_serves_via_team_session() {
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("chat.jsonl");
+        let t = MockTransport {
+            batches: Mutex::new(vec![vec![group_msg(1, 111, "@bot hi", true)]]),
+            sent: Mutex::new(vec![]),
+        };
+        let gcreated = ctr();
+        let gf = EchoFactory {
+            created: gcreated.clone(),
+        };
+        let dmf = EchoFactory { created: ctr() };
+        let gb = GroupBridge {
+            factory: &gf,
+            chat_log: log.clone(),
+        };
+        run_bridge(&t, &dmf, Some(gb), &group_cfg(&[111], true), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            t.sent.lock().unwrap().as_slice(),
+            &[(-100, "echo: @bot hi".to_string())]
+        );
+        assert_eq!(
+            gcreated.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "group session served it"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_non_mention_logs_peer_and_does_not_reply() {
+        let tmp = TempDir::new().unwrap();
+        let log = tmp.path().join("teams/squad/chat.jsonl"); // parent auto-created
+        let t = MockTransport {
+            batches: Mutex::new(vec![vec![group_msg(1, 111, "hi team", false)]]),
+            sent: Mutex::new(vec![]),
+        };
+        let gcreated = ctr();
+        let gf = EchoFactory {
+            created: gcreated.clone(),
+        };
+        let dmf = EchoFactory { created: ctr() };
+        let gb = GroupBridge {
+            factory: &gf,
+            chat_log: log.clone(),
+        };
+        run_bridge(&t, &dmf, Some(gb), &group_cfg(&[111], true), Some(1))
+            .await
+            .unwrap();
+        // No reply, no session — just a peer line appended for context.
+        assert!(t.sent.lock().unwrap().is_empty(), "mention-gated: no reply");
+        assert_eq!(gcreated.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let body = std::fs::read_to_string(&log).unwrap();
+        assert!(body.contains("\"from\":\"tg:111\""), "peer logged: {body}");
+        assert!(body.contains("hi team"));
+    }
+
+    #[tokio::test]
+    async fn group_message_without_binding_is_ignored() {
+        let t = MockTransport {
+            batches: Mutex::new(vec![vec![group_msg(1, 111, "@bot hi", true)]]),
+            sent: Mutex::new(vec![]),
+        };
+        let dmf = EchoFactory { created: ctr() };
+        // group = None → group messages ignored even when allow-listed + mention.
+        run_bridge(&t, &dmf, None, &group_cfg(&[111], true), Some(1))
+            .await
+            .unwrap();
+        assert!(t.sent.lock().unwrap().is_empty(), "no binding ⇒ ignored");
     }
 }
