@@ -167,12 +167,14 @@ fn resolve_token(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "agent".to_string());
     let service = format!("bwoc/{platform}");
+    // Trim on the way out — a token stored with a trailing newline (common from
+    // `echo`/copy-paste) would otherwise corrupt the Bot auth header.
     if let Some(tok) = keyring_lookup(&service, &account) {
         eprintln!("[bwoc-connect] token: keyring {service}·{account}");
-        return Ok(tok);
+        return Ok(tok.trim().to_string());
     }
     match std::env::var(token_env) {
-        Ok(tok) if !tok.trim().is_empty() => Ok(tok),
+        Ok(tok) if !tok.trim().is_empty() => Ok(tok.trim().to_string()),
         _ => Err(ConnectError::NoToken(format!(
             "{token_env} (or, on macOS/Windows, keyring entry {service}·{account})"
         ))),
