@@ -78,6 +78,7 @@ impl ConnectorSupervisor {
                 Ok(Some(status)) => {
                     eprintln!("bwoc-agent --serve: connector '{platform}' exited ({status})");
                     self.child = None;
+                    self.write_status("exited", None);
                 }
                 Err(e) => {
                     eprintln!("bwoc-agent --serve: connector wait error: {e}");
@@ -102,13 +103,32 @@ impl ConnectorSupervisor {
             .spawn()
         {
             Ok(c) => {
-                eprintln!(
-                    "bwoc-agent --serve: spawned connector '{platform}' (pid {})",
-                    c.id()
-                );
+                let pid = c.id();
+                eprintln!("bwoc-agent --serve: spawned connector '{platform}' (pid {pid})");
                 self.child = Some(c);
+                self.write_status("running", Some(pid));
             }
             Err(e) => eprintln!("bwoc-agent --serve: failed to spawn connector '{platform}': {e}"),
+        }
+    }
+
+    /// Write the connector health marker (`<agent>/.bwoc/connector.status`) so
+    /// `bwoc status` can surface it. Best-effort; only when a connector is
+    /// configured. `state` is `running` / `exited` / `stopped`.
+    fn write_status(&self, state: &str, pid: Option<u32>) {
+        let Some(platform) = self.platform else {
+            return;
+        };
+        let path = self.agent_dir.join(".bwoc").join("connector.status");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let body = serde_json::json!({ "platform": platform, "state": state, "pid": pid });
+        // Atomic: write a temp sibling then rename, so `bwoc status` never reads
+        // a half-written marker (rename is atomic on the same filesystem).
+        let tmp = path.with_extension("status.tmp");
+        if std::fs::write(&tmp, body.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
         }
     }
 
@@ -118,6 +138,9 @@ impl ConnectorSupervisor {
             let _ = c.kill();
             let _ = c.wait();
         }
+        // Unconditionally mark stopped (even if the child had already exited),
+        // so a stale `running` marker can't linger after the daemon is down.
+        self.write_status("stopped", None);
     }
 }
 
@@ -185,5 +208,23 @@ mod tests {
         write(tmp.path(), "enabled = false\n");
         let sup = ConnectorSupervisor::detect(tmp.path());
         assert_eq!(sup.platform, None);
+    }
+
+    #[test]
+    fn write_status_emits_marker_when_configured() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "enabled = true\n");
+        let sup = ConnectorSupervisor::detect(tmp.path());
+        sup.write_status("running", Some(42));
+        let body = fs::read_to_string(tmp.path().join(".bwoc/connector.status")).unwrap();
+        assert!(body.contains("\"platform\":\"telegram\""), "{body}");
+        assert!(body.contains("\"state\":\"running\""));
+        assert!(body.contains("\"pid\":42"));
+
+        // No connector configured ⇒ no marker written.
+        let tmp2 = TempDir::new().unwrap();
+        write(tmp2.path(), "enabled = false\n");
+        ConnectorSupervisor::detect(tmp2.path()).write_status("running", Some(1));
+        assert!(!tmp2.path().join(".bwoc/connector.status").exists());
     }
 }
