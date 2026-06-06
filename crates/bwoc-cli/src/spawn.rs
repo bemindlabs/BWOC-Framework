@@ -54,8 +54,8 @@ pub enum Backend {
     Kimi,
     /// GitHub Copilot CLI (`copilot`). Agentic vendor CLI; reads `AGENTS.md`
     /// natively for custom instructions, so the agent's source of truth works
-    /// without a backend-named file. Non-interactive mode is `copilot -p`
-    /// (used by future headless adapters, HV3-6); spawn execs it interactively.
+    /// without a backend-named file. Spawn execs it interactively; `bwoc run`
+    /// uses its programmatic mode (`copilot -p … --no-ask-user`).
     Copilot,
     /// Self-hosted Ollama.  Execs the `bwoc-harness` sibling binary with the
     /// default endpoint `http://localhost:11434/v1`, or with `baseUrl` from

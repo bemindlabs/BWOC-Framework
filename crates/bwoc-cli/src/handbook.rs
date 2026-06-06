@@ -61,7 +61,8 @@ Agents are created by the CLI, never by hand-editing .bwoc/agents.toml:
 
 Each agent is agents/agent-<name>/ with slot dirs (persona/ mindsets/ skills/
 interconnect/ memories/) plus AGENTS.md — the single backend-neutral source of
-truth, symlinked to CLAUDE.md / CODEX.md / KIMI.md / AGY.md / COPILOT.md / OLLAMA.md.
+truth, symlinked to CLAUDE.md / CODEX.md / KIMI.md / AGY.md / COPILOT.md /
+OLLAMA.md / OPENAI.md.
 
 Keep AGENTS.md neutral: no YAML frontmatter, no model IDs/vendor names (use
 {{camelCase}} placeholders). `bwoc check` enforces this.",
@@ -75,7 +76,8 @@ agent ถูกสร้างผ่าน CLI เท่านั้น ห้�
 
 แต่ละ agent คือ agents/agent-<name>/ มี slot dirs (persona/ mindsets/ skills/
 interconnect/ memories/) และ AGENTS.md — แหล่งความจริงเดียวที่ backend-neutral
-symlink ไปยัง CLAUDE.md / CODEX.md / KIMI.md / AGY.md / COPILOT.md / OLLAMA.md
+symlink ไปยัง CLAUDE.md / CODEX.md / KIMI.md / AGY.md / COPILOT.md /
+OLLAMA.md / OPENAI.md
 
 ให้ AGENTS.md เป็นกลาง: ไม่มี YAML frontmatter, ไม่ฮาร์ดโค้ด model ID/ชื่อ vendor
 (ใช้ placeholder {{camelCase}}) — `bwoc check` บังคับกฎนี้",

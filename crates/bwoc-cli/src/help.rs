@@ -198,7 +198,7 @@ See also:
 ";
 
 const BACKENDS: &str = "\
-BWOC supports 6 declared backends (Samānattatā — equal treatment, no lock-in):
+BWOC supports 7 declared backends (Samānattatā — equal treatment, no lock-in):
 
   | Backend     | CLI binary    | Common models                                          |
   |-------------|---------------|--------------------------------------------------------|
@@ -214,8 +214,10 @@ Each agent picks ONE backend at incarnation, recorded in its
 config.manifest.json (primaryModel + optional fallbackModel) and in
 .bwoc/agents.toml.
 
-All 6 read the SAME AGENTS.md via symlinks (CLAUDE.md / AGY.md /
-CODEX.md / KIMI.md / OLLAMA.md / OPENAI.md all → AGENTS.md). If your agent's
+All 7 read the SAME AGENTS.md via symlinks (CLAUDE.md / AGY.md /
+CODEX.md / KIMI.md / COPILOT.md / OLLAMA.md / OPENAI.md all → AGENTS.md).
+(Copilot also reads AGENTS.md natively, no symlink required — it ships for
+convention.) If your agent's
 instructions assume a specific backend, `bwoc check` flags it as a
 neutrality violation.
 
