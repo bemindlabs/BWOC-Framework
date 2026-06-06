@@ -12,14 +12,20 @@ Telegram API ──long-poll──┐                       ┌─ bwoc-harness 
 Discord gateway ──ws──────┤   bwoc-connect        ├─ bwoc-harness --chat (DM B)
                           ├──(new, quarantined ───┤
                           │   crate/binary)       └─ team chat.jsonl ⇄ group room
-bwoc-agent --serve ───────┘   spawn + supervise
+bwoc-agent --serve ───────┘   spawn + supervise (PR3)
 ```
+
+(Diagram shows the **end-state**. In PR1/PR2 `bwoc-connect` is launched
+directly — `bwoc-connect telegram --agent <dir>` — with no `bwoc-agent`
+changes; daemon spawn + restart-supervision lands in **PR3**.)
 
 - **`bwoc-connect`** — a NEW crate/binary holding the heavy deps (HTTP,
   websocket). `bwoc-agent` stays lean (dep-quarantine HARD RULE) and honours
-  the "on the daemon" decision **operationally**: the daemon spawns
+  the "on the daemon" decision **operationally** *(from PR3)*: the daemon spawns
   `bwoc-connect <platform> --agent <dir>` when the agent declares a connector,
   and restarts it on crash — exactly the `bwoc-harness` subprocess pattern.
+  Until then (PR1/PR2) it runs standalone, which also keeps it independently
+  testable.
 - **The bridge is just another chat frontend.** For DMs it spawns/holds a
   `bwoc-harness --chat` subprocess per conversation and speaks the existing
   `bwoc_core::chat_proto` JSON-lines — the same contract `bwoc chat --tui`
@@ -33,14 +39,20 @@ bwoc-agent --serve ───────┘   spawn + supervise
 
 ## Security (Sīla — the load-bearing part)
 
-1. **Tokens** in the OS keyring (or env for headless hosts) — never in config
-   files. Config holds only a keyring reference.
-2. **Sender allow-list, default-empty**: only explicitly listed platform user
-   ids may reach an agent; unknown senders are ignored and logged. No public
-   bots by default.
+1. **Tokens** via the existing `CredentialBroker` convention (see
+   `bwoc-harness::tools::auth`): an OS-keyring entry
+   (`keyring_service = "bwoc/telegram"`, `keyring_account = <agentId>`) with an
+   **env-var fallback** (`TELEGRAM_BOT_TOKEN`) for headless hosts. Never stored
+   in config files — the config names the source, not the secret. Default on a
+   server is the env-var fallback (the bemind host is headless); keyring is the
+   hardened default where a keyring exists.
+2. **Sender allow-list**: only listed platform user ids may reach an agent;
+   unknown senders are ignored and logged. **Empty/absent ⇒ no one is allowed**
+   (closed by default) — so the field must be populated to permit anyone. No
+   public bots by default.
 3. **No permission escalation**: the bridged session is non-TTY, so `ask`
-   falls back to **deny** under the standard `harness-policy.toml`. Remote
-   users can never approve tool calls.
+   falls back to **deny** under the standard `.bwoc/harness-policy.toml`.
+   Remote users can never approve tool calls.
 4. **Mention-gating in groups** (default): the agent replies only when
    @mentioned, so it is a participant, not a firehose.
 5. Per-sender rate limit + max message length; text-only in v1 (no media).
@@ -50,11 +62,12 @@ bwoc-agent --serve ───────┘   spawn + supervise
 `.bwoc/connectors/telegram.toml` (next to the agent's other config):
 
 ```toml
-enabled   = true
-tokenRef  = "keyring:bwoc/telegram/<agentId>"   # or env:TELEGRAM_BOT_TOKEN
-allowFrom = [123456789]                          # platform user ids, REQUIRED
+enabled    = true
+# Token resolves via CredentialBroker: keyring (bwoc/telegram · <agentId>) →
+# env TELEGRAM_BOT_TOKEN fallback. No secret in this file.
+allowFrom  = [123456789]   # platform user ids; EMPTY/absent ⇒ nobody allowed
 [group]
-team       = "squad"                             # binds groups → this team
+team        = "squad"      # binds platform groups → this Saṅgha team
 mentionOnly = true
 ```
 
@@ -72,10 +85,12 @@ mentionOnly = true
 Telegram first: plain HTTPS long-poll (no websocket), simplest token model —
 the cheapest end-to-end proof.
 
-## Open items for the architect
+## Decisions (architect, 2026-06-06)
 
-- v1 scope OK as PR1+PR2 (Telegram only), Discord after?
-- Keyring vs env default for the token on servers (bemind host is headless)?
+- **v1 = Telegram first** (PR1 DM → PR2 group → PR3 supervision); Discord is PR4.
+- **Token: keyring default, env-var fallback documented** as the headless-server
+  pattern — both supported from PR1 (matches the `CredentialBroker` convention
+  above).
 
 ## Related
 
