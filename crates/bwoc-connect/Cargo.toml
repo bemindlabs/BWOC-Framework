@@ -34,3 +34,16 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 
 [dev-dependencies]
 tempfile = "3"
+
+# Token resolution via the OS keyring (chat-connectors). macOS/Windows use the
+# native secret stores. Linux is intentionally NOT wired to Secret Service: that
+# path pulls libdbus (a system C lib, absent on CI) or, via zbus, a second async
+# runtime — heavy for a feature the headless deployment target doesn't use (no
+# Secret Service daemon there → it falls back to the env var anyway). So Linux is
+# env-only; the env var is the fallback on every platform (Mattaññutā — right
+# amount, not every-platform-completeness). See `keyring_lookup` in main.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }

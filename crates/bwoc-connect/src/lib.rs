@@ -42,7 +42,7 @@ pub enum ConnectError {
     Transport(String),
     #[error("agent session error: {0}")]
     Session(String),
-    #[error("no bot token: set the {0} environment variable (keyring resolution is a follow-up)")]
+    #[error("no bot token found — set {0}")]
     NoToken(String),
 }
 

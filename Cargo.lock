@@ -331,6 +331,7 @@ dependencies = [
  "async-trait",
  "bwoc-core",
  "futures-util",
+ "keyring",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
