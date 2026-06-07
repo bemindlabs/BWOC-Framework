@@ -30,6 +30,12 @@ pub mod telegram;
 /// flood when the platform is unreachable or rate-limiting).
 const POLL_BACKOFF_SECS: u64 = 2;
 
+/// Minimum gap between in-place edits while streaming a reply. Telegram allows
+/// ~1 edit/sec per chat and Discord ~5/5s per channel; 1s stays clear of both.
+/// The final edit (on turn end) always fires regardless, so the complete reply
+/// is never throttled away.
+const EDIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -118,14 +124,29 @@ pub struct Incoming {
     pub mentions_bot: bool,
 }
 
-/// A platform transport: long-poll for messages, send replies.
+/// A platform transport: long-poll for messages, send + edit replies.
 #[async_trait]
 pub trait Transport: Send + Sync {
     /// Fetch messages with `update_id >= offset`. May block up to the
     /// transport's long-poll timeout, returning `[]` when nothing arrives.
     async fn poll(&self, offset: i64) -> Result<Vec<Incoming>, ConnectError>;
-    /// Send `text` to `chat_id`.
-    async fn send(&self, chat_id: i64, text: &str) -> Result<(), ConnectError>;
+    /// Send `text` to `chat_id`; return the new message's id (needed to edit it
+    /// while streaming).
+    async fn send(&self, chat_id: i64, text: &str) -> Result<i64, ConnectError>;
+    /// Replace the text of an existing message (used to stream a growing reply
+    /// in place). Editing to identical text should be treated as a no-op error
+    /// by the impl, not propagated.
+    async fn edit(&self, chat_id: i64, message_id: i64, text: &str) -> Result<(), ConnectError>;
+}
+
+/// Sink the agent session pushes the **accumulated** reply to as tokens arrive,
+/// so a [`Transport`] can render a growing message in place. The bridge's
+/// [`PlatformStream`] is the production impl (send-then-debounced-edit); the
+/// default [`AgentSession::ask_streamed`] ignores it (single send on finish).
+#[async_trait]
+pub trait ReplyStream: Send {
+    /// Called with the reply-so-far (accumulated, not a delta) on each token.
+    async fn push(&mut self, accumulated: &str);
 }
 
 /// One agent conversation (a `bwoc-harness --chat` subprocess in PR1).
@@ -133,6 +154,19 @@ pub trait Transport: Send + Sync {
 pub trait AgentSession: Send {
     /// Deliver a user message; return the agent's final reply text.
     async fn ask(&mut self, text: &str) -> Result<String, ConnectError>;
+
+    /// Like [`ask`](Self::ask) but pushing the accumulated reply to `sink` as
+    /// tokens stream in. The default delegates to `ask` (no streaming — one
+    /// send on finish); `HarnessSession` overrides it to relay `chat_proto`
+    /// `Token` events.
+    async fn ask_streamed(
+        &mut self,
+        text: &str,
+        sink: &mut dyn ReplyStream,
+    ) -> Result<String, ConnectError> {
+        let _ = sink;
+        self.ask(text).await
+    }
 }
 
 /// Makes a fresh [`AgentSession`] per conversation (lazily, on first message).
@@ -259,11 +293,13 @@ async fn serve_turn(
         }
     }
     let session = sessions.get_mut(&chat_id).expect("inserted above");
-    match session.ask(text).await {
+    let mut stream = PlatformStream::new(transport, chat_id);
+    match session.ask_streamed(text, &mut stream).await {
         Ok(reply) => {
-            if let Err(e) = transport.send(chat_id, &reply).await {
-                eprintln!("[bwoc-connect] send failed: {e}");
-            }
+            // Ensure the platform shows the complete reply: a final edit (or a
+            // single send if no tokens streamed). Errors are already logged
+            // inside the stream; finish swallows the no-op-identical case.
+            stream.finish(&reply).await;
         }
         Err(e) => {
             eprintln!("[bwoc-connect] agent error: {e}");
@@ -271,6 +307,91 @@ async fn serve_turn(
             let _ = transport
                 .send(chat_id, &format!("⚠️ agent error: {e}"))
                 .await;
+        }
+    }
+}
+
+/// A [`ReplyStream`] that renders a growing reply into one platform message:
+/// the first non-empty push **sends** a message; later pushes **edit** it in
+/// place, debounced to [`EDIT_INTERVAL`]; [`finish`](Self::finish) guarantees
+/// the final text is shown. If nothing was ever pushed (a non-streaming
+/// session), `finish` sends the whole reply once — the original behaviour.
+struct PlatformStream<'a> {
+    transport: &'a dyn Transport,
+    chat_id: i64,
+    message_id: Option<i64>,
+    /// Last text actually pushed to the platform (skip identical edits).
+    last_text: String,
+    last_edit: Option<tokio::time::Instant>,
+    min_interval: std::time::Duration,
+}
+
+impl<'a> PlatformStream<'a> {
+    fn new(transport: &'a dyn Transport, chat_id: i64) -> Self {
+        Self {
+            transport,
+            chat_id,
+            message_id: None,
+            last_text: String::new(),
+            last_edit: None,
+            min_interval: EDIT_INTERVAL,
+        }
+    }
+
+    /// Show the complete reply: edit the streamed message to `final_text` (if it
+    /// differs), or — if nothing streamed — send it as a single message.
+    async fn finish(&mut self, final_text: &str) {
+        match self.message_id {
+            None => {
+                if !final_text.is_empty() {
+                    if let Err(e) = self.transport.send(self.chat_id, final_text).await {
+                        eprintln!("[bwoc-connect] send failed: {e}");
+                    }
+                }
+            }
+            Some(id) => {
+                if final_text != self.last_text {
+                    if let Err(e) = self.transport.edit(self.chat_id, id, final_text).await {
+                        eprintln!("[bwoc-connect] final edit failed: {e}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl ReplyStream for PlatformStream<'_> {
+    async fn push(&mut self, accumulated: &str) {
+        if accumulated.trim().is_empty() {
+            return; // nothing worth a message yet
+        }
+        match self.message_id {
+            None => match self.transport.send(self.chat_id, accumulated).await {
+                Ok(id) => {
+                    self.message_id = Some(id);
+                    self.last_text = accumulated.to_string();
+                    self.last_edit = Some(tokio::time::Instant::now());
+                }
+                Err(e) => eprintln!("[bwoc-connect] stream send failed: {e}"),
+            },
+            Some(id) => {
+                let now = tokio::time::Instant::now();
+                let due = self
+                    .last_edit
+                    .is_none_or(|t| now.duration_since(t) >= self.min_interval);
+                if due
+                    && accumulated != self.last_text
+                    && self
+                        .transport
+                        .edit(self.chat_id, id, accumulated)
+                        .await
+                        .is_ok()
+                {
+                    self.last_text = accumulated.to_string();
+                    self.last_edit = Some(now);
+                }
+            }
         }
     }
 }
@@ -319,18 +440,40 @@ mod tests {
         assert!(g.mention_only, "mention_only defaults true");
     }
 
-    /// Transport that yields one scripted batch then empty, recording sends.
+    /// Transport that yields one scripted batch then empty, recording sends +
+    /// edits. `send` returns an incrementing message id so streaming can edit.
     struct MockTransport {
         batches: Mutex<Vec<Vec<Incoming>>>,
         sent: Mutex<Vec<(i64, String)>>,
+        edited: Mutex<Vec<(i64, i64, String)>>,
+        next_id: std::sync::atomic::AtomicI64,
+    }
+    impl MockTransport {
+        fn new(batches: Vec<Vec<Incoming>>) -> Self {
+            Self {
+                batches: Mutex::new(batches),
+                sent: Mutex::new(vec![]),
+                edited: Mutex::new(vec![]),
+                next_id: std::sync::atomic::AtomicI64::new(1),
+            }
+        }
     }
     #[async_trait]
     impl Transport for MockTransport {
         async fn poll(&self, _offset: i64) -> Result<Vec<Incoming>, ConnectError> {
             Ok(self.batches.lock().unwrap().pop().unwrap_or_default())
         }
-        async fn send(&self, chat_id: i64, text: &str) -> Result<(), ConnectError> {
+        async fn send(&self, chat_id: i64, text: &str) -> Result<i64, ConnectError> {
             self.sent.lock().unwrap().push((chat_id, text.to_string()));
+            Ok(self
+                .next_id
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+        }
+        async fn edit(&self, chat_id: i64, mid: i64, text: &str) -> Result<(), ConnectError> {
+            self.edited
+                .lock()
+                .unwrap()
+                .push((chat_id, mid, text.to_string()));
             Ok(())
         }
     }
@@ -366,18 +509,15 @@ mod tests {
 
     #[tokio::test]
     async fn allow_listed_message_gets_an_echoed_reply() {
-        let t = MockTransport {
-            batches: Mutex::new(vec![vec![Incoming {
-                update_id: 5,
-                chat_id: 42,
-                from_user_id: 111,
-                text: "hi".into(),
+        let t = MockTransport::new(vec![vec![Incoming {
+            update_id: 5,
+            chat_id: 42,
+            from_user_id: 111,
+            text: "hi".into(),
 
-                is_group: false,
-                mentions_bot: false,
-            }]]),
-            sent: Mutex::new(vec![]),
-        };
+            is_group: false,
+            mentions_bot: false,
+        }]]);
         let created = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let f = EchoFactory {
             created: created.clone(),
@@ -394,18 +534,15 @@ mod tests {
 
     #[tokio::test]
     async fn non_allow_listed_message_is_ignored() {
-        let t = MockTransport {
-            batches: Mutex::new(vec![vec![Incoming {
-                update_id: 1,
-                chat_id: 9,
-                from_user_id: 999, // not allowed
-                text: "spam".into(),
+        let t = MockTransport::new(vec![vec![Incoming {
+            update_id: 1,
+            chat_id: 9,
+            from_user_id: 999, // not allowed
+            text: "spam".into(),
 
-                is_group: false,
-                mentions_bot: false,
-            }]]),
-            sent: Mutex::new(vec![]),
-        };
+            is_group: false,
+            mentions_bot: false,
+        }]]);
         let created = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let f = EchoFactory {
             created: created.clone(),
@@ -452,29 +589,26 @@ mod tests {
     async fn dead_session_is_dropped_and_respawned() {
         // Two polls, each delivering one message to the same chat. First ask
         // errors (session removed); second poll respawns + succeeds.
-        let t = MockTransport {
-            batches: Mutex::new(vec![
-                vec![Incoming {
-                    update_id: 2,
-                    chat_id: 7,
-                    from_user_id: 111,
-                    text: "b".into(),
+        let t = MockTransport::new(vec![
+            vec![Incoming {
+                update_id: 2,
+                chat_id: 7,
+                from_user_id: 111,
+                text: "b".into(),
 
-                    is_group: false,
-                    mentions_bot: false,
-                }],
-                vec![Incoming {
-                    update_id: 1,
-                    chat_id: 7,
-                    from_user_id: 111,
-                    text: "a".into(),
+                is_group: false,
+                mentions_bot: false,
+            }],
+            vec![Incoming {
+                update_id: 1,
+                chat_id: 7,
+                from_user_id: 111,
+                text: "a".into(),
 
-                    is_group: false,
-                    mentions_bot: false,
-                }],
-            ]),
-            sent: Mutex::new(vec![]),
-        };
+                is_group: false,
+                mentions_bot: false,
+            }],
+        ]);
         let created = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let f = FlakyFactory {
             created: created.clone(),
@@ -497,29 +631,26 @@ mod tests {
 
     #[tokio::test]
     async fn two_messages_same_chat_reuse_one_session() {
-        let t = MockTransport {
-            batches: Mutex::new(vec![vec![
-                Incoming {
-                    update_id: 1,
-                    chat_id: 7,
-                    from_user_id: 111,
-                    text: "a".into(),
+        let t = MockTransport::new(vec![vec![
+            Incoming {
+                update_id: 1,
+                chat_id: 7,
+                from_user_id: 111,
+                text: "a".into(),
 
-                    is_group: false,
-                    mentions_bot: false,
-                },
-                Incoming {
-                    update_id: 2,
-                    chat_id: 7,
-                    from_user_id: 111,
-                    text: "b".into(),
+                is_group: false,
+                mentions_bot: false,
+            },
+            Incoming {
+                update_id: 2,
+                chat_id: 7,
+                from_user_id: 111,
+                text: "b".into(),
 
-                    is_group: false,
-                    mentions_bot: false,
-                },
-            ]]),
-            sent: Mutex::new(vec![]),
-        };
+                is_group: false,
+                mentions_bot: false,
+            },
+        ]]);
         let created = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let f = EchoFactory {
             created: created.clone(),
@@ -567,10 +698,7 @@ mod tests {
     async fn group_mention_serves_via_team_session() {
         let tmp = TempDir::new().unwrap();
         let log = tmp.path().join("chat.jsonl");
-        let t = MockTransport {
-            batches: Mutex::new(vec![vec![group_msg(1, 111, "@bot hi", true)]]),
-            sent: Mutex::new(vec![]),
-        };
+        let t = MockTransport::new(vec![vec![group_msg(1, 111, "@bot hi", true)]]);
         let gcreated = ctr();
         let gf = EchoFactory {
             created: gcreated.clone(),
@@ -599,10 +727,7 @@ mod tests {
     async fn group_non_mention_logs_peer_and_does_not_reply() {
         let tmp = TempDir::new().unwrap();
         let log = tmp.path().join("teams/squad/chat.jsonl"); // parent auto-created
-        let t = MockTransport {
-            batches: Mutex::new(vec![vec![group_msg(1, 111, "hi team", false)]]),
-            sent: Mutex::new(vec![]),
-        };
+        let t = MockTransport::new(vec![vec![group_msg(1, 111, "hi team", false)]]);
         let gcreated = ctr();
         let gf = EchoFactory {
             created: gcreated.clone(),
@@ -626,15 +751,108 @@ mod tests {
 
     #[tokio::test]
     async fn group_message_without_binding_is_ignored() {
-        let t = MockTransport {
-            batches: Mutex::new(vec![vec![group_msg(1, 111, "@bot hi", true)]]),
-            sent: Mutex::new(vec![]),
-        };
+        let t = MockTransport::new(vec![vec![group_msg(1, 111, "@bot hi", true)]]);
         let dmf = EchoFactory { created: ctr() };
         // group = None → group messages ignored even when allow-listed + mention.
         run_bridge(&t, &dmf, None, &group_cfg(&[111], true), Some(1))
             .await
             .unwrap();
         assert!(t.sent.lock().unwrap().is_empty(), "no binding ⇒ ignored");
+    }
+
+    // ── Streaming: send placeholder, edit in place (PR streaming) ────────────
+
+    /// A session that streams a growing reply, then returns the full text.
+    struct StreamSession;
+    #[async_trait]
+    impl AgentSession for StreamSession {
+        async fn ask(&mut self, text: &str) -> Result<String, ConnectError> {
+            Ok(format!("echo: {text}"))
+        }
+        async fn ask_streamed(
+            &mut self,
+            text: &str,
+            sink: &mut dyn ReplyStream,
+        ) -> Result<String, ConnectError> {
+            let full = format!("echo: {text}");
+            sink.push("e").await; // first token → placeholder send
+            sink.push(&full).await; // more (debounced by the 1s interval)
+            Ok(full)
+        }
+    }
+    struct StreamFactory;
+    #[async_trait]
+    impl SessionFactory for StreamFactory {
+        async fn create(&self) -> Result<Box<dyn AgentSession>, ConnectError> {
+            Ok(Box::new(StreamSession))
+        }
+    }
+
+    #[tokio::test]
+    async fn platform_stream_sends_placeholder_then_edits_in_place() {
+        let t = MockTransport::new(vec![]);
+        let mut s = PlatformStream::new(&t, 42);
+        s.min_interval = std::time::Duration::ZERO; // edit on every push (deterministic)
+        s.push("ab").await; // first non-empty → send placeholder
+        s.push("abcd").await; // → edit
+        s.push("abcdef").await; // → edit
+        s.finish("abcdef").await; // identical to last → no extra edit
+        assert_eq!(t.sent.lock().unwrap().as_slice(), &[(42, "ab".to_string())]);
+        let edited = t.edited.lock().unwrap();
+        assert_eq!(edited.len(), 2);
+        assert_eq!(edited[0].2, "abcd");
+        assert_eq!(edited[1].2, "abcdef");
+    }
+
+    #[tokio::test]
+    async fn platform_stream_no_tokens_sends_once() {
+        let t = MockTransport::new(vec![]);
+        let mut s = PlatformStream::new(&t, 7);
+        s.finish("done").await; // nothing streamed → single send, no edits
+        assert_eq!(
+            t.sent.lock().unwrap().as_slice(),
+            &[(7, "done".to_string())]
+        );
+        assert!(t.edited.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn platform_stream_skips_blank_pushes() {
+        let t = MockTransport::new(vec![]);
+        let mut s = PlatformStream::new(&t, 1);
+        s.push("   ").await; // whitespace-only → no message yet
+        assert!(t.sent.lock().unwrap().is_empty());
+        s.finish("real").await;
+        assert_eq!(
+            t.sent.lock().unwrap().as_slice(),
+            &[(1, "real".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_session_sends_placeholder_and_final_edit() {
+        let t = MockTransport::new(vec![vec![Incoming {
+            update_id: 1,
+            chat_id: 5,
+            from_user_id: 111,
+            text: "hi".into(),
+            is_group: false,
+            mentions_bot: false,
+        }]]);
+        let f = StreamFactory;
+        run_bridge(&t, &f, None, &cfg(&[111]), Some(1))
+            .await
+            .unwrap();
+        // Placeholder "e" sent; the complete reply lands via the final edit
+        // (the intermediate edit is skipped by the 1s debounce — pushes are
+        // microseconds apart).
+        assert_eq!(t.sent.lock().unwrap().as_slice(), &[(5, "e".to_string())]);
+        let edited = t.edited.lock().unwrap();
+        assert!(!edited.is_empty(), "final edit fired");
+        assert_eq!(
+            edited.last().unwrap().2,
+            "echo: hi",
+            "final edit shows the full reply"
+        );
     }
 }

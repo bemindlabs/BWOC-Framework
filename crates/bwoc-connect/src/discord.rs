@@ -72,35 +72,60 @@ impl Transport for DiscordTransport {
         Ok(out)
     }
 
-    async fn send(&self, chat_id: i64, text: &str) -> Result<(), ConnectError> {
+    async fn send(&self, chat_id: i64, text: &str) -> Result<i64, ConnectError> {
         let url = format!("{REST_BASE}/channels/{chat_id}/messages");
-        let resp = self
+        let req = self
             .http
             .post(&url)
             .header("Authorization", format!("Bot {}", self.token))
-            .json(&json!({ "content": text }))
-            .send()
-            .await
-            .map_err(|e| ConnectError::Transport(format!("createMessage: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            // Discord returns a JSON error body (missing perms, invalid form,
-            // rate limit, …) — include it (capped, so a huge/HTML page can't
-            // bloat the error) so failures are diagnosable.
-            let body: String = resp
-                .text()
-                .await
-                .unwrap_or_default()
-                .trim()
-                .chars()
-                .take(300)
-                .collect();
-            return Err(ConnectError::Transport(format!(
-                "createMessage HTTP {status}: {body}"
-            )));
-        }
-        Ok(())
+            .json(&json!({ "content": text }));
+        let body = send_message_request(req, "createMessage").await?;
+        // Discord ids are snowflakes sent as strings; they fit in i64.
+        body.get("id")
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse::<i64>().ok())
+            .ok_or_else(|| ConnectError::Transport("createMessage: no message id".into()))
     }
+
+    async fn edit(&self, chat_id: i64, message_id: i64, text: &str) -> Result<(), ConnectError> {
+        let url = format!("{REST_BASE}/channels/{chat_id}/messages/{message_id}");
+        let req = self
+            .http
+            .patch(&url)
+            .header("Authorization", format!("Bot {}", self.token))
+            .json(&json!({ "content": text }));
+        send_message_request(req, "editMessage").await.map(|_| ())
+    }
+}
+
+/// Execute a create/edit-message request, returning the decoded JSON body. On a
+/// non-2xx, surfaces Discord's JSON error body (capped so a huge/HTML page can't
+/// bloat the error).
+async fn send_message_request(
+    req: reqwest::RequestBuilder,
+    what: &str,
+) -> Result<Value, ConnectError> {
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| ConnectError::Transport(format!("{what}: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body: String = resp
+            .text()
+            .await
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            .take(300)
+            .collect();
+        return Err(ConnectError::Transport(format!(
+            "{what} HTTP {status}: {body}"
+        )));
+    }
+    resp.json::<Value>()
+        .await
+        .map_err(|e| ConnectError::Transport(format!("{what} decode: {e}")))
 }
 
 /// Reconnect loop: run one gateway session; on error/disconnect, wait and
