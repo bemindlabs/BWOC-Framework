@@ -322,7 +322,9 @@ struct PlatformStream<'a> {
     message_id: Option<i64>,
     /// Last text actually pushed to the platform (skip identical edits).
     last_text: String,
-    last_edit: Option<tokio::time::Instant>,
+    /// When the last platform call was *attempted* (success or failure). Gates
+    /// every call — so a failing send/edit can't be retried on each token.
+    last_attempt: Option<tokio::time::Instant>,
     min_interval: std::time::Duration,
 }
 
@@ -333,7 +335,7 @@ impl<'a> PlatformStream<'a> {
             chat_id,
             message_id: None,
             last_text: String::new(),
-            last_edit: None,
+            last_attempt: None,
             min_interval: EDIT_INTERVAL,
         }
     }
@@ -366,30 +368,40 @@ impl ReplyStream for PlatformStream<'_> {
         if accumulated.trim().is_empty() {
             return; // nothing worth a message yet
         }
+        // Debounce EVERY platform call (the initial send included), keyed on the
+        // last attempt regardless of outcome — so a failing send/edit waits the
+        // interval instead of being retried on every single token. The first
+        // token (no prior attempt) sends immediately; `finish` still guarantees
+        // the complete text at turn end.
+        let now = tokio::time::Instant::now();
+        if self
+            .last_attempt
+            .is_some_and(|t| now.duration_since(t) < self.min_interval)
+        {
+            return;
+        }
         match self.message_id {
-            None => match self.transport.send(self.chat_id, accumulated).await {
-                Ok(id) => {
-                    self.message_id = Some(id);
-                    self.last_text = accumulated.to_string();
-                    self.last_edit = Some(tokio::time::Instant::now());
+            None => {
+                self.last_attempt = Some(now);
+                match self.transport.send(self.chat_id, accumulated).await {
+                    Ok(id) => {
+                        self.message_id = Some(id);
+                        self.last_text = accumulated.to_string();
+                    }
+                    Err(e) => eprintln!("[bwoc-connect] stream send failed: {e}"),
                 }
-                Err(e) => eprintln!("[bwoc-connect] stream send failed: {e}"),
-            },
+            }
             Some(id) => {
-                let now = tokio::time::Instant::now();
-                let due = self
-                    .last_edit
-                    .is_none_or(|t| now.duration_since(t) >= self.min_interval);
-                if due
-                    && accumulated != self.last_text
-                    && self
+                if accumulated != self.last_text {
+                    self.last_attempt = Some(now);
+                    if self
                         .transport
                         .edit(self.chat_id, id, accumulated)
                         .await
                         .is_ok()
-                {
-                    self.last_text = accumulated.to_string();
-                    self.last_edit = Some(now);
+                    {
+                        self.last_text = accumulated.to_string();
+                    }
                 }
             }
         }
