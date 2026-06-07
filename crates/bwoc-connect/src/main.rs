@@ -29,13 +29,14 @@ async fn run() -> Result<(), ConnectError> {
     let (platform, token_env) = match args.get(1).map(String::as_str) {
         Some("telegram") => ("telegram", "TELEGRAM_BOT_TOKEN"),
         Some("discord") => ("discord", "DISCORD_BOT_TOKEN"),
+        Some("line") => ("line", "LINE_CHANNEL_ACCESS_TOKEN"),
         Some(other) => {
             return Err(ConnectError::Config(format!(
-                "unknown connector '{other}' (supported: telegram, discord)"
+                "unknown connector '{other}' (supported: telegram, discord, line)"
             )));
         }
         None => {
-            eprintln!("usage: bwoc-connect <telegram|discord> --agent <dir> [--max-polls N]");
+            eprintln!("usage: bwoc-connect <telegram|discord|line> --agent <dir> [--max-polls N]");
             return Err(ConnectError::Config("missing connector".into()));
         }
     };
@@ -52,12 +53,28 @@ async fn run() -> Result<(), ConnectError> {
         .join(format!("{platform}.toml"));
     let raw = std::fs::read_to_string(&cfg_path)
         .map_err(|e| ConnectError::Config(format!("read {}: {e}", cfg_path.display())))?;
-    let cfg = ConnectorConfig::parse(&raw)?;
+    let mut cfg = ConnectorConfig::parse(&raw)?;
     if !cfg.enabled {
         return Err(ConnectError::Config(format!(
             "connector disabled (set enabled = true in {})",
             cfg_path.display()
         )));
+    }
+    // LINE ids are strings — fold its `[line].allow_user_ids` into the numeric
+    // `allow_from` (same hash the transport applies) so the shared allow-list
+    // gate works unchanged.
+    if platform == "line" {
+        let line_cfg = cfg.line.as_ref().ok_or_else(|| {
+            ConnectError::Config(format!(
+                "line connector needs a [line] block in {}",
+                cfg_path.display()
+            ))
+        })?;
+        cfg.allow_from = line_cfg
+            .allow_user_ids
+            .iter()
+            .map(|u| bwoc_connect::line::hash_id(u))
+            .collect();
     }
     if cfg.allow_from.is_empty() {
         eprintln!(
@@ -78,6 +95,17 @@ async fn run() -> Result<(), ConnectError> {
             Box::new(t)
         }
         "discord" => Box::new(DiscordTransport::connect(&token).await?),
+        "line" => {
+            // The channel secret (webhook signature) is separate from the access
+            // token; env-only (it's a server credential, like the headless path).
+            let secret = std::env::var("LINE_CHANNEL_SECRET")
+                .map_err(|_| ConnectError::NoToken("LINE_CHANNEL_SECRET".into()))?;
+            let lc = cfg.line.as_ref().expect("line block validated above");
+            Box::new(
+                bwoc_connect::line::LineTransport::start(&token, &secret, &lc.bind, &lc.path)
+                    .await?,
+            )
+        }
         _ => unreachable!("platform validated above"),
     };
     let dm_factory = HarnessSessionFactory::new(&agent_dir)?;
@@ -101,8 +129,12 @@ async fn run() -> Result<(), ConnectError> {
         Some(log) => Some(HarnessSessionFactory::new(&agent_dir)?.with_team_chat(log.clone())),
         None => None,
     };
-    // Short platform tag for logged-peer `from` fields (tg:<id> / dc:<id>).
-    let peer_prefix = if platform == "discord" { "dc" } else { "tg" };
+    // Short platform tag for logged-peer `from` fields (tg:/dc:/ln:<id>).
+    let peer_prefix = match platform {
+        "discord" => "dc",
+        "line" => "ln",
+        _ => "tg",
+    };
     let group_bridge = match (group_factory.as_ref(), group_chat_log.as_ref()) {
         (Some(f), Some(log)) => Some(GroupBridge {
             factory: f,

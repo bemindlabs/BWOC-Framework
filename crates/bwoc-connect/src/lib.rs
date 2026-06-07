@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 pub mod discord;
+pub mod line;
 pub mod session;
 pub mod telegram;
 
@@ -71,6 +72,33 @@ pub struct TelegramConfig {
     /// in PR1's DM-only path.
     #[serde(default)]
     pub group: Option<GroupConfig>,
+    /// LINE-only block (webhook bind + the LINE user-id allow-list). LINE ids
+    /// are strings, so its allow-list lives here and `main` hashes it into
+    /// `allow_from` (see `line::hash_id`).
+    #[serde(default)]
+    pub line: Option<LineConfig>,
+}
+
+/// LINE connector config (`connectors/line.toml`, under `[line]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LineConfig {
+    /// LINE user ids (`U…`) permitted to reach the agent. **Empty ⇒ nobody.**
+    #[serde(default)]
+    pub allow_user_ids: Vec<String>,
+    /// Address the inbound webhook server binds (put an HTTPS proxy in front).
+    #[serde(default = "default_line_bind")]
+    pub bind: String,
+    /// Webhook path registered with the LINE channel.
+    #[serde(default = "default_line_path")]
+    pub path: String,
+}
+
+fn default_line_bind() -> String {
+    "0.0.0.0:8080".to_string()
+}
+
+fn default_line_path() -> String {
+    "/webhook".to_string()
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -137,6 +165,14 @@ pub trait Transport: Send + Sync {
     /// in place). Editing to identical text should be treated as a no-op error
     /// by the impl, not propagated.
     async fn edit(&self, chat_id: i64, message_id: i64, text: &str) -> Result<(), ConnectError>;
+
+    /// Whether this transport can edit a sent message — i.e. supports streaming
+    /// via send-then-edit. Default `true` (Telegram/Discord); platforms with no
+    /// edit API (LINE) override to `false`, and the bridge then sends the reply
+    /// once on turn end instead of streaming.
+    fn supports_edit(&self) -> bool {
+        true
+    }
 }
 
 /// Sink the agent session pushes the **accumulated** reply to as tokens arrive,
@@ -326,6 +362,9 @@ struct PlatformStream<'a> {
     /// every call — so a failing send/edit can't be retried on each token.
     last_attempt: Option<tokio::time::Instant>,
     min_interval: std::time::Duration,
+    /// Whether the transport can edit — if not, stream nothing and let `finish`
+    /// send the whole reply once (LINE).
+    can_edit: bool,
 }
 
 impl<'a> PlatformStream<'a> {
@@ -337,6 +376,7 @@ impl<'a> PlatformStream<'a> {
             last_text: String::new(),
             last_attempt: None,
             min_interval: EDIT_INTERVAL,
+            can_edit: transport.supports_edit(),
         }
     }
 
@@ -365,8 +405,9 @@ impl<'a> PlatformStream<'a> {
 #[async_trait]
 impl ReplyStream for PlatformStream<'_> {
     async fn push(&mut self, accumulated: &str) {
-        if accumulated.trim().is_empty() {
-            return; // nothing worth a message yet
+        if !self.can_edit || accumulated.trim().is_empty() {
+            // No edit API (or nothing yet) ⇒ don't stream; `finish` sends once.
+            return;
         }
         // Debounce EVERY platform call (the initial send included), keyed on the
         // last attempt regardless of outcome — so a failing send/edit waits the
@@ -516,6 +557,7 @@ mod tests {
             enabled: true,
             allow_from: allow.to_vec(),
             group: None,
+            line: None,
         }
     }
 
@@ -688,6 +730,7 @@ mod tests {
                 team: Some("squad".into()),
                 mention_only,
             }),
+            line: None,
         }
     }
 
@@ -866,5 +909,48 @@ mod tests {
             "echo: hi",
             "final edit shows the full reply"
         );
+    }
+
+    /// A transport that can't edit (LINE) — streaming must collapse to one send.
+    struct NoEditTransport {
+        sent: Mutex<Vec<(i64, String)>>,
+        edited: Mutex<Vec<(i64, i64, String)>>,
+    }
+    #[async_trait]
+    impl Transport for NoEditTransport {
+        async fn poll(&self, _offset: i64) -> Result<Vec<Incoming>, ConnectError> {
+            Ok(vec![])
+        }
+        async fn send(&self, chat_id: i64, text: &str) -> Result<i64, ConnectError> {
+            self.sent.lock().unwrap().push((chat_id, text.to_string()));
+            Ok(1)
+        }
+        async fn edit(&self, chat_id: i64, mid: i64, text: &str) -> Result<(), ConnectError> {
+            self.edited
+                .lock()
+                .unwrap()
+                .push((chat_id, mid, text.to_string()));
+            Ok(())
+        }
+        fn supports_edit(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn non_editing_transport_sends_once_no_edits() {
+        let t = NoEditTransport {
+            sent: Mutex::new(vec![]),
+            edited: Mutex::new(vec![]),
+        };
+        let mut s = PlatformStream::new(&t, 9);
+        s.push("partial").await; // can't edit → ignored
+        s.push("partial more").await; // ignored
+        s.finish("partial more done").await; // single send of the full reply
+        assert_eq!(
+            t.sent.lock().unwrap().as_slice(),
+            &[(9, "partial more done".to_string())]
+        );
+        assert!(t.edited.lock().unwrap().is_empty(), "never edits");
     }
 }

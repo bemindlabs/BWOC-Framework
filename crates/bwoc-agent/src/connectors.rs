@@ -20,6 +20,7 @@ const RESPAWN_BACKOFF: Duration = Duration::from_secs(5);
 const KNOWN: &[(&str, &str)] = &[
     ("telegram", "connectors/telegram.toml"),
     ("discord", "connectors/discord.toml"),
+    ("line", "connectors/line.toml"),
 ];
 
 pub struct ConnectorSupervisor {
