@@ -78,6 +78,21 @@ impl TelegramTransport {
             .await
             .map_err(|e| ConnectError::Transport(format!("{method} decode: {e}")))
     }
+
+    /// POST a JSON body to a Bot API method, returning the decoded response.
+    async fn post_json(&self, method: &str, body: Value) -> Result<Value, ConnectError> {
+        let url = format!("{}/{method}", self.api_base);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ConnectError::Transport(format!("{method}: {e}")))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| ConnectError::Transport(format!("{method} decode: {e}")))
+    }
 }
 
 /// Parse a `getUpdates` JSON body into [`Incoming`] messages. Keeps text
@@ -182,22 +197,49 @@ impl Transport for TelegramTransport {
         Ok(parse_updates(&body, self.bot_username.as_deref()))
     }
 
-    async fn send(&self, chat_id: i64, text: &str) -> Result<(), ConnectError> {
-        let url = format!("{}/sendMessage", self.api_base);
-        let resp = self
-            .client
-            .post(&url)
-            .json(&serde_json::json!({ "chat_id": chat_id, "text": text }))
-            .send()
-            .await
-            .map_err(|e| ConnectError::Transport(format!("sendMessage: {e}")))?;
-        if !resp.status().is_success() {
+    async fn send(&self, chat_id: i64, text: &str) -> Result<i64, ConnectError> {
+        let body = self
+            .post_json(
+                "sendMessage",
+                serde_json::json!({ "chat_id": chat_id, "text": text }),
+            )
+            .await?;
+        if body.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err(ConnectError::Transport(format!(
-                "sendMessage HTTP {}",
-                resp.status()
+                "sendMessage not ok: {}",
+                body.get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
             )));
         }
-        Ok(())
+        body.get("result")
+            .and_then(|r| r.get("message_id"))
+            .and_then(Value::as_i64)
+            .ok_or_else(|| ConnectError::Transport("sendMessage: no message_id".into()))
+    }
+
+    async fn edit(&self, chat_id: i64, message_id: i64, text: &str) -> Result<(), ConnectError> {
+        let body = self
+            .post_json(
+                "editMessageText",
+                serde_json::json!({ "chat_id": chat_id, "message_id": message_id, "text": text }),
+            )
+            .await?;
+        if body.get("ok").and_then(Value::as_bool) == Some(true) {
+            return Ok(());
+        }
+        // Identical text ⇒ Telegram returns "message is not modified" — a no-op,
+        // not a failure (the streamed text simply hasn't changed).
+        let desc = body
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if desc.contains("not modified") {
+            return Ok(());
+        }
+        Err(ConnectError::Transport(format!(
+            "editMessageText not ok: {desc}"
+        )))
     }
 }
 

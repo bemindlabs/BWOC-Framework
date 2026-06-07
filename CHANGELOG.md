@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Chat connectors — reply streaming (in-place edits).** Telegram + Discord replies now stream: the bridge **sends** a message on the first token and **edits it in place** as the agent's reply grows, debounced to 1 edit/sec (clear of Telegram's ~1/s and Discord's ~5/5s limits), with a guaranteed final edit showing the complete text. `Transport::send` now returns the message id and gains `edit`; `AgentSession::ask_streamed` relays `chat_proto` `Token` deltas (the default still does a single send, so non-streaming sessions are unchanged). A new `PlatformStream` carries the send-then-debounced-edit logic, unit-tested (placeholder→edits, no-tokens→single-send, blank-skip, end-to-end via the bridge). No new deps.
+
+
 ## [v2026.6.7-0] — 2026-06-07 — 2.25.0
 
 ### Added
