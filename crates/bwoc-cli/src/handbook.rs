@@ -165,6 +165,42 @@ native พร้อม model fallback) และจำข้าม session ผ�
 จึงใช้ .bwoc/harness-policy.toml แบบ allow-list",
     },
     Section {
+        name: "connectors",
+        title: "Chat connectors",
+        en: "\
+Reach an agent from a chat app — Telegram, Discord, or LINE — via bwoc-connect,
+spawned + supervised by the agent daemon. Per agent, add connectors/<platform>.toml:
+
+  # agents/agent-x/connectors/telegram.toml
+  enabled    = true
+  allow_from = [123456789]    # closed by default: empty = nobody
+
+  bwoc-agent --serve          # (in the agent dir) spawns + keeps the bridge alive
+  bwoc status                 # shows a Connectors line per running bridge
+
+Tokens resolve from the OS keyring (macOS/Windows) or an env var:
+TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN / LINE_CHANNEL_ACCESS_TOKEN (+ _SECRET).
+A [group] team = \"<id>\" binding bridges a room to a Saṅgha team's shared chat.
+Telegram/Discord stream the reply live (edit-in-place); LINE sends it once.
+Full reference: docs/en/CONNECTORS.en.md.",
+        th: "\
+คุยกับ agent จากแอปแชต — Telegram, Discord หรือ LINE — ผ่าน bwoc-connect ที่
+daemon ของ agent เป็นคน spawn + ดูแลให้ ต่อ agent ใส่ connectors/<platform>.toml:
+
+  # agents/agent-x/connectors/telegram.toml
+  enabled    = true
+  allow_from = [123456789]    # ปิดโดยปริยาย: ว่าง = ไม่มีใครเข้าถึงได้
+
+  bwoc-agent --serve          # (ในโฟลเดอร์ agent) spawn + คอยเลี้ยง bridge
+  bwoc status                 # แสดงบรรทัด Connectors ต่อ bridge ที่รันอยู่
+
+Token มาจาก OS keyring (macOS/Windows) หรือ env var:
+TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN / LINE_CHANNEL_ACCESS_TOKEN (+ _SECRET)
+ตั้ง [group] team = \"<id>\" เพื่อผูกห้องกลุ่มเข้ากับ chat ร่วมของทีม Saṅgha
+Telegram/Discord สตรีมคำตอบสด (แก้ข้อความเดิม); LINE ส่งครั้งเดียว
+อ้างอิงเต็ม: docs/th/CONNECTORS.th.md",
+    },
+    Section {
         name: "release",
         title: "Releasing & updates",
         en: "\
