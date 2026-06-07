@@ -348,7 +348,21 @@ async fn webhook(
     let Ok(json) = serde_json::from_slice::<Value>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
-    for ev in parse_webhook(&json) {
+    let events = parse_webhook(&json);
+    if events.is_empty() {
+        return StatusCode::OK;
+    }
+    // Reserve a slot for EVERY event up front (non-blocking). This keeps the
+    // webhook from awaiting the bridge — a slow `poll`/full queue would stall the
+    // HTTP response past LINE's timeout — AND makes a multi-event payload
+    // all-or-nothing: a partial enqueue followed by a 503 would make LINE retry
+    // the whole payload and duplicate the already-queued events. If the queue is
+    // too full to hold the batch, nothing is enqueued and LINE retries later.
+    let permits = match st.tx.try_reserve_many(events.len()) {
+        Ok(p) => p,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE,
+    };
+    for (permit, ev) in permits.zip(events) {
         let chat_id = hash_id(&ev.source_id);
         st.replies.lock().unwrap().insert(
             chat_id,
@@ -358,21 +372,14 @@ async fn webhook(
                 received: Instant::now(),
             },
         );
-        let inc = Incoming {
+        permit.send(Incoming {
             update_id: st.counter.fetch_add(1, Ordering::SeqCst),
             chat_id,
             from_user_id: hash_id(&ev.user_id),
             text: ev.text,
             is_group: ev.is_group,
             mentions_bot: ev.mentions_bot,
-        };
-        // Non-blocking: never `await` the bridge from the webhook, or a slow
-        // `poll`/full queue would stall the HTTP response past LINE's timeout
-        // (→ retries + duplicate deliveries). A full queue means the bridge is
-        // badly backed up — return 503 so LINE retries later rather than block.
-        if st.tx.try_send(inc).is_err() {
-            return StatusCode::SERVICE_UNAVAILABLE;
-        }
+        });
     }
     StatusCode::OK
 }
@@ -380,10 +387,18 @@ async fn webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Incoming;
+    use axum::body::Bytes;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use hmac::{Hmac, Mac};
     use serde_json::json;
     use sha2::Sha256;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicI64;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc;
 
     fn sign(secret: &[u8], body: &[u8]) -> String {
         let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
@@ -468,5 +483,73 @@ mod tests {
             ]
         });
         assert!(parse_webhook(&body).is_empty());
+    }
+
+    // ── Webhook handler: signature gate + all-or-nothing enqueue ─────────────
+
+    /// Drive the real `webhook` handler with a correctly-signed body and a
+    /// channel of capacity `cap`; return its status + the receiver to inspect.
+    async fn call_webhook(
+        secret: &str,
+        body: &str,
+        cap: usize,
+    ) -> (StatusCode, mpsc::Receiver<Incoming>) {
+        let (tx, rx) = mpsc::channel(cap);
+        let state = Arc::new(WebhookState {
+            secret: secret.to_string(),
+            tx,
+            replies: Arc::new(Mutex::new(HashMap::new())),
+            counter: AtomicI64::new(1),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-line-signature",
+            HeaderValue::from_str(&sign(secret.as_bytes(), body.as_bytes())).unwrap(),
+        );
+        let code = webhook(State(state), headers, Bytes::from(body.to_string())).await;
+        (code, rx)
+    }
+
+    const TWO_EVENTS: &str = r#"{"events":[
+        {"type":"message","replyToken":"r1","source":{"type":"user","userId":"Ua"},"message":{"type":"text","text":"one"}},
+        {"type":"message","replyToken":"r2","source":{"type":"user","userId":"Ub"},"message":{"type":"text","text":"two"}}
+    ]}"#;
+
+    #[tokio::test]
+    async fn webhook_rejects_bad_signature() {
+        let (tx, _rx) = mpsc::channel(4);
+        let state = Arc::new(WebhookState {
+            secret: "sec".into(),
+            tx,
+            replies: Arc::new(Mutex::new(HashMap::new())),
+            counter: AtomicI64::new(1),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert("x-line-signature", HeaderValue::from_static("not-the-sig"));
+        let code = webhook(
+            State(state),
+            headers,
+            Bytes::from_static(b"{\"events\":[]}"),
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn webhook_enqueues_a_valid_batch() {
+        let (code, mut rx) = call_webhook("sec", TWO_EVENTS, 8).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(rx.try_recv().unwrap().text, "one");
+        assert_eq!(rx.try_recv().unwrap().text, "two");
+        assert!(rx.try_recv().is_err(), "exactly two enqueued");
+    }
+
+    #[tokio::test]
+    async fn webhook_503_when_queue_cant_hold_batch_enqueues_nothing() {
+        // Capacity 1 can't hold the 2-event batch → all-or-nothing: 503, and
+        // NOTHING enqueued (a partial enqueue + 503 would dup on LINE's retry).
+        let (code, mut rx) = call_webhook("sec", TWO_EVENTS, 1).await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(rx.try_recv().is_err(), "no partial enqueue");
     }
 }
