@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ที่ active:** Phase 3 — *วยะ + Interconnect* — **DoD บรรลุแล้ว** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya ship ครบ 2026-05-23) Trust v2 signed envelopes ship ไปแล้ว (crate `bwoc-signing`) และ reference implementation ของ Tier 2 memory (`bwoc-deep-memory`) ก็ ship แล้วเช่นกัน — ปิดรายการ Phase 3 ที่ยังเลื่อนออกรายการสุดท้าย DoD ของ Phase 1 v2.0 และ Phase 2 ก็บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
+**Phase ที่ active:** Phase 3 — *วยะ + Interconnect* — **DoD บรรลุแล้ว** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya ship ครบ 2026-05-23) Trust v2 signed envelopes ship ไปแล้ว (crate `bwoc-signing`) และ reference implementation ของ Tier 2 memory (`bwoc-deep-memory`) ก็ ship แล้วเช่นกัน — ปิดรายการ Phase 3 ที่ยังเลื่อนออกรายการสุดท้าย DoD ของ Phase 1 v2.0 และ Phase 2 ก็บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2` Phase 4 (Reference Agent + Fleet) ขับเคลื่อนด้วย adoption — บรรลุจากภายนอก รอการยืนยัน **Phase 5 — *สังวร* (trust-boundary & sandbox hardening)** ให้สัตยาบัน 2026-06-07 โดย council ของ tianting; DoD เปิดอยู่
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -155,6 +155,47 @@ DoD ครบทั้งสองครึ่งแล้ว: *ประสา�
 - Fleet dashboard — Aparihāniya-dhamma 7 governance ใช้กับการติดตั้ง multi-agent จริง **Spec ลง 2026-05-23** ([`FLEET-GOVERNANCE.th.md`](FLEET-GOVERNANCE.th.md)); การยืนยันกับ fleet จริงรอ
 - ศัพท์ BWOC (Yoniso manasikāra checks, Mattaññutā caps, Sīla baselines, Kalyāṇamitta trust scores) ปรากฏใน codebase ที่ไม่มีความสัมพันธ์กับ project นี้ (success ที่ 3 ปี)
 - รูปแบบ fleet ระดับ production ข้าม vendor ใช้ในองค์กรมากกว่าหนึ่งแห่ง
+
+---
+
+## Phase 5 — สังวร (Trust-Boundary & Sandbox Hardening)
+
+**นิยามของเสร็จ:** ingress จาก chat-connector ที่ไม่น่าเชื่อถือต้องไม่สามารถสั่งการกระทำที่มีผล (effectful) หรือรั่วข้อมูลออกนอกขอบเขต policy ที่บังคับไว้ได้
+
+**ทำไมตอนนี้:** chat-connector ของ Phase 3 (Telegram / Discord / LINE, streaming) เปิดพื้นผิว ingress ที่ *ไม่ผ่านการพิสูจน์ตัวตนและเป็นปฏิปักษ์* เข้าสู่ runtime `bwoc-harness` ที่ self-hosted โดยตรง — เวกเตอร์ Kāma-taṇhā (prompt injection) และ Vibhava-taṇhā (การกระทำทำลาย) ใน [`THREAT-MODEL.th.md`](../../modules/agent-template/docs/th/THREAT-MODEL.th.md) มีจุดเข้าที่ทำงานได้จริงแล้ว *สังวร* (อินทรียสังวร — การสำรวมระวังทวารผัสสะ) คือธรรมประจำ phase: ความสำรวมที่ใช้ ณ ขอบเขตที่ input ไม่น่าเชื่อถืออาจกลายเป็นผลกระทำ
+
+### สัญญา (contract) ที่ให้สัตยาบันแล้ว
+
+ขอบเขตการแยกตัว (isolation) อยู่ที่ **การทำงานของ tool ที่มีผล (tool-effect) ไม่ใช่ที่การรับข้อความ** — ข้อความไม่น่าเชื่อถือที่ถึง LLM เป็นปัญหา policy/injection (ไม่มี syscall ทำงาน); สิ่งที่ต้อง contain คือ *tool ที่มีผล* ใด ๆ ที่แผนซึ่งมาจาก input ไม่น่าเชื่อถือสั่งให้ทำงาน
+
+- **หน่วยการแยกตัว:** OS process + capability gate ใน runtime แบบเป็นชั้น (gate = policy, process = การบังคับใช้) ไม่ใช้ container (ทำลายคุณสมบัติ self-hosted บน Unix เครื่องใดก็ได้; เก็บไว้เป็น backend แบบเสียบเพิ่มสำหรับ multi-tenant SaaS ที่เป็นปฏิปักษ์) ไม่ใช้ gate ล้วน (harness เปิด tool ที่ spawn process โดยตั้งใจ)
+- **Tenancy:** harness แบบ multi-tenant; sandbox แบบ single-tenant *ชั่วคราว* ผูกกับหนึ่ง turn ของ `(connector, conversation)` ทำลายทิ้งหลังจบ turn — ไม่มี state รั่วข้ามแชต
+- **Trust tag แพร่ taint:** artifact ที่ได้จาก input ไม่น่าเชื่อถือคง tag ไม่น่าเชื่อถือข้าม turn; capability ที่น่าเชื่อถือซึ่งรับมันเข้าไปถูก re-gate ไม่ใช่เชื่อถืออัตโนมัติ (ป้องกัน confused-deputy)
+
+### นิยามของเสร็จ — checklist gate
+
+Phase 5 ปิดได้ก็ต่อเมื่อ **ครบทั้งแปด** ผ่าน; แต่ละข้อ owner เป็นผู้รัน และ gate ด้วยการอนุมัติแผนจาก lead (ปวารณา)
+
+| # | เกณฑ์ (ทดสอบได้เชิงวัตถุวิสัย) | Owner |
+|---|---|---|
+| 1 | **ติดป้าย ingress ครบถ้วน** — ทุกข้อความ / tool-result ขาเข้าพก tag `{trusted\|untrusted}` ที่เปลี่ยนไม่ได้; fuzz พิสูจน์ว่าไม่มีเส้นทาง ingress ใดปล่อยรายการที่ไม่มีป้าย (fail-closed → untrusted) | luban |
+| 2 | **Gate ปฏิเสธโดยปริยาย** — turn ไม่น่าเชื่อถือที่เรียก tool ที่ไม่อยู่ใน whitelist หรือ tool ที่มีผล ถูกปฏิเสธ + บันทึก log; ไม่มีเส้นทางอนุญาตโดยการละเว้น | luban |
+| 3 | **การแพร่ taint** — การทดสอบ laundering (input ไม่น่าเชื่อถือ → output LLM → tool ที่มีสิทธิ์) ถูกบล็อก; artifact ที่ได้คง tag ไม่น่าเชื่อถือข้าม turn | tianting |
+| 4 | **Whitelist สะอาดจาก egress** — รายการที่ตรวจสอบแล้วซึ่งทุกรายการพิสูจน์ว่าไม่มี network egress, ไม่มี DNS, ไม่เขียน FS, ไม่มี side-channel; CI fail หากรายการใหม่ขาดการพิสูจน์ | tianting |
+| 5 | **การแยกตัวต่อ turn** — แต่ละ turn ของ `(connector, conversation)` รันใน OS process ของตัวเอง ทำลายทิ้งหลัง turn; test พิสูจน์ว่าไม่มี fd / memory / state รั่วข้าม turn | luban |
+| 6 | **rlimits contain การใช้ในทางผิด** — cap CPU / mem / fd / proc ต่อ sandbox; การทดสอบ fork-bomb + mem-bomb ถูก contain และ harness multi-tenant อยู่รอด | luban |
+| 7 | **บล็อกการ escape sandbox→harness** — ความพยายามจาก red-team ภายใน sandbox อ่านหรือแก้ harness ที่น่าเชื่อถือไม่ได้ (ไม่มี mount เขียนร่วม; IPC ผ่าน capability เท่านั้น) | tianting |
+| 8 | **ล้อมความเสี่ยงที่เลื่อน** — การไม่มี seccomp-bpf / Landlock / container / Seatbelt ถูกบันทึกเป็น known-residual พร้อมตั้งชื่อ compensating control และ grep พิสูจน์ว่าไม่มีเส้นทาง code ใดสมมติว่ามันมีอยู่ | luban (doc) → tianting (เซ็นรับรอง) |
+
+### เลื่อน (ล้อมไว้ ไม่อยู่ใน DoD)
+
+- การกรอง syscall ด้วย seccomp-bpf (Linux เท่านั้น) และ Landlock FS-jail (Linux ≥ 5.13) — เพิ่มหลัง `cfg` ใน increment ถัดไป
+- Backend sandbox แบบ container / microVM — สำหรับ multi-tenancy ของ public SaaS ที่เป็นปฏิปักษ์
+- ความเท่าเทียมของ macOS Seatbelt — knob แข็งแกร่งของ "Unix-first" จริง ๆ คือ Linux-first; macOS v1 ได้แค่ rlimits + privilege-drop, **บันทึกช่องว่างไว้ชัดเจน**
+- การให้ capability ที่มีผลใด ๆ แก่ conversation ไม่น่าเชื่อถือ — เฉพาะหลัง allowlist ต่อ cap + การอนุมัติของมนุษย์
+
+> [!note]
+> ให้สัตยาบัน 2026-06-07 โดย council ของ tianting (ประธาน: yudi; contract: luban) บันทึก charter: [`notes/2026-06-07_phase5-charter.md`](../../notes/2026-06-07_phase5-charter.md)
 
 ---
 

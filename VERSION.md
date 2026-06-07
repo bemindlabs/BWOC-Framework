@@ -4,7 +4,7 @@
 
 **Software-Version:** `2.26.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.6.4`   *(canonical here — bumped on `.md` edits)*
-**Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
+**Phase:** Phase 5 — *saṃvara* (trust-boundary & sandbox hardening), **chartered 2026-06-07** — DoD open *(Phase 3 vaya + interconnect DoD met, incl. `bwoc-harness` self-hosted runtime, Unix-first v1; Phase 4 Reference Agents + Fleet is adoption-driven)*
 **Latest release:** [`v2026.6.7-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.7-1) *(2026-06-07 — **2.26.0**; minor — chat-connector **streaming** (Telegram/Discord in-place send-then-edit) + the **LINE** connector (signature-verified inbound webhook, reply-token/push, axum). Prior: `v2026.6.7-0` 2.25.0 — keyring token resolution completing the Telegram/Discord/daemon connector subsystem)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
 **Last-Updated:** `2026-06-07T08:21:22Z`   *(UTC, ISO 8601 — stamped on every edit)*

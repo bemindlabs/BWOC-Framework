@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Trust v2 signed envelopes have since shipped (the `bwoc-signing` crate), and the Tier 2 memory reference implementation (`bwoc-deep-memory`) has since shipped too — closing the last deferred Phase 3 item. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Trust v2 signed envelopes have since shipped (the `bwoc-signing` crate), and the Tier 2 memory reference implementation (`bwoc-deep-memory`) has since shipped too — closing the last deferred Phase 3 item. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`. Phase 4 (Reference Agents + Fleet) is adoption-driven — realized externally, validation pending. **Phase 5 — *saṃvara* (trust-boundary & sandbox hardening)** chartered 2026-06-07 by the tianting council; DoD open.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -155,6 +155,47 @@ These are realized by maintainers outside the original authors using the framewo
 - Fleet dashboard — Aparihāniya-dhamma 7 governance applied to a real multi-agent installation. **Spec landed 2026-05-23** ([`FLEET-GOVERNANCE.en.md`](FLEET-GOVERNANCE.en.md)); real-fleet validation pending.
 - BWOC vocabulary (Yoniso manasikāra checks, Mattaññutā caps, Sīla baselines, Kalyāṇamitta trust scores) observed in codebases unaffiliated with this project (three-year success).
 - Cross-vendor production fleet pattern in use at more than one organization.
+
+---
+
+## Phase 5 — saṃvara (Trust-Boundary & Sandbox Hardening)
+
+**Definition of done:** untrusted chat-connector ingress cannot drive an effectful action or exfiltrate data outside an enforced policy boundary.
+
+**Why now:** Phase 3 chat-connectors (Telegram / Discord / LINE, streaming) opened an *unauthenticated, adversarial* ingress surface straight into the self-hosted `bwoc-harness` runtime — the Kāma-taṇhā (prompt injection) and Vibhava-taṇhā (destructive action) vectors of [`THREAT-MODEL.en.md`](../../modules/agent-template/docs/en/THREAT-MODEL.en.md) now have a live entry point. *Saṃvara* (indriya-saṃvara — guarding the sense-doors) is the dhamma: restraint applied at the boundary where untrusted input could become effect.
+
+### Ratified contract
+
+The isolation boundary sits at **tool-effect execution, not message ingestion** — untrusted text reaching the LLM is a policy/injection problem (no syscalls run); what needs containment is any *effectful tool* an untrusted-derived plan triggers.
+
+- **Isolation unit:** OS process + in-runtime capability gate, layered (gate = policy, process = enforcement). Not a container (breaks self-hosted-on-any-Unix; kept as a pluggable backend for hostile multi-tenant SaaS). Not a pure gate (the harness intentionally exposes process-spawning tools).
+- **Tenancy:** multi-tenant harness; single-tenant *ephemeral* sandbox scoped to one `(connector, conversation)` turn, torn down after the turn — no cross-chat state bleed.
+- **Trust tags are taint-propagating:** an artifact derived from untrusted input keeps the untrusted tag across turns; a trusted capability that ingests it is re-gated, not auto-trusted (confused-deputy defense).
+
+### Definition of Done — gate checklist
+
+Phase 5 closes only when **all eight** pass; each is owner-run and gated on lead-plan approval (Pavāraṇā).
+
+| # | Criterion (objectively testable) | Owner |
+|---|---|---|
+| 1 | **Ingress labeling total** — every inbound message / tool-result carries an immutable `{trusted\|untrusted}` tag; fuzz proves no ingress path emits an unlabeled item (fail-closed → untrusted). | luban |
+| 2 | **Default-deny gate** — an untrusted turn invoking any non-whitelisted or effectful tool is denied + logged; zero allow-by-omission paths. | luban |
+| 3 | **Taint propagation** — laundering test (untrusted input → LLM output → privileged tool) is blocked; derived artifacts retain the untrusted tag across turns. | tianting |
+| 4 | **Whitelist egress-clean** — audited list where every entry is proven to have no network egress, no DNS, no FS write, no side-channel; CI fails if a new entry lacks the proof. | tianting |
+| 5 | **Per-turn isolation** — each `(connector, conversation)` turn runs in its own OS process, torn down after the turn; test proves no shared fd / memory / state leak across turns. | luban |
+| 6 | **rlimits contain abuse** — CPU / mem / fd / proc caps applied per sandbox; fork-bomb + mem-bomb tests are contained and the multi-tenant harness survives. | luban |
+| 7 | **Sandbox→harness escape blocked** — a red-team attempt from inside a sandbox cannot read or mutate the trusted harness (no shared writable mount; IPC capability-mediated only). | tianting |
+| 8 | **Deferred risk fenced** — absence of seccomp-bpf / Landlock / container / Seatbelt is documented as known-residual with the compensating control named, and grep proves no code path assumes they exist. | luban (doc) → tianting (sign-off) |
+
+### Deferred (fenced, not in DoD)
+
+- seccomp-bpf syscall filtering (Linux-only) and Landlock FS-jail (Linux ≥ 5.13) — added behind `cfg` in a later increment.
+- Container / microVM sandbox backend — for hostile public-SaaS multi-tenancy.
+- macOS Seatbelt parity — "Unix-first" strong knobs are really Linux-first; macOS v1 gets rlimits + privilege-drop only, **gap documented explicitly**.
+- Granting untrusted conversations any effectful capability — only behind per-cap allowlist + human approval.
+
+> [!note]
+> Chartered 2026-06-07 by the tianting council (chair: yudi; contract: luban). Charter log: [`notes/2026-06-07_phase5-charter.md`](../../notes/2026-06-07_phase5-charter.md).
 
 ---
 
