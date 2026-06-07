@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 5 charter — *saṃvara* (trust-boundary & sandbox hardening).** ROADMAP (EN+TH) gains a Phase 5 section chartered by the tianting council: the isolation boundary sits at **tool-effect execution** (not message ingestion); the isolation unit is an **OS process + layered in-runtime capability gate**; the harness is multi-tenant with a **single-tenant ephemeral sandbox per `(connector, conversation)` turn**; trust tags are **taint-propagating** (confused-deputy defense); and the phase closes against an **8-gate, owner-mapped Definition of Done**. `VERSION.md` Phase line advanced; charter log in `notes/2026-06-07_phase5-charter.md`.
+
+### Fixed
+
+- **Name cleanup — `bwoc-framwork` → `bwoc-framework`.** Self-references now spell the directory name correctly (README directory-tree example, `install.sh` usage comment, `debase.rs` test fixtures), and the stale `bmt-bwol-ops/bwoc-framwork` URLs in `Cargo.toml` / `CONTRIBUTING.md` now point at the canonical `bemindlabs/BWOC-Framework`.
+
 ## [v2026.6.7-1] — 2026-06-07 — 2.26.0
 
 ### Added

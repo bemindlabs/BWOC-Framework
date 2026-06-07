@@ -429,15 +429,15 @@ mod tests {
 
     #[test]
     fn worktree_base_appends_worktrees() {
-        let wb = worktree_base_for_project(Path::new("/p/bwoc-framwork"));
-        assert_eq!(wb, PathBuf::from("/p/bwoc-framwork/worktrees"));
+        let wb = worktree_base_for_project(Path::new("/p/bwoc-framework"));
+        assert_eq!(wb, PathBuf::from("/p/bwoc-framework/worktrees"));
     }
 
     #[test]
     fn project_root_strips_worktrees() {
         assert_eq!(
-            project_root_of("/p/bwoc-framwork/worktrees").as_deref(),
-            Some("/p/bwoc-framwork")
+            project_root_of("/p/bwoc-framework/worktrees").as_deref(),
+            Some("/p/bwoc-framework")
         );
     }
 

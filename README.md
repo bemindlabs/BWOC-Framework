@@ -213,7 +213,7 @@ Two distinct trees the project deals with: **(A)** this repository — what a co
 ### A. The BWOC framework repository
 
 ```
-bwoc-framwork/
+bwoc-framework/
 ├── crates/                      ← Rust workspace (the reference implementation)
 │   ├── bwoc-core/                 • shared types — manifest, workspace, identity, chat_proto (lean, dep-quarantined)
 │   ├── bwoc-cli/                  • `bwoc` binary — install · workspace · lifecycle · chat · audit
