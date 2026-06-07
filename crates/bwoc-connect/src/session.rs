@@ -17,7 +17,7 @@ use bwoc_core::manifest::Manifest;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-use crate::{AgentSession, ConnectError, SessionFactory};
+use crate::{AgentSession, ConnectError, ReplyStream, SessionFactory};
 
 /// Builds a `bwoc-harness --chat` session per conversation against one agent
 /// directory (resolving model/endpoint from its manifest, like `bwoc chat`).
@@ -168,16 +168,33 @@ impl HarnessSession {
 #[async_trait]
 impl AgentSession for HarnessSession {
     async fn ask(&mut self, text: &str) -> Result<String, ConnectError> {
+        // Non-streaming callers get the final text only.
+        let mut noop = NoopStream;
+        self.ask_streamed(text, &mut noop).await
+    }
+
+    async fn ask_streamed(
+        &mut self,
+        text: &str,
+        sink: &mut dyn ReplyStream,
+    ) -> Result<String, ConnectError> {
         self.write_input(&ChatInput::User {
             text: text.to_string(),
         })
         .await?;
 
+        // Accumulate `Token` deltas and push the running reply to the sink; the
+        // terminal `Message` carries the canonical full text we return.
+        let mut acc = String::new();
         loop {
             let Some(ev) = self.next_event().await? else {
                 return Err(ConnectError::Session("harness ended mid-turn".into()));
             };
             match ev {
+                ChatEvent::Token { text } => {
+                    acc.push_str(&text);
+                    sink.push(&acc).await;
+                }
                 // The turn's final assistant text.
                 ChatEvent::Message { text } => return Ok(text),
                 // A remote user can't approve tools — deny and continue the turn.
@@ -188,11 +205,20 @@ impl AgentSession for HarnessSession {
                 ChatEvent::Bye => {
                     return Err(ConnectError::Session("session ended".into()));
                 }
-                // Token/ToolCall/ToolResult/TurnEnd/Compacted/Error/etc. — keep reading.
+                // ToolCall/ToolResult/TurnEnd/Compacted/Error/etc. — keep reading.
                 _ => {}
             }
         }
     }
+}
+
+/// A [`ReplyStream`] that drops every push — used by the non-streaming
+/// [`AgentSession::ask`] path.
+struct NoopStream;
+
+#[async_trait]
+impl ReplyStream for NoopStream {
+    async fn push(&mut self, _accumulated: &str) {}
 }
 
 impl Drop for HarnessSession {
