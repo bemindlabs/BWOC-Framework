@@ -22,7 +22,7 @@ make before any code.
 | Direction | Mechanism | Notes |
 |-----------|-----------|-------|
 | **send** | `osascript` → `tell application "Messages" to send <text> to …` | public AppleScript; **no SIP changes**. Needs **Automation** TCC grant. |
-| **receive** | read `~/Library/Messages/chat.db` (SQLite, read-only) | needs **Full Disk Access** TCC grant. Poll `message` ROWID > cursor, `is_from_me = 0`. |
+| **receive** | read `~/Library/Messages/chat.db` (SQLite, read-only) | needs **Full Disk Access** TCC grant. Poll `message WHERE ROWID >= offset AND is_from_me = 0` (offset = bridge cursor = last `update_id` + 1). |
 
 No BlueBubbles, no `imessage-rs`, no private API for the MVP — just `osascript` +
 a read-only SQLite poll. (BlueBubbles / `imessage-rs` become the upgrade path for
@@ -31,11 +31,14 @@ streaming/tapbacks/edit — see below.)
 ## Mapping onto the existing seams
 
 - **`Transport::poll(offset)`** ↔ `chat.db` perfectly: the `message.ROWID` is a
-  monotonic integer → use it as both `Incoming.update_id` **and** the poll cursor
-  (`offset`). Query `message` JOIN `handle` JOIN `chat_message_join`/`chat` for
-  rows with `ROWID > offset AND is_from_me = 0`; `text` (or `attributedBody` on
-  newer macOS — see risks). No long-poll, so the transport sleeps ~1–2s between
-  reads (like the Discord queue's 1s tick).
+  monotonic integer → use it as `Incoming.update_id`. The bridge advances
+  `offset = update_id + 1` and the trait contract is "return `update_id >=
+  offset`", so the query is `message … WHERE ROWID >= offset AND is_from_me = 0`
+  (with `offset` starting at 0) — equivalently `ROWID > last_seen`, just stated to
+  match the bridge's `>= offset` contract so no message is skipped. JOIN `handle`
+  / `chat_message_join` / `chat`; `text` (or `attributedBody` on newer macOS —
+  see risks). No long-poll, so the transport sleeps ~1–2s between reads (like the
+  Discord queue's 1s tick).
 - **`Transport::send`** ↔ `osascript` to the chat GUID / handle.
 - **`is_group`** ← the `chat` row has >1 participant / `style`. **`mentions_bot`**
   ← iMessage group @mentions exist (stored in the message); gate on the Mac's own
@@ -66,12 +69,13 @@ actually knows.
 
 ## Streaming
 
-The send-then-edit streaming just shipped for Telegram/Discord **can't** work on
-the MVP free path: AppleScript can't edit a sent message. So iMessage MVP is
-**non-streaming** — and the architecture already handles that gracefully: the
-default `AgentSession::ask_streamed` does a single send on finish, so an iMessage
-transport that only implements `send` (and a no-op/`Unsupported` `edit`) just
-gets the whole reply at once. iMessage *does* have edit (iOS 16+); wiring it would
+The send-then-edit streaming (added for Telegram/Discord by the streaming PR
+**#228**, which introduced `AgentSession::ask_streamed`, `Transport::edit`, and
+`Transport::supports_edit`) **can't** work on the MVP free path: AppleScript
+can't edit a sent message. So iMessage MVP is **non-streaming** — and the
+architecture handles that gracefully: a transport that returns
+`supports_edit() == false` (like LINE) makes the bridge send the reply once on
+turn end. iMessage *does* have edit (iOS 16+); wiring it would
 require the **BlueBubbles private API / `imessage-rs`** path (SIP disabled + dylib
 into Messages) — an explicit upgrade, not MVP.
 
@@ -118,6 +122,6 @@ explicit go**, not speculatively (Mattaññutā).
 
 ## Related
 
-- `notes/2026-06-07_connect-subsystem-complete.md`, `notes/2026-06-07_connect-streaming.md`
+- `notes/2026-06-07_connect-subsystem-complete.md`, `notes/2026-06-07_connect-streaming.md` (added by streaming PR #228)
 - `notes/2026-06-06_chat-connectors-design.md` (the seams this reuses)
 - Refs: BlueBubbles (OSS Mac server + API), `jesec/imessage-rs` (Rust, BlueBubbles-compatible), `openclaw/imsg` (agent CLI)
