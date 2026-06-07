@@ -366,7 +366,13 @@ async fn webhook(
             is_group: ev.is_group,
             mentions_bot: ev.mentions_bot,
         };
-        let _ = st.tx.send(inc).await;
+        // Non-blocking: never `await` the bridge from the webhook, or a slow
+        // `poll`/full queue would stall the HTTP response past LINE's timeout
+        // (→ retries + duplicate deliveries). A full queue means the bridge is
+        // badly backed up — return 503 so LINE retries later rather than block.
+        if st.tx.try_send(inc).is_err() {
+            return StatusCode::SERVICE_UNAVAILABLE;
+        }
     }
     StatusCode::OK
 }
