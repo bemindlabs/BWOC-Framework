@@ -266,7 +266,7 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
 name = "bwoc-a2a"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-agent"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "bwoc-core",
  "bwoc-signing",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-cli"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "bwoc-core",
  "bwoc-signing",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-connect"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-core"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-deep-memory"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "clap",
  "reqwest 0.12.28",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-harness"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "async-trait",
  "bwoc-core",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-mqtt"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "bwoc-core",
  "clap",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-signing"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-tui"
-version = "2.25.0"
+version = "2.26.0"
 dependencies = [
  "bwoc-core",
  "crossterm",
