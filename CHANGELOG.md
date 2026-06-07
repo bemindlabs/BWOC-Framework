@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.7-1] — 2026-06-07 — 2.26.0
+
 ### Added
 
 - **Chat connectors — LINE (`bwoc-connect line`).** Bridges LINE to a BWOC agent over the Messaging API. Unlike Telegram/Discord, LINE **pushes to an HTTPS webhook** — so the transport runs a small inbound **axum** server: each POST is signature-verified (`X-Line-Signature` = base64(HMAC-SHA256(channel secret, body))), parsed, and queued; `poll` drains the queue (the Discord gateway→mpsc pattern). **Free for our use case**: replies use the one-time `replyToken` (free, unlimited) when fresh, falling back to a **push** (monthly quota) for a slow turn. LINE has no edit API → non-streaming (`supports_edit = false`; the bridge sends the reply once). LINE's string ids (`U…`/`C…`/`R…`) are hashed to a stable `i64` so they fit the existing allow-list seam; the allow-list is configured as LINE user ids under `[line].allow_user_ids` (closed by default). Token from `LINE_CHANNEL_ACCESS_TOKEN` (keyring/env), secret from `LINE_CHANNEL_SECRET`; `bwoc-agent --serve` supervises `connectors/line.toml`. Dep-quarantine holds (axum/hmac/sha2/base64 in `bwoc-connect` only — verified absent from cli/agent/core). `verify_signature`/`parse_webhook`/`hash_id` + the non-editing single-send path are unit-tested; the live webhook/send are the eyeball-reviewed edge. Runs on Linux — unlike iMessage.
