@@ -86,16 +86,25 @@ mod linux_impl {
     /// The network-acquisition deny set (KILL) — control A: there is **no way to
     /// obtain a network fd** in the child. `socket` covers every family (AF_INET/
     /// INET6/PACKET/… *and* AF_UNIX); `connect`/`accept*`/`bind`/`listen`/
-    /// `getpeername` are the reach/address primitives; `pidfd_getfd`/`pidfd_open`
-    /// let a child *steal* a live fd (incl. a socket) from a sibling — an
-    /// acquisition path an FS jail cannot see; `io_uring_*` can perform network
-    /// ops without the classic syscalls. `sendmmsg`/`recvmmsg` (the **batched**
-    /// send/recv variants, binding cond #3) are denied as a send-side
-    /// belt-and-suspenders: unlike the unary family they are not used by the
-    /// executor's IPC or tokio, but CAN drive bulk egress on a leaked fd.
+    /// `getpeername` are the reach/address primitives; `pidfd_getfd` is the
+    /// fd-*theft* primitive — it duplicates a live fd (incl. a socket) out of a
+    /// sibling, an acquisition path an FS jail cannot see; `io_uring_*` can
+    /// perform network ops without the classic syscalls. `sendmmsg`/`recvmmsg`
+    /// (the **batched** send/recv variants, binding cond #3) are denied as a
+    /// send-side belt-and-suspenders: unlike the unary family they are not used
+    /// by the executor's IPC or tokio, but CAN drive bulk egress on a leaked fd.
     ///
     /// Deliberately **NOT** denied (they are not network-egress primitives, and
     /// denying them would break the executor itself — see the module docs):
+    ///   - `pidfd_open` — yields only a *process handle* (a pidfd), NOT a
+    ///     descriptor into the target's fd table; the actual fd-theft needs the
+    ///     separate `pidfd_getfd(pidfd, fd)` (KILLed above), so allowing
+    ///     `pidfd_open` does not weaken control A. tokio's process reaper opens a
+    ///     `pidfd_open(child, PIDFD_NONBLOCK)` to await the `run_command`
+    ///     grandchild; KILLing it SIGSYS-killed the executor mid-turn, before it
+    ///     could send its IPC response frame — the parent then read EOF on the
+    ///     result socket (Phase 5 t16). Do NOT re-add it without a tokio-free
+    ///     reaping path.
     ///   - `socketpair` — a *local* connected AF_UNIX pair that can only talk to
     ///     itself/descendants; tokio's runtime (used to drive a `run_command`
     ///     grandchild) creates one for its SIGCHLD self-pipe. (Contrast
@@ -123,8 +132,11 @@ mod linux_impl {
             // the IPC/tokio need; the *mmsg forms are unused by either.
             libc::SYS_sendmmsg,
             libc::SYS_recvmmsg,
+            // `pidfd_getfd` is the fd-THEFT syscall (steals a live fd out of a
+            // sibling) — KILLed. `pidfd_open` (process handle only, no fd) stays
+            // ALLOWED: tokio's reaper needs it for the run_command grandchild
+            // (Phase 5 t16). See the doc comment above.
             libc::SYS_pidfd_getfd,
-            libc::SYS_pidfd_open,
             libc::SYS_io_uring_setup,
             libc::SYS_io_uring_enter,
             libc::SYS_io_uring_register,
@@ -255,10 +267,10 @@ mod tests {
 
     /// Binding condition #3 + control-A coverage — a DETERMINISTIC membership
     /// check on the deny set (no kernel needed). It pins exactly what must be
-    /// killed (incl. `pidfd_*` and the batched `*mmsg` egress variants cond #3
-    /// names) AND what must stay allowed (the unary send/recv family + socketpair
-    /// the IPC/tokio runtime needs). A future edit that drops a deny or denies an
-    /// IPC primitive re-reds here, off any specific kernel.
+    /// killed (incl. `pidfd_getfd` and the batched `*mmsg` egress variants cond
+    /// #3 names) AND what must stay allowed (the unary send/recv family +
+    /// socketpair + `pidfd_open` the IPC/tokio runtime needs). A future edit that
+    /// drops a deny or denies an IPC primitive re-reds here, off any kernel.
     #[test]
     fn net_deny_set_membership_is_pinned() {
         let deny = linux_impl::net_deny();
@@ -272,7 +284,6 @@ mod tests {
             libc::SYS_listen,
             libc::SYS_getpeername,
             libc::SYS_pidfd_getfd,
-            libc::SYS_pidfd_open,
             libc::SYS_sendmmsg,
             libc::SYS_recvmmsg,
             libc::SYS_io_uring_setup,
@@ -285,13 +296,18 @@ mod tests {
             );
         }
         // MUST stay allowed — denying any of these severs the executor's AF_UNIX
-        // parent-IPC (SCM_RIGHTS via sendmsg) or tokio's runtime.
+        // parent-IPC (SCM_RIGHTS via sendmsg) or tokio's runtime. `pidfd_open`
+        // (process handle only — NOT the fd-theft `pidfd_getfd`, which stays
+        // killed above) is here because tokio's process reaper opens a pidfd to
+        // await the run_command grandchild; KILLing it SIGSYS-killed the executor
+        // before it sent the IPC response → parent read EOF (Phase 5 t16).
         for nr in [
             libc::SYS_sendto,
             libc::SYS_sendmsg,
             libc::SYS_recvfrom,
             libc::SYS_recvmsg,
             libc::SYS_socketpair,
+            libc::SYS_pidfd_open,
         ] {
             assert!(
                 !deny.contains(&nr),
