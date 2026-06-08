@@ -396,6 +396,7 @@ dependencies = [
  "futures-util",
  "keyring",
  "landlock",
+ "libc",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

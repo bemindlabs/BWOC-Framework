@@ -55,6 +55,10 @@ async-trait = "0.1"
 # TOML config parsing for .bwoc/harness-policy.toml
 toml = "0.8"
 
+# Per-turn throwaway cwd for the isolated turn-executor child (Phase 5 t5).
+# Promoted from dev-dependency: the parent now creates a tempdir at runtime.
+tempfile = "3"
+
 # OS keyring — scoped credential store for tool authentication.
 # Heavy dep (platform integration): lives in bwoc-harness ONLY per dep-quarantine.
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
@@ -62,6 +66,11 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "linux-
 # ---------------------------------------------------------------------------
 # Platform-specific dependencies
 # ---------------------------------------------------------------------------
+# Raw syscalls for the Phase 5 t5 turn-executor `pre_exec` (dup2/fcntl/close).
+# Unix-only and dep-quarantined to bwoc-harness; bwoc-core stays untouched.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Landlock LSM bindings for kernel-enforced filesystem access control.
 # Allowed here: bwoc-harness is the dep-quarantine crate for heavy/platform deps.
@@ -74,3 +83,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
 # Ingress-labeling invariant fuzz (Phase 5 t1). Dev-only.
 proptest = { workspace = true }
+
+# Process-liveness check (kill(pid,0)) for the t5 reap/no-zombie test.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

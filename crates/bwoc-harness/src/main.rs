@@ -158,12 +158,29 @@ struct Args {
 // Main
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("bwoc-harness error: {e}");
-        std::process::exit(1);
+fn main() {
+    // Phase 5 t5 — process isolation. When re-exec'd as the hidden turn-executor
+    // we MUST run the one-shot child path *before* building any async runtime, so
+    // the inherited-fd snapshot stays clean (no tokio epoll/eventfd). The child
+    // verifies its capability token, runs exactly one tool, and exits.
+    #[cfg(unix)]
+    {
+        if bwoc_harness::turn_executor::is_executor_invocation() {
+            std::process::exit(bwoc_harness::turn_executor::run_executor_blocking());
+        }
     }
+
+    // Normal harness path: build the multi-thread runtime and run the loop.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+    rt.block_on(async {
+        if let Err(e) = run().await {
+            eprintln!("bwoc-harness error: {e}");
+            std::process::exit(1);
+        }
+    });
 }
 
 async fn run() -> HarnessResult<()> {
