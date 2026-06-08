@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `main` plus the Phase 5 integration branch so the deferred-control fence and
+    # the t9 cgroup enforcement proof run on the integration flow, not only at the
+    # final merge to main.
+    branches: [main, 'feat/phase5-**']
   pull_request:
-    branches: [main]
+    branches: [main, 'feat/phase5-**']
 
 # Least-privilege: every job here only checks out + runs cargo. No writes.
 permissions:
@@ -75,4 +78,70 @@ jobs:
       # write-confine arms; if the jail is unavailable the suite LOUD-skips
       # (never silent-pass). cfg(unix) → it compiles to nothing on Windows.
       - run: cargo test -p bwoc-harness --features test-redteam --test sandbox_escape
+
+  # Phase 5 t9 — cgroup v2 `pids.max` ENFORCEMENT proof. Two jobs ATTEMPT real
+  # enforcement (binding condition 3), in the mandated order:
+  #
+  #   (a) self-delegation on a STANDARD ubuntu runner — try it, LOG the result, do
+  #       NOT assume it fails. Non-blocking (`continue-on-error`): a GitHub-hosted
+  #       runner may lack a user systemd/dbus session or a writable delegated
+  #       subtree, in which case the arm LOUD-skips with a `NOT COVERAGE` marker.
+  #       This is best-effort EVIDENCE, recorded in the log — not the gate.
+  #   (b) a PRIVILEGED container with writable cgroupfs — the PRIMARY proof.
+  #       `BWOC_T9_EXPECT_ENFORCE=1` turns a skip into a FAILURE, so this job
+  #       cannot go green unless the per-turn `pids.max` cap actually contains a
+  #       fork bomb that the per-UID `RLIMIT_NPROC` floor (headroom 4096) would
+  #       not — i.e. only the cgroup can explain the containment.
+  #
+  # Manual-only verification (c) is the LAST resort, used only if BOTH (a) and (b)
+  # prove infeasible in this CI environment (logged).
+  t9-cgroup-selfdelegate:
+    name: t9 cgroup pids.max (self-delegate, best-effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Probe cgroup v2 + attempt self-delegation, then run the t9 arm
+        run: |
+          set -x
+          uname -a
+          cat /sys/fs/cgroup/cgroup.controllers || true
+          cat /proc/self/cgroup || true
+          stat -fc '%T' /sys/fs/cgroup || true
+          # Log whether a user systemd manager is reachable for `systemd-run --user
+          # --scope -p Delegate=yes`; we do not assume its absence.
+          if systemctl --user show-environment >/dev/null 2>&1; then
+            echo "user systemd session present — attempting a delegated user scope"
+            systemd-run --user --scope -p Delegate=yes -- \
+              env BWOC_T9_RUN_BOMBS=1 cargo test -p bwoc-harness --test cgroup_pids \
+                -- --test-threads=1 --nocapture
+          else
+            echo "no reachable user systemd session — running the arm directly; the harness"
+            echo "runs its own delegation dance and LOUD-skips if no subtree is writable"
+            BWOC_T9_RUN_BOMBS=1 cargo test -p bwoc-harness --test cgroup_pids \
+              -- --test-threads=1 --nocapture
+          fi
+
+  t9-cgroup-privileged:
+    name: t9 cgroup pids.max (privileged container — PRIMARY proof)
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1
+      # `--privileged` gives a writable cgroup v2 fs; the harness self-delegates
+      # (the cgroup.subtree_control dance) inside it.
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prove cgroup v2 pids.max contains a fork bomb (fail-closed)
+        env:
+          # A skip (no enforceable cgroup) becomes a FAILURE here — this job is the
+          # binding enforcement proof, not a best-effort attempt.
+          BWOC_T9_EXPECT_ENFORCE: "1"
+        run: |
+          set -x
+          mount | grep -i cgroup || true
+          cat /sys/fs/cgroup/cgroup.controllers
+          cat /proc/self/cgroup
+          cargo test -p bwoc-harness --test cgroup_pids -- --test-threads=1 --nocapture
 

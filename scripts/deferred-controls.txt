@@ -28,13 +28,18 @@
 #   <ticket>  <token>
 # Tokens must contain no whitespace.
 
-# ── t9 — true per-turn process cap (cgroup v2 pids.max) ─────────────────────
-# Until this lands, RLIMIT_NPROC is the only fork guard and it is per-UID +
-# RELATIVE best-effort, NOT an absolute per-turn cap (see the t9 fence row).
-t9   cgroup
-t9   /sys/fs/cgroup
-t9   cgroup.procs
-t9   pids.max
+# ── t9 — true per-turn process cap (cgroup v2 pids.max) — LANDED (best-effort) ─
+# t9 is IMPLEMENTED: the parent creates a per-turn cgroup v2 leaf, writes its
+# pids.max, and the executor child joins it post-fork (the cgroup.procs write in
+# turn_executor's pre_exec). It is therefore an ENFORCED control WHERE a delegated
+# writable cgroup v2 subtree exists (systemd Delegate=yes / privileged container)
+# — so its tokens (cgroup / /sys/fs/cgroup / cgroup.procs / pids.max) are REMOVED
+# from this fence; they now appear in live code (src/cgroup.rs) as a real control,
+# not a phantom. The HONEST RESIDUAL — when NO delegated subtree exists (dev /
+# bare-SSH / non-delegated container, the DEFAULT case) the fork guard degrades to
+# the best-effort per-UID RLIMIT_NPROC floor (🟠) — is documented in the
+# THREAT-MODEL Residuals section, no longer in this machine-checked fence. Do NOT
+# re-add the tokens here.
 
 # ── t11 — egress / syscall containment (the t7b half of t7) — LANDED ─────────
 # t11 (= t7b) is IMPLEMENTED: a seccomp-bpf egress filter (KILL_PROCESS deny set)

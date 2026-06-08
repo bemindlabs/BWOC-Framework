@@ -51,16 +51,26 @@
 //!     macOS it provides no real fork containment. The value is still set (cheap,
 //!     finite, defence-in-depth) and the snapshot test proves it is finite.
 //!
-//! **Deferred gaps (still open after t6):**
-//!   - A true per-turn process cap — cgroup v2 `pids.max` — ticket **t9**. Until
-//!     then NPROC is the only fork guard and it is per-UID best-effort.
+//! **Per-turn process cap (t9 — landed, best-effort):**
+//!   - A true per-turn process cap — cgroup v2 `pids.max` — is installed by
+//!     [`crate::cgroup`] **when a delegated writable cgroup v2 subtree exists**
+//!     (systemd `Delegate=yes` or a privileged container). The parent creates a
+//!     per-turn leaf and the child joins it post-fork (the `cgroup.procs` write in
+//!     `pre_exec` below). Where no delegated subtree exists (dev / bare SSH /
+//!     non-delegated container — the **default**), t9 is a LOUD no-op and the
+//!     per-UID best-effort `RLIMIT_NPROC` above remains the only fork guard. So
+//!     fork containment is ✅ when delegated, 🟠 (per-UID, RELATIVE) otherwise.
+//!     `BWOC_REQUIRE_CGROUP_PIDS=1` (checked at startup) refuses to run unless the
+//!     delegated subtree is present, for prod that demands the hard cap.
+//!
+//! **Still open after t9:**
 //!   - No cgroup memory/CPU controller, no `nice`/`ionice`, no PID/mount/net
 //!     namespace. Non-Unix targets get NO rlimits (the spawn path is `cfg(unix)`).
 //!
 //! Net: t6 turns the bare process boundary t5 added into a resource-bounded one
-//! for CPU, files, and disk (and memory on Linux) — but fork containment stays
-//! best-effort until the cgroup work in t9. Do not describe this as full
-//! isolation.
+//! for CPU, files, and disk (and memory on Linux); t9 adds an absolute per-turn
+//! pid ceiling **where the deployment delegates a cgroup**, else fork containment
+//! stays best-effort per-UID. Do not describe this as full isolation.
 //!
 //! # Authority model (C2) — unforgeable parent→child channel
 //!
@@ -431,8 +441,9 @@ fn build_rlimit_table() -> Vec<RlimitEntry> {
 
     // NPROC — PARTIAL containment: per-UID and RELATIVE (live usage + headroom),
     // NOT an absolute per-turn cap. Bounds a runaway fork but does not isolate
-    // this turn's tree from the agent's other processes. A true per-turn cap
-    // (cgroup v2 pids.max) is deferred to ticket t9.
+    // this turn's tree from the agent's other processes. The absolute per-turn cap
+    // (cgroup v2 pids.max, t9) layers ON TOP of this floor when a delegated subtree
+    // exists; this best-effort RLIMIT_NPROC remains the guard otherwise.
     let headroom = env_or_default("BWOC_TURN_RLIMIT_NPROC_HEADROOM", 128, 1, 4096);
     let usage = current_uid_proc_count();
     t.push(entry(
@@ -908,6 +919,26 @@ fn roundtrip(
     // the closure below never parses env or allocates.
     let rlimit_plan = build_rlimit_plan();
 
+    // t9 — true per-turn process cap via cgroup v2 `pids.max`. Create the per-turn
+    // leaf + set `pids.max` in the PARENT; the child self-joins post-fork by
+    // writing "0" to the inherited `cgroup.procs` fd (in `pre_exec`, BEFORE the
+    // `close_range` so the fd is still open). Fail-OPEN here (Ruling 5, parent
+    // half): with no delegated subtree or on any setup failure this is `None`, the
+    // turn keeps the t6 `RLIMIT_NPROC` floor, and the spawn is NEVER blocked. The
+    // guard is held in this scope so its RAII `Drop` rmdir-cleans the leaf after
+    // the child is reaped (or on any early-return / timeout). The child-side write
+    // is fail-CLOSED (in the closure below).
+    //
+    // fd safety: `parent_sock`/`child_sock` (opened above) hold fds 3 and 4 for the
+    // whole roundtrip and the Landlock ruleset holds the next, so this later-opened
+    // `cgroup.procs` fd is always ≥ 5 — never `EXECUTOR_FD` (3). The child's
+    // `dup2(child_fd, EXECUTOR_FD)` therefore cannot clobber it before the write.
+    #[cfg(target_os = "linux")]
+    let turn_cgroup = crate::cgroup::TurnCgroup::create();
+    #[cfg(target_os = "linux")]
+    let cgroup_procs_fd: Option<std::os::unix::io::RawFd> =
+        turn_cgroup.as_ref().map(|g| g.procs_fd());
+
     // SAFETY (C1/C3): this closure runs in the forked child, after fork and
     // before exec. It calls ONLY raw libc / the async-signal-safe
     // `landlock_restrict_self` syscall — no allocation, no locks, no Rust std
@@ -927,7 +958,8 @@ fn roundtrip(
             }
             // C3 / t6: install POSIX resource limits (plan computed in parent).
             // CPU/NOFILE/FSIZE (+ AS/DATA on Linux) per-process; NPROC is a
-            // best-effort per-UID fork guard (cgroup pids.max deferred to t9).
+            // best-effort per-UID fork guard (the absolute per-turn cap is t9's
+            // cgroup pids.max, joined just below when a delegated subtree exists).
             let mut i = 0;
             while i < rlimit_plan.count {
                 let s = rlimit_plan.specs[i];
@@ -939,6 +971,28 @@ fn roundtrip(
                     return Err(std::io::Error::last_os_error());
                 }
                 i += 1;
+            }
+            // t9: move THIS (post-fork) process into the per-turn cgroup leaf the
+            // parent created, so its `pids.max` caps this turn's whole future
+            // process tree. Writing "0" makes the kernel use the calling pid
+            // (`current`). MUST run BEFORE `harden_child_fds` below — that issues
+            // `close_range`, which would otherwise close the inherited
+            // `cgroup.procs` fd before we use it. Fail-CLOSED (Ruling 5, child
+            // half): the parent already committed the leaf + `pids.max`, so a
+            // silent failure here would let the child run UNCAGED while the parent
+            // believes it is capped — abort the spawn instead. Async-signal-safe:
+            // one raw `write` + `from_raw_os_error` (no alloc, no env, no locks).
+            #[cfg(target_os = "linux")]
+            if let Some(fd) = cgroup_procs_fd {
+                let n = libc::write(fd, b"0".as_ptr() as *const libc::c_void, 1);
+                if n != 1 {
+                    let errno = if n < 0 {
+                        *libc::__errno_location()
+                    } else {
+                        libc::EIO
+                    };
+                    return Err(std::io::Error::from_raw_os_error(errno));
+                }
             }
             // C1: install the Landlock FS jail (Linux). MUST run BEFORE the
             // close loop below — the ruleset fd was inherited from the parent
