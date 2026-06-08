@@ -128,20 +128,45 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: rust:1
-      # `--privileged` gives a writable cgroup v2 fs; the harness self-delegates
-      # (the cgroup.subtree_control dance) inside it.
+      # `--privileged` gives a writable cgroup v2 fs.
       options: --privileged
     steps:
       - uses: actions/checkout@v6
-      - name: Prove cgroup v2 pids.max contains a fork bomb (fail-closed)
+      - name: Build the t9 test binary
+        run: cargo test -p bwoc-harness --test cgroup_pids --no-run
+      - name: Provision a delegated subtree, then prove pids.max contains a bomb
         env:
           # A skip (no enforceable cgroup) becomes a FAILURE here — this job is the
           # binding enforcement proof, not a best-effort attempt.
           BWOC_T9_EXPECT_ENFORCE: "1"
+        # ONE step / ONE process, by design. The harness consumes a delegated
+        # subtree that — like production under systemd `Delegate=yes` — holds ONLY
+        # its own process; its move-self→enable dance then frees the cgroup so
+        # `+pids` can be set (the "no internal process" rule). We therefore must
+        # run the test binary as the SOLE process in `agent`: a plain `cargo test`
+        # would leave cargo co-resident there, so the harness's move-self would not
+        # empty `agent` and `+pids` would EBUSY. So: build above, then `exec` the
+        # test binary directly (it replaces the shell ⇒ no cargo parent in
+        # `agent`). The container's cgroup-ns root `0::/` co-hosts the container's
+        # other processes, so we first drain it into an `init` leaf (privileged ⇒
+        # same-uid root, movable) and enable `pids` for root's children.
         run: |
-          set -x
+          set -ex
           mount | grep -i cgroup || true
           cat /sys/fs/cgroup/cgroup.controllers
           cat /proc/self/cgroup
-          cargo test -p bwoc-harness --test cgroup_pids -- --test-threads=1 --nocapture
+          mkdir -p /sys/fs/cgroup/init /sys/fs/cgroup/agent
+          for p in $(cat /sys/fs/cgroup/cgroup.procs); do
+            echo "$p" > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
+          done
+          echo '+pids' > /sys/fs/cgroup/cgroup.subtree_control
+          grep -qw pids /sys/fs/cgroup/agent/cgroup.controllers
+          # Locate the freshly-built test binary (skip the `.d` depfile).
+          BIN="$(ls -t target/debug/deps/cgroup_pids-* | grep -v '\.d$' | head -1)"
+          test -x "$BIN"
+          # Land THIS shell in `agent`, then REPLACE it with the test binary so the
+          # binary is the only process there (its parent runner stays in `init`).
+          echo $$ > /sys/fs/cgroup/agent/cgroup.procs
+          cat /proc/self/cgroup
+          exec "$BIN" --test-threads=1 --nocapture
 
