@@ -243,3 +243,90 @@ an unannotated deferred token in live code (or in a string literal), a hard
 guarantee on `RLIMIT_NPROC`, or any ticket/token drift between SSOT and either
 fence table **fails** the `fence-guard` CI job. t8 implements **neither t9 nor
 t11** — that is the point.
+
+---
+
+## Phase 5 t11 (= t7b) — turn-executor network-egress containment
+
+t11 is the **egress half** of the original t7 (yudi's SPLIT ruling; the FS/process
+half was t7a). It closes the last hard-blocker the t8 fence was holding open. It
+is the prose companion to `crates/bwoc-harness/src/seccomp.rs`,
+`crates/bwoc-harness/src/jail.rs` (`harden_child_fds`), the seccomp install wired
+into `turn_executor::roundtrip`, and the proof in
+`crates/bwoc-harness/src/bin/sandbox_redteam.rs` + `tests/sandbox_escape.rs`.
+
+### The closure theorem (the binding claim)
+
+> **egress contained ⟺ (A) the child can't *acquire* a network fd ∧ (B) it
+> *holds* none ∧ (D) the arch-guard is tight.**
+
+The **no-fd invariant (A ∧ B) is the PRIMARY control**; the send-side syscall deny
+(`sendto`/`sendmsg`/…) is belt-and-suspenders for a descriptor that should not
+exist in the first place. **A ∧ B ∧ D are proven by TEST, not assumed** — each is
+a red-team arm that LOUD-skips (never false-passes) when seccomp is unavailable.
+
+| Leg | Claim | Mechanism | Proof arm(s) |
+|---|---|---|---|
+| **A** | can't acquire a network fd | seccomp `KILL_PROCESS` on socket/connect/accept*/bind/listen/getpeername/`sendmmsg`/`recvmmsg`/io_uring_*/`pidfd_getfd`/`pidfd_open` (the **unary** send/recv family + local `socketpair` stay allowed — IPC/tokio need them; only the batched `*mmsg` egress variants are denied) | `net_socket`, `net_abstract_connect`, `pidfd_getfd_steal` (+ `net_socketpair` as the precision/allowed control) |
+| **B** | holds no network fd | `close_range(EXECUTOR_FD+1, ~0)` (whole table, not the old `4..1024`) + stdio (0/1/2) socket→`/dev/null` audit | `holds_no_network_fd`, `splice_to_existing_fd`, + the C10 selftest fd assertion + a leaked-`>=1024`-socket regression |
+| **D** | arch-guard is tight | seccompiler arch prologue KILLs non-native `seccomp_data.arch`; deny set carries x32-renumbered (`nr \| __X32_SYSCALL_BIT`) variants | `arch_i386_int80` (i386 `int 0x80`), `arch_x32_renumber` |
+
+### Design decisions (the binding conditions)
+
+- **KILL_PROCESS, not ERRNO.** An ERRNO filter is a syscall-enumeration *oracle*;
+  KILL gives a hostile child one bit (death) and no map. The ptrace set
+  (ptrace/process_vm_readv/process_vm_writev/kcmp/perf_event_open) is in the same
+  KILL set, layered on C4's `PR_SET_DUMPABLE(0)`.
+- **seccompiler (pure-Rust), not libseccomp.** No C dependency, no FFI to a system
+  library. The BPF is compiled in the **parent** (allocation) and installed in the
+  child's `pre_exec` via two raw `prctl`s — async-signal-safe, no-alloc (C1). The
+  **same installer** (`seccomp::install_in_child`) is called by both
+  `turn_executor::roundtrip` (production) and `jail::jail_command` (the red-team /
+  standalone path), so they cannot drift.
+- **Fail-closed on Linux.** Egress containment is mandatory: if the filter cannot
+  be installed, the production executor **refuses to run** (it never degrades to an
+  unfiltered child). `PR_SET_NO_NEW_PRIVS` is set idempotently by the installer
+  (not relied upon from Landlock). seccomp persists across `execve` and is
+  inherited by the `run_command` grandchild.
+- **Verify the arch-guard, do not assume it.** P0-1: the seccompiler arch prologue
+  must KILL a non-native syscall. This is **proven** by the `arch_i386_int80` arm
+  firing an i386 `int 0x80` and asserting a `SIGSYS` kill — the gate does not flip
+  green on the assumption that seccompiler emits a killing prologue.
+
+### Condition #5 — Landlock-writable paths must be local filesystems
+
+A Landlock "write" onto a networked filesystem (NFS / CIFS / SMB / 9p / FUSE) is a
+network egress in disguise — the FS jail would allow it and seccomp would not see
+it (the egress happens in the kernel mount layer, not via a socket the child
+holds). The charter therefore binds: **every path in the executor `rw` set MUST be
+a local filesystem.** The `landlock_writable_paths_are_local_fs` test `statfs`'s
+each existing writable path and fails on any networked `f_type`; it is a standing
+CI regression so adding a networked path re-reds the fence. (Honest bound: the
+test checks the paths present on the CI runner; a production deployment that points
+the worktree at NFS must still satisfy this — it is an operator obligation the test
+documents and checks where it can.)
+
+### Condition #7 — explicit scope: network egress only
+
+t11's claim is **network egress containment (Linux)**. It is explicitly **NOT** a
+claim about local, same-uid covert channels — the OS keyring, SysV-IPC, POSIX
+message queues, a shared file under the worktree, or signals. A same-uid sibling
+can always reach those; seccomp is the wrong instrument for them. They are
+**out of scope** for t11 and tracked opportunistically as **NEWNET**.
+
+### Proof model (fail-closed, never silent-pass)
+
+`tests/sandbox_escape.rs` (`--features test-redteam`) spawns the hostile child
+inside the real seccomp filter and asserts every arm above is contained; the suite
+LOUD-skips when `seccomp::available()` is false (so a seccomp-less kernel cannot
+yield a false green). The red-team binary uses a **fork-per-arm** harness: each
+KILL-prone escape runs in a forked child so the `SIGSYS` takes only that child and
+the reporter survives to print the verdict (`killed by SIGSYS` ⇒ blocked;
+`exited 0` ⇒ the escape ran — containment FAILED). The same suite runs in CI
+(`build-and-test` → `cargo test -p bwoc-harness --features test-redteam --test
+sandbox_escape`), so A ∧ B ∧ D are a **standing regression**, not a one-time check.
+
+**Phase 5 is FULLY signed off on t11 merge.** The remaining Phase 5 residual is t9
+(the cgroup `pids.max` per-turn process cap — a harness-availability DoS, not an
+escape); the macOS arm stays write-confinement-only (Linux is the egress-proof
+platform, mirroring t6/t7a).

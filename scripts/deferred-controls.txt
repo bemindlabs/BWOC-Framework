@@ -36,10 +36,10 @@ t9   /sys/fs/cgroup
 t9   cgroup.procs
 t9   pids.max
 
-# ── t11 — egress / syscall containment (the t7b half of t7) ─────────────────
-# Until this lands, the executor can still open sockets and reach abstract-
-# namespace sockets that an FS jail cannot fence.
-t11  seccomp
-t11  PR_SET_SECCOMP
-t11  SECCOMP_SET_MODE_FILTER
-t11  libseccomp
+# ── t11 — egress / syscall containment (the t7b half of t7) — LANDED ─────────
+# t11 (= t7b) is IMPLEMENTED: a seccomp-bpf egress filter (KILL_PROCESS deny set)
+# + the no-fd invariant (close_range + stdio socket audit) + a tight arch-guard
+# now contain network egress on Linux. It is therefore an ENFORCED control, not
+# a deferred one — its tokens (seccomp / PR_SET_SECCOMP / SECCOMP_SET_MODE_FILTER
+# / libseccomp) are REMOVED from this fence; the THREAT-MODEL enforced section
+# documents the live control instead. Do NOT re-add them here.

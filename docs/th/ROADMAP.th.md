@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ที่ active:** Phase 5 — *การแยกตัวของ turn-executor* (เสริมความแข็งแรงให้ self-hosted harness) t1–t7a ship แล้ว (re-exec process isolation, `setrlimit`, Landlock FS jail + กัน ptrace) **t8 — รั้วกั้นมาตรการที่เลื่อน — ship 2026-06-08** (gate ด้านความซื่อตรง) t9 (cgroup `pids.max`) และ t11 (egress seccomp/netns) ยังเลื่อน ถูกระบุชื่อ และถูกล้อมรั้วไว้ Phase ก่อนหน้า: Phase 3 *วยะ + Interconnect* DoD บรรลุ (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` ship แล้ว) Phase 4 spec fleet-governance ลงแล้ว DoD ของ Phase 1 v2.0 และ Phase 2 บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
+**Phase ที่ active:** Phase 5 — *การแยกตัวของ turn-executor* (เสริมความแข็งแรงให้ self-hosted harness) — **ลงนามครบถ้วนแล้ว (t11 merge แล้ว)** t1–t7a ship แล้ว (re-exec process isolation, `setrlimit`, Landlock FS jail + กัน ptrace) t8 รั้วกั้นมาตรการที่เลื่อน (gate ด้านความซื่อตรง) **t11 — การกักกัน network egress (seccomp + no-fd invariant, Linux, fail-closed)** เหลือเพียง t9 (เพดาน process ต่อ turn ด้วย cgroup `pids.max` — residual ด้าน availability) ที่ยังเลื่อน ถูกระบุชื่อ และถูกล้อมรั้วไว้ Phase ก่อนหน้า: Phase 3 *วยะ + Interconnect* DoD บรรลุ (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` ship แล้ว) Phase 4 spec fleet-governance ลงแล้ว DoD ของ Phase 1 v2.0 และ Phase 2 บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -176,19 +176,22 @@ harness ไม่ได้ และการกักกันทุกอย�
 | t6 | การกักกัน resource ต่อ turn ด้วย `setrlimit` (เพดาน memory เฉพาะ Linux) | ✓ |
 | t7a | process / FS jail ของ turn-executor (Landlock + กัน ptrace; C1, C4–C9) | ✓ |
 | t8 | **รั้วกั้นมาตรการที่เลื่อน** — SSOT (`scripts/deferred-controls.txt`) + CI fence-guard ตรึงตาราง fence ใน THREAT-MODEL, SSOT และ source จริงให้ตรงกัน phantom-control guard กันการอ้างถึงมาตรการที่เลื่อนโดยไม่มีคำกำกับ `// DEFERRED(tNN):` **เป็น gate ด้านความซื่อตรง ไม่ใช่ด้าน coverage** | ✓ |
+| t11 | **การกักกัน network egress (= t7b)** — seccomp-bpf deny set แบบ `KILL_PROCESS` (seccompiler, pure-Rust) + no-fd invariant (`close_range` + ตรวจ stdio) + arch-guard แน่น (kill ทั้ง non-native และ x32 renumber) fail-closed บน Linux พิสูจน์ด้วย arm A∧B∧D ของ red-team | ✓ |
+
+**Phase 5 ลงนามครบถ้วนแล้ว (t11 merge แล้ว)**
 
 ### เลื่อนออกไป (ถูกระบุชื่อ + ล้อมรั้วโดย t8 แต่ยังไม่ลงมือ)
 
 - **t9** — เพดานจำนวน process ต่อ turn จริง (cgroup v2 `pids.max`) จนกว่าจะลง ตัว
   กัน fork อย่างเดียวคือ `RLIMIT_NPROC` แบบ per-UID + RELATIVE best-effort → residual
-  ด้าน availability 🟠
-- **t11** (ครึ่ง t7b ของ t7) — การกักกัน egress / syscall (seccomp-bpf + netns)
-  จนกว่าจะลง executor ยังมี network egress เต็มที่ → 🟠
+  ด้าน availability 🟠 (เป็น DoS ต่อ harness ไม่ใช่การหนีออกจาก sandbox)
 
-**ขอบเขตการ ship ที่ผูกพัน (คำ sign-off ของ t8):** t1–t7a ship ได้ **เฉพาะ** เข้า
-context ที่ยอมรับ egress ได้ / แยก network จนกว่า t11 จะลง t8 **ไม่ใช่** ใบอนุญาตให้
-ship เข้า production context ที่เข้าถึงได้ผ่าน network และรับ input ที่เป็นอันตราย
-ดู [`THREAT-MODEL.th.md`](THREAT-MODEL.th.md#รั้วกั้นมาตรการที่เลื่อนออกไป-deferred-control-fence--t8)
+**ขอบเขตการ ship (ปรับปรุงที่ t11):** ข้อจำกัดเดิมของ t8 — ship ได้เฉพาะ context ที่
+ยอมรับ egress ได้ / แยก network — **ถูกยกเลิกบน Linux**: network egress ของ
+turn-executor ถูกกักกันแล้ว (t11, fail-closed) คำเตือนตามจริง: ตัวกัน fork ต่อ turn
+ยังเป็น best-effort จนกว่า t9 จะลง และ macOS ยังเป็น dev-only (ไม่มี Landlock/seccomp)
+ช่องทางลับ local แบบ uid เดียวกันอยู่นอกขอบเขต (NEWNET)
+ดู [`THREAT-MODEL.th.md`](THREAT-MODEL.th.md#การกักกัน-network-egress-t11--t7b--บังคับใช้แล้ว-enforced-linux)
 
 ---
 

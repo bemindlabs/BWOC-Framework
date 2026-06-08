@@ -34,8 +34,10 @@ child ไม่ได้ถืออะไรเลย
 >
 > **t7a ไม่ได้อ้าง** การแยกตัวด้วย mount-namespace
 >
-> **t7a ไม่ได้อ้าง** การกักกัน egress — network, ssh-agent และ abstract-socket
-> ยังเข้าถึงได้อยู่ และเป็นเรื่องของ **t7b / ticket t11**
+> **t7a (โดยลำพัง) ไม่ได้อ้าง** การกักกัน egress — นั่นคือครึ่ง **t7b / t11** ซึ่ง
+> ตอนนี้ **ลงแล้ว (LANDED)** (ดูหัวข้อ *การกักกัน network egress* ด้านล่าง) ตั้งแต่
+> t11 เป็นต้นมา network egress ของ executor ถูกกักกันบน Linux แล้ว t7a ยังคงเป็น
+> ครึ่ง FS/process ของการพิสูจน์
 
 จงใจ **ไม่** ใช้ถ้อยคำว่า "no shared writable mount" เพราะ shared mount ยังคงมีอยู่
 สิ่งที่ t7a ตัดออกไปคือ *การเอื้อมถึง* filesystem ของ executor เข้าไปใน harness
@@ -53,24 +55,55 @@ child ไม่ได้ถืออะไรเลย
 | **C8** — binary RO; checkpoint อยู่นอก jail | **M3** (เขียนทับ `current_exe`), **M2** (ปลอม trust latch) | binary เป็น read+exec เท่านั้น (เขียนไม่ได้) ส่วน checkpoint ของ SessionTrust อยู่นอก rw set ของ jail child จึงเขียนไม่ได้ — latch เขียนโดย parent เท่านั้น |
 | **C9** — อ่าน fd3 แบบมีขอบเขต | การใช้ IPC ในทางที่ผิด / ลักลอบส่ง descriptor | parent อ่านหนึ่งเฟรมด้วย timeout จำกัด, จำกัดความยาวสูงสุด, ปิด socket หลังหนึ่งเฟรม และ **ไม่มี `cmsg` buffer** (child จึงส่ง descriptor กลับผ่าน `SCM_RIGHTS` ไม่ได้) |
 
-## ส่วนที่ยังเหลือ — สิ่งที่ยัง **ไม่** ถูกกักกัน (t7b / t11)
+## การกักกัน network egress (t11 / t7b — บังคับใช้แล้ว ENFORCED, Linux)
 
-t7a เป็นครึ่ง **process/FS** ของ t7 เดิม ส่วนครึ่ง egress ถูกเลื่อนไปเป็น
-**t7b (ticket t11)** และยังเปิดอยู่อย่างชัดเจน:
+t11 (= t7b) คือครึ่ง egress ของ t7 เดิม และตอนนี้ **ลงมือทำแล้ว** (เป็น control ที่
+บังคับใช้ ไม่ใช่ residual อีกต่อไป) ทฤษฎีบทการปิด (closure theorem) ที่การพิสูจน์
+ตั้งอยู่บน (yudi รับมาจากผล red-team ของ nezha):
 
-- **Network egress** — executor ยังเปิด socket ได้ (DNS, TCP, UDP)
-- **ssh-agent / abstract sockets** — `SSH_AUTH_SOCK` ถูก scrub ออกจาก env (C6)
-  แล้ว แต่ abstract-namespace socket ที่เข้าถึงได้โดยไม่ต้องมี path นั้น FS jail
-  กักไม่ได้ ต้องใช้ seccomp/netns (t7b)
+> **egress ถูกกักกัน ⟺ (A) child *หา* network fd มาไม่ได้ ∧ (B) มัน *ไม่ถือ* ไว้เลย
+> ∧ (D) arch-guard แน่นหนา**
+
+**no-fd invariant (A ∧ B)** คือ control หลัก ส่วน deny ฝั่งส่ง (send) เป็น
+belt-and-suspenders สำหรับ descriptor ที่ไม่ควรมีอยู่ตั้งแต่แรก แต่ละขาพิสูจน์ด้วย
+arm ของ red-team (`tests/sandbox_escape.rs`, `--features test-redteam`) ไม่ใช่สมมติเอา
+
+| Control | ภัยที่ปิด | กลไก |
+|---|---|---|
+| **t11-A** — หา network fd ไม่ได้ | executor เปิด socket / ขโมยมา (DNS, TCP, UDP, abstract-namespace AF_UNIX, `pidfd_getfd` ขโมย fd, io_uring) | seccomp-bpf `SECCOMP_RET_KILL_PROCESS` deny set (socket/connect/accept*/bind/listen/getpeername/sendmmsg/recvmmsg/io_uring_*/pidfd_getfd/pidfd_open) คอมไพล์ด้วย **seccompiler** (pure-Rust) ใน parent ติดตั้งผ่าน `prctl` ใน `pre_exec` ของ child ใช้ KILL (ไม่ใช่ ERRNO) เพื่อไม่ให้ child ที่เป็นศัตรูได้ oracle สำหรับไล่หมายเลข syscall ตระกูล send/recv แบบ **unary** และ `socketpair` แบบ *local* ยังอนุญาต (IPC AF_UNIX ของ executor + tokio ต้องใช้) deny เฉพาะตัวแปร batched `*mmsg` เท่านั้น |
+| **t11-B** — ไม่ถือ network fd | fd socket ที่รั่ว/สืบทอดมา (รวมถึงที่ **>= 1024**) คือเป้าหมาย egress ที่พร้อมใช้ | `close_range(EXECUTOR_FD+1, ~0)` ปิด descriptor table ทั้งก้อน (ลูป `4..1024` เดิมพลาดตัวที่ >= 1024) บวกการตรวจ stdio (0/1/2) ที่ชี้ stdio ซึ่งเป็น socket ไปที่ `/dev/null` |
+| **t11-D** — arch-guard แน่น | syscall ผ่าน i386 `int 0x80` หรือ x32-renumber (`nr | __X32_SYSCALL_BIT`) เลี่ยง deny set ของ x86_64 | arch prologue ของ seccompiler KILL ทุก `seccomp_data.arch` ที่ไม่ใช่ native และ deny set ยังบรรจุตัวแปร x32-renumber ด้วย พิสูจน์ทั้งคู่ด้วย arm ของ red-team (การ KILL ของ prologue **พิสูจน์ด้วยเทสต์** ไม่ใช่สมมติเอา) |
+| **t11 / C4** — กัน ptrace เชิงลึก | child uid เดียวกันอ่าน RAM ของ parent ผ่าน ptrace/process_vm_readv | ptrace set (ptrace/process_vm_readv/process_vm_writev/kcmp/perf_event_open) อยู่ใน KILL deny set ซ้อนบน `PR_SET_DUMPABLE(0)` ของ parent |
+
+**Fail-closed (Linux):** การกักกัน egress เป็นข้อบังคับ ถ้าติดตั้ง filter ไม่ได้
+turn-executor ฝั่ง production จะ **ปฏิเสธที่จะรัน** (ไม่ลดระดับไปเป็น executor ที่ไม่มี
+filter เด็ดขาด) ตัวติดตั้ง seccomp ตั้ง `PR_SET_NO_NEW_PRIVS` แบบ idempotent (ไม่พึ่ง
+Landlock) seccomp คงอยู่ข้าม `execve` และสืบทอดไปยัง grandchild ของ `run_command`
+ด้วย มันจึงถูกกักกัน egress เช่นกัน
+
+**ขอบเขต (ตามจริง)** นี่คือ **การกักกัน network egress (Linux)** ไม่ได้อ้างถึง
+ช่องทางลับ local แบบ uid เดียวกัน — OS keyring, SysV-IPC, POSIX message queue,
+ไฟล์ที่แชร์ใต้ worktree หรือ signal: sibling uid เดียวกันเข้าถึงสิ่งเหล่านั้นได้เสมอ
+seccomp เป็นเครื่องมือผิดประเภทสำหรับมัน จึง **อยู่นอกขอบเขต** ของ t11 (ติดตามแบบ
+ฉวยโอกาสในชื่อ NEWNET)
+
+## ส่วนที่ยังเหลือ — สิ่งที่ยัง **ไม่** ถูกกักกัน
+
 - **การแยก mount-namespace** — ไม่ได้อ้าง; mount ของ worktree ยังแชร์กันอยู่
-- **การ confine การอ่านบน macOS** — เป็น Linux-only; บน macOS jail ของ executor
-  เป็น write-confinement เท่านั้น (arm อ่าน/ptrace/proc ของ red-team จะ LOUD-skip)
+- **ช่องทางลับ local แบบ uid เดียวกัน** — อยู่นอกขอบเขต (ดู *ขอบเขต* ด้านบน)
+- **เพดาน process ต่อ turn** — มีเพียงตัวกัน fork แบบ per-UID `RLIMIT_NPROC`
+  best-effort จนกว่า controller `pids.max` ของ cgroup (t9) จะลง (เป็น DoS ต่อ
+  availability ของ harness ไม่ใช่การหนีออกจาก sandbox)
+- **การ confine การอ่าน/egress บน macOS** — เป็น Linux-only; บน macOS jail ของ
+  executor เป็น write-confinement เท่านั้น และ seccomp ใช้ไม่ได้ (arm อ่าน/ptrace/
+  egress ของ red-team จะ LOUD-skip)
 
 ## รั้วกั้นมาตรการที่เลื่อนออกไป (deferred-control fence — t8)
 
 Phase 5 t1–t7a เสริมความแข็งแรงให้ turn-executor จนถึงขอบเขต **process/FS** แล้ว
-แต่ยังมีการกักกันอีกสองกลุ่มทั้งกลุ่มที่ **ยังเปิดอยู่ (known-open)** และถูกเลื่อน
-ออกไปเป็น ticket ภายหลัง t8 **ไม่ได้** ลงมือสร้างมัน — แต่สร้าง *รั้ว* เพื่อให้การ
+และ t11 ปิดขอบเขต **egress** (ด้านบน) เหลือการกักกันอีกหนึ่งกลุ่มที่ **ยังเปิดอยู่
+(known-open)** และถูกเลื่อนออกไป (t9 — เพดาน process ต่อ turn จริง) t8 **ไม่ได้**
+ลงมือสร้างมัน — แต่สร้าง *รั้ว* เพื่อให้การ
 ขาดหายของมันลืมไม่ได้และปลอมไม่ได้ คือ single source of truth ที่
 `scripts/deferred-controls.txt` ระบุชื่อมาตรการที่ขาดด้วยสะกดจริงระดับ kernel/library
 มี CI guard ที่ `scripts/check-deferred-fence.sh` คอยตรึงตาราง, SSOT และ source
@@ -87,22 +120,23 @@ token ใน SSOT เป๊ะ และ ticket ต้องตรงกัน�
 | Ticket | มาตรการที่เลื่อน | Real spellings (guard grep หาใน live .rs) | residual ตามจริง — สิ่งที่ยังเปิดอยู่ | ความรุนแรง |
 |---|---|---|---|---|
 | **t9** | เพดานจำนวน process ต่อ turn จริง (cgroup v2) | `cgroup` · `/sys/fs/cgroup` · `cgroup.procs` · `pids.max` | ตัวกันการ fork อย่างเดียวที่มีตอนนี้คือ RLIMIT_NPROC ซึ่งเป็นแบบ **per-UID และ RELATIVE** (usage ที่ใช้จริง + headroom) ไม่ใช่เพดานสัมบูรณ์ต่อ turn ตัว child ของ turn-executor re-exec binary ของ harness และ **รันด้วย UID เดียวกับ harness เอง** — **ไม่ได้** ถูกแยกไปอยู่ UID เฉพาะต่างหาก ดังนั้น fork-bomb ใน child นั้นจะเติมตาราง process **ระดับ per-UID** จนเต็มและแย่ง process slot ของตัว harness เองได้ เป็น **denial-of-service ต่อ harness (availability) ไม่ใช่การหนีออกจาก sandbox** เพดาน pid ต่อ turn จริงต้องใช้ controller ของ cgroup v2 | 🟠 |
-| **t11** | การกักกัน egress / syscall (ครึ่ง t7b) | `seccomp` · `PR_SET_SECCOMP` · `SECCOMP_SET_MODE_FILTER` · `libseccomp` | FS jail ไม่ได้กั้น syscall executor ยังเปิด socket ได้ (DNS / TCP / UDP) และเอื้อมถึง abstract-namespace socket ที่ไม่มี path บน filesystem ได้ **ยังไม่มี syscall filter** จนกว่านโยบาย seccomp-bpf จะลง ดังนั้น turn ที่ถูกผู้โจมตีควบคุมยังมี network egress เต็มที่ | 🟠 |
 
 <!-- DEFERRED-FENCE:END -->
 
-### ขอบเขตการอนุญาตของ t8 (คำ sign-off ที่ผูกพัน)
+### ขอบเขตการอนุญาต (คำ sign-off ที่ผูกพัน) — ปรับปรุงที่ t11
 
-t8 ปิด gate ด้าน **ความซื่อตรง (honesty)** ไม่ใช่ปิดตัวมาตรการ คำ sign-off จึง
-จำกัด *ว่า* t1–t7a จะ ship ไปที่ไหนได้:
+t8 ปิด gate ด้าน **ความซื่อตรง (honesty)** จากนั้น t11 ปิดตัว control ด้าน egress ที่
+t8 กั้นรั้วไว้ คำ sign-off เดิมจึงถูกยกเลิกสำหรับตัวบล็อกเกอร์เดิม:
 
-> **t1–t7a ship ได้เฉพาะเข้า execution context ที่ยอมรับ egress ได้ / แยก network
-> เท่านั้น จนกว่า t11 จะลง** เพราะ turn-executor ยังมี network egress เต็มที่ (t11)
-> และมีเพียงตัวกัน fork แบบ per-UID best-effort (t9) t8 จึง **ไม่ใช่** ใบอนุญาตให้
-> ship harness เข้าสู่ production context ที่รับ input ที่เป็นอันตรายผ่าน network
-> ในการ deploy ที่เข้าถึงได้ผ่าน network และรับ input ที่ไม่เชื่อถือ residual ด้าน
-> egress ข้างต้นยังมีชีวิต ต้องปิดด้วย t11 หรือชดเชยด้วยขอบเขต network นอกแบนด์
-> (netns / firewall / ไม่มี route) ก่อน
+> **Phase 5 ลงนามครบถ้วนแล้ว (t11 merge แล้ว)** บน **Linux** network egress ของ
+> turn-executor ถูกกักกันแล้ว (seccomp + no-fd invariant + arch-guard แน่น แบบ
+> fail-closed) ข้อจำกัดเดิม — *"ship ได้เฉพาะ context ที่ยอมรับ egress ได้ / แยก
+> network จนกว่า t11 จะลง"* — **ถูกยกเลิกบน Linux** เหลือคำเตือนตามจริงสองข้อ:
+> (1) ตัวกัน fork ต่อ turn ยังเป็น per-UID `RLIMIT_NPROC` best-effort จนกว่า **t9**
+> (cgroup `pids.max`) จะลง — เป็น DoS ต่อ availability ของ harness ไม่ใช่การหนี;
+> (2) บน **macOS** ทั้ง Landlock และ seccomp ใช้ไม่ได้ (write-confinement เท่านั้น)
+> macOS จึงยังเป็นแพลตฟอร์มสำหรับ dev เท่านั้น ส่วนช่องทางลับ local แบบ uid เดียวกัน
+> อยู่นอกขอบเขตโดยการออกแบบ (NEWNET)
 
 ## การพิสูจน์
 

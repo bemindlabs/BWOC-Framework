@@ -89,6 +89,10 @@ libc = "0.2"
 # Landlock LSM bindings for kernel-enforced filesystem access control.
 # Allowed here: bwoc-harness is the dep-quarantine crate for heavy/platform deps.
 landlock = "0.4"
+# Phase 5 t11 — pure-Rust seccomp-bpf compiler (Firecracker). NOT libseccomp
+# (no C dep, no FFI to a system lib). Compiles the egress deny-set filter in the
+# parent; installed in the child's pre_exec. Dep-quarantined to bwoc-harness.
+seccompiler = "0.5"
 
 [dev-dependencies]
 # HTTP mock server for offline provider tests
