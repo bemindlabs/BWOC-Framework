@@ -75,7 +75,7 @@ fn availability_probe_is_honest() {
 //
 // The proof isolates the cgroup from t6's RLIMIT_NPROC: NPROC headroom is set
 // HUGE (4096), so the per-UID fork guard would let all 60 subshells through. With
-// `pids.max` low (8), a containment near the cap can ONLY be the cgroup — not
+// `pids.max` low (20), a containment far below 60 can ONLY be the cgroup — not
 // NPROC. So `created << 60` is unambiguous t9 evidence.
 #[test]
 fn pids_max_contains_fork_bomb_when_delegated() {
@@ -119,22 +119,30 @@ fn pids_max_contains_fork_bomb_when_delegated() {
     let md = markers.to_str().unwrap();
 
     // HUGE NPROC headroom so the per-UID floor would pass all 60 forks; LOW
-    // pids.max so only the cgroup can contain them. BOUNDED: 60 bg subshells, each
-    // touches a marker then sleeps 3s; a working cap ⇒ far fewer than 60 markers.
+    // pids.max (20) so only the cgroup can contain them. 20 is deliberately above
+    // the executor child's own baseline (its runtime threads + the run_command
+    // shell) so the child can spawn the bomb, yet far below 60 so containment is
+    // unambiguous. BOUNDED: 60 bg subshells, each touches a marker then sleeps 3s.
     // SAFETY: env mutation serialized by ENV_GUARD; removed before unlock.
     unsafe {
         std::env::set_var("BWOC_TURN_RLIMIT_NPROC_HEADROOM", "4096");
-        std::env::set_var("BWOC_TURN_PIDS_MAX", "8");
+        std::env::set_var("BWOC_TURN_PIDS_MAX", "20");
     }
+    // Count via a glob + `$#` (shell builtins, NO extra fork) so the tally itself
+    // is not starved by the cap it is measuring.
     let script = format!(
-        "for i in $(seq 1 60); do ( : > {md}/p.$i; sleep 3 ) & done; sleep 1; ls {md} | wc -l"
+        "for i in $(seq 1 60); do ( : > {md}/p.$i; sleep 3 ) & done; set -- {md}/p.*; echo $#"
     );
     let args = serde_json::json!({ "command": script }).to_string();
-    let out = run_isolated(
+    // The cap counts ALL tasks in the leaf (threads included), so a tight cap can
+    // starve the executor child's OWN runtime mid-turn and drop the IPC response.
+    // That is fine: the ENFORCEMENT EVIDENCE is the on-disk marker count (forks
+    // that the cgroup let through), not the child's reply — a fork bomb may well
+    // kill the very process trying to report on it. So do NOT unwrap.
+    let res = run_isolated(
         &harness_bin(),
         &inv("run_command", &args, work.path(), true),
-    )
-    .unwrap();
+    );
     unsafe {
         std::env::remove_var("BWOC_TURN_RLIMIT_NPROC_HEADROOM");
         std::env::remove_var("BWOC_TURN_PIDS_MAX");
@@ -142,14 +150,21 @@ fn pids_max_contains_fork_bomb_when_delegated() {
 
     let created = std::fs::read_dir(&markers).map(|d| d.count()).unwrap_or(0);
     eprintln!(
-        "[t9] pids.max=8 bomb: {created}/60 subshells forked (NPROC headroom=4096 would allow all \
-         60); out={:?}",
-        out.content.trim()
+        "[t9] pids.max=20 bomb: {created}/60 subshells forked (NPROC headroom=4096 would allow all \
+         60); child reply={:?}",
+        res.as_ref().map(|o| o.content.trim().to_string())
     );
-    // < 30 is well below the 60 NPROC would have allowed, so the cgroup cap fired.
+    // Some forks must have run (the command executed), but FAR below the 60 that
+    // NPROC (headroom 4096) would have allowed — so the cgroup `pids.max` is what
+    // bound it. pids.max=20 can never yield 40 markers, so `< 40` is unambiguous.
     assert!(
-        created < 30,
-        "cgroup pids.max did not contain the fork bomb: {created}/60 forked despite pids.max=8 \
-         (NPROC headroom was 4096, so this can only be the cgroup failing to bind)"
+        created >= 1,
+        "the run_command shell never forked a single subshell — the turn did not run, so this is \
+         not a valid pids.max enforcement measurement"
+    );
+    assert!(
+        created < 40,
+        "cgroup pids.max did not contain the fork bomb: {created}/60 forked despite pids.max=20 \
+         (NPROC headroom was 4096, so only the cgroup could bound this below 60)"
     );
 }
