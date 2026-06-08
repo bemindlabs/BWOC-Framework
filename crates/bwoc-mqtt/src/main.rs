@@ -27,9 +27,11 @@ struct Cli {
 enum Cmd {
     /// Publish one envelope (JSON) to a broker topic.
     Publish {
-        /// Broker URL, e.g. `mqtt://host:1883`.
+        /// Broker URL, e.g. `mqtt://[user:pass@]host:1883`. Optional — falls back
+        /// to `BWOC_MQTT_BROKER_FILE` (a file holding the url) then `BWOC_MQTT_BROKER`,
+        /// keeping credentials out of argv for daemons.
         #[arg(long)]
-        broker: String,
+        broker: Option<String>,
         /// Topic to publish to (e.g. `bwoc/agent-neo/inbox`).
         #[arg(long)]
         topic: String,
@@ -42,9 +44,11 @@ enum Cmd {
     },
     /// Subscribe and deliver received envelopes into agent inboxes.
     Serve {
-        /// Broker URL, e.g. `mqtt://host:1883`.
+        /// Broker URL, e.g. `mqtt://[user:pass@]host:1883`. Optional — falls back
+        /// to `BWOC_MQTT_BROKER_FILE` (a file holding the url) then `BWOC_MQTT_BROKER`,
+        /// keeping credentials out of argv for daemons.
         #[arg(long)]
-        broker: String,
+        broker: Option<String>,
         /// Workspace root holding `.bwoc/agents.toml` (recipient registry).
         #[arg(long)]
         workspace: PathBuf,
@@ -67,6 +71,27 @@ fn main() -> ExitCode {
     }
 }
 
+/// Resolve the broker URL from the flag, else `BWOC_MQTT_BROKER_FILE` (read the
+/// file), else `BWOC_MQTT_BROKER`. Letting a daemon source the url from a file
+/// or env keeps credentials out of the process argv (visible in `ps`).
+fn resolve_broker(flag: Option<String>) -> Result<String, MqttError> {
+    if let Some(b) = flag.filter(|s| !s.is_empty()) {
+        return Ok(b);
+    }
+    if let Ok(path) = std::env::var("BWOC_MQTT_BROKER_FILE") {
+        let url = std::fs::read_to_string(&path)?.trim().to_string();
+        if !url.is_empty() {
+            return Ok(url);
+        }
+    }
+    if let Ok(url) = std::env::var("BWOC_MQTT_BROKER") {
+        if !url.is_empty() {
+            return Ok(url);
+        }
+    }
+    Err(MqttError::MissingBroker)
+}
+
 fn run(cli: Cli) -> Result<(), MqttError> {
     match cli.cmd {
         Cmd::Publish {
@@ -75,7 +100,7 @@ fn run(cli: Cli) -> Result<(), MqttError> {
             payload,
             client_id,
         } => {
-            let broker: Broker = parse_broker(&broker)?;
+            let broker: Broker = parse_broker(&resolve_broker(broker)?)?;
             let payload = match payload {
                 Some(p) => p,
                 None => {
@@ -99,7 +124,7 @@ fn run(cli: Cli) -> Result<(), MqttError> {
             topic,
             client_id,
         } => {
-            let broker = parse_broker(&broker)?;
+            let broker = parse_broker(&resolve_broker(broker)?)?;
             serve(&broker, &workspace, &topic, &client_id, |line| {
                 println!("{line}");
             })

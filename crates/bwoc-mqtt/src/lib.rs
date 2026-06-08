@@ -44,6 +44,10 @@ pub enum MqttError {
     Workspace(#[from] bwoc_core::workspace::WorkspaceError),
     #[error("payload is not a JSON object with a string `to` field")]
     BadEnvelope,
+    #[error(
+        "no broker: pass --broker, or set BWOC_MQTT_BROKER_FILE (path to a file holding the url) or BWOC_MQTT_BROKER"
+    )]
+    MissingBroker,
 }
 
 /// A parsed broker address, with optional credentials.
