@@ -85,6 +85,20 @@ pub enum RouteTarget {
     Gateway { url: String },
 }
 
+/// Redact any `user:pass@` userinfo from a broker URL for safe display in logs
+/// and listings — a broker may carry a password that must never be printed.
+/// `mqtt://u:p@host:1883` becomes `mqtt://host:1883`; a URL without userinfo (or
+/// without a scheme) is returned unchanged.
+pub fn redact_broker(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let host = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
+            format!("{scheme}://{host}")
+        }
+        None => url.to_string(),
+    }
+}
+
 /// How a [`Route`] matches a recipient id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteKind {
@@ -412,6 +426,19 @@ mod tests {
     }
 
     // ── Happy-path deserialization ────────────────────────────────────────────
+
+    #[test]
+    fn redact_broker_strips_userinfo() {
+        assert_eq!(
+            redact_broker("mqtt://bwoc:s3cret@host:1883"),
+            "mqtt://host:1883"
+        );
+        // no userinfo / no scheme → unchanged
+        assert_eq!(redact_broker("mqtt://host:1883"), "mqtt://host:1883");
+        assert_eq!(redact_broker("host:1883"), "host:1883");
+        // user-only userinfo is still stripped
+        assert_eq!(redact_broker("mqtt://bwoc@host"), "mqtt://host");
+    }
 
     #[test]
     fn load_exact_agent_route() {

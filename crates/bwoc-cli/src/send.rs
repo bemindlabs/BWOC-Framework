@@ -353,16 +353,21 @@ fn send(args: SendArgs) -> Result<(), SendError> {
             // never links an MQTT client). The peer's `bwoc-mqtt serve` delivers
             // it into the recipient's inbox on the far side.
             let bin = bwoc_core::exec::binary_or_name("bwoc-mqtt");
-            // Pipe the envelope via stdin, NOT `--payload`: a command-line arg
-            // would expose the signed envelope in `ps`/process listings and hit
-            // ARG_MAX (E2BIG) for long messages. `bwoc-mqtt publish` reads the
-            // payload from stdin when `--payload` is omitted.
+            // Redacted form (strip any `user:pass@` userinfo) for logs and errors —
+            // the broker may carry credentials that must never be printed.
+            let broker_display = bwoc_core::routing::redact_broker(&broker);
+            // Pass the broker (which may carry credentials) via the environment,
+            // NOT `--broker`: a command-line arg would expose the password in
+            // `ps`/process listings. The envelope likewise goes over stdin, not
+            // `--payload` (ARG_MAX + `ps` exposure). `bwoc-mqtt` resolves the
+            // broker from `BWOC_MQTT_BROKER` when `--broker` is omitted.
             let mut child = std::process::Command::new(&bin)
-                .args(["publish", "--broker", &broker, "--topic", &topic])
+                .args(["publish", "--topic", &topic])
+                .env("BWOC_MQTT_BROKER", &broker)
                 .stdin(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|e| SendError::MqttSpawn {
-                    broker: broker.clone(),
+                    broker: broker_display.clone(),
                     source: e,
                 })?;
             child
@@ -371,16 +376,16 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                 .expect("stdin piped above")
                 .write_all(line.as_bytes())
                 .map_err(|e| SendError::MqttSpawn {
-                    broker: broker.clone(),
+                    broker: broker_display.clone(),
                     source: e,
                 })?;
             let status = child.wait().map_err(|e| SendError::MqttSpawn {
-                broker: broker.clone(),
+                broker: broker_display.clone(),
                 source: e,
             })?;
             if !status.success() {
                 return Err(SendError::MqttPublish {
-                    broker: broker.clone(),
+                    broker: broker_display.clone(),
                     topic: topic.clone(),
                 });
             }
@@ -389,7 +394,7 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                 "Published to {recipient_id} (from {from}) [id {message_id}{reply_suffix}]: {}",
                 args.message,
             );
-            println!("  MQTT: {broker} → {topic} (at {ts})");
+            println!("  MQTT: {broker_display} → {topic} (at {ts})");
             println!();
         }
         Target::Gateway { url } => {
