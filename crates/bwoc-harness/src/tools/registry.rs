@@ -42,6 +42,12 @@ impl ToolRegistry {
     pub fn get(&self, name: &str) -> Option<Arc<dyn ToolImpl>> {
         self.tools.get(name).cloned()
     }
+
+    /// The names of every registered tool. Used by the turn-executor to decide
+    /// which tools are marshallable across the process boundary (Phase 5 t5).
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
 }
 
 impl Default for ToolRegistry {

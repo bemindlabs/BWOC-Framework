@@ -16,12 +16,32 @@
 //! reads the same envelope before the lead runs gates.
 
 use std::path::Path;
+// `PathBuf` only feeds the `#[cfg(unix)]` FS-jail path (`git_common_dir`); gate
+// the import so Windows — where the jail is absent by design — has no unused use.
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 /// Path, relative to a worktree, where the worker writes its result envelope
 /// and the lead reads it.
 pub const RESULT_FILE: &str = ".bwoc/worker-result.json";
+
+/// Phase 5 t7a / C7 — config keys forced on every `git` the PARENT runs over a
+/// (possibly child-touched) worktree. Command-line `-c` overrides outrank any
+/// repo-local `.git/config`, so a worktree that planted a `core.hooksPath`,
+/// `core.fsmonitor`, `diff.external`, `core.pager`, or `core.sshCommand` to get
+/// code executed when the parent shells out to git is neutralized. Defence in
+/// depth on top of the FS jail (the spawned git is also Landlock/sandbox-exec
+/// confined to the worktree + its git dir).
+const GIT_HARDENING: &[&str] = &[
+    "core.hooksPath=/dev/null",
+    "core.fsmonitor=false",
+    "core.pager=cat",
+    "core.sshCommand=/bin/false",
+    "diff.external=",
+    "protocol.ext.allow=never",
+];
 
 /// Final assistant messages can be long; the envelope keeps a bounded preview
 /// so the lead's log and any downstream reviewer stay readable.
@@ -74,16 +94,82 @@ fn parse_numstat(numstat: &str) -> (u32, u32, u32) {
 }
 
 /// Run `git -C <worktree> <args…>`, returning trimmed stdout on exit 0.
+///
+/// Phase 5 t7a / C7 — the worktree may have been mutated by an isolated child
+/// turn, so it is **untrusted** here. Two layers protect the parent:
+///
+/// 1. [`GIT_HARDENING`] `-c` overrides neutralize config-driven RCE vectors;
+/// 2. the git process runs inside the same FS jail (Landlock on Linux,
+///    sandbox-exec write-confinement on macOS), rw-restricted to the worktree +
+///    its git common dir, so even an unforeseen vector cannot read secrets or
+///    write outside the worktree.
 fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(worktree)
-        .args(args)
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(worktree);
+    for kv in GIT_HARDENING {
+        cmd.arg("-c").arg(kv);
+    }
+    cmd.args(args);
+    // C7 — point global/system config at /dev/null. Two wins: git never reads
+    // `~/.gitconfig` / `/etc/gitconfig` (which the FS jail would `EACCES`, so a
+    // diff/ls-files would otherwise fail), and a malicious global config cannot
+    // reintroduce a hook/pager/fsmonitor vector. The repo-local `.git/config`
+    // (inside the jail's rw set) is still read but is fully overridden by the
+    // `-c` flags above.
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+
+    // C7 — confine git to the worktree + its git dir. Best-effort: on a kernel
+    // without Landlock (or a non-jail platform) the `-c` hardening above still
+    // stands; `jail_command` emits a LOUD warning, never a silent pass.
+    //
+    // The process FS jail (`jail::jail_command`: Landlock on Linux, sandbox-exec
+    // write-confine on macOS) is `#[cfg(unix)]` by design. On Windows it is
+    // simply ABSENT — git here runs with the cross-platform `-c` config
+    // hardening above but no FS jail. Gate the call so the crate compiles on
+    // Windows; do NOT stub a no-op jail that would falsely claim confinement.
+    #[cfg(unix)]
+    {
+        let spec = crate::jail::JailSpec::for_git(worktree, git_common_dir(worktree).as_deref());
+        let _ = crate::jail::jail_command(&mut cmd, &spec);
+    }
+
+    let out = cmd.output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Resolve the git **common dir** for `worktree` so the C7 jail can grant git
+/// rw there (a linked worktree's gitdir lives outside the worktree). Returns
+/// `None` for a standard repo (`.git` is a dir under the worktree, already in
+/// the jail's rw set) or when resolution fails (best-effort — the jail then
+/// covers only the worktree, and the diff summary degrades to zero rather than
+/// breaking).
+///
+/// `#[cfg(unix)]`: its sole caller is the FS-jail spec in [`git_output`], which
+/// is itself unix-only. Windows has no jail, so it needs no common-dir lookup.
+#[cfg(unix)]
+fn git_common_dir(worktree: &Path) -> Option<PathBuf> {
+    let dot_git = worktree.join(".git");
+    let meta = std::fs::symlink_metadata(&dot_git).ok()?;
+    if meta.is_dir() {
+        return None;
+    }
+    // Linked worktree: `.git` is a file `gitdir: <path>`.
+    let content = std::fs::read_to_string(&dot_git).ok()?;
+    let raw = content.lines().find_map(|l| l.strip_prefix("gitdir:"))?;
+    let mut gitdir = PathBuf::from(raw.trim());
+    if gitdir.is_relative() {
+        gitdir = worktree.join(gitdir);
+    }
+    // gitdir = <repo>/.git/worktrees/<name>; the common dir is <repo>/.git,
+    // which holds both this worktree's gitdir and the shared objects/refs.
+    gitdir
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .or(Some(gitdir))
 }
 
 /// The structured outcome of one worker run, written to [`RESULT_FILE`].

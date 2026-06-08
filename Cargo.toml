@@ -58,6 +58,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Unix path stays on std's UnixListener/UnixStream, and bwoc-core never takes
 # it (dep-quarantine HARD RULE).
 interprocess = "2.2"
+# Property-based testing — DEV-DEPENDENCY ONLY. Used by bwoc-core (trust fuzz)
+# and bwoc-harness (ingress-labeling invariants). Never a normal dependency:
+# the dep-quarantine keeps bwoc-core's runtime graph to serde/toml/thiserror.
+proptest = "1"
 
 [profile.release]
 lto = "thin"

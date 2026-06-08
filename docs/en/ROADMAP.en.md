@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Trust v2 signed envelopes have since shipped (the `bwoc-signing` crate), and the Tier 2 memory reference implementation (`bwoc-deep-memory`) has since shipped too — closing the last deferred Phase 3 item. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Active phase:** Phase 5 — *turn-executor isolation* (self-hosted harness hardening) — **FULLY signed off (t11 merged).** t1–t7a shipped (re-exec process isolation, `setrlimit`, Landlock FS jail + anti-ptrace); t8 the deferred-control fence (honesty gate); **t11 — network-egress containment (seccomp + the no-fd invariant, Linux, fail-closed)**. Only t9 (cgroup `pids.max` per-turn process cap — an availability residual) remains deferred, named, and fenced. Earlier phases: Phase 3 *vaya + interconnect* DoD met (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` since shipped); Phase 4 fleet-governance spec landed; Phase 1 v2.0 and Phase 2 DoDs met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -155,6 +155,43 @@ These are realized by maintainers outside the original authors using the framewo
 - Fleet dashboard — Aparihāniya-dhamma 7 governance applied to a real multi-agent installation. **Spec landed 2026-05-23** ([`FLEET-GOVERNANCE.en.md`](FLEET-GOVERNANCE.en.md)); real-fleet validation pending.
 - BWOC vocabulary (Yoniso manasikāra checks, Mattaññutā caps, Sīla baselines, Kalyāṇamitta trust scores) observed in codebases unaffiliated with this project (three-year success).
 - Cross-vendor production fleet pattern in use at more than one organization.
+
+---
+
+## Phase 5 — turn-executor isolation (self-hosted harness hardening)
+
+**Definition of done:** an approved tool call runs in a process that cannot read
+or mutate the harness, and every containment Phase 5 does **not** yet provide is
+named, scoped, and fenced so it cannot be forgotten.
+
+### Shipped in Phase 5
+
+| Ticket | Item | Status |
+|---|---|---|
+| t1 | Total ingress trust labeling | ✓ |
+| t2 | Layer-0 capability gate (untrusted turns read-only) | ✓ |
+| t3 | Capability-graded gate + taint propagation | ✓ |
+| t4 | `PURE_READ_TOOLS` proven egress-clean | ✓ |
+| t5 | Per-turn process isolation via re-exec | ✓ |
+| t6 | Per-turn `setrlimit` resource containment (memory cap Linux-only) | ✓ |
+| t7a | Turn-executor process / FS jail (Landlock + anti-ptrace; C1, C4–C9) | ✓ |
+| t8 | **Deferred-control fence** — SSOT (`scripts/deferred-controls.txt`) + CI fence-guard keep the THREAT-MODEL fence table, the SSOT, and live source in lock-step; phantom-control guard blocks referencing a deferred control without a `// DEFERRED(tNN):` admission. **Honesty gate, not coverage.** | ✓ |
+| t11 | **Network-egress containment (= t7b)** — seccomp-bpf `KILL_PROCESS` deny set (seccompiler, pure-Rust) + the no-fd invariant (`close_range` + stdio audit) + a tight arch-guard (non-native + x32 renumber killed). Fail-closed on Linux. Proven by the A∧B∧D red-team arms. | ✓ |
+
+**Phase 5 is FULLY signed off (t11 merged).**
+
+### Deferred (named + fenced by t8, not implemented)
+
+- **t9** — true per-turn process cap (cgroup v2 `pids.max`). Until it lands the
+  only fork guard is `RLIMIT_NPROC`, per-UID + RELATIVE best-effort → 🟠
+  availability residual (a harness DoS, not a sandbox escape).
+
+**Ship-scope (updated at t11):** the earlier t8 restriction — ship only into
+egress-acceptable / network-isolated contexts — is **lifted on Linux**: the
+turn-executor's network egress is now contained (t11, fail-closed). Honest
+caveats: the per-turn fork guard is still best-effort until t9, and macOS stays
+dev-only (no Landlock/seccomp). Local same-uid covert channels are out of scope
+(NEWNET). See [`THREAT-MODEL.en.md`](THREAT-MODEL.en.md#network-egress-containment-t11--t7b--enforced-linux).
 
 ---
 

@@ -37,6 +37,7 @@ use std::time::Duration;
 use bwoc_core::chat_proto::{ChatEvent, ChatInput};
 use bwoc_core::design;
 use bwoc_core::manifest::Manifest;
+use bwoc_core::trust::Principal;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -453,7 +454,14 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
             let text = std::mem::take(&mut app.input);
             if !text.trim().is_empty() {
                 app.conversation.push(format!("you: {text}"));
-                send_input(stdin, &ChatInput::User { text })?;
+                // The local TUI is the trusted operator channel (Phase 5 t1).
+                send_input(
+                    stdin,
+                    &ChatInput::User {
+                        text,
+                        principal: Principal::LocalOperator,
+                    },
+                )?;
             }
             Ok(false)
         }

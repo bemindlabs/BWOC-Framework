@@ -81,10 +81,12 @@ use crate::checkpoint::{CheckpointConfig, RunState};
 use crate::error::{HarnessError, HarnessResult};
 use crate::policy::{Policy, PolicyOutcome, run_pipeline};
 use crate::provider::{ChatMessage, ProviderClient, Role, ToolCall};
-use crate::sandbox::{self, make_os_sandbox};
+use crate::sandbox::make_os_sandbox;
+use crate::session_trust::SessionTrust;
 use crate::telemetry::{Telemetry, TurnBuilder};
-use crate::tools::registry::dispatch;
 use crate::tools::{ToolContext, ToolRegistry};
+use crate::turn_executor::execute_proceeded;
+use bwoc_core::trust::TrustLevel;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -377,6 +379,11 @@ pub async fn run_loop(
     // Consecutive malformed-tool-call counter for the current model.
     let mut consecutive_malformed = 0u32;
 
+    // Phase 5 t2 — monotonic session-trust latch. Updated from `history` each
+    // turn before tool dispatch; drives the Layer-0 capability gate. Persisted
+    // (and reseeded on resume) so it survives compaction AND reload.
+    let mut session_trust = SessionTrust::default();
+
     // ── Durable-run resume (HV2-2) ────────────────────────────────────────────
     // If a checkpoint with prior state is present, replace the freshly-built
     // locals with the checkpointed values.  The worktree already persists on
@@ -405,6 +412,10 @@ pub async fn run_loop(
         token_pressure_switches = state.token_pressure_switches;
         active_model = state.active_model.clone();
         task = state.task.clone();
+        // Reseed the trust latch from the checkpoint (C1: survives reload). Even
+        // if a legacy checkpoint defaults this to `false`, the per-turn scan of
+        // the replayed `history` below re-latches if the taint is still present.
+        session_trust = SessionTrust::from_latched(state.untrusted_seen);
     }
 
     loop {
@@ -550,6 +561,7 @@ pub async fn run_loop(
                     token_pressure_switches,
                     &active_model,
                     &ctx.workdir,
+                    session_trust.latched(),
                 );
                 return Err(e);
             }
@@ -620,6 +632,7 @@ pub async fn run_loop(
                     token_pressure_switches,
                     &active_model,
                     &ctx.workdir,
+                    session_trust.latched(),
                 );
                 continue;
             }
@@ -679,15 +692,25 @@ pub async fn run_loop(
             .cloned()
             .collect();
 
-        let results = execute_tool_calls(&tool_calls, &registry, &ctx, &config).await;
+        // Phase 5 t2 — fold this turn's history into the monotonic trust latch
+        // and derive the turn's trust verdict. `history` already carries the
+        // just-appended assistant(tool_calls) message; the scan keys on genuine
+        // ingress principals, so that assistant turn does not affect the verdict.
+        let turn_trust = session_trust.observe(&history);
 
-        // Count denials from the safety pipeline.
+        let results = execute_tool_calls(&tool_calls, &registry, &ctx, &config, turn_trust).await;
+
+        // Count denials from the safety pipeline. Capability-gate refusals are
+        // tallied separately (C4) and are mutually exclusive with `denials`.
         for result in &results {
-            if result.denied {
+            if result.capability_denied {
+                tb.capability_denials += 1;
+            } else if result.denied {
                 tb.denials += 1;
             }
             history.push(ChatMessage::tool_result(
                 result.call_id.clone(),
+                result.tool_name.clone(),
                 result.content.clone(),
             ));
         }
@@ -706,6 +729,7 @@ pub async fn run_loop(
             token_pressure_switches,
             &active_model,
             &ctx.workdir,
+            session_trust.latched(),
         );
         // Continue to next turn.
     }
@@ -728,6 +752,7 @@ fn persist_checkpoint(
     token_pressure_switches: u32,
     active_model: &str,
     workdir: &std::path::Path,
+    untrusted_seen: bool,
 ) {
     let Some(cfg) = checkpoint else { return };
     let state = RunState {
@@ -740,6 +765,8 @@ fn persist_checkpoint(
         active_model: active_model.to_string(),
         // Canonical so the resume guard compares stable absolute paths.
         workdir: std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf()),
+        // Phase 5 t2 — persist the monotonic trust latch across reload.
+        untrusted_seen,
     };
     if let Err(e) = cfg.save(&state) {
         eprintln!("[bwoc-harness] warning: checkpoint save failed: {e}");
@@ -931,12 +958,14 @@ async fn execute_tool_calls(
     registry: &ToolRegistry,
     ctx: &ToolContext,
     config: &LoopConfig,
+    turn_trust: TrustLevel,
 ) -> Vec<ToolCallResult> {
     let os_sandbox = make_os_sandbox(&ctx.workdir);
 
-    // ── Phase 1: Guardrails → Permission, SEQUENTIALLY ──────────────────────
+    // ── Phase 0/1: Capability gate → Guardrails → Permission, SEQUENTIALLY ──
     // Decide every call in order before any execution so an interactive `ask`
-    // prompt can't race another call's prompt for the same stdin/terminal.
+    // prompt can't race another call's prompt for the same stdin/terminal. The
+    // Layer-0 capability gate (Phase 5 t2) consumes this turn's trust verdict.
     let decisions: Vec<PolicyOutcome> = calls
         .iter()
         .map(|call| {
@@ -946,6 +975,7 @@ async fn execute_tool_calls(
                 &ctx.workdir,
                 &config.policy,
                 config.is_tty,
+                turn_trust,
             )
         })
         .collect();
@@ -959,42 +989,46 @@ async fn execute_tool_calls(
             let tool_name = &call.function.name;
             let args_json = &call.function.arguments;
 
-            let (content, denied) = match outcome {
+            let (content, denied, capability_denied) = match outcome {
                 PolicyOutcome::Proceed => {
-                    // ── Layer 3: Sandbox ─────────────────────────────────────────
-                    // For run_command: use the sandboxed runner (env scrub + arg scan + cwd lock).
-                    // For all other tools: the sandbox path-confinement is already enforced
-                    // by ToolContext::resolve_path; run through dispatch as before.
-                    let result = if tool_name == "run_command" {
-                        // Extract the command string from the JSON args.
-                        match serde_json::from_str::<serde_json::Value>(args_json)
-                            .ok()
-                            .and_then(|v| v["command"].as_str().map(|s| s.to_string()))
-                        {
-                            Some(cmd) => {
-                                match sandbox::run_sandboxed(&cmd, &ctx.workdir, &*os_sandbox).await
-                                {
-                                    Ok(output) => output.into_tool_result(),
-                                    Err(e) => format!("error: {e}"),
-                                }
-                            }
-                            None => {
-                                // Malformed args: fall through to dispatch which will
-                                // return a proper "missing command argument" error.
-                                dispatch(registry, tool_name, args_json, ctx).await
-                            }
-                        }
-                    } else {
-                        dispatch(registry, tool_name, args_json, ctx).await
-                    };
-                    (result, false)
+                    // ── Layer 3: Process isolation (Phase 5 t5) ──────────────────
+                    // Execution of an approved call no longer happens in this
+                    // process. `execute_proceeded` re-execs the binary as an
+                    // isolated turn-executor child for marshallable (default-
+                    // registry) tools — run_command still goes through the
+                    // sandboxed runner, but now inside the child (child-of-child).
+                    // Un-marshallable (dynamic/MCP/credential) tools are denied
+                    // fail-closed; the child never reaches in-parent execution.
+                    let r = execute_proceeded(
+                        tool_name,
+                        args_json,
+                        ctx,
+                        registry,
+                        &*os_sandbox,
+                        turn_trust,
+                    )
+                    .await;
+                    (r.content, r.denied, r.capability_denied)
+                }
+                PolicyOutcome::CapabilityDenied { tool, reason } => {
+                    // C4: structured log line — tool + reason + turn-trust — so a
+                    // capability refusal is observable in the harness log, not
+                    // only as a tool result fed back to the model.
+                    eprintln!(
+                        "[bwoc-harness] capability-gate DENY tool=`{tool}` \
+                         turn_trust={turn_trust:?} reason=`{reason}`"
+                    );
+                    let msg = PolicyOutcome::CapabilityDenied { tool, reason }
+                        .into_tool_result()
+                        .unwrap_or_else(|| "blocked".to_string());
+                    (msg, true, true)
                 }
                 blocked => {
                     // Feed the denial back to the model as the tool result.
                     let msg = blocked
                         .into_tool_result()
                         .unwrap_or_else(|| "blocked".to_string());
-                    (msg, true)
+                    (msg, true, false)
                 }
             };
 
@@ -1003,6 +1037,7 @@ async fn execute_tool_calls(
                 tool_name: call.function.name.clone(),
                 content,
                 denied,
+                capability_denied,
             }
         }
     });
@@ -1012,10 +1047,14 @@ async fn execute_tool_calls(
 
 struct ToolCallResult {
     call_id: String,
-    #[allow(dead_code)]
     tool_name: String,
     content: String,
+    /// Blocked by any policy layer (guardrail / permission / capability gate) —
+    /// the content is the refusal fed back to the model.
     denied: bool,
+    /// Specifically refused by the Layer-0 capability gate (Phase 5 t2). Counted
+    /// into `capability_denials`, NOT `denials` (kept mutually exclusive).
+    capability_denied: bool,
 }
 
 /// Stream a response and accumulate content + tool_calls into a single
@@ -1411,7 +1450,9 @@ mod tests {
             ctx,
             test_config(5),
             "system".to_string(),
-            vec![ChatMessage::user("write a file")],
+            // operator() → Trusted turn: the capability gate is a no-op so this
+            // exercises the effectful tool path (Phase 5 t2).
+            vec![ChatMessage::operator("write a file")],
             &mut telem,
         )
         .await
@@ -1519,7 +1560,9 @@ mod tests {
             ctx,
             test_config(5),
             "sys".to_string(),
-            vec![ChatMessage::user("destroy")],
+            // operator() → Trusted: the guardrail (not the capability gate) must
+            // be the layer that denies `rm -rf /`, so `denials` is what counts.
+            vec![ChatMessage::operator("destroy")],
             &mut telem,
         )
         .await
@@ -1530,6 +1573,140 @@ mod tests {
         // Turn 1 had 1 tool call and 1 denial.
         assert_eq!(harness.turns[0].denials, 1, "expected 1 denial in turn 1");
         assert_eq!(harness.totals.denials, 1);
+    }
+
+    /// Phase 5 t3 — an Untrusted turn (undeclared `user()` ingress) requesting a
+    /// GATED effectful tool (run_command) is refused by the Layer-0 capability
+    /// gate. The refusal is tallied in `capability_denials`, NOT `denials` (C4),
+    /// and the model is fed the capability-gate marker so it can adapt.
+    /// (A *worktree-confined write* would instead PROCEED on an untrusted turn
+    /// under ruling (a) — see `capability_gate_allows_confined_write_on_untrusted_turn`.)
+    #[tokio::test]
+    async fn capability_gate_denies_effectful_tool_on_untrusted_turn() {
+        let tmp = TempDir::new().unwrap();
+
+        let provider = Arc::new(MockProvider::new(vec![
+            // A gated effect — run_command is denied on an untrusted turn even
+            // though the command itself is benign and would create the file.
+            make_tool_call_response("run_command", r#"{"command": "touch created.txt"}"#),
+            make_final_response("done"),
+        ]));
+
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = Telemetry::new("sess-telem-t3", "agent-oracle");
+
+        let result = run_loop(
+            provider,
+            registry,
+            ctx,
+            test_config(5),
+            "sys".to_string(),
+            // user() → Unknown → Untrusted (fail-closed). The gate must fire.
+            vec![ChatMessage::user("run a command")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        let record = telem.build_record();
+        let harness = record.harness.unwrap();
+        // Counted as a capability denial, kept OUT of the guardrail/permission
+        // `denials` counter.
+        assert_eq!(
+            harness.turns[0].capability_denials, 1,
+            "gated tool on untrusted turn → 1 capability denial"
+        );
+        assert_eq!(
+            harness.turns[0].denials, 0,
+            "must NOT count as a plain denial"
+        );
+        assert_eq!(harness.totals.capability_denials, 1);
+        assert_eq!(harness.totals.denials, 0);
+        // The model saw the capability-gate refusal; the command never ran.
+        assert!(
+            !tmp.path().join("created.txt").exists(),
+            "gated command must be blocked"
+        );
+        let _ = result;
+    }
+
+    /// Phase 5 t3, ruling (a) — a worktree-confined write PROCEEDS on an
+    /// Untrusted turn (this is what the capability-graded gate adds over t2's
+    /// flat deny-all-effectful). No capability denial; the file is written.
+    #[tokio::test]
+    async fn capability_gate_allows_confined_write_on_untrusted_turn() {
+        let tmp = TempDir::new().unwrap();
+
+        let provider = Arc::new(MockProvider::new(vec![
+            make_tool_call_response("write_file", r#"{"path": "out.txt", "content": "x"}"#),
+            make_final_response("done"),
+        ]));
+
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = Telemetry::new("sess-telem-t3b", "agent-oracle");
+
+        run_loop(
+            provider,
+            registry,
+            ctx,
+            test_config(5),
+            "sys".to_string(),
+            // user() → Untrusted, yet a write confined to the worktree is allowed.
+            vec![ChatMessage::user("write a file")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        let record = telem.build_record();
+        let harness = record.harness.unwrap();
+        assert_eq!(
+            harness.totals.capability_denials, 0,
+            "a worktree-confined write must NOT be capability-denied on an untrusted turn"
+        );
+        assert!(
+            tmp.path().join("out.txt").exists(),
+            "confined write must succeed even on an untrusted turn"
+        );
+    }
+
+    /// The companion to the above: the SAME effectful write under a Trusted
+    /// (`operator()`) turn proceeds — the gate granted nothing, it simply did not
+    /// deny — and the file is written.
+    #[tokio::test]
+    async fn capability_gate_allows_effectful_tool_on_trusted_turn() {
+        let tmp = TempDir::new().unwrap();
+
+        let provider = Arc::new(MockProvider::new(vec![
+            make_tool_call_response("write_file", r#"{"path": "out.txt", "content": "x"}"#),
+            make_final_response("done"),
+        ]));
+
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = Telemetry::new("sess-telem-t2b", "agent-oracle");
+
+        run_loop(
+            provider,
+            registry,
+            ctx,
+            test_config(5),
+            "sys".to_string(),
+            vec![ChatMessage::operator("write a file")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        let record = telem.build_record();
+        let harness = record.harness.unwrap();
+        assert_eq!(harness.totals.capability_denials, 0);
+        assert!(
+            tmp.path().join("out.txt").exists(),
+            "trusted write must succeed"
+        );
     }
 
     // ── Retry tests ──────────────────────────────────────────────────────────
@@ -1830,7 +2007,8 @@ mod tests {
             ctx,
             test_config(5),
             "system".to_string(),
-            vec![ChatMessage::user("wipe everything")],
+            // operator() → Trusted: reach the guardrail layer, not the gate.
+            vec![ChatMessage::operator("wipe everything")],
             &mut telem,
         )
         .await
@@ -1891,7 +2069,8 @@ mod tests {
             ctx,
             deny_config,
             "system".to_string(),
-            vec![ChatMessage::user("run echo hi")],
+            // operator() → Trusted: reach the permission layer, not the gate.
+            vec![ChatMessage::operator("run echo hi")],
             &mut telem,
         )
         .await
@@ -1934,7 +2113,8 @@ mod tests {
             ctx,
             test_config(5),
             "system".to_string(),
-            vec![ChatMessage::user("commit")],
+            // operator() → Trusted: reach the guardrail layer, not the gate.
+            vec![ChatMessage::operator("commit")],
             &mut telem,
         )
         .await
@@ -2594,6 +2774,7 @@ mod tests {
             token_pressure_switches: 2,
             active_model: "mock".to_string(),
             workdir: std::path::PathBuf::new(), // empty → resume guard skipped
+            untrusted_seen: false,
         };
         let ckpt = CheckpointConfig {
             run_id: "resume-1".to_string(),
@@ -2655,6 +2836,7 @@ mod tests {
             active_model: "mock".to_string(),
             // A different worktree than `ctx` → must be refused.
             workdir: tmp.path().join("some-other-worktree"),
+            untrusted_seen: false,
         };
         let mut config = test_config(20);
         config.checkpoint = Some(CheckpointConfig {
@@ -2857,7 +3039,8 @@ mod tests {
             },
         ];
 
-        let results = execute_tool_calls(&calls, &registry, &ctx, &config).await;
+        let results =
+            execute_tool_calls(&calls, &registry, &ctx, &config, TrustLevel::Trusted).await;
 
         assert_eq!(results.len(), 3);
         // Order preserved: result[i] corresponds to calls[i].

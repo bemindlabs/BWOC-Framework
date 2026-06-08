@@ -14,6 +14,7 @@
 //! self-describing and forward-compatible (unknown variants can be skipped).
 //! Pure `serde` — no new dependencies, safe for the lean core crate.
 
+use crate::trust::Principal;
 use serde::{Deserialize, Serialize};
 
 /// An event emitted by the harness session (one per stdout line).
@@ -100,7 +101,18 @@ pub enum ChatEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatInput {
     /// The user's next message / task for the agent.
-    User { text: String },
+    ///
+    /// `User` is the **only external-content carrier** among the inputs (the
+    /// audit below proves the rest carry no content that reaches the model).
+    /// `principal` is its Phase-5 t1 ingress label: the trusted local TUI stamps
+    /// [`Principal::LocalOperator`]; chat connectors omit it, so it defaults
+    /// (via `#[serde(default)]`) to [`Principal::Unknown`] → Untrusted —
+    /// fail-closed for unauthenticated platform ingress.
+    User {
+        text: String,
+        #[serde(default)]
+        principal: Principal,
+    },
     /// The answer to a pending [`ChatEvent::PermissionRequest`] (same `id`).
     Permission { id: String, allow: bool },
     /// Forget the persisted conversation — clears the in-memory history back to
@@ -157,7 +169,10 @@ mod tests {
     #[test]
     fn input_roundtrips_tagged() {
         for inp in [
-            ChatInput::User { text: "hi".into() },
+            ChatInput::User {
+                text: "hi".into(),
+                principal: Principal::LocalOperator,
+            },
             ChatInput::Permission {
                 id: "p1".into(),
                 allow: true,
@@ -235,6 +250,62 @@ mod tests {
         let line = ev.to_line().unwrap();
         assert!(line.contains(r#""type":"compacted""#));
         assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
+    }
+
+    #[test]
+    fn user_input_without_principal_defaults_to_untrusted() {
+        // Phase 5 t1, C3: a connector (or any older frontend) that omits the
+        // principal must deserialize fail-closed to Unknown → Untrusted.
+        let line = r#"{"type":"user","text":"do the thing"}"#;
+        let inp: ChatInput = serde_json::from_str(line).unwrap();
+        match inp {
+            ChatInput::User { principal, .. } => {
+                assert_eq!(principal, Principal::Unknown);
+                assert_eq!(principal.trust(), crate::trust::TrustLevel::Untrusted);
+            }
+            other => panic!("expected User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_operator_principal_round_trips_on_the_wire() {
+        let inp = ChatInput::User {
+            text: "hi".into(),
+            principal: Principal::LocalOperator,
+        };
+        let back = ChatInput::from_line(&inp.to_line().unwrap()).unwrap();
+        assert_eq!(back, inp);
+    }
+
+    /// C3 audit: every non-`User` `ChatInput` variant is control-plane only —
+    /// it carries no free-text content that ever enters the model's context, so
+    /// it needs no trust label. This test is the executable record of that audit;
+    /// adding a content-bearing field to any of these variants breaks it,
+    /// forcing a re-audit (and a principal, if the field is external content).
+    #[test]
+    fn non_user_inputs_are_control_plane_carry_no_model_content() {
+        // `Permission`: an echoed id + a bool decision — no model content.
+        // `SetMode`: a fixed-vocabulary mode string — control-plane, not context.
+        // `Forget` / `Quit`: unit — no payload at all.
+        for inp in [
+            ChatInput::Permission {
+                id: "p1".into(),
+                allow: true,
+            },
+            ChatInput::SetMode {
+                mode: "bypass".into(),
+            },
+            ChatInput::Forget,
+            ChatInput::Quit,
+        ] {
+            // They round-trip without ever naming a principal/provenance tag.
+            let line = inp.to_line().unwrap();
+            assert!(
+                !line.contains("principal") && !line.contains("\"kind\""),
+                "non-User input unexpectedly carries provenance: {line}"
+            );
+            assert_eq!(ChatInput::from_line(&line).unwrap(), inp);
+        }
     }
 
     #[test]

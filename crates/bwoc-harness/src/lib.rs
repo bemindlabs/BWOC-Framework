@@ -29,12 +29,14 @@
 
 pub mod agent_loop;
 pub mod budget;
+pub mod cgroup;
 pub mod chat_session;
 pub mod checkpoint;
 pub mod compact;
 pub mod deep_memory;
 pub mod error;
 pub mod eval;
+pub mod jail;
 pub mod lead;
 pub mod mcp;
 pub mod model_select;
@@ -45,6 +47,9 @@ pub mod result;
 pub mod retrospective;
 pub mod review;
 pub mod sandbox;
+pub mod seccomp;
+pub mod session_trust;
 pub mod telemetry;
 pub mod tools;
+pub mod turn_executor;
 pub mod worker;
