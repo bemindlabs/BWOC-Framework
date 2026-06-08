@@ -34,8 +34,10 @@ child holds none of them.
 >
 > **t7a does NOT claim** mount-namespace isolation.
 >
-> **t7a does NOT claim** egress containment — network, ssh-agent, and
-> abstract-socket reachability remain open and are **t7b / ticket t11**.
+> **t7a (by itself) does not claim** egress containment — that is the **t7b /
+> t11** half, now **LANDED** (see *Network egress containment* below). As of t11
+> the executor's network egress IS contained on Linux; t7a remains the FS/process
+> half of the proof.
 
 This is deliberately *not* phrased as "no shared writable mount": a shared mount
 still exists. What t7a removes is the executor's filesystem *reach* into the
@@ -53,24 +55,56 @@ harness and the `ptrace`/proc path to the parent's RAM.
 | **C8** — binary RO; checkpoint outside the jail | **M3** (overwrite `current_exe`), **M2** (forge the trust latch) | The binary is read+exec-only (never writable); the SessionTrust checkpoint lives outside the jail rw set, so the child cannot write it — the latch is parent-written only. |
 | **C9** — bounded fd3 read | IPC abuse / descriptor smuggling | The parent reads one frame with a finite timeout, a max-length cap, close-after-one-frame, and **no `cmsg` buffer** (so a child cannot pass a descriptor back via `SCM_RIGHTS`). |
 
-## Residuals — what is NOT contained (t7b / t11)
+## Network egress containment (t11 / t7b — ENFORCED, Linux)
 
-t7a is the **process/FS** half of the original t7. The egress half is deferred to
-**t7b (ticket t11)** and is explicitly still open:
+t11 (= t7b) is the egress half of the original t7, and it is now **implemented**
+(an enforced control, no longer a residual). The closure theorem the proof is
+built on (yudi, adopting nezha's red-team result):
 
-- **Network egress** — the executor can still open sockets (DNS, TCP, UDP).
-- **ssh-agent / abstract sockets** — `SSH_AUTH_SOCK` is scrubbed from the env
-  (C6), but an abstract-namespace socket reachable without a path is not
-  contained by an FS jail; that is a seccomp/netns concern (t7b).
+> **egress contained ⟺ (A) the child can't *acquire* a network fd ∧ (B) it
+> *holds* none ∧ (D) the arch-guard is tight.**
+
+The **no-fd invariant (A ∧ B)** is the PRIMARY control; the send-side syscall
+deny is belt-and-suspenders for a descriptor that should not exist. Each leg is
+proven by a red-team arm (`tests/sandbox_escape.rs`, `--features test-redteam`),
+never assumed.
+
+| Control | Threat closed | Mechanism |
+|---|---|---|
+| **t11-A** — can't acquire a network fd | Executor opens a socket / steals one (DNS, TCP, UDP, abstract-namespace AF_UNIX, `pidfd_getfd` fd-theft, io_uring) | seccomp-bpf `SECCOMP_RET_KILL_PROCESS` deny set (socket/connect/accept*/bind/listen/getpeername/sendmmsg/recvmmsg/io_uring_*/pidfd_getfd/pidfd_open) compiled by **seccompiler** (pure-Rust) in the parent, installed via `prctl` in the child's `pre_exec`. KILL (not ERRNO) so a hostile child gets no syscall-enumeration oracle. The **unary** send/recv family and a *local* `socketpair` stay allowed (the executor's AF_UNIX IPC + tokio need them); only the batched `*mmsg` egress variants are denied. |
+| **t11-B** — holds no network fd | A leaked/inherited socket fd (incl. one **>= 1024**) is a ready egress target | `close_range(EXECUTOR_FD+1, ~0)` closes the WHOLE descriptor table (the old `4..1024` loop missed >= 1024), plus a stdio (0/1/2) audit that re-points any socket-backed stdio at `/dev/null`. |
+| **t11-D** — arch-guard is tight | An i386 `int 0x80` or x32-renumbered (`nr | __X32_SYSCALL_BIT`) syscall side-steps the x86_64 deny set | seccompiler's arch prologue KILLs any non-native `seccomp_data.arch`; the deny set additionally carries the x32-renumbered variants. Both proven by red-team arms (the prologue's KILL is **verified by test**, not assumed). |
+| **t11 / C4** — ptrace defence-in-depth | A same-uid child reads parent RAM via ptrace/process_vm_readv | The ptrace set (ptrace/process_vm_readv/process_vm_writev/kcmp/perf_event_open) is in the KILL deny set, layered on top of the parent's `PR_SET_DUMPABLE(0)`. |
+
+**Fail-closed (Linux):** egress containment is mandatory. If the filter cannot be
+installed the production turn-executor **refuses to run** (it never degrades to an
+unfiltered executor). `PR_SET_NO_NEW_PRIVS` is set idempotently by the seccomp
+installer (not relied upon from Landlock). seccomp persists across `execve` and is
+inherited by any `run_command` grandchild, so it too is egress-contained.
+
+**Scope (honest).** This is **network egress containment (Linux)**. It is
+explicitly **NOT** a claim about local, same-uid covert channels — the OS keyring,
+SysV-IPC, POSIX message queues, a shared file under the worktree, or signals.
+A same-uid sibling can always reach those; seccomp is the wrong tool for them and
+they are **out of scope** for t11 (tracked opportunistically as NEWNET).
+
+## Residuals — what is still NOT contained
+
 - **Mount-namespace isolation** — not claimed; the worktree mount is shared.
-- **macOS read confinement** — Linux-only; on macOS the executor jail is
-  write-confinement only (the red-team read/ptrace/proc arms LOUD-skip there).
+- **Local same-uid covert channels** — out of scope (see *Scope* above).
+- **Per-turn process cap** — only a best-effort per-UID `RLIMIT_NPROC` fork guard
+  until the t9 cgroup `pids.max` controller lands (a harness-availability DoS, not
+  an escape).
+- **macOS read / egress confinement** — Linux-only; on macOS the executor jail is
+  write-confinement only and seccomp does not apply (the red-team read / ptrace /
+  egress arms LOUD-skip there).
 
 ## The deferred-control fence (t8)
 
-Phase 5 t1–t7a hardened the turn-executor up to the **process/FS** boundary. Two
-whole classes of containment are **known-open** and deferred to later tickets.
-t8 does not implement them — it builds a *fence* so their absence can never be
+Phase 5 t1–t7a hardened the turn-executor up to the **process/FS** boundary, and
+t11 closed the **egress** boundary (above). One class of containment remains
+**known-open** and deferred (t9 — the true per-turn process cap). t8 does not
+implement it — it builds a *fence* so its absence can never be
 forgotten or faked: a single source of truth (`scripts/deferred-controls.txt`)
 names each missing control by its real kernel/library spelling, a CI guard
 (`scripts/check-deferred-fence.sh`) keeps this table, that SSOT, and the live
@@ -87,23 +121,23 @@ bidirectionally. Editing one without the other fails CI.
 | Ticket | Deferred control | Real spellings (the guard greps these in live .rs) | Honest residual — what is still open | Severity |
 |---|---|---|---|---|
 | **t9** | True per-turn process cap (cgroup v2) | `cgroup` · `/sys/fs/cgroup` · `cgroup.procs` · `pids.max` | The only fork guard today is RLIMIT_NPROC, which is **per-UID and RELATIVE** (live usage + headroom), not an absolute per-turn cap. The turn-executor child re-execs the harness binary and **runs under the harness's own UID** — it is **not** given a dedicated separate UID. So a fork-bomb in that child fills the **per-UID** process table and can starve the harness itself of process slots: a **denial-of-service against the harness (availability), not a sandbox escape**. A true per-turn pid ceiling needs the cgroup v2 controller. | 🟠 |
-| **t11** | Egress / syscall containment (the t7b half) | `seccomp` · `PR_SET_SECCOMP` · `SECCOMP_SET_MODE_FILTER` · `libseccomp` | The FS jail does not fence syscalls. The executor can still open sockets (DNS / TCP / UDP) and reach abstract-namespace sockets that have no filesystem path. There is **no syscall filter** until a seccomp-bpf policy lands, so an attacker-controlled turn retains full network egress. | 🟠 |
 
 <!-- DEFERRED-FENCE:END -->
 
-### Permission scope of t8 (the binding sign-off)
+### Permission scope (the binding sign-off) — updated at t11
 
-t8 closes the **honesty** gate, not the controls. Its sign-off therefore scopes
-*where* t1–t7a may ship:
+t8 closed the **honesty** gate; t11 then closed the **egress** control it was
+fencing. The sign-off is therefore lifted for its original blocker:
 
-> **t1–t7a may be shipped ONLY into egress-acceptable / network-isolated
-> execution contexts until t11 lands.** Because the turn-executor retains full
-> network egress (t11) and only a best-effort per-UID fork guard (t9), t8 is
-> **not** a license to ship the harness into a production context that takes
-> hostile input over the network. In any network-reachable, untrusted-input
-> deployment the egress residual above is live and must be closed (t11) or
-> compensated by an out-of-band network boundary (netns / firewall / no route)
-> first.
+> **Phase 5 is FULLY signed off (t11 merged).** On **Linux**, the turn-executor's
+> network egress is now contained (seccomp + the no-fd invariant + a tight
+> arch-guard, fail-closed). The earlier restriction — *"ship only into
+> egress-acceptable / network-isolated contexts until t11 lands"* — is **lifted on
+> Linux**. Two honest caveats remain: (1) the per-turn fork guard is still the
+> best-effort per-UID `RLIMIT_NPROC` until **t9** (cgroup `pids.max`) lands — a
+> harness-availability DoS, not an escape; (2) on **macOS** neither Landlock nor
+> seccomp applies (write-confinement only), so macOS remains a dev-only platform.
+> Local same-uid covert channels are out of scope by design (NEWNET).
 
 ## Proof
 

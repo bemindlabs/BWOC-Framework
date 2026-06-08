@@ -250,6 +250,69 @@ pub fn which_sandbox_exec() -> Option<PathBuf> {
 }
 
 // ===========================================================================
+// t11 — post-fork fd hygiene (control B: the child holds no network fd)
+// ===========================================================================
+
+/// Close every inherited descriptor above `keep_max` and re-point any
+/// socket-backed stdio (0/1/2) at `/dev/null`. This is the **no-fd invariant**
+/// (t11 control B): a forked-then-exec'd child must hold no network fd it did
+/// not open itself. Shared by `turn_executor::roundtrip` (`keep_max =
+/// EXECUTOR_FD`, preserving the IPC socket) and [`jail_command`] (`keep_max =
+/// 2`, stdio only) so the two paths cannot drift.
+///
+/// Post-fork / async-signal-safe: raw libc only (`close_range`/`fstat`/`open`/
+/// `dup2`), no allocation, no locks. MUST be called in a `pre_exec` closure.
+// `as u32` on the mode bits is a no-op on Linux (mode_t = u32) but load-bearing
+// on macOS (mode_t = u16); keep it for cross-platform correctness.
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)]
+pub fn harden_child_fds(keep_max: i32) -> std::io::Result<()> {
+    // 1. Close the whole fd table above {0..=keep_max} in one syscall. The old
+    //    `4..1024` loop left any inherited fd >= 1024 OPEN; `close_range` makes
+    //    the no-fd invariant total (covers a leaked high network fd).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        // SAFETY: close_range only closes descriptors in [first, last]; with
+        // first = keep_max+1 it never touches {0..=keep_max}.
+        if unsafe { libc::close_range((keep_max + 1) as libc::c_uint, libc::c_uint::MAX, 0) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    {
+        // No close_range (macOS): best-effort bounded close loop, matching the
+        // pre-t11 behaviour. macOS is not the seccomp egress target.
+        let mut fd = keep_max + 1;
+        while fd < 1024 {
+            // SAFETY: close on a possibly-unopen fd is a harmless EBADF no-op.
+            unsafe { libc::close(fd) };
+            fd += 1;
+        }
+    }
+    // 2. stdio socket audit — a network-backed 0/1/2 would be a held egress fd
+    //    that survives close_range. Re-point any such socket at /dev/null.
+    let mut i = 0;
+    while i <= 2 {
+        // SAFETY: fstat only reads descriptor metadata into our own `st`.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(i, &mut st) } == 0
+            && (st.st_mode as u32 & libc::S_IFMT as u32) == libc::S_IFSOCK as u32
+        {
+            // SAFETY: open/dup2/close act on our own descriptors only.
+            let nul = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+            if nul >= 0 {
+                unsafe { libc::dup2(nul, i) };
+                if nul > 2 {
+                    unsafe { libc::close(nul) };
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+// ===========================================================================
 // Standalone command jailing (C7 git, redteam spawns)
 // ===========================================================================
 
@@ -269,28 +332,51 @@ pub fn jail_command(cmd: &mut std::process::Command, spec: &JailSpec) -> JailSta
     {
         use std::os::fd::AsRawFd;
         use std::os::unix::process::CommandExt;
-        match build_ruleset(spec) {
-            Some(owned) => {
-                // SAFETY: only async-signal-safe syscalls run post-fork; `owned`
-                // is moved in to keep the ruleset fd alive until restrict_self.
-                unsafe {
-                    cmd.pre_exec(move || {
-                        // SAFETY: `owned` is a live ruleset fd; restrict the
-                        // calling (post-fork) thread before execve.
-                        unsafe { restrict_current_thread(owned.as_raw_fd())? };
-                        Ok(())
-                    });
-                }
-                JailStatus::Enforced
-            }
+        let ruleset = build_ruleset(spec);
+        let status = match ruleset {
+            Some(_) => JailStatus::Enforced,
             None => {
                 eprintln!(
-                    "[bwoc-harness:jail] WARNING: Landlock unavailable; command runs UNJAILED \
-                     (FS confinement not enforced). [Phase 5 t7a]"
+                    "[bwoc-harness:jail] WARNING: Landlock unavailable; command runs without the \
+                     FS jail (FS confinement not enforced). [Phase 5 t7a]"
                 );
                 JailStatus::Unavailable
             }
+        };
+        // t11 — compile the seccomp egress filter (parent-side allocation) and
+        // install it post-fork INDEPENDENTLY of Landlock: egress containment must
+        // hold even if the FS jail is unavailable. Best-effort here (gated on a
+        // non-destructive `available()` probe) so an FS-only caller (the C7 git
+        // path) does not break on a seccomp-less kernel; the t11 gate checks the
+        // same probe and LOUD-skips rather than false-pass. Production
+        // (`turn_executor::roundtrip`) is STRICTLY fail-closed instead.
+        let seccomp_bpf = if crate::seccomp::available() {
+            crate::seccomp::build_filter()
+        } else {
+            None
+        };
+        // SAFETY: only async-signal-safe work runs post-fork; `ruleset`/`bpf`
+        // are moved in to keep them alive until restrict_self / install.
+        unsafe {
+            cmd.pre_exec(move || {
+                // 1. Landlock FS jail (if available) — must precede the fd close.
+                if let Some(ref owned) = ruleset {
+                    // SAFETY (covered by the enclosing `unsafe` on `pre_exec`):
+                    // `owned` is a live ruleset fd built in the parent.
+                    restrict_current_thread(owned.as_raw_fd())?;
+                }
+                // 2. t11 control B — no-fd invariant (stdio preserved).
+                harden_child_fds(2)?;
+                // 3. t11 — seccomp egress filter LAST (after fd hygiene). The
+                //    shared installer is the SAME fn the production path calls.
+                //    Fail-closed: an install error aborts the spawn.
+                if let Some(ref bpf) = seccomp_bpf {
+                    crate::seccomp::install_in_child(bpf)?;
+                }
+                Ok(())
+            });
         }
+        status
     }
     #[cfg(target_os = "macos")]
     {

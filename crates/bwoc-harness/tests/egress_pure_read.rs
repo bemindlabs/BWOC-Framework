@@ -380,6 +380,7 @@ mod linux_behavioral {
         cases: Vec<(&'static str, Expect)>,
         workdir: PathBuf,
     ) -> Result<(), String> {
+        let tool_label = tool.clone(); // for the panic message after `tool` moves
         std::thread::spawn(move || -> Result<(), String> {
             arm_sandbox()?;
             assert_tripwire_armed(&workdir)?;
@@ -410,7 +411,7 @@ mod linux_behavioral {
             Ok(())
         })
         .join()
-        .map_err(|_| format!("sandboxed thread for `{tool}` panicked"))?
+        .map_err(|_| format!("sandboxed thread for `{tool_label}` panicked"))?
     }
 
     /// Install the Landlock domain on the current thread: handle (and add no
@@ -419,8 +420,7 @@ mod linux_behavioral {
     /// makes an unsupported access a hard error — fail-closed (t4 BC-1b).
     fn arm_sandbox() -> Result<(), String> {
         use landlock::{
-            ABI, AccessFs, AccessNet, CompatLevel, Compatible, Ruleset, RulesetAttr,
-            RulesetCreatedAttr, RulesetStatus,
+            ABI, AccessFs, AccessNet, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetStatus,
         };
         // ABI V4 (Linux 6.7+) is the first with network access control; the t4
         // behavioral gate requires it, hence HardRequirement.

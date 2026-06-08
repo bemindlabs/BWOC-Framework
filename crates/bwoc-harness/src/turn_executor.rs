@@ -848,6 +848,21 @@ fn roundtrip(
         JailStatus::Unavailable
     };
 
+    // t11 — compile the seccomp-bpf egress filter in the PARENT (the seccompiler
+    // BPF assembly allocates; only the prctl install runs post-fork). On Linux a
+    // build failure is FATAL/fail-closed: egress containment is mandatory, so we
+    // refuse to spawn an unfiltered executor rather than silently degrade.
+    #[cfg(target_os = "linux")]
+    let seccomp_bpf = match crate::seccomp::build_filter() {
+        Some(bpf) => Some(bpf),
+        None => {
+            return Err(std::io::Error::other(
+                "[bwoc-harness:t11] FATAL: could not compile the seccomp egress filter — \
+                 refusing to spawn an unfiltered turn-executor (fail-closed).",
+            ));
+        }
+    };
+
     // Build the base command. On macOS the executor is wrapped in `sandbox-exec`
     // (the fd-dup/rlimit `pre_exec` still runs first, then execve(sandbox-exec),
     // which execs the real binary — fd3 + rlimits inherit through it).
@@ -932,17 +947,28 @@ fn roundtrip(
             // jails via the sandbox-exec wrapper — no per-fd action here.)
             #[cfg(target_os = "linux")]
             if let Some(ref fd) = landlock_fd {
-                // SAFETY: `fd` is a live ruleset fd built in the parent; this
-                // restricts the calling (post-fork) thread before execve.
-                unsafe { crate::jail::restrict_current_thread(fd.as_raw_fd())? };
+                // SAFETY (covered by the enclosing `unsafe` on `pre_exec`): `fd`
+                // is a live ruleset fd built in the parent; this restricts the
+                // calling (post-fork) thread before execve.
+                crate::jail::restrict_current_thread(fd.as_raw_fd())?;
             }
-            // C10: close every other inherited fd so the child holds exactly
-            // {0,1,2,EXECUTOR_FD}. CLOEXEC already covers Rust-opened fds; this
-            // loop is the belt-and-suspenders guarantee the fd test asserts.
-            let mut fd = EXECUTOR_FD + 1;
-            while fd < 1024 {
-                libc::close(fd);
-                fd += 1;
+            // C10 / t11-B (no-fd invariant): close every inherited fd above
+            // {0,1,2,EXECUTOR_FD} and re-point any socket-backed stdio at
+            // /dev/null. The old `4..1024` loop left any inherited fd >= 1024
+            // OPEN — incl. a network fd a parent thread held past 1023;
+            // `harden_child_fds` uses `close_range` so the "child holds no
+            // network fd" invariant (control B) is total, not capped at 1024.
+            // SAFETY: async-signal-safe (close_range/fstat/open/dup2 only); never
+            // touches {0,1,2,EXECUTOR_FD}.
+            crate::jail::harden_child_fds(EXECUTOR_FD)?;
+            // t11 / C1: install the seccomp-bpf egress filter LAST — after all fd
+            // hygiene, so the close_range/dup2/open above are not themselves
+            // filtered. The BPF was compiled in the PARENT (alloc-heavy); here we
+            // only issue the two async-signal-safe prctl()s. Fail-closed: an
+            // install error aborts the spawn so the child NEVER runs unfiltered.
+            #[cfg(target_os = "linux")]
+            if let Some(ref bpf) = seccomp_bpf {
+                crate::seccomp::install_in_child(bpf)?;
             }
             Ok(())
         });
