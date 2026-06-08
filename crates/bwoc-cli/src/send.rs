@@ -30,6 +30,11 @@ enum Target {
     LocalInbox { inbox_path: PathBuf },
     /// A remote peer over MQTT — publish via the `bwoc-mqtt` sibling binary.
     Mqtt { broker: String, topic: String },
+    /// A remote peer reached through a `bwoc-gateway` relay — send via the
+    /// `bwoc-gateway-send` sibling binary (dep-quarantine: the CLI never links a
+    /// WebSocket/TLS client). The sender's keypair is the gateway login, so this
+    /// transport requires a signed agent sender.
+    Gateway { url: String },
 }
 
 pub struct SendArgs {
@@ -102,6 +107,21 @@ pub enum SendError {
     },
     #[error("`bwoc-mqtt publish` to {broker} (topic {topic}) failed")]
     MqttPublish { broker: String, topic: String },
+    #[error(
+        "gateway route to '{recipient}' requires a signed agent sender — pass \
+         `--from <agent>` with a key (`bwoc trust --keygen <agent>`); the keypair is \
+         the gateway login, so `user`/unsigned senders cannot authenticate"
+    )]
+    GatewayUnsigned { recipient: String },
+    #[error(
+        "could not run `bwoc-gateway-send` to relay via {url}: {source}. It ships from the \
+         external `bemindlabs/bwoc-gateway` repo — install it \
+         (`cargo install --git https://github.com/bemindlabs/bwoc-gateway --bin bwoc-gateway-send`) \
+         or add it to PATH."
+    )]
+    GatewaySpawn { url: String, source: std::io::Error },
+    #[error("`bwoc-gateway-send` relay via {url} failed")]
+    GatewayRelay { url: String },
 }
 
 pub fn run(args: SendArgs) -> i32 {
@@ -114,6 +134,7 @@ pub fn run(args: SendArgs) -> i32 {
                 | SendError::NotFound { .. }
                 | SendError::SenderNotFound { .. }
                 | SendError::SignatureRequired { .. }
+                | SendError::GatewayUnsigned { .. }
                 | SendError::EmptyMessage => 2,
                 _ => 1,
             }
@@ -190,6 +211,12 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                         },
                         lookup_id.clone(),
                     )
+                }
+                Some(RouteTarget::Gateway { url }) => {
+                    // Remote peer over a bwoc-gateway relay. The gateway routes
+                    // by recipient id on its side, so — as with MQTT — there is
+                    // no local registry lookup; the `to` id is the route key.
+                    (Target::Gateway { url: url.clone() }, lookup_id.clone())
                 }
                 // No match in routes.toml either. Existing behaviour.
                 None => {
@@ -363,6 +390,70 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                 args.message,
             );
             println!("  MQTT: {broker} → {topic} (at {ts})");
+            println!();
+        }
+        Target::Gateway { url } => {
+            // Relay via the `bwoc-gateway-send` sibling binary (dep-quarantine:
+            // the CLI never links a WebSocket/TLS client). The sender's keypair
+            // is the gateway login, so a `user`/unsigned origin cannot reach it.
+            // Require a *loadable* signing key — the keypair is the gateway
+            // login. Checking the file merely exists is not enough: a malformed
+            // `agent.key` would otherwise fail downstream with an opaque relay
+            // error instead of this actionable one.
+            let key_dir = sender_bwoc_dir
+                .as_ref()
+                .ok_or_else(|| SendError::GatewayUnsigned {
+                    recipient: recipient_id.clone(),
+                })?;
+            if !matches!(bwoc_signing::load_signing_key(key_dir), Ok(Some(_))) {
+                return Err(SendError::GatewayUnsigned {
+                    recipient: recipient_id.clone(),
+                });
+            }
+            let key_path = key_dir.join(bwoc_signing::KEY_FILE);
+            let bin = bwoc_core::exec::binary_or_name("bwoc-gateway-send");
+            // Pipe the signed message envelope via stdin (same reasons as MQTT:
+            // keep it out of `ps`/ARG_MAX). `bwoc-gateway-send` wraps it into the
+            // gateway transport envelope and routes by `--to`. Args use `.arg()`
+            // (not a string slice) so the key path passes as an `OsStr` — no
+            // lossy conversion on non-UTF-8 paths.
+            let mut child = std::process::Command::new(&bin)
+                .arg("--url")
+                .arg(&url)
+                .arg("--agent-id")
+                .arg(&from)
+                .arg("--to")
+                .arg(&recipient_id)
+                .arg("--key-file")
+                .arg(&key_path)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| SendError::GatewaySpawn {
+                    url: url.clone(),
+                    source: e,
+                })?;
+            child
+                .stdin
+                .take()
+                .expect("stdin piped above")
+                .write_all(line.as_bytes())
+                .map_err(|e| SendError::GatewaySpawn {
+                    url: url.clone(),
+                    source: e,
+                })?;
+            let status = child.wait().map_err(|e| SendError::GatewaySpawn {
+                url: url.clone(),
+                source: e,
+            })?;
+            if !status.success() {
+                return Err(SendError::GatewayRelay { url: url.clone() });
+            }
+            println!();
+            println!(
+                "Relayed to {recipient_id} (from {from}) [id {message_id}{reply_suffix}]: {}",
+                args.message,
+            );
+            println!("  Gateway: {url} (at {ts})");
             println!();
         }
     }
