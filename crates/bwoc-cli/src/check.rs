@@ -373,12 +373,25 @@ fn check_memory_completeness(
     } else {
         report
             .warnings
-            .push(format!("{memory_dir}/ missing (deep-memory staging area)"));
+            .push(format!("{memory_dir}/ missing (Tier 1 file-based memory)"));
     }
 
-    let memory_md = target.join("MEMORY.md");
-    if memory_md.is_file() {
-        match count_lines(&memory_md) {
+    // The MEMORY.md index lives at the agent root in current incarnations, but
+    // the docs also place it inside the memory dir — accept either location so
+    // a correctly-placed index is never reported missing.
+    let memory_md = {
+        let root = target.join("MEMORY.md");
+        let nested = target.join(memory_dir).join("MEMORY.md");
+        if root.is_file() {
+            Some(root)
+        } else if nested.is_file() {
+            Some(nested)
+        } else {
+            None
+        }
+    };
+    match memory_md {
+        Some(p) => match count_lines(&p) {
             Ok(lines) if lines > MEMORY_MD_MAX_LINES => report.warnings.push(format!(
                 "MEMORY.md is {lines} lines (> {MEMORY_MD_MAX_LINES} cap — Mattaññutā; trim it)"
             )),
@@ -386,11 +399,11 @@ fn check_memory_completeness(
                 .passes
                 .push(format!("MEMORY.md within {MEMORY_MD_MAX_LINES}-line cap")),
             Err(e) => report.warnings.push(format!("MEMORY.md unreadable: {e}")),
-        }
-    } else if matches!(mode, AuditMode::Incarnation) {
-        report
+        },
+        None if matches!(mode, AuditMode::Incarnation) => report
             .warnings
-            .push("MEMORY.md missing (seed it as the agent learns)".to_string());
+            .push("MEMORY.md missing (seed it as the agent learns)".to_string()),
+        None => {}
     }
 
     if target.join("task-log.jsonl").is_file() {
@@ -4276,6 +4289,31 @@ mod tests {
         assert!(
             !report.warnings.iter().any(|w| w.contains("memories/")),
             "must not warn about default memories/ when memoryPath is custom"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_md_accepted_inside_memory_dir() {
+        // MEMORY.md placed in the memory dir (the docs' convention) must be
+        // accepted, not reported missing.
+        let root = write_temp_agent("nestedmem", "iota", "You are agent-iota.");
+        fs::remove_file(root.join("MEMORY.md")).ok();
+        fs::create_dir_all(root.join("memories")).unwrap();
+        fs::write(root.join("memories").join("MEMORY.md"), "index\n").unwrap();
+        let report = audit(&root);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.contains("MEMORY.md missing")),
+            "memories/MEMORY.md must satisfy the index check, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            report.passes.iter().any(|p| p.contains("MEMORY.md within")),
+            "expected within-cap pass for nested MEMORY.md, got: {:?}",
+            report.passes
         );
     }
 
