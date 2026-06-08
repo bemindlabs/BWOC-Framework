@@ -15,9 +15,13 @@
 //! # Transports
 //!
 //! Each route declares a [`RouteTarget`]: `local` (a peer workspace path on
-//! this machine — the v1 default, written directly into the peer's inbox) or
-//! `mqtt` (publish to a broker for cross-machine federation; the actual publish
-//! lives in the `bwoc-mqtt` crate so `bwoc-core` stays dependency-free).
+//! this machine — the v1 default, written directly into the peer's inbox),
+//! `mqtt` (publish to a broker for cross-machine federation), or `gateway`
+//! (relay through a `bwoc-gateway` server for agents with no direct
+//! reachability across NAT/firewalls). As with MQTT, the actual network I/O
+//! lives outside `bwoc-core` (the `bwoc-mqtt` crate / the `bwoc-gateway-send`
+//! binary) so `bwoc-core` stays dependency-free — these targets are plain
+//! strings.
 //!
 //! # Scope constraints
 //!
@@ -71,6 +75,14 @@ pub enum RouteTarget {
         broker: String,
         topic: Option<String>,
     },
+    /// A remote peer reached through a `bwoc-gateway` rendezvous/relay server:
+    /// the sender opens an authenticated WebSocket to `url` and relays the
+    /// signed envelope, which the gateway routes to the recipient by id. Used
+    /// when peers have no direct reachability (across NAT, firewalls, the open
+    /// internet). No gateway dependency reaches `bwoc-core` — `url` is a plain
+    /// string; the relay lives in the `bwoc-gateway-send` binary the harness
+    /// shells out to.
+    Gateway { url: String },
 }
 
 /// How a [`Route`] matches a recipient id.
@@ -106,7 +118,11 @@ pub enum RouteValidationError {
     LocalMissingWorkspace { route: String },
     #[error("route '{route}' uses transport 'mqtt' but has no 'broker'")]
     MqttMissingBroker { route: String },
-    #[error("route '{route}' has unknown transport '{transport}' (expected 'local' or 'mqtt')")]
+    #[error("route '{route}' uses transport 'gateway' but has no 'gateway' url")]
+    GatewayMissingUrl { route: String },
+    #[error(
+        "route '{route}' has unknown transport '{transport}' (expected 'local', 'mqtt', or 'gateway')"
+    )]
     UnknownTransport { route: String, transport: String },
 }
 
@@ -141,6 +157,10 @@ struct RawRoute {
     /// MQTT topic override. Defaults to `bwoc/<recipient-id>/inbox`.
     #[serde(skip_serializing_if = "Option::is_none")]
     topic: Option<String>,
+    /// Gateway server URL (e.g. `wss://gateway.example/v1/connect`). Required
+    /// for the `gateway` transport; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway: Option<String>,
 }
 
 // ── Load + validate ───────────────────────────────────────────────────────────
@@ -239,9 +259,9 @@ impl Routes {
     pub fn resolve(&self, recipient_id: &str) -> Option<&Path> {
         match self.resolve_target(recipient_id)? {
             RouteTarget::Local(ws) => Some(ws),
-            // An MQTT route has no local workspace path — callers that only
-            // understand local delivery (e.g. `bwoc peer`) treat it as no match.
-            RouteTarget::Mqtt { .. } => None,
+            // Remote transports have no local workspace path — callers that only
+            // understand local delivery (e.g. `bwoc peer`) treat them as no match.
+            RouteTarget::Mqtt { .. } | RouteTarget::Gateway { .. } => None,
         }
     }
 
@@ -313,6 +333,12 @@ fn validate_route(raw: RawRoute) -> Result<Route, RouteValidationError> {
                 broker,
                 topic: raw.topic,
             }
+        }
+        "gateway" => {
+            let url = raw
+                .gateway
+                .ok_or(RouteValidationError::GatewayMissingUrl { route: route_label })?;
+            RouteTarget::Gateway { url }
         }
         other => {
             return Err(RouteValidationError::UnknownTransport {
@@ -571,6 +597,55 @@ topic = "bwoc/agent-remote/inbox"
             routes.resolve_target("agent-remote"),
             Some(RouteTarget::Mqtt { .. })
         ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ── Gateway transport ─────────────────────────────────────────────────────
+
+    #[test]
+    fn load_gateway_route_parses_url() {
+        let root = temp_ws("gateway-route");
+        write_routes(
+            &root,
+            r#"
+[[route]]
+agent = "agent-remote"
+transport = "gateway"
+gateway = "wss://gateway.example/v1/connect"
+"#,
+        );
+        let routes = Routes::load(&root).unwrap();
+        assert_eq!(
+            routes.routes[0].target,
+            RouteTarget::Gateway {
+                url: "wss://gateway.example/v1/connect".into(),
+            }
+        );
+        // A gateway route has no local path → `resolve` (local-only) returns None,
+        // while `resolve_target` surfaces the gateway url.
+        assert_eq!(routes.resolve("agent-remote"), None);
+        assert!(matches!(
+            routes.resolve_target("agent-remote"),
+            Some(RouteTarget::Gateway { .. })
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gateway_route_without_url_is_error() {
+        let root = temp_ws("gateway-no-url");
+        write_routes(
+            &root,
+            "\n[[route]]\nagent = \"agent-remote\"\ntransport = \"gateway\"\n",
+        );
+        let err = Routes::load(&root).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RoutingError::Validation(RouteValidationError::GatewayMissingUrl { .. })
+            ),
+            "expected GatewayMissingUrl, got {err}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
