@@ -204,7 +204,10 @@ pub async fn run_fixture(
         ctx,
         loop_config,
         "You are a BWOC coding agent. Follow the task instructions precisely.".to_string(),
-        vec![ChatMessage::user(fixture.task.prompt.clone())],
+        // The eval harness is a trusted local benchmark runner — its fixture
+        // tasks must be able to exercise effectful tools (write/run/git), so the
+        // prompt is the local operator's, not undeclared ingress (Phase 5 t2).
+        vec![ChatMessage::operator(fixture.task.prompt.clone())],
         &mut telem,
     )
     .await?;

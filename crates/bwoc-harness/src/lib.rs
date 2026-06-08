@@ -45,6 +45,7 @@ pub mod result;
 pub mod retrospective;
 pub mod review;
 pub mod sandbox;
+pub mod session_trust;
 pub mod telemetry;
 pub mod tools;
 pub mod worker;
