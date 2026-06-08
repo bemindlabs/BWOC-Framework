@@ -176,6 +176,10 @@ fn main() {
     // any child is spawned. Fail-closed if the kernel cannot protect it.
     harden_parent_against_ptrace();
 
+    // Phase 5 t9 / condition 2 — the prod hard-guarantee switch. Default OFF
+    // (best-effort); when on, refuse to start without an enforceable cgroup cap.
+    assert_cgroup_enforcement_if_required();
+
     // Normal harness path: build the multi-thread runtime and run the loop.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -240,6 +244,44 @@ fn harden_parent_against_ptrace() {
 /// taskgated/SIP. No-op so the call site stays platform-neutral.
 #[cfg(not(target_os = "linux"))]
 fn harden_parent_against_ptrace() {}
+
+/// Phase 5 t9 / condition 2 — the prod hard-guarantee switch for the per-turn
+/// process cap. When `BWOC_REQUIRE_CGROUP_PIDS` is truthy, refuse to start unless
+/// a delegated writable cgroup v2 subtree with the `pids` controller is present,
+/// so the per-turn `pids.max` cap (t9) is actually enforceable instead of silently
+/// degrading to the best-effort per-UID `RLIMIT_NPROC` floor.
+///
+/// Default OFF: dev boxes, bare-SSH logins, and non-delegated containers keep the
+/// best-effort floor and start normally. Setting the flag is how a production
+/// deployment demands the hard cap. The file-tracked deployment prerequisite (a
+/// systemd unit drop-in with `Delegate=yes`) is **t14**; this switch is the
+/// runtime assertion that the prerequisite was met. Probing here also runs the
+/// (idempotent) cgroup delegation dance eagerly, so the first turn pays no setup.
+fn assert_cgroup_enforcement_if_required() {
+    let required = matches!(
+        std::env::var("BWOC_REQUIRE_CGROUP_PIDS").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+    );
+    if !required {
+        return;
+    }
+    if bwoc_harness::cgroup::delegated_subtree_available() {
+        eprintln!(
+            "[bwoc-harness:t9] BWOC_REQUIRE_CGROUP_PIDS satisfied: a delegated cgroup v2 pids \
+             subtree is present; per-turn pids.max will be enforced. [Phase 5 t9 / condition 2]"
+        );
+        return;
+    }
+    eprintln!(
+        "[bwoc-harness:t9] FATAL: BWOC_REQUIRE_CGROUP_PIDS is set but no delegated writable cgroup \
+         v2 subtree with the `pids` controller is available — the per-turn pids.max cap cannot be \
+         enforced and the harness would silently fall back to best-effort RLIMIT_NPROC. Refusing to \
+         start (fail-closed). Fix: run under a systemd unit with `Delegate=yes` (t14 deployment \
+         prereq) or unset BWOC_REQUIRE_CGROUP_PIDS to accept the RLIMIT_NPROC floor. \
+         [Phase 5 t9 / condition 2]"
+    );
+    std::process::exit(70);
+}
 
 async fn run() -> HarnessResult<()> {
     let args = Args::parse();

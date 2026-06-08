@@ -92,35 +92,44 @@ they are **out of scope** for t11 (tracked opportunistically as NEWNET).
 
 - **Mount-namespace isolation** — not claimed; the worktree mount is shared.
 - **Local same-uid covert channels** — out of scope (see *Scope* above).
-- **Per-turn process cap** — only a best-effort per-UID `RLIMIT_NPROC` fork guard
-  until the t9 cgroup `pids.max` controller lands (a harness-availability DoS, not
-  an escape).
+- **Per-turn process cap** — t9 landed: an absolute per-turn cgroup v2 `pids.max`
+  cap is enforced **when a writable cgroup v2 subtree is delegated** (systemd
+  `Delegate=yes` / a privileged container) — ✅. In the **default** case (dev box,
+  bare-SSH login, non-delegated container) **no** subtree is delegated, so the
+  fork guard degrades to the best-effort **per-UID, RELATIVE** `RLIMIT_NPROC`
+  floor — 🟠. The residual is therefore the non-delegated default: a fork bomb
+  fills the per-UID process table (a harness-availability DoS, **not** an escape).
+  `BWOC_REQUIRE_CGROUP_PIDS=1` makes the harness refuse to start unless the
+  delegated subtree is present, for prod that demands the hard cap (the file-tracked
+  deployment prereq — a `Delegate=yes` unit drop-in — is **t14**).
 - **macOS read / egress confinement** — Linux-only; on macOS the executor jail is
   write-confinement only and seccomp does not apply (the red-team read / ptrace /
   egress arms LOUD-skip there).
 
 ## The deferred-control fence (t8)
 
-Phase 5 t1–t7a hardened the turn-executor up to the **process/FS** boundary, and
-t11 closed the **egress** boundary (above). One class of containment remains
-**known-open** and deferred (t9 — the true per-turn process cap). t8 does not
-implement it — it builds a *fence* so its absence can never be
+Phase 5 t8 built a *fence* so a deferred control's absence could never be
 forgotten or faked: a single source of truth (`scripts/deferred-controls.txt`)
-names each missing control by its real kernel/library spelling, a CI guard
-(`scripts/check-deferred-fence.sh`) keeps this table, that SSOT, and the live
-source in lock-step, and a phantom-control check fails the build if code ever
-*references* one of these controls (even in a string literal) without an
-explicit `// DEFERRED(tNN):` admission that it is not really there.
+named each missing control by its real kernel/library spelling, a CI guard
+(`scripts/check-deferred-fence.sh`) kept that SSOT, the fence region below, and the
+live source in lock-step, and a phantom-control check failed the build if code ever
+*referenced* one of these controls (even in a string literal) without an explicit
+`// DEFERRED(tNN):` admission that it was not really there.
 
-The table below is machine-checked: the tokens in the **Real spellings** column
-must exactly equal the SSOT token set, and the tickets must match it
-bidirectionally. Editing one without the other fails CI.
+Both controls it fenced have since **landed**: t11 closed the **egress** boundary,
+and t9 added the **per-turn process cap** (cgroup v2 `pids.max`, best-effort — see
+*Residuals* above). The SSOT therefore enumerates **no deferred tokens** and the
+fence is **fully discharged**. The guard still runs every CI pass to keep that
+terminal state honest: it re-fails if a landed control's residual is dropped from
+the THREAT-MODEL (condition C, EN + TH), or if a fresh deferral re-introduces a
+phantom. The machine-checked region below is consequently empty of tokens.
 
-<!-- DEFERRED-FENCE:BEGIN — machine-checked against scripts/deferred-controls.txt; the ONLY backticks inside this region are the deferred tokens. -->
+<!-- DEFERRED-FENCE:BEGIN — machine-checked against scripts/deferred-controls.txt; this region must hold NO deferred tokens (backticks) and NO ticket ids while the fence is discharged. -->
 
-| Ticket | Deferred control | Real spellings (the guard greps these in live .rs) | Honest residual — what is still open | Severity |
-|---|---|---|---|---|
-| **t9** | True per-turn process cap (cgroup v2) | `cgroup` · `/sys/fs/cgroup` · `cgroup.procs` · `pids.max` | The only fork guard today is RLIMIT_NPROC, which is **per-UID and RELATIVE** (live usage + headroom), not an absolute per-turn cap. The turn-executor child re-execs the harness binary and **runs under the harness's own UID** — it is **not** given a dedicated separate UID. So a fork-bomb in that child fills the **per-UID** process table and can starve the harness itself of process slots: a **denial-of-service against the harness (availability), not a sandbox escape**. A true per-turn pid ceiling needs the cgroup v2 controller. | 🟠 |
+All Phase 5 deferred controls have landed (the per-turn process cap and the
+egress/syscall filter); this fence is **fully discharged**. The honest residual
+that survives each landed control — chiefly the non-delegated fork-guard fallback —
+is documented in the Residuals section above, not here.
 
 <!-- DEFERRED-FENCE:END -->
 
@@ -133,11 +142,15 @@ fencing. The sign-off is therefore lifted for its original blocker:
 > network egress is now contained (seccomp + the no-fd invariant + a tight
 > arch-guard, fail-closed). The earlier restriction — *"ship only into
 > egress-acceptable / network-isolated contexts until t11 lands"* — is **lifted on
-> Linux**. Two honest caveats remain: (1) the per-turn fork guard is still the
-> best-effort per-UID `RLIMIT_NPROC` until **t9** (cgroup `pids.max`) lands — a
-> harness-availability DoS, not an escape; (2) on **macOS** neither Landlock nor
-> seccomp applies (write-confinement only), so macOS remains a dev-only platform.
-> Local same-uid covert channels are out of scope by design (NEWNET).
+> Linux**. Two honest caveats remain: (1) the per-turn fork guard is an absolute
+> cgroup v2 `pids.max` cap **only where a writable subtree is delegated** (systemd
+> `Delegate=yes` / privileged container, asserted at startup by
+> `BWOC_REQUIRE_CGROUP_PIDS=1`); in the **default** non-delegated case it degrades
+> to the best-effort **per-UID** `RLIMIT_NPROC` floor — a harness-availability DoS,
+> not an escape (the delegated-deployment prereq is **t14**); (2) on **macOS**
+> neither Landlock nor seccomp applies (write-confinement only), so macOS remains a
+> dev-only platform. Local same-uid covert channels are out of scope by design
+> (NEWNET).
 
 ## Proof
 

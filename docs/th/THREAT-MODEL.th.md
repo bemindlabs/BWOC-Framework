@@ -91,35 +91,43 @@ seccomp เป็นเครื่องมือผิดประเภทส
 
 - **การแยก mount-namespace** — ไม่ได้อ้าง; mount ของ worktree ยังแชร์กันอยู่
 - **ช่องทางลับ local แบบ uid เดียวกัน** — อยู่นอกขอบเขต (ดู *ขอบเขต* ด้านบน)
-- **เพดาน process ต่อ turn** — มีเพียงตัวกัน fork แบบ per-UID `RLIMIT_NPROC`
-  best-effort จนกว่า controller `pids.max` ของ cgroup (t9) จะลง (เป็น DoS ต่อ
-  availability ของ harness ไม่ใช่การหนีออกจาก sandbox)
+- **เพดาน process ต่อ turn** — t9 ลงแล้ว: มีเพดานสัมบูรณ์ต่อ turn แบบ cgroup v2
+  `pids.max` บังคับใช้ **เมื่อมี cgroup v2 subtree ที่ writable ถูก delegate** (systemd
+  `Delegate=yes` / privileged container) — ✅ แต่ในกรณี **default** (เครื่อง dev,
+  bare-SSH login, container ที่ไม่ได้ delegate) **ไม่มี** subtree ถูก delegate ตัวกัน
+  fork จึงลดเหลือ floor แบบ **per-UID, RELATIVE** `RLIMIT_NPROC` best-effort — 🟠
+  residual จึงคือกรณี default ที่ไม่ได้ delegate: fork-bomb เติมตาราง process ระดับ
+  per-UID จนเต็ม (เป็น DoS ต่อ availability ของ harness **ไม่ใช่** การหนีออกจาก sandbox)
+  ตั้ง `BWOC_REQUIRE_CGROUP_PIDS=1` ให้ harness ปฏิเสธการเริ่มถ้าไม่มี subtree ที่
+  delegate ไว้ สำหรับ prod ที่ต้องการเพดานแบบ hard (ส่วน prereq ฝั่ง deployment —
+  unit drop-in `Delegate=yes` — คือ **t14**)
 - **การ confine การอ่าน/egress บน macOS** — เป็น Linux-only; บน macOS jail ของ
   executor เป็น write-confinement เท่านั้น และ seccomp ใช้ไม่ได้ (arm อ่าน/ptrace/
   egress ของ red-team จะ LOUD-skip)
 
 ## รั้วกั้นมาตรการที่เลื่อนออกไป (deferred-control fence — t8)
 
-Phase 5 t1–t7a เสริมความแข็งแรงให้ turn-executor จนถึงขอบเขต **process/FS** แล้ว
-และ t11 ปิดขอบเขต **egress** (ด้านบน) เหลือการกักกันอีกหนึ่งกลุ่มที่ **ยังเปิดอยู่
-(known-open)** และถูกเลื่อนออกไป (t9 — เพดาน process ต่อ turn จริง) t8 **ไม่ได้**
-ลงมือสร้างมัน — แต่สร้าง *รั้ว* เพื่อให้การ
-ขาดหายของมันลืมไม่ได้และปลอมไม่ได้ คือ single source of truth ที่
-`scripts/deferred-controls.txt` ระบุชื่อมาตรการที่ขาดด้วยสะกดจริงระดับ kernel/library
-มี CI guard ที่ `scripts/check-deferred-fence.sh` คอยตรึงตาราง, SSOT และ source
-จริงให้ตรงกัน และมี phantom-control check ที่ทำให้ build ล้มถ้ามีโค้ด *อ้างถึง*
-มาตรการเหล่านี้ (แม้ใน string literal) โดยไม่มีคำกำกับ `// DEFERRED(tNN):` ที่ยอมรับ
-อย่างตรงไปตรงมาว่ามันยังไม่มีอยู่จริง
+Phase 5 t8 สร้าง *รั้ว* เพื่อให้การขาดหายของมาตรการที่เลื่อนออกไปลืมไม่ได้และปลอมไม่ได้
+คือ single source of truth ที่ `scripts/deferred-controls.txt` ระบุชื่อมาตรการที่ขาดด้วย
+สะกดจริงระดับ kernel/library มี CI guard ที่ `scripts/check-deferred-fence.sh` คอยตรึง
+SSOT, fence region ด้านล่าง และ source จริงให้ตรงกัน และมี phantom-control check ที่ทำให้
+build ล้มถ้ามีโค้ด *อ้างถึง* มาตรการเหล่านี้ (แม้ใน string literal) โดยไม่มีคำกำกับ
+`// DEFERRED(tNN):` ที่ยอมรับอย่างตรงไปตรงมาว่ามันยังไม่มีอยู่จริง
 
-ตารางด้านล่างถูกตรวจด้วยเครื่อง: token ในคอลัมน์ **Real spellings** ต้องเท่ากับชุด
-token ใน SSOT เป๊ะ และ ticket ต้องตรงกันแบบสองทิศทาง แก้ฝั่งใดฝั่งหนึ่งโดยไม่แก้อีก
-ฝั่ง CI จะ fail
+มาตรการทั้งสองที่รั้วนี้กั้นไว้ได้ **ลงมือทำเสร็จแล้ว**: t11 ปิดขอบเขต **egress** และ t9
+เพิ่ม **เพดาน process ต่อ turn** (cgroup v2 `pids.max` แบบ best-effort — ดู *ส่วนที่ยัง
+เหลือ* ด้านบน) ดังนั้น SSOT จึง **ไม่มี token ที่เลื่อนออกไปเหลืออยู่** และรั้วนี้ **ถูกปลด
+ครบแล้ว (fully discharged)** guard ยังรันทุกครั้งใน CI เพื่อรักษาสถานะปลายทางนี้ให้ตรงตาม
+จริง: มันจะ fail อีกถ้า residual ของมาตรการที่ลงแล้วถูกตัดออกจาก THREAT-MODEL (condition C,
+EN + TH) หรือถ้ามีการเลื่อนมาตรการใหม่ที่ทำให้เกิด phantom ขึ้นมาอีก fence region ด้านล่าง
+จึงว่างเปล่าจาก token
 
-<!-- DEFERRED-FENCE:BEGIN — machine-checked against scripts/deferred-controls.txt; the ONLY backticks inside this region are the deferred tokens. -->
+<!-- DEFERRED-FENCE:BEGIN — machine-checked against scripts/deferred-controls.txt; this region must hold NO deferred tokens (backticks) and NO ticket ids while the fence is discharged. -->
 
-| Ticket | มาตรการที่เลื่อน | Real spellings (guard grep หาใน live .rs) | residual ตามจริง — สิ่งที่ยังเปิดอยู่ | ความรุนแรง |
-|---|---|---|---|---|
-| **t9** | เพดานจำนวน process ต่อ turn จริง (cgroup v2) | `cgroup` · `/sys/fs/cgroup` · `cgroup.procs` · `pids.max` | ตัวกันการ fork อย่างเดียวที่มีตอนนี้คือ RLIMIT_NPROC ซึ่งเป็นแบบ **per-UID และ RELATIVE** (usage ที่ใช้จริง + headroom) ไม่ใช่เพดานสัมบูรณ์ต่อ turn ตัว child ของ turn-executor re-exec binary ของ harness และ **รันด้วย UID เดียวกับ harness เอง** — **ไม่ได้** ถูกแยกไปอยู่ UID เฉพาะต่างหาก ดังนั้น fork-bomb ใน child นั้นจะเติมตาราง process **ระดับ per-UID** จนเต็มและแย่ง process slot ของตัว harness เองได้ เป็น **denial-of-service ต่อ harness (availability) ไม่ใช่การหนีออกจาก sandbox** เพดาน pid ต่อ turn จริงต้องใช้ controller ของ cgroup v2 | 🟠 |
+มาตรการที่เลื่อนออกไปของ Phase 5 ลงครบทั้งหมดแล้ว (เพดาน process ต่อ turn และ
+egress/syscall filter) รั้วนี้จึง **ถูกปลดครบแล้ว (fully discharged)** residual ตามจริงที่
+ยังเหลือจากแต่ละมาตรการที่ลงแล้ว — โดยเฉพาะ fallback ของตัวกัน fork กรณีไม่ได้ delegate —
+ถูกบันทึกไว้ในส่วน *ส่วนที่ยังเหลือ* ด้านบน ไม่ใช่ตรงนี้
 
 <!-- DEFERRED-FENCE:END -->
 
@@ -132,9 +140,12 @@ t8 กั้นรั้วไว้ คำ sign-off เดิมจึงถู
 > turn-executor ถูกกักกันแล้ว (seccomp + no-fd invariant + arch-guard แน่น แบบ
 > fail-closed) ข้อจำกัดเดิม — *"ship ได้เฉพาะ context ที่ยอมรับ egress ได้ / แยก
 > network จนกว่า t11 จะลง"* — **ถูกยกเลิกบน Linux** เหลือคำเตือนตามจริงสองข้อ:
-> (1) ตัวกัน fork ต่อ turn ยังเป็น per-UID `RLIMIT_NPROC` best-effort จนกว่า **t9**
-> (cgroup `pids.max`) จะลง — เป็น DoS ต่อ availability ของ harness ไม่ใช่การหนี;
-> (2) บน **macOS** ทั้ง Landlock และ seccomp ใช้ไม่ได้ (write-confinement เท่านั้น)
+> (1) ตัวกัน fork ต่อ turn เป็นเพดานสัมบูรณ์ cgroup v2 `pids.max` **เฉพาะเมื่อมี subtree
+> ที่ writable ถูก delegate** (systemd `Delegate=yes` / privileged container ตรวจที่ startup
+> ด้วย `BWOC_REQUIRE_CGROUP_PIDS=1`) ในกรณี **default** ที่ไม่ได้ delegate จะลดเหลือ floor
+> แบบ **per-UID** `RLIMIT_NPROC` best-effort — เป็น DoS ต่อ availability ของ harness ไม่ใช่
+> การหนี (prereq ฝั่ง deployment คือ **t14**); (2) บน **macOS** ทั้ง Landlock และ seccomp
+> ใช้ไม่ได้ (write-confinement เท่านั้น)
 > macOS จึงยังเป็นแพลตฟอร์มสำหรับ dev เท่านั้น ส่วนช่องทางลับ local แบบ uid เดียวกัน
 > อยู่นอกขอบเขตโดยการออกแบบ (NEWNET)
 

@@ -29,6 +29,7 @@
 
 pub mod agent_loop;
 pub mod budget;
+pub mod cgroup;
 pub mod chat_session;
 pub mod checkpoint;
 pub mod compact;
