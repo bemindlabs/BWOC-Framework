@@ -308,13 +308,69 @@ pub fn audit(target: &Path) -> AuditReport {
         }
     }
 
-    // 11. Trust evidence — Kalyāṇamitta 7. Each `true` declaration in
+    // 11. Memory completeness — the knowledge-base scaffold that incarnation
+    //     does NOT create (it is seeded at runtime). All advisory warnings:
+    //     a fresh agent legitimately has none yet, so never block on these.
+    check_memory_completeness(target, mode, &mut report);
+
+    // 12. Trust evidence — Kalyāṇamitta 7. Each `true` declaration in
     //     config.manifest.json's `trust.declared` block must have the
     //     evidence documented in `interconnect/trust.md`. A claim without
     //     evidence is a violation. Skipped silently if no trust block.
     check_trust_evidence(target, &mut report);
 
     report
+}
+
+/// Cap on `MEMORY.md` length — Mattaññutā ("right amount"); see the
+/// framework `CLAUDE.md`. Over this is a warning, not a violation.
+const MEMORY_MD_MAX_LINES: usize = 200;
+
+/// Audit the runtime knowledge-base scaffold: `memories/`, `MEMORY.md`,
+/// `task-log.jsonl`. These are seeded as an agent works, not by `bwoc new`,
+/// so every finding is a warning — the goal is to remind, never to block.
+/// `MEMORY.md` / `task-log.jsonl` absence is only flagged for incarnated
+/// agents (the template legitimately ships neither).
+fn check_memory_completeness(target: &Path, mode: AuditMode, report: &mut AuditReport) {
+    let memories = target.join("memories");
+    if memories.is_dir() {
+        report.passes.push("memories/ exists".to_string());
+    } else {
+        report
+            .warnings
+            .push("memories/ missing (deep-memory staging area)".to_string());
+    }
+
+    let memory_md = target.join("MEMORY.md");
+    if memory_md.is_file() {
+        match fs::read_to_string(&memory_md) {
+            Ok(c) => {
+                let lines = c.lines().count();
+                if lines > MEMORY_MD_MAX_LINES {
+                    report.warnings.push(format!(
+                        "MEMORY.md is {lines} lines (> {MEMORY_MD_MAX_LINES} cap — Mattaññutā; trim it)"
+                    ));
+                } else {
+                    report
+                        .passes
+                        .push(format!("MEMORY.md within {MEMORY_MD_MAX_LINES}-line cap"));
+                }
+            }
+            Err(_) => report.warnings.push("MEMORY.md unreadable".to_string()),
+        }
+    } else if matches!(mode, AuditMode::Incarnation) {
+        report
+            .warnings
+            .push("MEMORY.md missing (seed it as the agent learns)".to_string());
+    }
+
+    if target.join("task-log.jsonl").is_file() {
+        report.passes.push("task-log.jsonl exists".to_string());
+    } else if matches!(mode, AuditMode::Incarnation) {
+        report
+            .warnings
+            .push("task-log.jsonl missing (append-only task history)".to_string());
+    }
 }
 
 /// Verify the Kalyāṇamitta 7 evidence rules from
@@ -4107,6 +4163,62 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incarnated_agent_warns_on_missing_memory_scaffold() {
+        // write_temp_agent seeds no memories//MEMORY.md/task-log.jsonl — an
+        // incarnated agent must be reminded, but never blocked (warnings only).
+        let root = write_temp_agent("nomem", "delta", "You are agent-delta.");
+        let report = audit(&root);
+        for needle in ["memories/", "MEMORY.md", "task-log.jsonl"] {
+            assert!(
+                report.warnings.iter().any(|w| w.contains(needle)),
+                "expected warning for {needle}, got: {:?}",
+                report.warnings
+            );
+            assert!(
+                !report.violations.iter().any(|v| v.contains(needle)),
+                "{needle} must never be a violation"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_md_over_cap_warns() {
+        let root = write_temp_agent("bigmem", "epsilon", "You are agent-epsilon.");
+        let body = "line\n".repeat(MEMORY_MD_MAX_LINES + 5);
+        fs::write(root.join("MEMORY.md"), body).unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("MEMORY.md") && w.contains("cap")),
+            "expected over-cap warning, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn template_mode_does_not_warn_on_missing_memory_md() {
+        // The template ships neither MEMORY.md nor task-log.jsonl by design —
+        // flagging them in template mode would be noise.
+        let root = write_temp_agent("tpl", "{{name}}", "You are {{agentId}}.");
+        fs::remove_file(root.join("MEMORY.md")).ok();
+        let report = audit(&root);
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("MEMORY.md")),
+            "template mode must not warn about MEMORY.md, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("task-log.jsonl")),
+            "template mode must not warn about task-log.jsonl"
+        );
     }
 
     #[cfg(unix)]
