@@ -8,7 +8,8 @@ real problem was the missing terminal. `spawn()` had no TTY check.
 ## What changed
 
 - `spawn.rs` — new pure helper `spawn_blocked_by_no_tty(stdin_is_tty, override_set)`;
-  `spawn()` calls it right after `validate_agent_path` and returns the new
+  `spawn()` calls it just before `cmd.spawn()` (after config validation, so a
+  broken manifest still surfaces first) and returns the new
   `SpawnError::NotInteractive` when stdin is not a TTY.
 - Escape hatch: `BWOC_SPAWN_ALLOW_NO_TTY=1` forces a headless spawn (harness
   backends that can run without a REPL, automation that supplies its own I/O).
