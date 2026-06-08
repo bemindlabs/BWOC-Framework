@@ -1030,21 +1030,12 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 /// Force-create every backend entry file → `AGENTS.md` in the target
-/// directory. Removes any pre-existing file/symlink first. The list must
-/// stay in sync with the symlinks shipped in `modules/agent-template/` and
-/// the backends audited by `bwoc check` (see `check.rs`).
+/// directory. Removes any pre-existing file/symlink first. The filename list
+/// is the shared `spawn::BACKEND_ENTRY_FILES` so it cannot drift from the
+/// backends `bwoc check` audits.
 fn create_symlinks(target: &Path) -> Result<Vec<String>, NewError> {
-    let backends = [
-        "CLAUDE.md",
-        "AGY.md",
-        "CODEX.md",
-        "KIMI.md",
-        "OLLAMA.md",
-        "COPILOT.md",
-        "OPENAI.md",
-    ];
     let mut created = Vec::new();
-    for backend in backends {
+    for backend in crate::spawn::BACKEND_ENTRY_FILES.iter().copied() {
         let p = target.join(backend);
         let _ = fs::remove_file(&p);
         #[cfg(unix)]

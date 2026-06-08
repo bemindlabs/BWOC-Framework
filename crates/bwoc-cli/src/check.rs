@@ -135,17 +135,15 @@ pub fn audit(target: &Path) -> AuditReport {
             .push("AGENTS.md not found — this is the single source of truth".to_string());
     }
 
-    // 2. Backend symlinks must point to AGENTS.md. Kept in sync with the
-    //    backends `bwoc new` force-creates (see `new.rs::create_symlinks`).
-    //    CLAUDE.md is handled separately below (it may be standalone guidance).
-    for backend in &[
-        "AGY.md",
-        "CODEX.md",
-        "KIMI.md",
-        "OLLAMA.md",
-        "COPILOT.md",
-        "OPENAI.md",
-    ] {
+    // 2. Backend symlinks must point to AGENTS.md. Uses the shared
+    //    `spawn::BACKEND_ENTRY_FILES` (the same list `bwoc new` force-creates)
+    //    so the two can't drift. CLAUDE.md is handled separately below (it may
+    //    be standalone guidance rather than a symlink).
+    for backend in crate::spawn::BACKEND_ENTRY_FILES
+        .iter()
+        .copied()
+        .filter(|f| *f != "CLAUDE.md")
+    {
         let p = target.join(backend);
         check_symlink_to_agents(&p, backend, &mut report);
     }
@@ -664,6 +662,13 @@ fn check_symlink_to_agents(path: &Path, backend: &str, report: &mut AuditReport)
                 .warnings
                 .push(format!("{backend} unreadable symlink")),
         }
+    } else if path.exists() {
+        // A regular file where a symlink belongs — e.g. a stale copy that
+        // never got linked. Distinguish it from "missing" so the fix is clear.
+        report.warnings.push(format!(
+            "{backend} exists but is not a symlink to AGENTS.md \
+             (stale file? replace with: ln -sf AGENTS.md {backend})"
+        ));
     } else {
         report.warnings.push(format!(
             "{backend} missing (create with: ln -s AGENTS.md {backend})"
@@ -4161,6 +4166,29 @@ mod tests {
         assert!(
             !report.violations.iter().any(|v| v.contains("COPILOT.md")),
             "missing backend must not be a violation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_distinguishes_stale_regular_file_from_missing() {
+        // A regular file where a symlink belongs (e.g. a stale copy) must warn
+        // with a "not a symlink" message, not be reported as "missing".
+        let root = write_temp_agent("stale", "zeta", "You are agent-zeta.");
+        fs::remove_file(root.join("COPILOT.md")).unwrap();
+        fs::write(root.join("COPILOT.md"), "stale copy").unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("COPILOT.md") && w.contains("not a symlink")),
+            "expected a stale-file warning, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.violations.iter().any(|v| v.contains("COPILOT.md")),
+            "stale file must stay a warning, not a violation"
         );
     }
 

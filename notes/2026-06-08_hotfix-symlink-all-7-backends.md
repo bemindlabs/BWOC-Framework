@@ -4,9 +4,9 @@
 
 ## What changed
 
-- `new.rs::create_symlinks` — added `COPILOT.md` and `OPENAI.md` to the force-created list (now 7).
-- `check.rs::audit` — added `COPILOT.md` and `OPENAI.md` to the backend-symlink audit loop; updated `check_symlink_to_agents` doc comment.
-- Tests: `create_symlinks_covers_all_seven_backends` (new.rs); `audit_passes_copilot_and_openai_when_symlinked` + `audit_warns_when_copilot_missing` (check.rs); extended `write_temp_agent` to model all 7.
+- New `spawn::BACKEND_ENTRY_FILES` — single canonical list of the 7 backend entry filenames. `new.rs::create_symlinks` and `check.rs::audit` both consume it (check excludes `CLAUDE.md`, handled separately) so the two call sites can no longer drift — the drift that dropped `COPILOT.md`/`OPENAI.md` is the bug this PR fixes.
+- `check_symlink_to_agents` now distinguishes "exists but is not a symlink" (stale copied file) from "missing", with a clearer fix hint.
+- Tests: `create_symlinks_covers_all_seven_backends` (new.rs); `audit_passes_copilot_and_openai_when_symlinked`, `audit_warns_when_copilot_missing`, `audit_distinguishes_stale_regular_file_from_missing` (check.rs); extended `write_temp_agent` to model all 7.
 
 ## Decisions
 
