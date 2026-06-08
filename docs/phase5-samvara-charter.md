@@ -111,3 +111,58 @@ observable write/egress on the exercised inputs, on Linux, under a sandbox prove
 armed; the static floor is a fast cross-platform sanity check. Extending coverage
 (more inputs, more platforms, fuzzed args) strengthens — but does not gate — the
 claim.
+
+---
+
+## Phase 5 t7a — turn-executor process / FS confinement
+
+t7a hardens the **process** that runs an approved tool (the re-exec'd
+`--__turn-executor` child), not just individual tool calls. It is the
+process/FS-confinement half of the original t7; the egress/seccomp/netns half is
+**t7b (ticket t11)**, a deferred hard-blocker (yudi's SPLIT ruling).
+
+### The t7a claim (honest gate text)
+
+> **t7a claims:** the turn-executor cannot read or mutate the harness via the
+> filesystem, via `ptrace`/proc-mem, or via a planted build artifact.
+>
+> **t7a does NOT claim** mount-namespace isolation.
+>
+> **t7a does NOT claim** egress containment — network, ssh-agent, and
+> abstract-socket reachability remain open and are **t7b / t11**.
+
+(Deliberately *not* phrased as "no shared writable mount": there IS a shared
+mount; what t7a removes is the executor's filesystem *reach* into it and the
+ptrace/proc path to the parent's RAM.)
+
+### How each control delivers the claim
+
+| Control | Closes | Mechanism |
+|---|---|---|
+| **C1** FS jail on the executor | FS read/mutate of the harness | Linux **Landlock** in `pre_exec` (rw = {worktree, per-turn tempdir}; read+exec = binary + minimal system allowlist; `$HOME`/checkpoint/`/proc/<other>` denied; `no_new_privs`). macOS = sandbox-exec **write-confinement only** (reads NOT jailed — Linux-only, mirrors t6's RLIMIT_AS). Probe + **LOUD-skip** when unavailable. |
+| **C4** parent anti-ptrace | **CRIT-1** (ptrace RAM-read of keys) | Parent `prctl(PR_SET_DUMPABLE,0)` (blocks same-uid `ptrace`/`process_vm_readv`) **+** verify `kernel.yama.ptrace_scope ≥ 1`, **fail-closed** on `0`. |
+| **C5** no wholesale `/proc` | proc-mem / info leak | Jail allowlist excludes `/proc` entirely; only the loader/runtime paths it actually needs are granted (none under `/proc` in practice). |
+| **C6** env-scrub extension | authority leak | Drop `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `GNUPGHOME`, `DBUS_SESSION_BUS_ADDRESS` from the executor env (allowlist-deny + pattern-deny). |
+| **C7** jailed post-turn git | **CRIT-2** (build.rs/worktree RCE) | The parent runs build/test **in-child** under the C1 jail (so a planted `build.rs` executes *confined*), and runs `git` on the untrusted worktree inside the same jail **with `core.hooksPath=/dev/null`** + config overrides (fsmonitor/pager/sshCommand/diff.external) so a planted hook/config cannot run as the unjailed parent. |
+| **C8** binary RO, checkpoint outside jail | **M3**, **M2** | The binary is read+exec-only (no `current_exe` overwrite); the SessionTrust checkpoint lives outside the jail rw set (child cannot forge the latch — parent-written only). |
+| **C9** bounded fd3 read | IPC abuse | Parent reads one frame with a finite timeout, max-length cap, close-after-one-frame, and **no cmsg buffer** (drops `SCM_RIGHTS`). |
+
+### Proof model (fail-closed, never silent-pass)
+
+The gate proof is the adversarial **red-team** suite
+(`crates/bwoc-harness/tests/sandbox_escape.rs`, `--features test-redteam`): a
+hostile child (`src/bin/sandbox_redteam.rs`) is spawned **inside the real
+executor jail** and attempts each escape against planted canaries — read a
+`~/.ssh` secret, write outside the worktree, overwrite the checkpoint canary
+(M2), overwrite its own binary (M3), `process_vm_readv` the parent (CRIT-1 / C4),
+read the parent's `/proc/<pid>/environ` (C4). Every attempt must **fail**. A
+planted `build.rs` is exactly worktree-resident code running under the same jail,
+so the read/write arms ARE its confinement proof (CRIT-2); a separate C7 test
+plants a malicious `core.fsmonitor` and asserts the production
+`DiffSummary::from_worktree` (hardened + jailed git) does not execute it.
+
+**Platform honesty (mirrors t6's Linux-only memory cap):** the read / ptrace /
+`/proc` guarantees are the **Linux** Landlock + C4 controls. On macOS the jail is
+write-confinement only, so those arms **LOUD-skip** (never silent-pass); the
+write-outside and checkpoint arms still bite. If Landlock is unavailable on a
+Linux kernel, the whole proof LOUD-skips rather than green.

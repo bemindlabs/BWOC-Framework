@@ -170,6 +170,12 @@ fn main() {
         }
     }
 
+    // Phase 5 t7a / C4 — this is the PARENT (it holds provider API keys + the
+    // SessionTrust latch in RAM). Harden it against same-uid ptrace /
+    // process_vm_readv from a turn-executor child BEFORE any secret is loaded or
+    // any child is spawned. Fail-closed if the kernel cannot protect it.
+    harden_parent_against_ptrace();
+
     // Normal harness path: build the multi-thread runtime and run the loop.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -182,6 +188,58 @@ fn main() {
         }
     });
 }
+
+/// Phase 5 t7a / C4 — protect the parent's RAM (provider keys, trust latch)
+/// from a same-uid attacker (the turn-executor child), closing CRIT-1.
+///
+/// 1. `prctl(PR_SET_DUMPABLE, 0)` — a non-dumpable process can only be ptraced /
+///    have `/proc/<pid>/mem` read by root (`CAP_SYS_PTRACE`); a same-uid caller
+///    gets `EPERM`. This is the control that actually blocks the RAM-read.
+/// 2. Verify `kernel.yama.ptrace_scope >= 1` and **fail-closed** if it reads `0`
+///    (yama further restricts ptrace to descendants — defence in depth).
+///
+/// macOS protects task ports via taskgated/SIP; this is a Linux control and the
+/// redteam ptrace arm LOUD-skips off-Linux.
+#[cfg(target_os = "linux")]
+fn harden_parent_against_ptrace() {
+    // SAFETY: prctl(PR_SET_DUMPABLE) only mutates this process's own flag.
+    let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    if rc != 0 {
+        eprintln!(
+            "[bwoc-harness:t7a] FATAL: prctl(PR_SET_DUMPABLE,0) failed: {} — cannot protect \
+             parent memory from same-uid ptrace. Refusing to start (fail-closed). [C4]",
+            std::io::Error::last_os_error()
+        );
+        std::process::exit(70);
+    }
+    match std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope") {
+        Ok(s) => {
+            if s.trim().parse::<i32>().unwrap_or(-1) == 0 {
+                eprintln!(
+                    "[bwoc-harness:t7a] FATAL: kernel.yama.ptrace_scope=0 — same-uid ptrace is \
+                     permitted. A turn-executor could read the parent's API keys from RAM. \
+                     Refusing to start (fail-closed). Fix: `sudo sysctl kernel.yama.ptrace_scope=1`. \
+                     [C4]"
+                );
+                std::process::exit(70);
+            }
+        }
+        Err(_) => {
+            // yama LSM absent (file missing). PR_SET_DUMPABLE(0) already blocks
+            // same-uid ptrace on its own, so warn LOUDLY instead of refusing —
+            // requiring yama would needlessly break otherwise-safe kernels.
+            eprintln!(
+                "[bwoc-harness:t7a] WARNING: kernel.yama.ptrace_scope unreadable (yama not \
+                 enabled); relying on PR_SET_DUMPABLE(0) alone to block same-uid ptrace. [C4]"
+            );
+        }
+    }
+}
+
+/// Non-Linux: C4's mechanism (PR_SET_DUMPABLE + yama) does not apply; macOS uses
+/// taskgated/SIP. No-op so the call site stays platform-neutral.
+#[cfg(not(target_os = "linux"))]
+fn harden_parent_against_ptrace() {}
 
 async fn run() -> HarnessResult<()> {
     let args = Args::parse();

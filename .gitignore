@@ -132,6 +132,13 @@ bin/
 *.out
 vendor/
 
+# Rust source binaries live under `src/bin/` (a convention, not build output).
+# The Go `bin/` rule above is overly broad for this Rust workspace, so re-include
+# the harness source bins it would otherwise swallow (e.g. the Phase 5 t7a
+# red-team bin). Compiled output stays ignored via `/target`.
+!crates/bwoc-harness/src/bin/
+!crates/bwoc-harness/src/bin/**
+
 # ---------------------------------------------------------------------------
 # Rust
 # ---------------------------------------------------------------------------

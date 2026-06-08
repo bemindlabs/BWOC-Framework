@@ -101,6 +101,31 @@
 //! in the child. A `memory_write` lands on disk in the child; the next
 //! `memory_read` (also a child) reads it back from disk. There is no stale
 //! parent-side copy to invalidate — re-hydration is automatic by construction.
+//!
+//! # Phase 5 t7a — FS jail (C1) + bounded IPC (C9)
+//!
+//! NOTE: the `C1`/`C3`/`C4` labels in the t6 section above are *t6's* condition
+//! numbers (resource containment). The labels below are *t7a's*.
+//!
+//! - **C1 — FS jail on the executor process.** Beyond the bare process boundary
+//!   (t5) and rlimits (t6), the child is now confined to a filesystem allowlist
+//!   installed in `pre_exec`: a Landlock domain on Linux (rw = {worktree,
+//!   per-turn tempdir}; read+exec = the binary + a minimal system allowlist;
+//!   everything else — `$HOME`, the checkpoint dir, `/proc/<other>` — denied),
+//!   or sandbox-exec write-confinement on macOS. The ruleset is built in the
+//!   PARENT (allocation-heavy) and only the `landlock_restrict_self` syscall
+//!   runs post-fork (async-signal-safe). See [`crate::jail`]. The binary is
+//!   read+exec-ONLY (M3: `current_exe` can't be overwritten); the checkpoint dir
+//!   is outside the rw set (M2: the latch is parent-written only). The
+//!   `run_command` grandchild inherits this jail, so its own OS-sandbox layer is
+//!   skipped when jailed (see [`ENV_JAILED`]).
+//! - **C9 — bounded IPC.** The parent's read of the child's single response
+//!   frame has a finite timeout ([`IPC_TIMEOUT`]) and the socket is shut down
+//!   after one frame; the reader uses a plain `read()` with no cmsg buffer, so a
+//!   malicious child cannot pass a descriptor back via `SCM_RIGHTS`.
+//!
+//! What t7a does NOT claim: mount-namespace isolation, or egress containment
+//! (network / ssh-agent / abstract sockets) — that is t7b (ticket t11).
 
 #[cfg(unix)]
 use std::io::{Read, Write};
@@ -113,6 +138,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
+use crate::jail::{JailSpec, JailStatus};
 use crate::sandbox::OsSandbox;
 #[cfg(unix)]
 use crate::sandbox::{make_os_sandbox, run_sandboxed, scrub_env};
@@ -134,6 +161,16 @@ const ENV_TOKEN: &str = "BWOC_TURN_EXECUTOR_TOKEN";
 /// Env var carrying the inherited IPC socket fd number.
 const ENV_FD: &str = "BWOC_TURN_EXECUTOR_FD";
 
+/// Set (to `1`) when the parent installed the C1 FS jail on the executor
+/// process. The child reads it to decide whether the `run_command` grandchild
+/// still needs its own OS-sandbox layer: when jailed, the grandchild *inherits*
+/// the executor's confinement (Landlock nests; macOS sandbox-exec is inherited
+/// AND cannot be re-applied — nesting fails with EPERM), so the child uses a
+/// no-op OS sandbox. When the jail is unavailable, the child falls back to the
+/// per-grandchild [`make_os_sandbox`] so confinement is never silently lost.
+#[cfg(unix)]
+const ENV_JAILED: &str = "BWOC_TURN_EXECUTOR_JAILED";
+
 /// The fixed fd the parent dup's the child socket onto in `pre_exec`.
 #[cfg(unix)]
 const EXECUTOR_FD: std::os::unix::io::RawFd = 3;
@@ -141,6 +178,14 @@ const EXECUTOR_FD: std::os::unix::io::RawFd = 3;
 /// Hard cap on a single IPC frame (defence against a corrupt length prefix).
 #[cfg(unix)]
 const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+/// C9 — bound the parent's wait on the child's single response frame. A hung or
+/// hostile child can never block the parent loop forever; the cap is generous
+/// (> the t6 `RLIMIT_CPU` hard limit of 600 s) so a legitimately slow tool
+/// (e.g. a build) is not cut off, but it is finite. Paired with an explicit
+/// socket shutdown after the one frame is read (close-after-one-frame).
+#[cfg(unix)]
+const IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -654,6 +699,10 @@ pub struct ExecutorOutcome {
     pub child_pid: u32,
     /// The per-turn tempdir handed to the child as its process cwd.
     pub cwd: PathBuf,
+    /// C1 — whether the FS jail was actually enforced on this spawn. The
+    /// redteam suite asserts this is `Enforced` on Linux (never silent-pass);
+    /// macOS reports `WriteConfineOnly` (reads not jailed — see `jail` docs).
+    pub jail_status: JailStatus,
 }
 
 /// Token-forging mode — test-only knob to exercise C2/C13.
@@ -756,12 +805,85 @@ fn roundtrip(
     // (it would strip the token, whose name contains TOKEN).
     let safe_env = scrub_env();
 
-    let mut cmd = Command::new(program);
-    cmd.arg(EXECUTOR_FLAG)
-        .current_dir(&tmp_path)
+    // C1 — the per-spawn FS jail spec for the executor: rw on the real worktree
+    // + the per-turn tempdir; read+exec on the binary + a minimal system
+    // allowlist. The binary is read+exec-ONLY (M3: `current_exe` cannot be
+    // overwritten from inside the jail). The SessionTrust checkpoint dir lives
+    // under `$BWOC_HOME`/`$HOME` — outside this rw set — so the child cannot
+    // write it (M2 / C8): confinement is structural, not a runtime check.
+    let jail_spec = JailSpec::executor(&inv.workdir, &tmp_path, program);
+
+    // Prepare the platform jail. Linux: a Landlock ruleset built in the PARENT
+    // (only the restrict syscall runs post-fork — async-signal-safe). macOS: a
+    // write-confinement sandbox-exec wrapper (reads NOT jailed — see `jail`
+    // docs). Both degrade gracefully with a LOUD warning; never silent-pass.
+    #[cfg(target_os = "linux")]
+    let (landlock_fd, jail_status) = match crate::jail::build_ruleset(&jail_spec) {
+        Some(fd) => (Some(fd), JailStatus::Enforced),
+        None => {
+            eprintln!(
+                "[bwoc-harness:t7a] WARNING: Landlock unavailable; turn-executor runs WITHOUT the \
+                 FS jail (read/write confinement NOT enforced). [Phase 5 t7a/C1]"
+            );
+            (None, JailStatus::Unavailable)
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let (macos_profile, jail_status) = match crate::jail::which_sandbox_exec() {
+        Some(_) => (
+            Some(crate::jail::macos_write_confine_profile(&jail_spec)),
+            JailStatus::WriteConfineOnly,
+        ),
+        None => {
+            eprintln!(
+                "[bwoc-harness:t7a] WARNING: sandbox-exec not found; turn-executor runs WITHOUT \
+                 write confinement. [Phase 5 t7a/C1]"
+            );
+            (None, JailStatus::Unavailable)
+        }
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let jail_status = {
+        let _ = &jail_spec;
+        JailStatus::Unavailable
+    };
+
+    // Build the base command. On macOS the executor is wrapped in `sandbox-exec`
+    // (the fd-dup/rlimit `pre_exec` still runs first, then execve(sandbox-exec),
+    // which execs the real binary — fd3 + rlimits inherit through it).
+    #[cfg(target_os = "macos")]
+    let mut cmd = match &macos_profile {
+        Some(profile) => {
+            let sb = crate::jail::which_sandbox_exec().expect("sandbox-exec present");
+            let mut c = Command::new(sb);
+            c.arg("-p").arg(profile).arg(program).arg(EXECUTOR_FLAG);
+            c
+        }
+        None => {
+            let mut c = Command::new(program);
+            c.arg(EXECUTOR_FLAG);
+            c
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = {
+        let mut c = Command::new(program);
+        c.arg(EXECUTOR_FLAG);
+        c
+    };
+
+    cmd.current_dir(&tmp_path)
         .env_clear()
         .envs(&safe_env)
         .env(ENV_FD, EXECUTOR_FD.to_string());
+    // Tell the child whether it is already FS-jailed (so the run_command
+    // grandchild skips its now-redundant — and on macOS un-nestable — OS-sandbox
+    // layer). Set after env_clear/envs so scrub_env can't strip it; the
+    // grandchild's own scrub then drops it (not allowlisted) so it goes no
+    // deeper.
+    if jail_status != JailStatus::Unavailable {
+        cmd.env(ENV_JAILED, "1");
+    }
     if forge != ForgeMode::NoEnvToken {
         cmd.env(ENV_TOKEN, &token);
     }
@@ -771,10 +893,13 @@ fn roundtrip(
     // the closure below never parses env or allocates.
     let rlimit_plan = build_rlimit_plan();
 
-    // SAFETY (C1): this closure runs in the forked child, after fork and before
-    // exec. It calls ONLY raw libc, all async-signal-safe (`dup2`, `fcntl`,
-    // `close`, `setrlimit`) — no allocation, no locks, no Rust std that could
-    // deadlock a post-fork child. Do NOT introduce nix/rustix wrappers here.
+    // SAFETY (C1/C3): this closure runs in the forked child, after fork and
+    // before exec. It calls ONLY raw libc / the async-signal-safe
+    // `landlock_restrict_self` syscall — no allocation, no locks, no Rust std
+    // that could deadlock a post-fork child of the multi-threaded parent. The
+    // Landlock ruleset was BUILT in the parent (above); here we only issue the
+    // final restrict syscall on the inherited (CLOEXEC) ruleset fd. Do NOT
+    // introduce nix/rustix wrappers here.
     unsafe {
         cmd.pre_exec(move || {
             // Place the IPC socket at the agreed fd and clear CLOEXEC (dup2 of
@@ -785,21 +910,9 @@ fn roundtrip(
             if libc::fcntl(EXECUTOR_FD, libc::F_SETFD, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            // C10: close every other inherited fd so the child holds exactly
-            // {0,1,2,EXECUTOR_FD}. CLOEXEC already covers Rust-opened fds; this
-            // loop is the belt-and-suspenders guarantee the fd test asserts.
-            let mut fd = EXECUTOR_FD + 1;
-            while fd < 1024 {
-                libc::close(fd);
-                fd += 1;
-            }
-            // C3 / t6: install POSIX resource limits. The plan (values +
-            // resource ids) was computed in the PARENT and captured as plain
-            // integers in `rlimit_plan`; here we only issue the async-signal-safe
-            // `setrlimit` syscall — no parsing, no allocation. Enforces
+            // C3 / t6: install POSIX resource limits (plan computed in parent).
             // CPU/NOFILE/FSIZE (+ AS/DATA on Linux) per-process; NPROC is a
-            // best-effort per-UID fork guard (full per-turn cap deferred to
-            // cgroup pids.max, ticket t9). See the module-level C4 notice.
+            // best-effort per-UID fork guard (cgroup pids.max deferred to t9).
             let mut i = 0;
             while i < rlimit_plan.count {
                 let s = rlimit_plan.specs[i];
@@ -812,6 +925,23 @@ fn roundtrip(
                 }
                 i += 1;
             }
+            // C1: install the Landlock FS jail (Linux). MUST run BEFORE the
+            // close loop below — the ruleset fd was inherited from the parent
+            // and the close loop would otherwise close it pre-restrict. After
+            // restrict_self the CLOEXEC ruleset fd is dropped at execve. (macOS
+            // jails via the sandbox-exec wrapper — no per-fd action here.)
+            #[cfg(target_os = "linux")]
+            if let Some(ref fd) = landlock_fd {
+                crate::jail::restrict_current_thread(fd.as_raw_fd())?;
+            }
+            // C10: close every other inherited fd so the child holds exactly
+            // {0,1,2,EXECUTOR_FD}. CLOEXEC already covers Rust-opened fds; this
+            // loop is the belt-and-suspenders guarantee the fd test asserts.
+            let mut fd = EXECUTOR_FD + 1;
+            while fd < 1024 {
+                libc::close(fd);
+                fd += 1;
+            }
             Ok(())
         });
     }
@@ -820,6 +950,14 @@ fn roundtrip(
     let child_pid = child.id();
     // Parent closes its copy of the child end; only `parent_sock` remains.
     drop(child_sock);
+
+    // C9: bound every parent read/write on the IPC socket so a hung or hostile
+    // child can never block the parent loop forever. The frame reader uses a
+    // plain `read()` with NO ancillary (cmsg) buffer, so any SCM_RIGHTS fd a
+    // malicious child tries to pass back is discarded by the kernel (MSG_CTRUNC)
+    // — the channel cannot smuggle a descriptor into the parent.
+    let _ = parent_sock.set_read_timeout(Some(IPC_TIMEOUT));
+    let _ = parent_sock.set_write_timeout(Some(IPC_TIMEOUT));
 
     // Send the single framed request.
     let req = WireRequest {
@@ -839,6 +977,10 @@ fn roundtrip(
     // Read the response (a refused child closes the socket → read error).
     let resp_result = read_frame(&mut parent_sock);
 
+    // C9: close-after-one-frame — exactly one response is expected; drop the
+    // half-open channel immediately so no further bytes can ever be read.
+    let _ = parent_sock.shutdown(std::net::Shutdown::Both);
+
     // C11: reap unconditionally — no zombie, even on the fail-closed path.
     let _ = child.wait();
     // `tmp` drops here → the per-turn cwd is removed.
@@ -849,6 +991,7 @@ fn roundtrip(
         content: resp.content,
         child_pid,
         cwd: tmp_path,
+        jail_status,
     })
 }
 
@@ -965,6 +1108,13 @@ pub fn run_executor_blocking() -> i32 {
 /// The confinement root stays the real worktree (`req.workdir`) so
 /// `resolve_path`/`confine_path` still reject escapes (C7/C12); the process cwd
 /// is the unrelated per-turn tempdir set by the parent.
+///
+/// C1 interaction: when the executor itself is FS-jailed (`ENV_JAILED` set), the
+/// `run_command` grandchild inherits that jail, so its own OS-sandbox layer is
+/// redundant — and on macOS re-applying `sandbox-exec` inside an existing
+/// sandbox fails with EPERM. We therefore use a no-op OS sandbox in the jailed
+/// case (the arg-scan + env-scrub in `run_sandboxed` still apply), and fall back
+/// to [`make_os_sandbox`] only when the executor jail was unavailable.
 #[cfg(unix)]
 async fn execute_one(req: &WireRequest) -> String {
     let ctx = if req.confine {
@@ -972,7 +1122,11 @@ async fn execute_one(req: &WireRequest) -> String {
     } else {
         ToolContext::unconfined(req.workdir.clone())
     };
-    let os_sandbox = make_os_sandbox(&req.workdir);
+    let os_sandbox: Box<dyn OsSandbox> = if std::env::var(ENV_JAILED).is_ok() {
+        Box::new(crate::sandbox::NoopOsSandbox)
+    } else {
+        make_os_sandbox(&req.workdir)
+    };
     run_in_process(
         &req.tool_name,
         &req.args_json,
