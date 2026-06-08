@@ -286,16 +286,6 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     validate_agent_path(&path)?;
 
-    // bwoc spawn attaches a backend REPL that reads stdin, so a non-TTY stdin
-    // means the session can't work. Fail fast with guidance rather than letting
-    // the vendor CLI die cryptically. Escape hatch for headless/automation use.
-    if spawn_blocked_by_no_tty(
-        io::stdin().is_terminal(),
-        std::env::var_os("BWOC_SPAWN_ALLOW_NO_TTY").is_some(),
-    ) {
-        return Err(SpawnError::NotInteractive);
-    }
-
     let backend_name = args.backend.display_name();
     let path_display = path.display().to_string();
     eprintln!(
@@ -397,6 +387,18 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
         c.args(&args.extra);
         c
     };
+
+    // Last gate before launching the interactive session: it reads stdin, so a
+    // non-TTY stdin makes the session unusable. Checked after config validation
+    // (a broken manifest should surface regardless of where it runs) but before
+    // exec, so the user gets actionable guidance instead of a cryptic
+    // backend-side failure. Escape hatch for headless/automation use.
+    if spawn_blocked_by_no_tty(
+        io::stdin().is_terminal(),
+        std::env::var_os("BWOC_SPAWN_ALLOW_NO_TTY").is_some(),
+    ) {
+        return Err(SpawnError::NotInteractive);
+    }
 
     let mut child = cmd.spawn().map_err(|e| {
         if !args.backend.uses_harness() {
