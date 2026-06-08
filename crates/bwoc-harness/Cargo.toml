@@ -11,6 +11,15 @@ repository.workspace = true
 name = "bwoc-harness"
 path = "src/main.rs"
 
+# Phase 5 t7a — the hostile turn-executor child (red-team). Built ONLY under the
+# `test-redteam` feature (required-features); the `sandbox_escape` gate spawns it
+# inside the executor FS jail and asserts every escape it attempts fails. Never
+# part of a normal build/ship.
+[[bin]]
+name = "sandbox_redteam"
+path = "src/bin/sandbox_redteam.rs"
+required-features = ["test-redteam"]
+
 # ---------------------------------------------------------------------------
 # Feature flags
 # ---------------------------------------------------------------------------
@@ -20,6 +29,11 @@ path = "src/main.rs"
 # Pulls the OTEL crate graph (heavy + network egress) ONLY under this feature —
 # the dep-quarantine holds for the default build.
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+
+# Phase 5 t7a — gate-only red-team suite (the hostile-child bin above +
+# `tests/sandbox_escape.rs`). Off by default; the gate enables it explicitly:
+#   cargo test -p bwoc-harness --features test-redteam --test sandbox_escape
+test-redteam = []
 
 [dependencies]
 # Lean shared types — bwoc-core carries only serde/toml/thiserror.

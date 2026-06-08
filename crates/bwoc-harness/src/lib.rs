@@ -35,6 +35,7 @@ pub mod compact;
 pub mod deep_memory;
 pub mod error;
 pub mod eval;
+pub mod jail;
 pub mod lead;
 pub mod mcp;
 pub mod model_select;
