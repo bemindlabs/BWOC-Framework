@@ -51,6 +51,23 @@ pub use permission::{
 
 use bwoc_core::trust::TrustLevel;
 
+/// The pure-read tool whitelist — the **single source of truth** for which
+/// tools are read-only and side-effect-free (Phase 5 t4 — saṃvara).
+///
+/// This slice is the one authority three places defer to, so they can never
+/// drift apart:
+/// 1. [`classify_capability`] decides [`Capability::PureRead`] *only* by testing
+///    membership here — the lone construction site for that tier (t4 BC-3b).
+/// 2. The t4 behavioral proof (`tests/egress_pure_read.rs`) enumerates **this**
+///    slice and exercises every entry under a deny-all-egress + read-only-FS
+///    sandbox — no opt-out list, so a tool that cannot be exercised cannot be
+///    PureRead (t4 BC-3a).
+/// 3. The static forbidden-symbol floor scans each listed tool's source.
+///
+/// Adding a tool here is a deliberate act: it must survive the behavioral proof
+/// on Linux and the static floor everywhere, or the test suite fails.
+pub const PURE_READ_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "memory_read"];
+
 /// Layer-0 capability tier, **graded by blast radius** (Phase 5 t3 — saṃvara,
 /// yudi's ruling (a)). This REPLACES t2's flat "deny every effectful tool on an
 /// untrusted turn": an Untrusted turn may still do the low-blast-radius things
@@ -59,6 +76,7 @@ use bwoc_core::trust::TrustLevel;
 /// any tool not deliberately classified into [`Capability::PureRead`] or
 /// [`Capability::WorktreeWrite`] falls to [`Capability::Gated`] and is refused on
 /// an Untrusted turn, so a newly-added tool is denied-by-default.
+#[derive(Debug, PartialEq, Eq)]
 enum Capability {
     /// Read-only and side-effect-free — allowed on ANY turn. `read_file`,
     /// `list_dir`, `grep` only read the worktree; `memory_read` does a single
@@ -88,8 +106,13 @@ fn classify_capability(tool_name: &str, arguments_json: &str) -> Capability {
             .ok()
             .and_then(|v| v[key].as_str().map(str::to_string))
     }
+    // PureRead is decided SOLELY by membership in the single-source-of-truth
+    // whitelist — the one and only construction site for this tier (t4 BC-3b).
+    // Keep this above the `match` so no second arm can mint a PureRead.
+    if PURE_READ_TOOLS.contains(&tool_name) {
+        return Capability::PureRead;
+    }
     match tool_name {
-        "read_file" | "list_dir" | "grep" | "memory_read" => Capability::PureRead,
         "write_file" | "edit_file" => Capability::WorktreeWrite {
             path: arg_str(arguments_json, "path"),
         },
@@ -556,6 +579,93 @@ mod tests {
             TrustLevel::Trusted,
         );
         assert!(matches!(outcome, PolicyOutcome::GuardrailBlocked(_)));
+    }
+
+    // ── t4 BC-5 — extracting PURE_READ_TOOLS is a behavior-preserving refactor ─
+
+    #[test]
+    fn classify_capability_golden_table_is_behavior_preserving() {
+        // A golden table pinning the classification of every tool the harness
+        // knows. Extracting `PURE_READ_TOOLS` and routing PureRead through a
+        // membership check must NOT change any verdict: the 4 whitelist strings
+        // stay PureRead, the writes stay WorktreeWrite, everything else stays
+        // Gated. If a future edit shifts any tool's tier, this test fails.
+        let pr = Capability::PureRead;
+        let gated = Capability::Gated;
+        // (tool, args, expected)
+        let cases: &[(&str, &str, Capability)] = &[
+            ("read_file", r#"{"path":"a"}"#, Capability::PureRead),
+            ("list_dir", "{}", Capability::PureRead),
+            ("grep", r#"{"pattern":"x"}"#, Capability::PureRead),
+            ("memory_read", "{}", Capability::PureRead),
+            (
+                "write_file",
+                r#"{"path":"a","content":"x"}"#,
+                Capability::WorktreeWrite {
+                    path: Some("a".to_string()),
+                },
+            ),
+            (
+                "edit_file",
+                r#"{"path":"b"}"#,
+                Capability::WorktreeWrite {
+                    path: Some("b".to_string()),
+                },
+            ),
+            (
+                "memory_write",
+                r#"{"name":"n.md"}"#,
+                Capability::WorktreeWrite {
+                    path: Some("memories/n.md".to_string()),
+                },
+            ),
+            ("run_command", r#"{"command":"echo"}"#, Capability::Gated),
+            ("git", r#"{"subcommand":"status"}"#, Capability::Gated),
+            ("run_gates", "{}", Capability::Gated),
+            ("bwoc_task", r#"{"action":"list"}"#, Capability::Gated),
+            ("bwoc_send", "{}", Capability::Gated),
+            ("bwoc_run", "{}", Capability::Gated),
+            ("mcp__srv__tool", "{}", Capability::Gated),
+            ("totally_unknown_tool", "{}", Capability::Gated),
+        ];
+        for (tool, args, expected) in cases {
+            assert_eq!(
+                &classify_capability(tool, args),
+                expected,
+                "classification of `{tool}` drifted — refactor was not behavior-preserving"
+            );
+        }
+        // Sanity: the whitelist drives PureRead and only PureRead.
+        for t in PURE_READ_TOOLS {
+            assert_eq!(classify_capability(t, "{}"), pr, "`{t}` must be PureRead");
+        }
+        assert_ne!(classify_capability("write_file", "{}"), gated);
+    }
+
+    #[test]
+    fn pure_read_tier_comes_only_from_the_whitelist() {
+        // Membership in PURE_READ_TOOLS ⇔ PureRead. A tool NOT in the slice is
+        // never PureRead, regardless of args (the t4 BC-3b invariant, checked
+        // behaviorally here; the source-level single-construction-site guard
+        // lives in tests/egress_pure_read.rs).
+        for tool in [
+            "write_file",
+            "edit_file",
+            "memory_write",
+            "run_command",
+            "git",
+            "x",
+        ] {
+            assert!(
+                !PURE_READ_TOOLS.contains(&tool),
+                "test premise broken: `{tool}` unexpectedly in whitelist"
+            );
+            assert_ne!(
+                classify_capability(tool, "{}"),
+                Capability::PureRead,
+                "`{tool}` is not whitelisted yet classified PureRead — second construction site?"
+            );
+        }
     }
 
     #[test]
