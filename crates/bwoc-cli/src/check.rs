@@ -315,13 +315,91 @@ pub fn audit(target: &Path) -> AuditReport {
         }
     }
 
-    // 11. Trust evidence — Kalyāṇamitta 7. Each `true` declaration in
+    // 11. Memory completeness — the knowledge-base scaffold that incarnation
+    //     does NOT create (it is seeded at runtime). All advisory warnings:
+    //     a fresh agent legitimately has none yet, so never block on these.
+    //     The memory directory name is the manifest's `memoryPath` (default
+    //     `memories/`), so a non-default configuration is not false-flagged.
+    let memory_dir = manifest_value
+        .as_ref()
+        .and_then(|m| m.get("memoryPath"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("memories");
+    check_memory_completeness(target, mode, memory_dir, &mut report);
+
+    // 12. Trust evidence — Kalyāṇamitta 7. Each `true` declaration in
     //     config.manifest.json's `trust.declared` block must have the
     //     evidence documented in `interconnect/trust.md`. A claim without
     //     evidence is a violation. Skipped silently if no trust block.
     check_trust_evidence(target, &mut report);
 
     report
+}
+
+/// Cap on `MEMORY.md` length — Mattaññutā ("right amount"); see the
+/// framework `CLAUDE.md`. Over this is a warning, not a violation.
+const MEMORY_MD_MAX_LINES: usize = 200;
+
+/// Count lines in a file by streaming, so a pathological (huge) `MEMORY.md`
+/// — exactly the over-cap case this audit flags — is not slurped into memory
+/// just to count it.
+fn count_lines(path: &Path) -> std::io::Result<usize> {
+    use std::io::BufRead;
+    let reader = std::io::BufReader::new(fs::File::open(path)?);
+    let mut n = 0usize;
+    for line in reader.lines() {
+        line?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Audit the runtime knowledge-base scaffold: the memory directory (the
+/// manifest's `memoryPath`, default `memories/`), `MEMORY.md`, and
+/// `task-log.jsonl`. These are seeded as an agent works, not by `bwoc new`,
+/// so every finding is a warning — the goal is to remind, never to block.
+/// `MEMORY.md` / `task-log.jsonl` absence is only flagged for incarnated
+/// agents (the template legitimately ships neither).
+fn check_memory_completeness(
+    target: &Path,
+    mode: AuditMode,
+    memory_dir: &str,
+    report: &mut AuditReport,
+) {
+    if target.join(memory_dir).is_dir() {
+        report.passes.push(format!("{memory_dir}/ exists"));
+    } else {
+        report
+            .warnings
+            .push(format!("{memory_dir}/ missing (deep-memory staging area)"));
+    }
+
+    let memory_md = target.join("MEMORY.md");
+    if memory_md.is_file() {
+        match count_lines(&memory_md) {
+            Ok(lines) if lines > MEMORY_MD_MAX_LINES => report.warnings.push(format!(
+                "MEMORY.md is {lines} lines (> {MEMORY_MD_MAX_LINES} cap — Mattaññutā; trim it)"
+            )),
+            Ok(_) => report
+                .passes
+                .push(format!("MEMORY.md within {MEMORY_MD_MAX_LINES}-line cap")),
+            Err(e) => report.warnings.push(format!("MEMORY.md unreadable: {e}")),
+        }
+    } else if matches!(mode, AuditMode::Incarnation) {
+        report
+            .warnings
+            .push("MEMORY.md missing (seed it as the agent learns)".to_string());
+    }
+
+    if target.join("task-log.jsonl").is_file() {
+        report.passes.push("task-log.jsonl exists".to_string());
+    } else if matches!(mode, AuditMode::Incarnation) {
+        report
+            .warnings
+            .push("task-log.jsonl missing (append-only task history)".to_string());
+    }
 }
 
 /// Verify the Kalyāṇamitta 7 evidence rules from
@@ -4129,6 +4207,95 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incarnated_agent_warns_on_missing_memory_scaffold() {
+        // write_temp_agent seeds none of the memory scaffold (the `memories/`
+        // directory, the `MEMORY.md` index, or `task-log.jsonl`) — an
+        // incarnated agent must be reminded, but never blocked (warnings only).
+        let root = write_temp_agent("nomem", "delta", "You are agent-delta.");
+        let report = audit(&root);
+        for needle in ["memories/", "MEMORY.md", "task-log.jsonl"] {
+            assert!(
+                report.warnings.iter().any(|w| w.contains(needle)),
+                "expected warning for {needle}, got: {:?}",
+                report.warnings
+            );
+            assert!(
+                !report.violations.iter().any(|v| v.contains(needle)),
+                "{needle} must never be a violation"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_md_over_cap_warns() {
+        let root = write_temp_agent("bigmem", "epsilon", "You are agent-epsilon.");
+        let body = "line\n".repeat(MEMORY_MD_MAX_LINES + 5);
+        fs::write(root.join("MEMORY.md"), body).unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("MEMORY.md") && w.contains("cap")),
+            "expected over-cap warning, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_memory_path_is_honored_not_hardcoded() {
+        // An agent that configures a non-default memoryPath must be audited
+        // against that directory — not falsely warned about a missing
+        // `memories/` while its real memory dir exists.
+        let root = write_temp_agent("custommem", "theta", "You are agent-theta.");
+        // Repoint memoryPath and create the matching directory.
+        let manifest = serde_json::json!({
+            "name": "theta", "agentId": "agent-theta", "agentRole": "demo",
+            "primaryModel": "m", "memoryPath": "brain/",
+            "lintCmd": "true", "formatCmd": "true",
+            "testCmd": "true", "buildCmd": "true", "version": "2.0",
+        });
+        fs::write(
+            root.join("config.manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::create_dir(root.join("brain")).unwrap();
+        let report = audit(&root);
+        assert!(
+            report.passes.iter().any(|p| p.contains("brain/ exists")),
+            "expected pass for the configured memory dir, got: {:?}",
+            report.passes
+        );
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("memories/")),
+            "must not warn about default memories/ when memoryPath is custom"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn template_mode_does_not_warn_on_missing_memory_md() {
+        // The template ships neither MEMORY.md nor task-log.jsonl by design —
+        // flagging them in template mode would be noise.
+        let root = write_temp_agent("tpl", "{{name}}", "You are {{agentId}}.");
+        fs::remove_file(root.join("MEMORY.md")).ok();
+        let report = audit(&root);
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("MEMORY.md")),
+            "template mode must not warn about MEMORY.md, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("task-log.jsonl")),
+            "template mode must not warn about task-log.jsonl"
+        );
     }
 
     #[cfg(unix)]
