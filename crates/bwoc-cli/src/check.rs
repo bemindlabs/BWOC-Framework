@@ -135,8 +135,15 @@ pub fn audit(target: &Path) -> AuditReport {
             .push("AGENTS.md not found — this is the single source of truth".to_string());
     }
 
-    // 2. Backend symlinks (AGY, CODEX, KIMI, OLLAMA must symlink to AGENTS.md)
-    for backend in &["AGY.md", "CODEX.md", "KIMI.md", "OLLAMA.md"] {
+    // 2. Backend symlinks must point to AGENTS.md. Uses the shared
+    //    `spawn::BACKEND_ENTRY_FILES` (the same list `bwoc new` force-creates)
+    //    so the two can't drift. CLAUDE.md is handled separately below (it may
+    //    be standalone guidance rather than a symlink).
+    for backend in crate::spawn::BACKEND_ENTRY_FILES
+        .iter()
+        .copied()
+        .filter(|f| *f != "CLAUDE.md")
+    {
         let p = target.join(backend);
         check_symlink_to_agents(&p, backend, &mut report);
     }
@@ -637,10 +644,10 @@ fn visit_md_files<F: FnMut(&Path, &str)>(target: &Path, depth: usize, visit: &mu
     }
 }
 
-/// Verify the backend entry file (`AGY.md`, `CODEX.md`, `KIMI.md`) is
-/// a symlink pointing at `AGENTS.md`. Missing files are warnings, not
-/// violations — an agent may not declare every backend. Symlinks
-/// pointing elsewhere are violations.
+/// Verify a backend entry file (`AGY.md`, `CODEX.md`, `KIMI.md`,
+/// `OLLAMA.md`, `COPILOT.md`, `OPENAI.md`) is a symlink pointing at
+/// `AGENTS.md`. Missing files are warnings, not violations — an agent may
+/// not declare every backend. Symlinks pointing elsewhere are violations.
 fn check_symlink_to_agents(path: &Path, backend: &str, report: &mut AuditReport) {
     if path.is_symlink() {
         match fs::read_link(path) {
@@ -655,6 +662,13 @@ fn check_symlink_to_agents(path: &Path, backend: &str, report: &mut AuditReport)
                 .warnings
                 .push(format!("{backend} unreadable symlink")),
         }
+    } else if path.exists() {
+        // A regular file where a symlink belongs — e.g. a stale copy that
+        // never got linked. Distinguish it from "missing" so the fix is clear.
+        report.warnings.push(format!(
+            "{backend} exists but is not a symlink to AGENTS.md \
+             (stale file? replace with: ln -sf AGENTS.md {backend})"
+        ));
     } else {
         report.warnings.push(format!(
             "{backend} missing (create with: ln -s AGENTS.md {backend})"
@@ -4086,7 +4100,15 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("AGENTS.md"), agents_body).unwrap();
-        for backend in ["AGY.md", "CODEX.md", "KIMI.md", "CLAUDE.md", "OLLAMA.md"] {
+        for backend in [
+            "AGY.md",
+            "CODEX.md",
+            "KIMI.md",
+            "CLAUDE.md",
+            "OLLAMA.md",
+            "COPILOT.md",
+            "OPENAI.md",
+        ] {
             std::os::unix::fs::symlink("AGENTS.md", root.join(backend)).unwrap();
         }
         let manifest = serde_json::json!({
@@ -4107,6 +4129,67 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_passes_copilot_and_openai_when_symlinked() {
+        // The full template ships 7 backend symlinks; check must audit all of
+        // them (COPILOT.md / OPENAI.md were previously ignored).
+        let root = write_temp_agent("allbackends", "beta", "You are agent-beta.");
+        let report = audit(&root);
+        for backend in ["COPILOT.md", "OPENAI.md"] {
+            assert!(
+                report
+                    .passes
+                    .iter()
+                    .any(|p| p.contains(backend) && p.contains("AGENTS.md")),
+                "expected pass for {backend}, got passes: {:?}",
+                report.passes
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_warns_when_copilot_missing() {
+        // Missing backend = warning, never a violation — keeps `check --all`
+        // green for agents incarnated before the backend existed.
+        let root = write_temp_agent("nocopilot", "gamma", "You are agent-gamma.");
+        fs::remove_file(root.join("COPILOT.md")).unwrap();
+        let report = audit(&root);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("COPILOT.md")),
+            "expected a warning for missing COPILOT.md, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.violations.iter().any(|v| v.contains("COPILOT.md")),
+            "missing backend must not be a violation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_distinguishes_stale_regular_file_from_missing() {
+        // A regular file where a symlink belongs (e.g. a stale copy) must warn
+        // with a "not a symlink" message, not be reported as "missing".
+        let root = write_temp_agent("stale", "zeta", "You are agent-zeta.");
+        fs::remove_file(root.join("COPILOT.md")).unwrap();
+        fs::write(root.join("COPILOT.md"), "stale copy").unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("COPILOT.md") && w.contains("not a symlink")),
+            "expected a stale-file warning, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.violations.iter().any(|v| v.contains("COPILOT.md")),
+            "stale file must stay a warning, not a violation"
+        );
     }
 
     #[cfg(unix)]

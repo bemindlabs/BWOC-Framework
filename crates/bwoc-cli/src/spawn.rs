@@ -69,6 +69,22 @@ pub enum Backend {
     OpenAiCompatible,
 }
 
+/// Canonical backend entry filenames that mirror `AGENTS.md`. Single source of
+/// truth for `bwoc new` (force-creates all of them) and `bwoc check` (audits
+/// them — `CLAUDE.md` is handled separately there, as it may be standalone
+/// guidance rather than a symlink). Keep in sync with the symlinks shipped in
+/// `modules/agent-template/`. Defined once so the two call sites cannot drift
+/// (the drift this list's last divergence caused is exactly what it prevents).
+pub const BACKEND_ENTRY_FILES: &[&str] = &[
+    "CLAUDE.md",
+    "AGY.md",
+    "CODEX.md",
+    "KIMI.md",
+    "OLLAMA.md",
+    "COPILOT.md",
+    "OPENAI.md",
+];
+
 impl Backend {
     /// External CLI program name for vendor backends.
     ///

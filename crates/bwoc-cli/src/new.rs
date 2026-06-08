@@ -1029,12 +1029,13 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Force-create `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md` → `AGENTS.md`
-/// in the target directory. Removes any pre-existing file/symlink first.
+/// Force-create every backend entry file → `AGENTS.md` in the target
+/// directory. Removes any pre-existing file/symlink first. The filename list
+/// is the shared `spawn::BACKEND_ENTRY_FILES` so it cannot drift from the
+/// backends `bwoc check` audits.
 fn create_symlinks(target: &Path) -> Result<Vec<String>, NewError> {
-    let backends = ["CLAUDE.md", "AGY.md", "CODEX.md", "KIMI.md", "OLLAMA.md"];
     let mut created = Vec::new();
-    for backend in backends {
+    for backend in crate::spawn::BACKEND_ENTRY_FILES.iter().copied() {
         let p = target.join(backend);
         let _ = fs::remove_file(&p);
         #[cfg(unix)]
@@ -1409,6 +1410,43 @@ mod tests {
         assert!(validate_name("agent_foo").is_err());
         assert!(validate_name("-foo").is_err());
         assert!(validate_name("foo-").is_err());
+    }
+
+    // Unix-only: create_symlinks returns an error on Windows (symlink
+    // support deferred to Phase 2, see create_symlinks).
+    #[cfg(unix)]
+    #[test]
+    fn create_symlinks_covers_all_seven_backends() {
+        // Every backend that ships as a symlink in modules/agent-template/
+        // must be force-created by incarnation — otherwise COPILOT.md /
+        // OPENAI.md silently fall through (the bug this guards).
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path();
+        fs::write(target.join("AGENTS.md"), "x").unwrap();
+        // A pre-existing plain file must be replaced by the symlink.
+        fs::write(target.join("OPENAI.md"), "stale {{placeholder}}").unwrap();
+
+        let created = create_symlinks(target).unwrap();
+
+        for backend in [
+            "CLAUDE.md",
+            "AGY.md",
+            "CODEX.md",
+            "KIMI.md",
+            "OLLAMA.md",
+            "COPILOT.md",
+            "OPENAI.md",
+        ] {
+            let p = target.join(backend);
+            assert!(p.is_symlink(), "{backend} must be a symlink");
+            assert_eq!(
+                fs::read_link(&p).unwrap(),
+                Path::new("AGENTS.md"),
+                "{backend} must point at AGENTS.md"
+            );
+            assert!(created.iter().any(|s| s.starts_with(backend)));
+        }
+        assert_eq!(created.len(), 7);
     }
 
     #[test]
