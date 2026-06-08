@@ -18,6 +18,19 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Phase 5 t8 — deferred-control fence-guard. Pure docs + shell (no Rust
+  # toolchain), so it runs first and fast. It keeps the deferred-control SSOT
+  # (scripts/deferred-controls.txt), the THREAT-MODEL fence tables (EN + TH),
+  # and the live source in lock-step, and fails the build on a phantom control:
+  # a deferred token (seccomp / cgroup / pids.max …) referenced in live code —
+  # even inside a string literal — without a `// DEFERRED(tNN):` admission.
+  fence-guard:
+    name: deferred-control fence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash scripts/check-deferred-fence.sh
+
   # Quality gates — fmt + clippy. Run once on Linux because the rules
   # are platform-independent and there's no value in repeating them
   # three times.

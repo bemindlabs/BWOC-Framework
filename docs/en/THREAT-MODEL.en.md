@@ -66,6 +66,45 @@ t7a is the **process/FS** half of the original t7. The egress half is deferred t
 - **macOS read confinement** — Linux-only; on macOS the executor jail is
   write-confinement only (the red-team read/ptrace/proc arms LOUD-skip there).
 
+## The deferred-control fence (t8)
+
+Phase 5 t1–t7a hardened the turn-executor up to the **process/FS** boundary. Two
+whole classes of containment are **known-open** and deferred to later tickets.
+t8 does not implement them — it builds a *fence* so their absence can never be
+forgotten or faked: a single source of truth (`scripts/deferred-controls.txt`)
+names each missing control by its real kernel/library spelling, a CI guard
+(`scripts/check-deferred-fence.sh`) keeps this table, that SSOT, and the live
+source in lock-step, and a phantom-control check fails the build if code ever
+*references* one of these controls (even in a string literal) without an
+explicit `// DEFERRED(tNN):` admission that it is not really there.
+
+The table below is machine-checked: the tokens in the **Real spellings** column
+must exactly equal the SSOT token set, and the tickets must match it
+bidirectionally. Editing one without the other fails CI.
+
+<!-- DEFERRED-FENCE:BEGIN — machine-checked against scripts/deferred-controls.txt; the ONLY backticks inside this region are the deferred tokens. -->
+
+| Ticket | Deferred control | Real spellings (the guard greps these in live .rs) | Honest residual — what is still open | Severity |
+|---|---|---|---|---|
+| **t9** | True per-turn process cap (cgroup v2) | `cgroup` · `/sys/fs/cgroup` · `cgroup.procs` · `pids.max` | The only fork guard today is RLIMIT_NPROC, which is **per-UID and RELATIVE** (live usage + headroom), not an absolute per-turn cap. The turn-executor child re-execs the harness binary and **runs under the harness's own UID** — it is **not** given a dedicated separate UID. So a fork-bomb in that child fills the **per-UID** process table and can starve the harness itself of process slots: a **denial-of-service against the harness (availability), not a sandbox escape**. A true per-turn pid ceiling needs the cgroup v2 controller. | 🟠 |
+| **t11** | Egress / syscall containment (the t7b half) | `seccomp` · `PR_SET_SECCOMP` · `SECCOMP_SET_MODE_FILTER` · `libseccomp` | The FS jail does not fence syscalls. The executor can still open sockets (DNS / TCP / UDP) and reach abstract-namespace sockets that have no filesystem path. There is **no syscall filter** until a seccomp-bpf policy lands, so an attacker-controlled turn retains full network egress. | 🟠 |
+
+<!-- DEFERRED-FENCE:END -->
+
+### Permission scope of t8 (the binding sign-off)
+
+t8 closes the **honesty** gate, not the controls. Its sign-off therefore scopes
+*where* t1–t7a may ship:
+
+> **t1–t7a may be shipped ONLY into egress-acceptable / network-isolated
+> execution contexts until t11 lands.** Because the turn-executor retains full
+> network egress (t11) and only a best-effort per-UID fork guard (t9), t8 is
+> **not** a license to ship the harness into a production context that takes
+> hostile input over the network. In any network-reachable, untrusted-input
+> deployment the egress residual above is live and must be closed (t11) or
+> compensated by an out-of-band network boundary (netns / firewall / no route)
+> first.
+
 ## Proof
 
 The gate proof is the adversarial red-team suite

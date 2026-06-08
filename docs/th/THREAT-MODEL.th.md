@@ -66,6 +66,44 @@ t7a เป็นครึ่ง **process/FS** ของ t7 เดิม ส่�
 - **การ confine การอ่านบน macOS** — เป็น Linux-only; บน macOS jail ของ executor
   เป็น write-confinement เท่านั้น (arm อ่าน/ptrace/proc ของ red-team จะ LOUD-skip)
 
+## รั้วกั้นมาตรการที่เลื่อนออกไป (deferred-control fence — t8)
+
+Phase 5 t1–t7a เสริมความแข็งแรงให้ turn-executor จนถึงขอบเขต **process/FS** แล้ว
+แต่ยังมีการกักกันอีกสองกลุ่มทั้งกลุ่มที่ **ยังเปิดอยู่ (known-open)** และถูกเลื่อน
+ออกไปเป็น ticket ภายหลัง t8 **ไม่ได้** ลงมือสร้างมัน — แต่สร้าง *รั้ว* เพื่อให้การ
+ขาดหายของมันลืมไม่ได้และปลอมไม่ได้ คือ single source of truth ที่
+`scripts/deferred-controls.txt` ระบุชื่อมาตรการที่ขาดด้วยสะกดจริงระดับ kernel/library
+มี CI guard ที่ `scripts/check-deferred-fence.sh` คอยตรึงตาราง, SSOT และ source
+จริงให้ตรงกัน และมี phantom-control check ที่ทำให้ build ล้มถ้ามีโค้ด *อ้างถึง*
+มาตรการเหล่านี้ (แม้ใน string literal) โดยไม่มีคำกำกับ `// DEFERRED(tNN):` ที่ยอมรับ
+อย่างตรงไปตรงมาว่ามันยังไม่มีอยู่จริง
+
+ตารางด้านล่างถูกตรวจด้วยเครื่อง: token ในคอลัมน์ **Real spellings** ต้องเท่ากับชุด
+token ใน SSOT เป๊ะ และ ticket ต้องตรงกันแบบสองทิศทาง แก้ฝั่งใดฝั่งหนึ่งโดยไม่แก้อีก
+ฝั่ง CI จะ fail
+
+<!-- DEFERRED-FENCE:BEGIN — machine-checked against scripts/deferred-controls.txt; the ONLY backticks inside this region are the deferred tokens. -->
+
+| Ticket | มาตรการที่เลื่อน | Real spellings (guard grep หาใน live .rs) | residual ตามจริง — สิ่งที่ยังเปิดอยู่ | ความรุนแรง |
+|---|---|---|---|---|
+| **t9** | เพดานจำนวน process ต่อ turn จริง (cgroup v2) | `cgroup` · `/sys/fs/cgroup` · `cgroup.procs` · `pids.max` | ตัวกันการ fork อย่างเดียวที่มีตอนนี้คือ RLIMIT_NPROC ซึ่งเป็นแบบ **per-UID และ RELATIVE** (usage ที่ใช้จริง + headroom) ไม่ใช่เพดานสัมบูรณ์ต่อ turn ตัว child ของ turn-executor re-exec binary ของ harness และ **รันด้วย UID เดียวกับ harness เอง** — **ไม่ได้** ถูกแยกไปอยู่ UID เฉพาะต่างหาก ดังนั้น fork-bomb ใน child นั้นจะเติมตาราง process **ระดับ per-UID** จนเต็มและแย่ง process slot ของตัว harness เองได้ เป็น **denial-of-service ต่อ harness (availability) ไม่ใช่การหนีออกจาก sandbox** เพดาน pid ต่อ turn จริงต้องใช้ controller ของ cgroup v2 | 🟠 |
+| **t11** | การกักกัน egress / syscall (ครึ่ง t7b) | `seccomp` · `PR_SET_SECCOMP` · `SECCOMP_SET_MODE_FILTER` · `libseccomp` | FS jail ไม่ได้กั้น syscall executor ยังเปิด socket ได้ (DNS / TCP / UDP) และเอื้อมถึง abstract-namespace socket ที่ไม่มี path บน filesystem ได้ **ยังไม่มี syscall filter** จนกว่านโยบาย seccomp-bpf จะลง ดังนั้น turn ที่ถูกผู้โจมตีควบคุมยังมี network egress เต็มที่ | 🟠 |
+
+<!-- DEFERRED-FENCE:END -->
+
+### ขอบเขตการอนุญาตของ t8 (คำ sign-off ที่ผูกพัน)
+
+t8 ปิด gate ด้าน **ความซื่อตรง (honesty)** ไม่ใช่ปิดตัวมาตรการ คำ sign-off จึง
+จำกัด *ว่า* t1–t7a จะ ship ไปที่ไหนได้:
+
+> **t1–t7a ship ได้เฉพาะเข้า execution context ที่ยอมรับ egress ได้ / แยก network
+> เท่านั้น จนกว่า t11 จะลง** เพราะ turn-executor ยังมี network egress เต็มที่ (t11)
+> และมีเพียงตัวกัน fork แบบ per-UID best-effort (t9) t8 จึง **ไม่ใช่** ใบอนุญาตให้
+> ship harness เข้าสู่ production context ที่รับ input ที่เป็นอันตรายผ่าน network
+> ในการ deploy ที่เข้าถึงได้ผ่าน network และรับ input ที่ไม่เชื่อถือ residual ด้าน
+> egress ข้างต้นยังมีชีวิต ต้องปิดด้วย t11 หรือชดเชยด้วยขอบเขต network นอกแบนด์
+> (netns / firewall / ไม่มี route) ก่อน
+
 ## การพิสูจน์
 
 หลักฐานของ gate คือชุดทดสอบ red-team เชิงปฏิปักษ์

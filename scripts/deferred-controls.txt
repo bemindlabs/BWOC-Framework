@@ -1,0 +1,45 @@
+# scripts/deferred-controls.txt
+#
+# Single source of truth (SSOT) for the Phase 5 "deferred-control fence" (t8).
+#
+# Phase 5 hardened the turn-executor as far as the process/FS boundary goes
+# (t5/t6/t7a). Two whole classes of containment are KNOWN-OPEN and explicitly
+# deferred to later tickets. This file enumerates each deferred control by its
+# REAL kernel/library spelling (not a nickname), bound to the ticket that will
+# land it. It is consumed by:
+#
+#   - scripts/check-deferred-fence.sh   (the CI fence-guard)
+#   - docs/en/THREAT-MODEL.en.md        (the deferred-control fence table)
+#   - docs/th/THREAT-MODEL.th.md        (TH parity of the same table)
+#
+# The fence-guard enforces, in CI:
+#   A. these exact spellings are the tokens the phantom-control guard greps for
+#      in live (comment- and test-stripped) `.rs`;
+#   B. a deferred token that DOES appear in live code (even inside a string
+#      literal, e.g. an honest "seccomp unavailable" error) is "must-annotate",
+#      not instant-fail: annotate the line with `// DEFERRED(tNN):` and it passes;
+#   E. bidirectional doc-sync — every ticket here must appear in the fence table
+#      and vice-versa; every token here must appear in the table and vice-versa.
+#
+# Do NOT add a token here as a way to "implement" the control. This file records
+# what is ABSENT and names it honestly. Implementing t9/t11 is out of t8 scope.
+#
+# Format: one control per non-comment line, two whitespace-separated fields:
+#   <ticket>  <token>
+# Tokens must contain no whitespace.
+
+# ── t9 — true per-turn process cap (cgroup v2 pids.max) ─────────────────────
+# Until this lands, RLIMIT_NPROC is the only fork guard and it is per-UID +
+# RELATIVE best-effort, NOT an absolute per-turn cap (see the t9 fence row).
+t9   cgroup
+t9   /sys/fs/cgroup
+t9   cgroup.procs
+t9   pids.max
+
+# ── t11 — egress / syscall containment (the t7b half of t7) ─────────────────
+# Until this lands, the executor can still open sockets and reach abstract-
+# namespace sockets that an FS jail cannot fence.
+t11  seccomp
+t11  PR_SET_SECCOMP
+t11  SECCOMP_SET_MODE_FILTER
+t11  libseccomp

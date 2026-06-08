@@ -166,3 +166,80 @@ plants a malicious `core.fsmonitor` and asserts the production
 write-confinement only, so those arms **LOUD-skip** (never silent-pass); the
 write-outside and checkpoint arms still bite. If Landlock is unavailable on a
 Linux kernel, the whole proof LOUD-skips rather than green.
+
+---
+
+## Phase 5 t8 — the deferred-control fence (capstone closure)
+
+t8 is the Phase 5 capstone. It adds **no new containment** — by design
+(Mattaññutā: t8 is honesty, not coverage). t1–t7a hardened the turn-executor to
+the process/FS boundary; two whole classes of containment remain **known-open**.
+t8's job is to make that openness *impossible to forget or to fake*, and to
+state in writing where t1–t7a may therefore be shipped.
+
+### The t8 claim (honest gate text)
+
+> **t8 claims:** every control Phase 5 deferred is enumerated by its real
+> kernel/library spelling in a single source of truth, is reflected truthfully in
+> the THREAT-MODEL fence table, and is fenced in CI so that (a) the docs and the
+> SSOT cannot drift apart in either direction and (b) no code can quietly
+> *reference* a deferred control as if it existed.
+>
+> **t8 does NOT claim** any new runtime containment. The egress gap (t11) and the
+> per-turn process-cap gap (t9) are exactly as open after t8 as before it — t8
+> only guarantees they are named, scoped, and un-foolable.
+
+### What the fence is made of
+
+| Artifact | Role |
+|---|---|
+| `scripts/deferred-controls.txt` | **SSOT.** Enumerates each deferred control by its REAL spelling (`seccomp`, `PR_SET_SECCOMP`, `SECCOMP_SET_MODE_FILTER`, `libseccomp` → t11; `cgroup`, `/sys/fs/cgroup`, `cgroup.procs`, `pids.max` → t9), each bound to its ticket. Not nicknames. |
+| `scripts/check-deferred-fence.sh` | The CI guard. Parses the SSOT, the EN + TH fence tables, and the live source; fails on drift or a phantom control. |
+| THREAT-MODEL fence table (EN + TH) | The human-facing truth: ticket, deferred control, real spellings, honest residual, severity. |
+| `.github/workflows/ci.yml` → `fence-guard` job | Runs the guard on every push / PR. |
+
+### How the five binding conditions land
+
+- **A — real spellings, not nicknames.** The SSOT lists the exact kernel/library
+  tokens above; the phantom-control guard greps **those** in live (comment- and
+  test-stripped) `.rs`.
+- **B — annotate, don't instant-fail.** A deferred token that appears in live
+  code — *including inside a string literal* such as an honest
+  `"seccomp unavailable"` error — is **must-annotate**: tag the line with
+  `// DEFERRED(tNN):` (matching ticket) and it passes. This is what stops the
+  guard from false-positiving against the project's own honest error strings.
+- **C — the honest t9 truth.** The t9 fence row states it plainly: the only fork
+  guard today is `RLIMIT_NPROC`, which is **per-UID and RELATIVE**. We
+  **confirmed** the turn-executor child does **not** run under a dedicated
+  separate UID — it re-execs the harness binary under the harness's own UID
+  (`crates/bwoc-harness/src/turn_executor.rs`; no `setuid`/`seteuid` on the spawn
+  path, only `getuid` for the per-UID proc count). So a fork-bomb in that child
+  fills the **per-UID** process table and can DoS the harness itself — an
+  **availability** failure, not an escape. Severity stays **🟠**. The guard also
+  enforces the *best-effort rule*: `RLIMIT_NPROC` keeps its RELATIVE/best-effort
+  marker and is never treated as a hard guarantee (`.expect`/`assert!`) in live
+  code (`setrlimit` failure is handled conditionally, not panicked on).
+- **D — the binding sign-off scopes shipping permission.** See the sign-off
+  below; it is also written into the THREAT-MODEL fence section.
+- **E — bidirectional doc-sync.** Every ticket in the SSOT must appear in the
+  fence table and vice-versa; the SSOT token set must equal the table's token
+  set, both languages. CI fails on drift in **either** direction.
+
+### The tiāntíng sign-off (binding — as written)
+
+> **t1–t7a may be shipped ONLY into egress-acceptable / network-isolated
+> execution contexts until t11 lands.** Because the turn-executor retains full
+> network egress (deferred to t11) and only a best-effort per-UID fork guard
+> (deferred to t9), **t8 is NOT a license to ship the harness into a production
+> context that takes hostile input over the network.** In any network-reachable,
+> untrusted-input deployment the egress residual is live and must be closed (t11)
+> or compensated by an out-of-band network boundary (netns / firewall / no route)
+> before shipping.
+
+### Proof model
+
+The proof is the guard itself, exercised both directions: a clean tree passes;
+an unannotated deferred token in live code (or in a string literal), a hard
+guarantee on `RLIMIT_NPROC`, or any ticket/token drift between SSOT and either
+fence table **fails** the `fence-guard` CI job. t8 implements **neither t9 nor
+t11** — that is the point.

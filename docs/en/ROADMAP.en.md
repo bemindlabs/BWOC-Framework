@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 3 — *vaya + interconnect* — **DoD met** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya all shipped 2026-05-23). Trust v2 signed envelopes have since shipped (the `bwoc-signing` crate), and the Tier 2 memory reference implementation (`bwoc-deep-memory`) has since shipped too — closing the last deferred Phase 3 item. Phase 1 v2.0 and Phase 2 DoDs also met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Active phase:** Phase 5 — *turn-executor isolation* (self-hosted harness hardening). t1–t7a shipped (re-exec process isolation, `setrlimit`, Landlock FS jail + anti-ptrace); **t8 — the deferred-control fence — shipped 2026-06-08** (honesty gate). t9 (cgroup `pids.max`) and t11 (seccomp/netns egress) remain deferred, named, and fenced. Earlier phases: Phase 3 *vaya + interconnect* DoD met (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` since shipped); Phase 4 fleet-governance spec landed; Phase 1 v2.0 and Phase 2 DoDs met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -155,6 +155,40 @@ These are realized by maintainers outside the original authors using the framewo
 - Fleet dashboard — Aparihāniya-dhamma 7 governance applied to a real multi-agent installation. **Spec landed 2026-05-23** ([`FLEET-GOVERNANCE.en.md`](FLEET-GOVERNANCE.en.md)); real-fleet validation pending.
 - BWOC vocabulary (Yoniso manasikāra checks, Mattaññutā caps, Sīla baselines, Kalyāṇamitta trust scores) observed in codebases unaffiliated with this project (three-year success).
 - Cross-vendor production fleet pattern in use at more than one organization.
+
+---
+
+## Phase 5 — turn-executor isolation (self-hosted harness hardening)
+
+**Definition of done:** an approved tool call runs in a process that cannot read
+or mutate the harness, and every containment Phase 5 does **not** yet provide is
+named, scoped, and fenced so it cannot be forgotten.
+
+### Shipped in Phase 5
+
+| Ticket | Item | Status |
+|---|---|---|
+| t1 | Total ingress trust labeling | ✓ |
+| t2 | Layer-0 capability gate (untrusted turns read-only) | ✓ |
+| t3 | Capability-graded gate + taint propagation | ✓ |
+| t4 | `PURE_READ_TOOLS` proven egress-clean | ✓ |
+| t5 | Per-turn process isolation via re-exec | ✓ |
+| t6 | Per-turn `setrlimit` resource containment (memory cap Linux-only) | ✓ |
+| t7a | Turn-executor process / FS jail (Landlock + anti-ptrace; C1, C4–C9) | ✓ |
+| t8 | **Deferred-control fence** — SSOT (`scripts/deferred-controls.txt`) + CI fence-guard keep the THREAT-MODEL fence table, the SSOT, and live source in lock-step; phantom-control guard blocks referencing a deferred control without a `// DEFERRED(tNN):` admission. **Honesty gate, not coverage.** | ✓ |
+
+### Deferred (named + fenced by t8, not implemented)
+
+- **t9** — true per-turn process cap (cgroup v2 `pids.max`). Until it lands the
+  only fork guard is `RLIMIT_NPROC`, per-UID + RELATIVE best-effort → 🟠
+  availability residual.
+- **t11** (the t7b half of t7) — egress / syscall containment (seccomp-bpf +
+  netns). Until it lands the executor retains full network egress → 🟠.
+
+**Binding ship-scope (t8 sign-off):** t1–t7a may ship **only** into
+egress-acceptable / network-isolated contexts until t11 lands; t8 is **not** a
+license to ship into a network-reachable production context that takes hostile
+input. See [`THREAT-MODEL.en.md`](THREAT-MODEL.en.md#the-deferred-control-fence-t8).
 
 ---
 
