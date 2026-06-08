@@ -447,12 +447,27 @@ mod tests {
     /// → `Principal::SelfAgent` → **Trusted**. That launders untrusted content
     /// into the agent's own highest trust at the compaction boundary.
     ///
-    /// This test asserts the *desired* t2 behavior — a summary that folds any
-    /// Untrusted message must itself be Untrusted (max-taint). It fails today,
-    /// which is the point: it is the executable, loud record that t1 does **not**
-    /// cover this hole. Remove the `#[ignore]` when gate t2 (taint propagation)
-    /// lands. Do not "fix" it inside t1 — t1 must not appear to cover t2.
-    #[ignore = "gate t2: compaction must propagate Untrusted taint into the summary"]
+    /// This test asserts the *desired* message-level behavior — a summary that
+    /// folds any Untrusted message must itself be Untrusted (max-taint). It still
+    /// fails today, on purpose, and is kept ignored and named `gate_t2` (NOT
+    /// relabeled — no musavada).
+    ///
+    /// ## How t2 actually closes the *security* hole — the sticky latch
+    ///
+    /// t2 does **not** taint the summary message. Instead the capability gate is
+    /// protected by the monotonic session-trust latch
+    /// ([`crate::session_trust::SessionTrust`]): the moment any turn observes
+    /// Untrusted ingress, `untrusted_seen` latches set-once and is persisted
+    /// across compaction AND reload. So even though this summary is still labeled
+    /// `SelfAgent`/Trusted after the fold, the laundering can no longer re-open
+    /// effectful tools — the latch already holds the turn Untrusted (see
+    /// `gate_survives_compaction_no_effectful_reopen` below, which PASSES).
+    ///
+    /// What remains for a later refinement (and what this test tracks) is
+    /// *message-level* taint propagation into the summary itself — a
+    /// defense-in-depth nicety the gate does not need. Remove the `#[ignore]`
+    /// when that lands.
+    #[ignore = "gate t2: compaction must propagate Untrusted taint into the summary (gate itself is protected by the sticky latch)"]
     #[tokio::test]
     async fn compaction_summary_inherits_untrusted_taint_gate_t2() {
         use bwoc_core::trust::TrustLevel;
@@ -523,5 +538,87 @@ mod tests {
         assert!(artifact.is_file(), "folded content must be persisted");
         let body = std::fs::read_to_string(artifact).unwrap();
         assert!(body.contains("THE SUMMARY"));
+    }
+
+    /// GATE t2 — the monotonic latch must survive compaction (C1).
+    ///
+    /// This is the load-bearing test that the false "monotonic" claim required:
+    /// compaction folds an Untrusted window into a Trusted `SelfAgent` system
+    /// summary, so a *fresh scan* of the post-compaction history reads Trusted —
+    /// but the sticky latch, set on the pre-compaction turn, holds the turn
+    /// Untrusted, so the capability gate still refuses effectful tools. It
+    /// PASSES — that is the point.
+    #[tokio::test]
+    async fn gate_survives_compaction_no_effectful_reopen() {
+        use crate::policy::{Mode, Policy, PolicyOutcome, run_pipeline};
+        use crate::session_trust::{SessionTrust, scan_turn_trust};
+        use bwoc_core::trust::{Principal, TrustLevel};
+
+        let allow_all = Policy {
+            default_mode: Mode::Allow,
+            tools: std::collections::HashMap::new(),
+            patterns: Vec::new(),
+        };
+        let wt = std::path::Path::new("/tmp/agent-luban/gate-survive");
+
+        // Build an over-budget history whose folded window carries Untrusted
+        // ingress (a teammate message), with a plain user tail so a summary is
+        // produced.
+        let mut h = vec![ChatMessage::system("sys prompt")];
+        h.push(ChatMessage::ingest(
+            Principal::TeamPeer {
+                agent: "peer".into(),
+            },
+            format!("peer says {}", "x".repeat(120)),
+        ));
+        // The tail is operator() (Trusted) so that, once the lone Untrusted
+        // teammate message is folded away, a fresh scan reads Trusted — isolating
+        // the laundering this test exists to demonstrate.
+        for i in 0..10 {
+            h.push(ChatMessage::operator(format!(
+                "message {i} {}",
+                "x".repeat(120)
+            )));
+        }
+
+        // Pre-compaction: the latch observes the Untrusted teammate ingress.
+        let mut trust = SessionTrust::default();
+        assert_eq!(trust.observe(&h), TrustLevel::Untrusted);
+        assert!(trust.latched());
+
+        // Compact. The Untrusted teammate message is folded into a Trusted
+        // SelfAgent system summary.
+        let mock = EngineMock::summarizing("a tidy summary");
+        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        assert!(
+            matches!(out, Compaction::Summarized { .. }),
+            "precondition: the untrusted window must be folded; got {out:?}"
+        );
+        // A fresh scan now reads Trusted — the laundering the gate_t2 test names.
+        assert_eq!(
+            scan_turn_trust(&h),
+            TrustLevel::Trusted,
+            "compaction laundered the window into a Trusted summary (expected)"
+        );
+
+        // But the latch is sticky: post-compaction turn_trust stays Untrusted…
+        assert_eq!(
+            trust.observe(&h),
+            TrustLevel::Untrusted,
+            "latch must not clear"
+        );
+        // …so the capability gate still refuses an effectful tool.
+        let outcome = run_pipeline(
+            "run_command",
+            r#"{"command": "echo hi"}"#,
+            wt,
+            &allow_all,
+            false,
+            trust.turn_trust(),
+        );
+        assert!(
+            matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+            "compaction must NOT re-open effectful tools; got {outcome:?}"
+        );
     }
 }

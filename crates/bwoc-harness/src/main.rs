@@ -385,7 +385,12 @@ async fn run() -> HarnessResult<()> {
             println!("  run id   : {run_id}");
             (
                 Some(bwoc_harness::checkpoint::CheckpointConfig::new(run_id)),
-                vec![ChatMessage::user(&task)],
+                // The interactive `--task` flag is the local operator invoking
+                // the CLI directly — the only Trusted ingress (Phase 5 t2). This
+                // keeps the batch entrypoint able to drive effectful tools while
+                // connector/queue ingress (which flows through `ingest()` /
+                // `user()`) stays Untrusted and capability-gated.
+                vec![ChatMessage::operator(&task)],
             )
         }
     };
