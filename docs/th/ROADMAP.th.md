@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ที่ active:** Phase 3 — *วยะ + Interconnect* — **DoD บรรลุแล้ว** (interconnect routing + worktree lifecycle + `bwoc retire` full vaya ship ครบ 2026-05-23) Trust v2 signed envelopes ship ไปแล้ว (crate `bwoc-signing`) และ reference implementation ของ Tier 2 memory (`bwoc-deep-memory`) ก็ ship แล้วเช่นกัน — ปิดรายการ Phase 3 ที่ยังเลื่อนออกรายการสุดท้าย DoD ของ Phase 1 v2.0 และ Phase 2 ก็บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
+**Phase ที่ active:** Phase 5 — *การแยกตัวของ turn-executor* (เสริมความแข็งแรงให้ self-hosted harness) t1–t7a ship แล้ว (re-exec process isolation, `setrlimit`, Landlock FS jail + กัน ptrace) **t8 — รั้วกั้นมาตรการที่เลื่อน — ship 2026-06-08** (gate ด้านความซื่อตรง) t9 (cgroup `pids.max`) และ t11 (egress seccomp/netns) ยังเลื่อน ถูกระบุชื่อ และถูกล้อมรั้วไว้ Phase ก่อนหน้า: Phase 3 *วยะ + Interconnect* DoD บรรลุ (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` ship แล้ว) Phase 4 spec fleet-governance ลงแล้ว DoD ของ Phase 1 v2.0 และ Phase 2 บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -155,6 +155,40 @@ DoD ครบทั้งสองครึ่งแล้ว: *ประสา�
 - Fleet dashboard — Aparihāniya-dhamma 7 governance ใช้กับการติดตั้ง multi-agent จริง **Spec ลง 2026-05-23** ([`FLEET-GOVERNANCE.th.md`](FLEET-GOVERNANCE.th.md)); การยืนยันกับ fleet จริงรอ
 - ศัพท์ BWOC (Yoniso manasikāra checks, Mattaññutā caps, Sīla baselines, Kalyāṇamitta trust scores) ปรากฏใน codebase ที่ไม่มีความสัมพันธ์กับ project นี้ (success ที่ 3 ปี)
 - รูปแบบ fleet ระดับ production ข้าม vendor ใช้ในองค์กรมากกว่าหนึ่งแห่ง
+
+---
+
+## Phase 5 — การแยกตัวของ turn-executor (เสริมความแข็งแรงให้ self-hosted harness)
+
+**นิยามของเสร็จ:** การเรียก tool ที่อนุมัติแล้วรันใน process ที่อ่านหรือแก้ไข
+harness ไม่ได้ และการกักกันทุกอย่างที่ Phase 5 **ยังไม่ได้** ทำ ถูกระบุชื่อ จำกัด
+ขอบเขต และล้อมรั้วไว้จนลืมไม่ได้
+
+### ส่งมอบใน Phase 5
+
+| Ticket | รายการ | สถานะ |
+|---|---|---|
+| t1 | Total ingress trust labeling | ✓ |
+| t2 | Layer-0 capability gate (turn ที่ไม่เชื่อถือเป็น read-only) | ✓ |
+| t3 | capability-graded gate + taint propagation | ✓ |
+| t4 | พิสูจน์ `PURE_READ_TOOLS` ว่า egress-clean | ✓ |
+| t5 | การแยก process ต่อ turn ผ่าน re-exec | ✓ |
+| t6 | การกักกัน resource ต่อ turn ด้วย `setrlimit` (เพดาน memory เฉพาะ Linux) | ✓ |
+| t7a | process / FS jail ของ turn-executor (Landlock + กัน ptrace; C1, C4–C9) | ✓ |
+| t8 | **รั้วกั้นมาตรการที่เลื่อน** — SSOT (`scripts/deferred-controls.txt`) + CI fence-guard ตรึงตาราง fence ใน THREAT-MODEL, SSOT และ source จริงให้ตรงกัน phantom-control guard กันการอ้างถึงมาตรการที่เลื่อนโดยไม่มีคำกำกับ `// DEFERRED(tNN):` **เป็น gate ด้านความซื่อตรง ไม่ใช่ด้าน coverage** | ✓ |
+
+### เลื่อนออกไป (ถูกระบุชื่อ + ล้อมรั้วโดย t8 แต่ยังไม่ลงมือ)
+
+- **t9** — เพดานจำนวน process ต่อ turn จริง (cgroup v2 `pids.max`) จนกว่าจะลง ตัว
+  กัน fork อย่างเดียวคือ `RLIMIT_NPROC` แบบ per-UID + RELATIVE best-effort → residual
+  ด้าน availability 🟠
+- **t11** (ครึ่ง t7b ของ t7) — การกักกัน egress / syscall (seccomp-bpf + netns)
+  จนกว่าจะลง executor ยังมี network egress เต็มที่ → 🟠
+
+**ขอบเขตการ ship ที่ผูกพัน (คำ sign-off ของ t8):** t1–t7a ship ได้ **เฉพาะ** เข้า
+context ที่ยอมรับ egress ได้ / แยก network จนกว่า t11 จะลง t8 **ไม่ใช่** ใบอนุญาตให้
+ship เข้า production context ที่เข้าถึงได้ผ่าน network และรับ input ที่เป็นอันตราย
+ดู [`THREAT-MODEL.th.md`](THREAT-MODEL.th.md#รั้วกั้นมาตรการที่เลื่อนออกไป-deferred-control-fence--t8)
 
 ---
 
