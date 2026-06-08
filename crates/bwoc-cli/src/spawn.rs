@@ -20,7 +20,7 @@
 //! trait`/`hyper` never appear in `bwoc-cli`'s dependency tree.
 
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -235,6 +235,15 @@ pub enum SpawnError {
          (e.g. \"https://api.openai.com/v1\"); none found in {0}"
     )]
     MissingBaseUrl(PathBuf),
+    /// `bwoc spawn` attaches an interactive backend session, which needs a
+    /// TTY on stdin. Surfaced before exec so the user gets an actionable
+    /// message instead of a cryptic vendor-CLI failure.
+    #[error(
+        "bwoc spawn opens an interactive session and needs a terminal, but stdin is not a TTY. \
+         Run it directly in a terminal. For non-interactive work use `bwoc run`/`bwoc send`/`bwoc chat`. \
+         To force a headless spawn (e.g. a harness backend), set BWOC_SPAWN_ALLOW_NO_TTY=1"
+    )]
+    NotInteractive,
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 }
@@ -248,6 +257,7 @@ pub fn run(args: SpawnArgs) -> i32 {
             | SpawnError::NotAnAgent(_)
             | SpawnError::BackendNotFound { .. }
             | SpawnError::HarnessNotFound
+            | SpawnError::NotInteractive
             | SpawnError::MissingBaseUrl(_)),
         ) => {
             eprintln!("bwoc spawn: {e}");
@@ -260,12 +270,31 @@ pub fn run(args: SpawnArgs) -> i32 {
     }
 }
 
+/// Decide whether the no-TTY guard should block a spawn. `bwoc spawn`
+/// launches an interactive backend session that reads stdin, so a non-TTY
+/// stdin makes the session unusable — unless the operator opts into headless
+/// use via `BWOC_SPAWN_ALLOW_NO_TTY`. Pure for testability (the real call
+/// passes `io::stdin().is_terminal()` and the env-var presence).
+fn spawn_blocked_by_no_tty(stdin_is_tty: bool, override_set: bool) -> bool {
+    !stdin_is_tty && !override_set
+}
+
 pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     let bundle = i18n::bundle_for(&args.lang);
     let path = args
         .path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     validate_agent_path(&path)?;
+
+    // bwoc spawn attaches a backend REPL that reads stdin, so a non-TTY stdin
+    // means the session can't work. Fail fast with guidance rather than letting
+    // the vendor CLI die cryptically. Escape hatch for headless/automation use.
+    if spawn_blocked_by_no_tty(
+        io::stdin().is_terminal(),
+        std::env::var_os("BWOC_SPAWN_ALLOW_NO_TTY").is_some(),
+    ) {
+        return Err(SpawnError::NotInteractive);
+    }
 
     let backend_name = args.backend.display_name();
     let path_display = path.display().to_string();
@@ -519,6 +548,25 @@ fn validate_agent_path(path: &Path) -> Result<(), SpawnError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_tty_guard_blocks_only_without_override() {
+        // Non-TTY stdin, no override → blocked (the user-error this guards).
+        assert!(spawn_blocked_by_no_tty(false, false));
+        // Override set → headless spawn allowed even without a TTY.
+        assert!(!spawn_blocked_by_no_tty(false, true));
+        // A real TTY is always fine, override or not.
+        assert!(!spawn_blocked_by_no_tty(true, false));
+        assert!(!spawn_blocked_by_no_tty(true, true));
+    }
+
+    #[test]
+    fn not_interactive_error_message_is_actionable() {
+        // The message must tell the user what's wrong and how to proceed.
+        let msg = SpawnError::NotInteractive.to_string();
+        assert!(msg.contains("not a TTY"), "got: {msg}");
+        assert!(msg.contains("BWOC_SPAWN_ALLOW_NO_TTY"), "got: {msg}");
+    }
 
     #[test]
     fn vendor_effort_args_per_backend() {
