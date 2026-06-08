@@ -15,7 +15,11 @@
 //! already has. This is the seam HV3-3c's peer-review gate taps — the reviewer
 //! reads the same envelope before the lead runs gates.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+// `PathBuf` only feeds the `#[cfg(unix)]` FS-jail path (`git_common_dir`); gate
+// the import so Windows — where the jail is absent by design — has no unused use.
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -118,8 +122,17 @@ fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
     // C7 — confine git to the worktree + its git dir. Best-effort: on a kernel
     // without Landlock (or a non-jail platform) the `-c` hardening above still
     // stands; `jail_command` emits a LOUD warning, never a silent pass.
-    let spec = crate::jail::JailSpec::for_git(worktree, git_common_dir(worktree).as_deref());
-    let _ = crate::jail::jail_command(&mut cmd, &spec);
+    //
+    // The process FS jail (`jail::jail_command`: Landlock on Linux, sandbox-exec
+    // write-confine on macOS) is `#[cfg(unix)]` by design. On Windows it is
+    // simply ABSENT — git here runs with the cross-platform `-c` config
+    // hardening above but no FS jail. Gate the call so the crate compiles on
+    // Windows; do NOT stub a no-op jail that would falsely claim confinement.
+    #[cfg(unix)]
+    {
+        let spec = crate::jail::JailSpec::for_git(worktree, git_common_dir(worktree).as_deref());
+        let _ = crate::jail::jail_command(&mut cmd, &spec);
+    }
 
     let out = cmd.output().ok()?;
     out.status
@@ -133,6 +146,10 @@ fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
 /// the jail's rw set) or when resolution fails (best-effort — the jail then
 /// covers only the worktree, and the diff summary degrades to zero rather than
 /// breaking).
+///
+/// `#[cfg(unix)]`: its sole caller is the FS-jail spec in [`git_output`], which
+/// is itself unix-only. Windows has no jail, so it needs no common-dir lookup.
+#[cfg(unix)]
 fn git_common_dir(worktree: &Path) -> Option<PathBuf> {
     let dot_git = worktree.join(".git");
     let meta = std::fs::symlink_metadata(&dot_git).ok()?;
