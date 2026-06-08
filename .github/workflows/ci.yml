@@ -31,6 +31,10 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Phase 5 t7a — the red-team bin + sandbox_escape suite live behind the
+      # `test-redteam` feature, so the default clippy above skips them. Lint them
+      # explicitly so the gate-only adversarial code stays warning-clean.
+      - run: cargo clippy -p bwoc-harness --all-targets --features test-redteam -- -D warnings
 
   # Build + test on every platform the toolkit advertises support for
   # (macOS · Linux · Windows). The Status badge in README.md claims
@@ -52,3 +56,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --workspace --verbose
       - run: cargo test --workspace --verbose
+      # Phase 5 t7a — adversarial sandbox-escape gate. Off by default (the bin +
+      # suite are behind `test-redteam`), so run it explicitly. On Linux this
+      # exercises the real Landlock jail + the C4 ptrace block; on macOS the
+      # write-confine arms; if the jail is unavailable the suite LOUD-skips
+      # (never silent-pass). cfg(unix) → it compiles to nothing on Windows.
+      - run: cargo test -p bwoc-harness --features test-redteam --test sandbox_escape
+

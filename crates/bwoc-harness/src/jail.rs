@@ -177,8 +177,8 @@ mod linux_impl {
             .ok()?
             .add_rules(path_beneath_rules(&spec.ro_exec, AccessFs::from_read(abi)))
             .ok()?;
-        let fd: Option<OwnedFd> = ruleset.into();
-        fd
+        // `None` ⇔ Landlock unavailable (best-effort produced no ruleset fd).
+        Option::<OwnedFd>::from(ruleset)
     }
 
     /// Restrict the **calling thread** to the ruleset `fd`. Async-signal-safe:
@@ -275,7 +275,9 @@ pub fn jail_command(cmd: &mut std::process::Command, spec: &JailSpec) -> JailSta
                 // is moved in to keep the ruleset fd alive until restrict_self.
                 unsafe {
                     cmd.pre_exec(move || {
-                        restrict_current_thread(owned.as_raw_fd())?;
+                        // SAFETY: `owned` is a live ruleset fd; restrict the
+                        // calling (post-fork) thread before execve.
+                        unsafe { restrict_current_thread(owned.as_raw_fd())? };
                         Ok(())
                     });
                 }

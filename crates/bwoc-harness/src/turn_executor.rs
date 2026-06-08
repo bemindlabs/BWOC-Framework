@@ -932,7 +932,9 @@ fn roundtrip(
             // jails via the sandbox-exec wrapper — no per-fd action here.)
             #[cfg(target_os = "linux")]
             if let Some(ref fd) = landlock_fd {
-                crate::jail::restrict_current_thread(fd.as_raw_fd())?;
+                // SAFETY: `fd` is a live ruleset fd built in the parent; this
+                // restricts the calling (post-fork) thread before execve.
+                unsafe { crate::jail::restrict_current_thread(fd.as_raw_fd())? };
             }
             // C10: close every other inherited fd so the child holds exactly
             // {0,1,2,EXECUTOR_FD}. CLOEXEC already covers Rust-opened fds; this
