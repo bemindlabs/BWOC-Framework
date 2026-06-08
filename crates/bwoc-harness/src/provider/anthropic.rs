@@ -713,8 +713,8 @@ mod tests {
         let msgs = vec![
             ChatMessage::user("go"),
             assistant,
-            ChatMessage::tool_result("t1", "A"),
-            ChatMessage::tool_result("t2", "B"),
+            ChatMessage::tool_result("t1", "tool_a", "A"),
+            ChatMessage::tool_result("t2", "tool_b", "B"),
         ];
         let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, false);
         let arr = body["messages"].as_array().unwrap();

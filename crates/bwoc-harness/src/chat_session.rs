@@ -304,7 +304,7 @@ where
                     .await?;
                 }
             },
-            ChatInput::User { text } => {
+            ChatInput::User { text, principal } => {
                 // Team chat (HV3-3a): pull in any teammate messages posted
                 // since the last turn as a system note, before the new user
                 // message, so the agent answers with the team's context — and
@@ -323,7 +323,12 @@ where
                         .await?;
                     }
                 }
-                history.push(ChatMessage::user(text));
+                // Phase 5 t1: stamp the inbound turn with the provenance the
+                // frontend declared. The local TUI declares LocalOperator
+                // (Trusted); a chat connector omits it, so `principal` arrives
+                // as Unknown → Untrusted (fail-closed). `ingest` clamps any
+                // attempt to claim SelfAgent.
+                history.push(ChatMessage::ingest(principal, text));
                 // Keep the conversation under the context budget: summarize the
                 // oldest turns when needed, before the provider sees them.
                 if config.max_context_tokens > 0 {
@@ -716,7 +721,11 @@ where
                 session_mode,
             )
             .await?;
-            history.push(ChatMessage::tool_result(call.id.clone(), result));
+            history.push(ChatMessage::tool_result(
+                call.id.clone(),
+                call.function.name.clone(),
+                result,
+            ));
         }
         // Loop: feed the tool results back for the next provider call.
     }
@@ -1706,7 +1715,7 @@ mod tests {
             ChatMessage::assistant(Some("first answer".into()), None),
             ChatMessage::user("q2"),
             ChatMessage::assistant(Some("  ".into()), None), // blank — skipped
-            ChatMessage::tool_result("c1", "tool output"),
+            ChatMessage::tool_result("c1", "read_file", "tool output"),
         ];
         assert_eq!(
             last_assistant_text(&history).as_deref(),

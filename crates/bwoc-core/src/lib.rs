@@ -17,4 +17,5 @@ pub mod manifest;
 pub mod routing;
 pub mod team;
 pub mod time;
+pub mod trust;
 pub mod workspace;

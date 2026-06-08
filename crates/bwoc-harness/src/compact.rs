@@ -291,7 +291,11 @@ mod tests {
         let mut h = vec![ChatMessage::system("sys")];
         h.push(big(true, 3000));
         h.push(ChatMessage::assistant(Some("call".into()), None));
-        h.push(ChatMessage::tool_result("call-1", "x".repeat(3000)));
+        h.push(ChatMessage::tool_result(
+            "call-1",
+            "read_file",
+            "x".repeat(3000),
+        ));
         h.push(big(true, 3000));
         h.push(big(false, 3000));
         if let Some(split) = plan_compaction(&h, 1500) {
@@ -432,6 +436,68 @@ mod tests {
         assert!(h.len() < before, "fallback must still shrink the history");
         let note = h[1].content.as_deref().unwrap_or("");
         assert!(note.contains("context compacted"), "got note: {note}");
+    }
+
+    /// GATE t2 TRACKING — KNOWN FAILING, INTENTIONALLY `#[ignore]`d.
+    ///
+    /// Phase 5 t1 (this gate) proves every *ingress* is labeled; it does **not**
+    /// fix taint propagation through compaction. When the unified context engine
+    /// summarizes a window that contained Untrusted content (a tool result, a
+    /// teammate message), the resulting note is built with `ChatMessage::system`
+    /// → `Principal::SelfAgent` → **Trusted**. That launders untrusted content
+    /// into the agent's own highest trust at the compaction boundary.
+    ///
+    /// This test asserts the *desired* t2 behavior — a summary that folds any
+    /// Untrusted message must itself be Untrusted (max-taint). It fails today,
+    /// which is the point: it is the executable, loud record that t1 does **not**
+    /// cover this hole. Remove the `#[ignore]` when gate t2 (taint propagation)
+    /// lands. Do not "fix" it inside t1 — t1 must not appear to cover t2.
+    #[ignore = "gate t2: compaction must propagate Untrusted taint into the summary"]
+    #[tokio::test]
+    async fn compaction_summary_inherits_untrusted_taint_gate_t2() {
+        use bwoc_core::trust::TrustLevel;
+
+        let mock = EngineMock::summarizing("a tidy summary of the secrets");
+        // The folded region (early messages) unambiguously contains Untrusted
+        // content — a teammate message and a tool result. The tail is plain user
+        // messages (no trailing tool result) so a summary is actually produced.
+        let mut h = vec![ChatMessage::system("sys prompt")];
+        h.push(ChatMessage::ingest(
+            bwoc_core::trust::Principal::TeamPeer {
+                agent: "peer".into(),
+            },
+            format!("peer leaked {}", "x".repeat(120)),
+        ));
+        h.push(ChatMessage::tool_result(
+            "c1",
+            "read_file",
+            format!("secret {}", "x".repeat(120)),
+        ));
+        for i in 0..10 {
+            h.push(ChatMessage::user(format!(
+                "message {i} {}",
+                "x".repeat(120)
+            )));
+        }
+
+        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        assert!(
+            matches!(out, Compaction::Summarized { .. }),
+            "precondition: the untrusted teammate/tool messages must be folded; got {out:?}"
+        );
+
+        let summary = &h[1];
+        assert_eq!(
+            summary.role,
+            Role::System,
+            "summary is folded as a system note"
+        );
+        // The taint that t2 must enforce, and that t1 deliberately does NOT:
+        assert_eq!(
+            summary.trust(),
+            TrustLevel::Untrusted,
+            "a summary folding Untrusted content must itself be Untrusted (gate t2)"
+        );
     }
 
     #[cfg(unix)]

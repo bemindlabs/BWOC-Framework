@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use bwoc_core::chat_proto::{ChatEvent, ChatInput};
 use bwoc_core::manifest::Manifest;
+use bwoc_core::trust::Principal;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
@@ -178,8 +179,15 @@ impl AgentSession for HarnessSession {
         text: &str,
         sink: &mut dyn ReplyStream,
     ) -> Result<String, ConnectError> {
+        // Phase 5 t1: chat-connector ingress is unauthenticated adversarial
+        // input. We omit an explicit principal, so the harness defaults it to
+        // Unknown → Untrusted (fail-closed). Threading richer
+        // `Principal::Platform { kind, user_id }` provenance from the inbound
+        // event is a deferred fidelity improvement; the fail-closed default
+        // keeps connector turns Untrusted regardless.
         self.write_input(&ChatInput::User {
             text: text.to_string(),
+            principal: Principal::default(),
         })
         .await?;
 

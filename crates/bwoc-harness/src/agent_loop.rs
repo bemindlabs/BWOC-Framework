@@ -688,6 +688,7 @@ pub async fn run_loop(
             }
             history.push(ChatMessage::tool_result(
                 result.call_id.clone(),
+                result.tool_name.clone(),
                 result.content.clone(),
             ));
         }
