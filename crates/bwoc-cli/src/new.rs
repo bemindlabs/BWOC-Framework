@@ -1074,12 +1074,15 @@ fn create_symlinks(target: &Path) -> Result<Vec<String>, NewError> {
 /// comes from `primaryModel: "auto"` + the `autoModels` pool (resolved by
 /// bwoc-harness). Returns `None` when no fallback is configured.
 fn fallback_metadata_notice(fallback_model: Option<&str>) -> Option<String> {
-    fallback_model.map(|_| {
-        "fallbackModel is metadata only (shown in status/dashboards, not used as a \
-         runtime fallback). For automatic model fallback set primaryModel to \"auto\" \
-         and list candidate models in autoModels."
-            .to_string()
-    })
+    fallback_model
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|_| {
+            "fallbackModel is metadata only (shown in status/dashboards, not used as a \
+             runtime fallback). For automatic model fallback set primaryModel to \"auto\" \
+             and list candidate models in autoModels."
+                .to_string()
+        })
 }
 
 fn build_manifest(r: &Resolved) -> Manifest {
@@ -1473,6 +1476,9 @@ mod tests {
     #[test]
     fn fallback_metadata_notice_only_when_set() {
         assert!(fallback_metadata_notice(None).is_none());
+        // Empty / whitespace-only counts as unset (matches other prompt helpers).
+        assert!(fallback_metadata_notice(Some("")).is_none());
+        assert!(fallback_metadata_notice(Some("   ")).is_none());
         let msg = fallback_metadata_notice(Some("claude-sonnet-4-6")).unwrap();
         assert!(msg.contains("metadata only"), "got: {msg}");
         assert!(msg.contains("autoModels"), "got: {msg}");
