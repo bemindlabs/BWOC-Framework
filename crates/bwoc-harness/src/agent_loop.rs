@@ -1584,23 +1584,26 @@ mod tests {
         assert_eq!(harness.totals.denials, 1);
     }
 
-    /// Phase 5 t2 — an Untrusted turn (undeclared `user()` ingress) requesting an
-    /// effectful tool is refused by the Layer-0 capability gate. The refusal is
-    /// tallied in `capability_denials`, NOT `denials` (C4), and the model is fed
-    /// the capability-gate marker so it can adapt.
+    /// Phase 5 t3 — an Untrusted turn (undeclared `user()` ingress) requesting a
+    /// GATED effectful tool (run_command) is refused by the Layer-0 capability
+    /// gate. The refusal is tallied in `capability_denials`, NOT `denials` (C4),
+    /// and the model is fed the capability-gate marker so it can adapt.
+    /// (A *worktree-confined write* would instead PROCEED on an untrusted turn
+    /// under ruling (a) — see `capability_gate_allows_confined_write_on_untrusted_turn`.)
     #[tokio::test]
     async fn capability_gate_denies_effectful_tool_on_untrusted_turn() {
         let tmp = TempDir::new().unwrap();
 
         let provider = Arc::new(MockProvider::new(vec![
-            // A benign write — would normally succeed, but the turn is Untrusted.
-            make_tool_call_response("write_file", r#"{"path": "out.txt", "content": "x"}"#),
+            // A gated effect — run_command is denied on an untrusted turn even
+            // though the command itself is benign and would create the file.
+            make_tool_call_response("run_command", r#"{"command": "touch created.txt"}"#),
             make_final_response("done"),
         ]));
 
         let registry = Arc::new(default_registry());
         let ctx = ToolContext::new(tmp.path());
-        let mut telem = Telemetry::new("sess-telem-t2", "agent-oracle");
+        let mut telem = Telemetry::new("sess-telem-t3", "agent-oracle");
 
         let result = run_loop(
             provider,
@@ -1609,7 +1612,7 @@ mod tests {
             test_config(5),
             "sys".to_string(),
             // user() → Unknown → Untrusted (fail-closed). The gate must fire.
-            vec![ChatMessage::user("write a file")],
+            vec![ChatMessage::user("run a command")],
             &mut telem,
         )
         .await
@@ -1621,7 +1624,7 @@ mod tests {
         // `denials` counter.
         assert_eq!(
             harness.turns[0].capability_denials, 1,
-            "effectful tool on untrusted turn → 1 capability denial"
+            "gated tool on untrusted turn → 1 capability denial"
         );
         assert_eq!(
             harness.turns[0].denials, 0,
@@ -1629,12 +1632,53 @@ mod tests {
         );
         assert_eq!(harness.totals.capability_denials, 1);
         assert_eq!(harness.totals.denials, 0);
-        // The model saw the capability-gate refusal, and the file was never written.
+        // The model saw the capability-gate refusal; the command never ran.
         assert!(
-            !tmp.path().join("out.txt").exists(),
-            "write must be blocked"
+            !tmp.path().join("created.txt").exists(),
+            "gated command must be blocked"
         );
         let _ = result;
+    }
+
+    /// Phase 5 t3, ruling (a) — a worktree-confined write PROCEEDS on an
+    /// Untrusted turn (this is what the capability-graded gate adds over t2's
+    /// flat deny-all-effectful). No capability denial; the file is written.
+    #[tokio::test]
+    async fn capability_gate_allows_confined_write_on_untrusted_turn() {
+        let tmp = TempDir::new().unwrap();
+
+        let provider = Arc::new(MockProvider::new(vec![
+            make_tool_call_response("write_file", r#"{"path": "out.txt", "content": "x"}"#),
+            make_final_response("done"),
+        ]));
+
+        let registry = Arc::new(default_registry());
+        let ctx = ToolContext::new(tmp.path());
+        let mut telem = Telemetry::new("sess-telem-t3b", "agent-oracle");
+
+        run_loop(
+            provider,
+            registry,
+            ctx,
+            test_config(5),
+            "sys".to_string(),
+            // user() → Untrusted, yet a write confined to the worktree is allowed.
+            vec![ChatMessage::user("write a file")],
+            &mut telem,
+        )
+        .await
+        .unwrap();
+
+        let record = telem.build_record();
+        let harness = record.harness.unwrap();
+        assert_eq!(
+            harness.totals.capability_denials, 0,
+            "a worktree-confined write must NOT be capability-denied on an untrusted turn"
+        );
+        assert!(
+            tmp.path().join("out.txt").exists(),
+            "confined write must succeed even on an untrusted turn"
+        );
     }
 
     /// The companion to the above: the SAME effectful write under a Trusted
