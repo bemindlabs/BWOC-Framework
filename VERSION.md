@@ -2,10 +2,10 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.26.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `2.27.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.6.4`   *(canonical here — bumped on `.md` edits)*
-**Phase:** Phase 3 — *vaya + interconnect*, **DoD met** *(+ `bwoc-harness` self-hosted runtime, Unix-first v1)*
-**Latest release:** [`v2026.6.7-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.7-1) *(2026-06-07 — **2.26.0**; minor — chat-connector **streaming** (Telegram/Discord in-place send-then-edit) + the **LINE** connector (signature-verified inbound webhook, reply-token/push, axum). Prior: `v2026.6.7-0` 2.25.0 — keyring token resolution completing the Telegram/Discord/daemon connector subsystem)*
+**Phase:** Phase 5 — *saṃvara* (trust-boundary & sandbox hardening), **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
+**Latest release:** [`v2026.6.8-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.8-0) *(2026-06-09 — **2.27.0**; minor — **Phase 5 saṃvara**: untrusted-ingress sandbox hardening for the self-hosted harness. Prior: `v2026.6.7-1` 2.26.0 — chat-connector streaming + the LINE connector)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
 **Last-Updated:** `2026-06-07T08:21:22Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
