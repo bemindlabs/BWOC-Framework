@@ -1,6 +1,6 @@
 # 2026-06-09 — `RouteTarget::Gateway` transport
 
-Wire a third `routes.toml` delivery transport — `gateway` — so `bwoc send` can reach a recipient through a `bwoc-gateway` rendezvous/relay server when no direct path exists (NAT, firewalls, the open internet). This is the framework half of the `bwoc-gateway` repo's deferred "framework wiring" item; the gateway server + client + `bwoc-gateway-send` binary live in `projects/bwoc-gateway`.
+Wire a third `routes.toml` delivery transport — `gateway` — so `bwoc send` can reach a recipient through a `bwoc-gateway` rendezvous/relay server when no direct path exists (NAT, firewalls, the open internet). This is the framework half of the deferred "framework wiring" item; the gateway server + client + `bwoc-gateway-send` binary live in the **separate** [`bemindlabs/bwoc-gateway`](https://github.com/bemindlabs/bwoc-gateway) repo, not in this one.
 
 ## What changed
 
@@ -28,6 +28,6 @@ Wire a third `routes.toml` delivery transport — `gateway` — so `bwoc send` c
 
 ## Related
 
-- `projects/bwoc-gateway` — server, client, `bwoc-gateway-send` (PR #2).
+- [`bemindlabs/bwoc-gateway`](https://github.com/bemindlabs/bwoc-gateway) — the external repo with the server, client, and `bwoc-gateway-send` binary (PR #2). Not vendored here.
 - `modules/agent-template/interconnect/routing.md` — the (v1) routing spec.
 - `crates/bwoc-mqtt` — the transport whose shell-out pattern this mirrors.

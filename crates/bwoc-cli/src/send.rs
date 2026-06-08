@@ -114,8 +114,10 @@ pub enum SendError {
     )]
     GatewayUnsigned { recipient: String },
     #[error(
-        "could not run `bwoc-gateway-send` to relay via {url}: {source}. Install it \
-         (`cargo install --path crates/gateway-client --bin bwoc-gateway-send`) or add it to PATH."
+        "could not run `bwoc-gateway-send` to relay via {url}: {source}. It ships from the \
+         external `bemindlabs/bwoc-gateway` repo — install it \
+         (`cargo install --git https://github.com/bemindlabs/bwoc-gateway --bin bwoc-gateway-send`) \
+         or add it to PATH."
     )]
     GatewaySpawn { url: String, source: std::io::Error },
     #[error("`bwoc-gateway-send` relay via {url} failed")]
@@ -394,28 +396,36 @@ fn send(args: SendArgs) -> Result<(), SendError> {
             // Relay via the `bwoc-gateway-send` sibling binary (dep-quarantine:
             // the CLI never links a WebSocket/TLS client). The sender's keypair
             // is the gateway login, so a `user`/unsigned origin cannot reach it.
-            let key_path = sender_bwoc_dir
+            // Require a *loadable* signing key — the keypair is the gateway
+            // login. Checking the file merely exists is not enough: a malformed
+            // `agent.key` would otherwise fail downstream with an opaque relay
+            // error instead of this actionable one.
+            let key_dir = sender_bwoc_dir
                 .as_ref()
-                .map(|dir| dir.join(bwoc_signing::KEY_FILE))
-                .filter(|p| p.exists())
                 .ok_or_else(|| SendError::GatewayUnsigned {
                     recipient: recipient_id.clone(),
                 })?;
+            if !matches!(bwoc_signing::load_signing_key(key_dir), Ok(Some(_))) {
+                return Err(SendError::GatewayUnsigned {
+                    recipient: recipient_id.clone(),
+                });
+            }
+            let key_path = key_dir.join(bwoc_signing::KEY_FILE);
             let bin = bwoc_core::exec::binary_or_name("bwoc-gateway-send");
             // Pipe the signed message envelope via stdin (same reasons as MQTT:
             // keep it out of `ps`/ARG_MAX). `bwoc-gateway-send` wraps it into the
-            // gateway transport envelope and routes by `--to`.
+            // gateway transport envelope and routes by `--to`. Args use `.arg()`
+            // (not a string slice) so the key path passes as an `OsStr` — no
+            // lossy conversion on non-UTF-8 paths.
             let mut child = std::process::Command::new(&bin)
-                .args([
-                    "--url",
-                    &url,
-                    "--agent-id",
-                    &from,
-                    "--to",
-                    &recipient_id,
-                    "--key-file",
-                    &key_path.to_string_lossy(),
-                ])
+                .arg("--url")
+                .arg(&url)
+                .arg("--agent-id")
+                .arg(&from)
+                .arg("--to")
+                .arg(&recipient_id)
+                .arg("--key-file")
+                .arg(&key_path)
                 .stdin(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|e| SendError::GatewaySpawn {
