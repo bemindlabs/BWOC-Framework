@@ -309,8 +309,10 @@ Schema (resolved by `bwoc new`, written verbatim — no placeholders):
     version           manifest schema version (auto: \"2.0\")
 
   Optional (no prompt; pass --flag if you want them):
-    fallbackModel     fallback LLM model identifier
+    fallbackModel     fallback model identifier (metadata only — shown in
+                      status/dashboards; for runtime fallback use autoModels)
     autoModels        ordered candidate pool used when primaryModel=\"auto\"
+                      (this is the actual runtime model-fallback mechanism)
     reasoningEffort   optional backend effort control (e.g. \"medium\")
     sessionsPath      session data dir for Tier 2 memory mining
     deepMemoryCmd     Tier 2 memory CLI command

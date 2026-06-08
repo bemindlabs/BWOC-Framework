@@ -202,6 +202,13 @@ pub fn incarnate(
         return Err(NewError::TargetExists(resolved.target));
     }
 
+    // `fallbackModel` is metadata only — surfaced in status/dashboards and
+    // substituted into AGENTS.md, but no runtime consumes it as a fallback.
+    // Warn so the operator is not misled into thinking it changes behavior.
+    if let Some(msg) = fallback_metadata_notice(resolved.fallback_model.as_deref()) {
+        eprintln!("bwoc new: note: {msg}");
+    }
+
     // 1. Copy template tree to target (skip .git, *.example.*).
     copy_tree(&resolved.template, &resolved.target)?;
 
@@ -1061,6 +1068,20 @@ fn create_symlinks(target: &Path) -> Result<Vec<String>, NewError> {
     Ok(created)
 }
 
+/// Build the advisory shown when an agent sets `fallbackModel`. That field is
+/// metadata only — surfaced in `bwoc status`/dashboards and substituted into
+/// AGENTS.md, but no runtime consumes it as a fallback. Real model fallback
+/// comes from `primaryModel: "auto"` + the `autoModels` pool (resolved by
+/// bwoc-harness). Returns `None` when no fallback is configured.
+fn fallback_metadata_notice(fallback_model: Option<&str>) -> Option<String> {
+    fallback_model.map(|_| {
+        "fallbackModel is metadata only (shown in status/dashboards, not used as a \
+         runtime fallback). For automatic model fallback set primaryModel to \"auto\" \
+         and list candidate models in autoModels."
+            .to_string()
+    })
+}
+
 fn build_manifest(r: &Resolved) -> Manifest {
     Manifest {
         name: r.name.clone(),
@@ -1447,6 +1468,14 @@ mod tests {
             assert!(created.iter().any(|s| s.starts_with(backend)));
         }
         assert_eq!(created.len(), 7);
+    }
+
+    #[test]
+    fn fallback_metadata_notice_only_when_set() {
+        assert!(fallback_metadata_notice(None).is_none());
+        let msg = fallback_metadata_notice(Some("claude-sonnet-4-6")).unwrap();
+        assert!(msg.contains("metadata only"), "got: {msg}");
+        assert!(msg.contains("autoModels"), "got: {msg}");
     }
 
     #[test]
