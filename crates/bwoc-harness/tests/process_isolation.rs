@@ -31,6 +31,21 @@ use bwoc_harness::turn_executor::{
     ForgeMode, SelfTestReport, ToolInvocation, run_isolated, run_isolated_forged,
     run_isolated_selftest,
 };
+use std::sync::{Mutex, MutexGuard};
+
+/// Serialize the whole suite. Each test spawns the real harness child and
+/// exercises *process-wide* sandbox machinery — the one-time capability token,
+/// per-turn `setrlimit`/cgroup, the IPC fd, env scrubbing, PID reaping. Run in
+/// parallel (cargo's default) those contend and the suite flakes on CI: a
+/// different subset fails each run. A single file-level lock makes them run one
+/// at a time. Poison-tolerant so a panicking test can't cascade-fail the rest.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn harness_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_bwoc-harness"))
@@ -63,6 +78,7 @@ fn inv(tool_name: &str, args_json: &str, workdir: &Path, confine: bool) -> ToolI
 // ── C9 — no secrets in the child env ───────────────────────────────────────
 #[test]
 fn c9_child_env_has_no_api_keys_or_secrets() {
+    let _serial = serial();
     // Plant a provider key + a generic secret in THIS (parent) process. scrub_env
     // reads the parent env at spawn, so a leak would surface in the child report.
     // SAFETY: set before the spawn in a test that is the sole env mutator.
@@ -111,6 +127,7 @@ fn c9_child_env_has_no_api_keys_or_secrets() {
 // ── C10 — exactly stdio + IPC fd ────────────────────────────────────────────
 #[test]
 fn c10_child_fds_are_stdio_plus_ipc_only() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let out = run_isolated_selftest(&harness_bin(), work.path()).unwrap();
     let report = parse_report(&out.content);
@@ -133,6 +150,7 @@ fn c10_child_fds_are_stdio_plus_ipc_only() {
 // ── C11 — child reaped, PID gone ────────────────────────────────────────────
 #[test]
 fn c11_child_is_reaped_no_zombie() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let out = run_isolated_selftest(&harness_bin(), work.path()).unwrap();
 
@@ -156,6 +174,7 @@ fn c11_child_is_reaped_no_zombie() {
 // ── C12 — cwd is the per-turn tempdir; confine still rejects escapes ─────────
 #[test]
 fn c12_cwd_is_tempdir_and_confine_holds() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
 
     // Part A: the child's process cwd is the per-turn tempdir handed by the
@@ -194,6 +213,7 @@ fn c12_cwd_is_tempdir_and_confine_holds() {
 // ── C13 — forged executor without the token is rejected ─────────────────────
 #[test]
 fn c13_forged_executor_no_env_token_rejected() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let target = work.path().join("should_not_exist.txt");
     let args = serde_json::json!({ "path": target.to_str().unwrap(), "content": "x" }).to_string();
@@ -217,6 +237,7 @@ fn c13_forged_executor_no_env_token_rejected() {
 // ── C2 — request token must match the env token ─────────────────────────────
 #[test]
 fn c2_bad_request_token_rejected() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let target = work.path().join("should_not_exist.txt");
     let args = serde_json::json!({ "path": target.to_str().unwrap(), "content": "x" }).to_string();
@@ -240,6 +261,7 @@ fn c2_bad_request_token_rejected() {
 // ── C2-token / grandchild — run_command's child-of-child has no token ────────
 #[test]
 fn c2_token_scrubbed_before_grandchild() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     // The grandchild (sh, spawned by run_command via run_sandboxed) must NOT see
     // BWOC_TURN_EXECUTOR_TOKEN — scrub_env strips it. An unset var expands empty.
@@ -262,6 +284,7 @@ fn c2_token_scrubbed_before_grandchild() {
 // ── C5 — un-marshallable tool denied fail-closed ────────────────────────────
 #[test]
 fn c5_unmarshallable_tool_denied_fail_closed() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let out = run_isolated(
         &harness_bin(),
@@ -278,6 +301,7 @@ fn c5_unmarshallable_tool_denied_fail_closed() {
 // ── C7/C8 — writes land on disk through the child ───────────────────────────
 #[test]
 fn write_file_executes_in_child_and_lands_on_disk() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let target = work.path().join("created_by_child.txt");
     let args = serde_json::json!({ "path": "created_by_child.txt", "content": "hello-from-child" })
@@ -296,6 +320,7 @@ fn write_file_executes_in_child_and_lands_on_disk() {
 
 #[test]
 fn c8_memory_write_lands_on_disk_for_rehydration() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let args = serde_json::json!({ "name": "note.md", "content": "remembered" }).to_string();
     let out = run_isolated(
@@ -316,6 +341,7 @@ fn c8_memory_write_lands_on_disk_for_rehydration() {
 // ── baseline — distinct PIDs + separate tempdirs ────────────────────────────
 #[test]
 fn baseline_distinct_pids_and_separate_tempdirs() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let a = run_isolated_selftest(&harness_bin(), work.path()).unwrap();
     let b = run_isolated_selftest(&harness_bin(), work.path()).unwrap();
@@ -333,6 +359,7 @@ fn baseline_distinct_pids_and_separate_tempdirs() {
 // ── baseline — fresh static memory per child ────────────────────────────────
 #[test]
 fn baseline_fresh_static_memory_each_child() {
+    let _serial = serial();
     let work = tempfile::tempdir().unwrap();
     let a = parse_report(
         &run_isolated_selftest(&harness_bin(), work.path())
