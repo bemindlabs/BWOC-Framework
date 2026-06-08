@@ -135,8 +135,15 @@ pub fn audit(target: &Path) -> AuditReport {
             .push("AGENTS.md not found — this is the single source of truth".to_string());
     }
 
-    // 2. Backend symlinks (AGY, CODEX, KIMI, OLLAMA must symlink to AGENTS.md)
-    for backend in &["AGY.md", "CODEX.md", "KIMI.md", "OLLAMA.md"] {
+    // 2. Backend symlinks must point to AGENTS.md. Uses the shared
+    //    `spawn::BACKEND_ENTRY_FILES` (the same list `bwoc new` force-creates)
+    //    so the two can't drift. CLAUDE.md is handled separately below (it may
+    //    be standalone guidance rather than a symlink).
+    for backend in crate::spawn::BACKEND_ENTRY_FILES
+        .iter()
+        .copied()
+        .filter(|f| *f != "CLAUDE.md")
+    {
         let p = target.join(backend);
         check_symlink_to_agents(&p, backend, &mut report);
     }
@@ -308,13 +315,104 @@ pub fn audit(target: &Path) -> AuditReport {
         }
     }
 
-    // 11. Trust evidence — Kalyāṇamitta 7. Each `true` declaration in
+    // 11. Memory completeness — the knowledge-base scaffold that incarnation
+    //     does NOT create (it is seeded at runtime). All advisory warnings:
+    //     a fresh agent legitimately has none yet, so never block on these.
+    //     The memory directory name is the manifest's `memoryPath` (default
+    //     `memories/`), so a non-default configuration is not false-flagged.
+    let memory_dir = manifest_value
+        .as_ref()
+        .and_then(|m| m.get("memoryPath"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("memories");
+    check_memory_completeness(target, mode, memory_dir, &mut report);
+
+    // 12. Trust evidence — Kalyāṇamitta 7. Each `true` declaration in
     //     config.manifest.json's `trust.declared` block must have the
     //     evidence documented in `interconnect/trust.md`. A claim without
     //     evidence is a violation. Skipped silently if no trust block.
     check_trust_evidence(target, &mut report);
 
     report
+}
+
+/// Cap on `MEMORY.md` length — Mattaññutā ("right amount"); see the
+/// framework `CLAUDE.md`. Over this is a warning, not a violation.
+const MEMORY_MD_MAX_LINES: usize = 200;
+
+/// Count lines in a file by streaming, so a pathological (huge) `MEMORY.md`
+/// — exactly the over-cap case this audit flags — is not slurped into memory
+/// just to count it.
+fn count_lines(path: &Path) -> std::io::Result<usize> {
+    use std::io::BufRead;
+    let reader = std::io::BufReader::new(fs::File::open(path)?);
+    let mut n = 0usize;
+    for line in reader.lines() {
+        line?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Audit the runtime knowledge-base scaffold: the memory directory (the
+/// manifest's `memoryPath`, default `memories/`), `MEMORY.md`, and
+/// `task-log.jsonl`. These are seeded as an agent works, not by `bwoc new`,
+/// so every finding is a warning — the goal is to remind, never to block.
+/// `MEMORY.md` / `task-log.jsonl` absence is only flagged for incarnated
+/// agents (the template legitimately ships neither).
+fn check_memory_completeness(
+    target: &Path,
+    mode: AuditMode,
+    memory_dir: &str,
+    report: &mut AuditReport,
+) {
+    if target.join(memory_dir).is_dir() {
+        report.passes.push(format!("{memory_dir}/ exists"));
+    } else {
+        report
+            .warnings
+            .push(format!("{memory_dir}/ missing (Tier 1 file-based memory)"));
+    }
+
+    // The MEMORY.md index lives at the agent root in current incarnations, but
+    // the docs also place it inside the memory dir — accept either location so
+    // a correctly-placed index is never reported missing.
+    let memory_md = {
+        let root = target.join("MEMORY.md");
+        let nested = target.join(memory_dir).join("MEMORY.md");
+        if root.is_file() {
+            Some(root)
+        } else if nested.is_file() {
+            Some(nested)
+        } else {
+            None
+        }
+    };
+    match memory_md {
+        Some(p) => match count_lines(&p) {
+            Ok(lines) if lines > MEMORY_MD_MAX_LINES => report.warnings.push(format!(
+                "MEMORY.md is {lines} lines (> {MEMORY_MD_MAX_LINES} cap — Mattaññutā; trim it)"
+            )),
+            Ok(_) => report
+                .passes
+                .push(format!("MEMORY.md within {MEMORY_MD_MAX_LINES}-line cap")),
+            Err(e) => report.warnings.push(format!("MEMORY.md unreadable: {e}")),
+        },
+        None if matches!(mode, AuditMode::Incarnation) => report
+            .warnings
+            .push("MEMORY.md missing (seed it as the agent learns)".to_string()),
+        None => {}
+    }
+
+    if target.join("task-log.jsonl").is_file() {
+        report.passes.push("task-log.jsonl exists".to_string());
+    } else if matches!(mode, AuditMode::Incarnation) {
+        report
+            .warnings
+            .push("task-log.jsonl missing (append-only task history)".to_string());
+    }
 }
 
 /// Verify the Kalyāṇamitta 7 evidence rules from
@@ -637,10 +735,10 @@ fn visit_md_files<F: FnMut(&Path, &str)>(target: &Path, depth: usize, visit: &mu
     }
 }
 
-/// Verify the backend entry file (`AGY.md`, `CODEX.md`, `KIMI.md`) is
-/// a symlink pointing at `AGENTS.md`. Missing files are warnings, not
-/// violations — an agent may not declare every backend. Symlinks
-/// pointing elsewhere are violations.
+/// Verify a backend entry file (`AGY.md`, `CODEX.md`, `KIMI.md`,
+/// `OLLAMA.md`, `COPILOT.md`, `OPENAI.md`) is a symlink pointing at
+/// `AGENTS.md`. Missing files are warnings, not violations — an agent may
+/// not declare every backend. Symlinks pointing elsewhere are violations.
 fn check_symlink_to_agents(path: &Path, backend: &str, report: &mut AuditReport) {
     if path.is_symlink() {
         match fs::read_link(path) {
@@ -655,6 +753,13 @@ fn check_symlink_to_agents(path: &Path, backend: &str, report: &mut AuditReport)
                 .warnings
                 .push(format!("{backend} unreadable symlink")),
         }
+    } else if path.exists() {
+        // A regular file where a symlink belongs — e.g. a stale copy that
+        // never got linked. Distinguish it from "missing" so the fix is clear.
+        report.warnings.push(format!(
+            "{backend} exists but is not a symlink to AGENTS.md \
+             (stale file? replace with: ln -sf AGENTS.md {backend})"
+        ));
     } else {
         report.warnings.push(format!(
             "{backend} missing (create with: ln -s AGENTS.md {backend})"
@@ -4086,7 +4191,15 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("AGENTS.md"), agents_body).unwrap();
-        for backend in ["AGY.md", "CODEX.md", "KIMI.md", "CLAUDE.md", "OLLAMA.md"] {
+        for backend in [
+            "AGY.md",
+            "CODEX.md",
+            "KIMI.md",
+            "CLAUDE.md",
+            "OLLAMA.md",
+            "COPILOT.md",
+            "OPENAI.md",
+        ] {
             std::os::unix::fs::symlink("AGENTS.md", root.join(backend)).unwrap();
         }
         let manifest = serde_json::json!({
@@ -4107,6 +4220,181 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incarnated_agent_warns_on_missing_memory_scaffold() {
+        // write_temp_agent seeds none of the memory scaffold (the `memories/`
+        // directory, the `MEMORY.md` index, or `task-log.jsonl`) — an
+        // incarnated agent must be reminded, but never blocked (warnings only).
+        let root = write_temp_agent("nomem", "delta", "You are agent-delta.");
+        let report = audit(&root);
+        for needle in ["memories/", "MEMORY.md", "task-log.jsonl"] {
+            assert!(
+                report.warnings.iter().any(|w| w.contains(needle)),
+                "expected warning for {needle}, got: {:?}",
+                report.warnings
+            );
+            assert!(
+                !report.violations.iter().any(|v| v.contains(needle)),
+                "{needle} must never be a violation"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_md_over_cap_warns() {
+        let root = write_temp_agent("bigmem", "epsilon", "You are agent-epsilon.");
+        let body = "line\n".repeat(MEMORY_MD_MAX_LINES + 5);
+        fs::write(root.join("MEMORY.md"), body).unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("MEMORY.md") && w.contains("cap")),
+            "expected over-cap warning, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_memory_path_is_honored_not_hardcoded() {
+        // An agent that configures a non-default memoryPath must be audited
+        // against that directory — not falsely warned about a missing
+        // `memories/` while its real memory dir exists.
+        let root = write_temp_agent("custommem", "theta", "You are agent-theta.");
+        // Repoint memoryPath and create the matching directory.
+        let manifest = serde_json::json!({
+            "name": "theta", "agentId": "agent-theta", "agentRole": "demo",
+            "primaryModel": "m", "memoryPath": "brain/",
+            "lintCmd": "true", "formatCmd": "true",
+            "testCmd": "true", "buildCmd": "true", "version": "2.0",
+        });
+        fs::write(
+            root.join("config.manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::create_dir(root.join("brain")).unwrap();
+        let report = audit(&root);
+        assert!(
+            report.passes.iter().any(|p| p.contains("brain/ exists")),
+            "expected pass for the configured memory dir, got: {:?}",
+            report.passes
+        );
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("memories/")),
+            "must not warn about default memories/ when memoryPath is custom"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_md_accepted_inside_memory_dir() {
+        // MEMORY.md placed in the memory dir (the docs' convention) must be
+        // accepted, not reported missing.
+        let root = write_temp_agent("nestedmem", "iota", "You are agent-iota.");
+        fs::remove_file(root.join("MEMORY.md")).ok();
+        fs::create_dir_all(root.join("memories")).unwrap();
+        fs::write(root.join("memories").join("MEMORY.md"), "index\n").unwrap();
+        let report = audit(&root);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.contains("MEMORY.md missing")),
+            "memories/MEMORY.md must satisfy the index check, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            report.passes.iter().any(|p| p.contains("MEMORY.md within")),
+            "expected within-cap pass for nested MEMORY.md, got: {:?}",
+            report.passes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn template_mode_does_not_warn_on_missing_memory_md() {
+        // The template ships neither MEMORY.md nor task-log.jsonl by design —
+        // flagging them in template mode would be noise.
+        let root = write_temp_agent("tpl", "{{name}}", "You are {{agentId}}.");
+        fs::remove_file(root.join("MEMORY.md")).ok();
+        let report = audit(&root);
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("MEMORY.md")),
+            "template mode must not warn about MEMORY.md, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("task-log.jsonl")),
+            "template mode must not warn about task-log.jsonl"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_passes_copilot_and_openai_when_symlinked() {
+        // The full template ships 7 backend symlinks; check must audit all of
+        // them (COPILOT.md / OPENAI.md were previously ignored).
+        let root = write_temp_agent("allbackends", "beta", "You are agent-beta.");
+        let report = audit(&root);
+        for backend in ["COPILOT.md", "OPENAI.md"] {
+            assert!(
+                report
+                    .passes
+                    .iter()
+                    .any(|p| p.contains(backend) && p.contains("AGENTS.md")),
+                "expected pass for {backend}, got passes: {:?}",
+                report.passes
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_warns_when_copilot_missing() {
+        // Missing backend = warning, never a violation — keeps `check --all`
+        // green for agents incarnated before the backend existed.
+        let root = write_temp_agent("nocopilot", "gamma", "You are agent-gamma.");
+        fs::remove_file(root.join("COPILOT.md")).unwrap();
+        let report = audit(&root);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("COPILOT.md")),
+            "expected a warning for missing COPILOT.md, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.violations.iter().any(|v| v.contains("COPILOT.md")),
+            "missing backend must not be a violation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_distinguishes_stale_regular_file_from_missing() {
+        // A regular file where a symlink belongs (e.g. a stale copy) must warn
+        // with a "not a symlink" message, not be reported as "missing".
+        let root = write_temp_agent("stale", "zeta", "You are agent-zeta.");
+        fs::remove_file(root.join("COPILOT.md")).unwrap();
+        fs::write(root.join("COPILOT.md"), "stale copy").unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("COPILOT.md") && w.contains("not a symlink")),
+            "expected a stale-file warning, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            !report.violations.iter().any(|v| v.contains("COPILOT.md")),
+            "stale file must stay a warning, not a violation"
+        );
     }
 
     #[cfg(unix)]

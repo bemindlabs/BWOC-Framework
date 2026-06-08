@@ -202,6 +202,13 @@ pub fn incarnate(
         return Err(NewError::TargetExists(resolved.target));
     }
 
+    // `fallbackModel` is metadata only — surfaced in status/dashboards and
+    // substituted into AGENTS.md, but no runtime consumes it as a fallback.
+    // Warn so the operator is not misled into thinking it changes behavior.
+    if let Some(msg) = fallback_metadata_notice(resolved.fallback_model.as_deref()) {
+        eprintln!("bwoc new: note: {msg}");
+    }
+
     // 1. Copy template tree to target (skip .git, *.example.*).
     copy_tree(&resolved.template, &resolved.target)?;
 
@@ -1029,12 +1036,13 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Force-create `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md` → `AGENTS.md`
-/// in the target directory. Removes any pre-existing file/symlink first.
+/// Force-create every backend entry file → `AGENTS.md` in the target
+/// directory. Removes any pre-existing file/symlink first. The filename list
+/// is the shared `spawn::BACKEND_ENTRY_FILES` so it cannot drift from the
+/// backends `bwoc check` audits.
 fn create_symlinks(target: &Path) -> Result<Vec<String>, NewError> {
-    let backends = ["CLAUDE.md", "AGY.md", "CODEX.md", "KIMI.md", "OLLAMA.md"];
     let mut created = Vec::new();
-    for backend in backends {
+    for backend in crate::spawn::BACKEND_ENTRY_FILES.iter().copied() {
         let p = target.join(backend);
         let _ = fs::remove_file(&p);
         #[cfg(unix)]
@@ -1058,6 +1066,23 @@ fn create_symlinks(target: &Path) -> Result<Vec<String>, NewError> {
         created.push(format!("{backend} -> AGENTS.md"));
     }
     Ok(created)
+}
+
+/// Build the advisory shown when an agent sets `fallbackModel`. That field is
+/// metadata only — surfaced in `bwoc status`/dashboards and substituted into
+/// AGENTS.md, but no runtime consumes it as a fallback. Real model fallback
+/// comes from `primaryModel: "auto"` + the `autoModels` pool (resolved by
+/// bwoc-harness). Returns `None` when no fallback is configured.
+fn fallback_metadata_notice(fallback_model: Option<&str>) -> Option<String> {
+    fallback_model
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|_| {
+            "fallbackModel is metadata only (shown in status/dashboards, not used as a \
+             runtime fallback). For automatic model fallback set primaryModel to \"auto\" \
+             and list candidate models in autoModels."
+                .to_string()
+        })
 }
 
 fn build_manifest(r: &Resolved) -> Manifest {
@@ -1409,6 +1434,54 @@ mod tests {
         assert!(validate_name("agent_foo").is_err());
         assert!(validate_name("-foo").is_err());
         assert!(validate_name("foo-").is_err());
+    }
+
+    // Unix-only: create_symlinks returns an error on Windows (symlink
+    // support deferred to Phase 2, see create_symlinks).
+    #[cfg(unix)]
+    #[test]
+    fn create_symlinks_covers_all_seven_backends() {
+        // Every backend that ships as a symlink in modules/agent-template/
+        // must be force-created by incarnation — otherwise COPILOT.md /
+        // OPENAI.md silently fall through (the bug this guards).
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path();
+        fs::write(target.join("AGENTS.md"), "x").unwrap();
+        // A pre-existing plain file must be replaced by the symlink.
+        fs::write(target.join("OPENAI.md"), "stale {{placeholder}}").unwrap();
+
+        let created = create_symlinks(target).unwrap();
+
+        for backend in [
+            "CLAUDE.md",
+            "AGY.md",
+            "CODEX.md",
+            "KIMI.md",
+            "OLLAMA.md",
+            "COPILOT.md",
+            "OPENAI.md",
+        ] {
+            let p = target.join(backend);
+            assert!(p.is_symlink(), "{backend} must be a symlink");
+            assert_eq!(
+                fs::read_link(&p).unwrap(),
+                Path::new("AGENTS.md"),
+                "{backend} must point at AGENTS.md"
+            );
+            assert!(created.iter().any(|s| s.starts_with(backend)));
+        }
+        assert_eq!(created.len(), 7);
+    }
+
+    #[test]
+    fn fallback_metadata_notice_only_when_set() {
+        assert!(fallback_metadata_notice(None).is_none());
+        // Empty / whitespace-only counts as unset (matches other prompt helpers).
+        assert!(fallback_metadata_notice(Some("")).is_none());
+        assert!(fallback_metadata_notice(Some("   ")).is_none());
+        let msg = fallback_metadata_notice(Some("claude-sonnet-4-6")).unwrap();
+        assert!(msg.contains("metadata only"), "got: {msg}");
+        assert!(msg.contains("autoModels"), "got: {msg}");
     }
 
     #[test]
