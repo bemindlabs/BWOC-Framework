@@ -17,8 +17,10 @@
 //! - C7/C8 — writes (write_file, memory_write) land on disk through the child.
 //! - baseline — distinct PIDs, separate tempdirs, fresh static memory, EBADF.
 //!
-//! C1/C3 (raw-libc pre_exec + the t6 setrlimit extension point) and C4 (the LOUD
-//! no-rlimits notice) are structural and reviewed in `src/turn_executor.rs`.
+//! C1/C3 (raw-libc pre_exec + the t6 `setrlimit` calls) and C4 (the resource-
+//! containment notice) are structural and reviewed in `src/turn_executor.rs`; the
+//! live per-limit assertions on the production pre_exec path live in the
+//! `resource_limits` integration test.
 
 #![cfg(unix)]
 

@@ -14,23 +14,53 @@
 //!   │                       │ yes                       │ no (MCP/dynamic/cred)
 //!   │  socketpair + token   ▼                           ▼
 //!   └─ re-exec self ──► child (one tool, then _exit)    FAIL CLOSED (deny+surface)
-//!        pre_exec: dup2→fd3, close others   [t6: setrlimit HERE]
+//!        pre_exec: dup2→fd3, close others, setrlimit (CPU/AS/DATA/NOFILE/FSIZE
+//!                  per-process + NPROC best-effort per-UID)
 //! ```
 //!
-//! # ⚠️⚠️ C4 — t5 ships NO RESOURCE LIMITS (rlimits are t6) ⚠️⚠️
+//! # C4 — resource containment (t6): per-process rlimits, NOT full isolation
 //!
-//! The child is a **separate process** but it is **NOT resource-isolated**.
-//! There is no `setrlimit` (RLIMIT_AS / RLIMIT_NPROC / RLIMIT_CPU /
-//! RLIMIT_NOFILE / RLIMIT_FSIZE), no cgroup, no `nice`. A single malicious or
-//! buggy tool turn can therefore still **fork-bomb**, **exhaust memory**, or
-//! **spin the CPU** within that one process subtree and take the host down with
-//! it. The process boundary t5 adds buys credential isolation and fd hygiene —
-//! it does **not** bound resource consumption.
+//! After the fd hygiene above, the child's `pre_exec` installs POSIX resource
+//! limits via raw-libc `setrlimit` (the `// C3 / t6` slot below). All values are
+//! hardcoded safe defaults, tunable within `[floor, ceiling]` via
+//! `BWOC_TURN_RLIMIT_*` (read in the PARENT only). An override can never exceed
+//! the ceiling and can never reach `unlimited` — no path yields `RLIM_INFINITY`.
+//! What this does and does **not** contain:
 //!
-//! GAP(t6): wire `setrlimit` (and optionally cgroup placement) into the
-//! `pre_exec` block marked `// C3 / GAP(t6)` below. The block is deliberately
-//! structured so t6 only adds raw-libc `setrlimit` calls there — no
-//! re-architecting of the spawn path.
+//! **Enforced per-process (Linux + macOS):**
+//!   - `RLIMIT_CPU`    — soft 300 s / hard 600 s (SIGXCPU → SIGKILL): caps CPU spin.
+//!   - `RLIMIT_NOFILE` — 1024: caps descriptor exhaustion.
+//!   - `RLIMIT_FSIZE`  — 8 GiB: caps the disk-fill DoS (a single unbounded write).
+//!
+//! **Enforced per-process (Linux only):**
+//!   - `RLIMIT_AS`     — 4 GiB default (8 GiB ceiling): caps address space / memory.
+//!   - `RLIMIT_DATA`   — 4 GiB: caps the data segment.
+//!
+//! macOS `setrlimit` rejects `RLIMIT_AS`/`RLIMIT_DATA` (EINVAL), so **memory
+//! capping is Linux-only**. The production host is Linux; on macOS dev boxes a
+//! memory bomb is NOT contained by this layer.
+//!
+//! **Best-effort only — NOT full containment:**
+//!   - `RLIMIT_NPROC` — soft = live per-UID process count + 128 (RELATIVE, not an
+//!     absolute per-turn cap). Even where enforced it is per-UID, so it bounds a
+//!     runaway fork but does **not** isolate this turn's process tree from the
+//!     agent's other processes, and a busy host can perturb it. This is
+//!     **PARTIAL** fork-bomb containment. Enforced on **Linux** (the kernel's
+//!     per-UID counter and `/proc` enumeration agree); **macOS accepts the
+//!     `setrlimit` but does not reliably enforce a usage-relative cap**, so on
+//!     macOS it provides no real fork containment. The value is still set (cheap,
+//!     finite, defence-in-depth) and the snapshot test proves it is finite.
+//!
+//! **Deferred gaps (still open after t6):**
+//!   - A true per-turn process cap — cgroup v2 `pids.max` — ticket **t9**. Until
+//!     then NPROC is the only fork guard and it is per-UID best-effort.
+//!   - No cgroup memory/CPU controller, no `nice`/`ionice`, no PID/mount/net
+//!     namespace. Non-Unix targets get NO rlimits (the spawn path is `cfg(unix)`).
+//!
+//! Net: t6 turns the bare process boundary t5 added into a resource-bounded one
+//! for CPU, files, and disk (and memory on Linux) — but fork containment stays
+//! best-effort until the cgroup work in t9. Do not describe this as full
+//! isolation.
 //!
 //! # Authority model (C2) — unforgeable parent→child channel
 //!
@@ -134,6 +164,321 @@ struct WireResponse {
     content: String,
 }
 
+// ---------------------------------------------------------------------------
+// Resource limits (C3 / t6)
+// ---------------------------------------------------------------------------
+//
+// The parent computes the entire rlimit plan (read env, measure UID usage,
+// clamp to hardcoded ceilings) and captures it as **plain integers** into the
+// `pre_exec` closure. The closure then only issues async-signal-safe
+// `setrlimit` syscalls (C1) — it never parses env or allocates.
+//
+// Tunable via `BWOC_TURN_RLIMIT_*` (read in the PARENT only). Every override is
+// clamped to `[floor, ceiling]`; a malformed / out-of-range / unset value falls
+// back to the hardcoded default. No path can ever reach `RLIM_INFINITY`.
+
+/// One resource limit as seen by callers/tests: name + the finite soft/hard the
+/// parent intends (or the child actually applied). Values are byte/second/count
+/// units depending on the resource; `RLIM_INFINITY_U64` would mean "unlimited"
+/// and is asserted to never appear.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RlimitView {
+    pub name: String,
+    pub soft: u64,
+    pub hard: u64,
+    /// `RLIMIT_NPROC` is per-UID and RELATIVE (live usage + headroom), so its
+    /// exact value depends on the process count at spawn time. Callers
+    /// range-check relative limits instead of asserting `==`.
+    pub relative: bool,
+}
+
+/// `RLIM_INFINITY` as a `u64`, platform-correct (macOS = 2^63-1, Linux = u64::MAX).
+/// The snapshot test asserts no applied limit equals this sentinel.
+#[cfg(unix)]
+pub const RLIM_INFINITY_U64: u64 = libc::RLIM_INFINITY;
+
+/// The `resource` argument type for `setrlimit`/`getrlimit` differs by platform
+/// (`__rlimit_resource_t` on Linux, `c_int` elsewhere).
+#[cfg(all(unix, target_os = "linux"))]
+type RlimitRes = libc::__rlimit_resource_t;
+#[cfg(all(unix, not(target_os = "linux")))]
+type RlimitRes = libc::c_int;
+
+/// Internal table row: the resource id plus the finite caps the parent intends.
+#[cfg(unix)]
+struct RlimitEntry {
+    name: &'static str,
+    resource: RlimitRes,
+    soft: u64,
+    hard: u64,
+    relative: bool,
+}
+
+/// Parse `BWOC_TURN_RLIMIT_*` (PARENT only). Within `[floor, ceiling]` → use it;
+/// malformed / out-of-range / unset → hardcoded `default`. Never `RLIM_INFINITY`.
+#[cfg(unix)]
+fn env_or_default(var: &str, default: u64, floor: u64, ceiling: u64) -> u64 {
+    match std::env::var(var) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(v) if (floor..=ceiling).contains(&v) => v,
+            Ok(v) => {
+                eprintln!(
+                    "[bwoc-harness:t6] {var}={v} out of [{floor},{ceiling}]; \
+                     using hardcoded default {default}"
+                );
+                default
+            }
+            Err(_) => {
+                eprintln!(
+                    "[bwoc-harness:t6] {var}={raw:?} malformed; \
+                     using hardcoded default {default}"
+                );
+                default
+            }
+        },
+    }
+}
+
+/// Current hard limit for `resource` (parent), or `None` if it reads as
+/// `RLIM_INFINITY` / the query fails. Used to clamp our hard DOWN so we never
+/// attempt to RAISE a hard limit (which would need privilege and could EPERM).
+#[cfg(unix)]
+fn current_hard(resource: RlimitRes) -> Option<u64> {
+    let mut rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit only reads the limit for a valid resource id.
+    if unsafe { libc::getrlimit(resource, &mut rl) } != 0 {
+        return None;
+    }
+    let hard = rl.rlim_max;
+    if hard == RLIM_INFINITY_U64 {
+        None
+    } else {
+        Some(hard)
+    }
+}
+
+/// Build a finite, never-raising row: clamp `hard` down to the inherited hard
+/// limit, then `soft <= hard`.
+#[cfg(unix)]
+fn entry(
+    name: &'static str,
+    resource: RlimitRes,
+    soft: u64,
+    hard: u64,
+    relative: bool,
+) -> RlimitEntry {
+    let hard = match current_hard(resource) {
+        Some(cur) => hard.min(cur),
+        None => hard, // inherited hard is unlimited → our finite ceiling stands.
+    };
+    let soft = soft.min(hard);
+    RlimitEntry {
+        name,
+        resource,
+        soft,
+        hard,
+        relative,
+    }
+}
+
+/// The UID of this process.
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // SAFETY: getuid is always safe and never fails.
+    unsafe { libc::getuid() as u32 }
+}
+
+/// Best-effort count of live processes owned by this UID (PARENT side; alloc OK).
+/// Backs the RELATIVE NPROC limit. A conservative non-zero floor is used if the
+/// measurement is unavailable so the cap is never absurdly small.
+#[cfg(all(unix, target_os = "linux"))]
+fn current_uid_proc_count() -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let uid = current_uid();
+    let mut count = 0u64;
+    if let Ok(rd) = std::fs::read_dir("/proc") {
+        for ent in rd.flatten() {
+            let name = ent.file_name();
+            let Some(s) = name.to_str() else { continue };
+            if !s.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            if let Ok(meta) = std::fs::metadata(ent.path()) {
+                if meta.uid() == uid {
+                    count += 1;
+                }
+            }
+        }
+    }
+    if count == 0 { 64 } else { count }
+}
+
+/// Darwin/BSD: `proc_listpids(PROC_UID_ONLY, uid, NULL, 0)` returns the byte size
+/// of the matching pid array; dividing by `sizeof(pid)` gives the process count.
+/// (A size-query avoids allocating or enumerating the pids themselves.)
+#[cfg(all(unix, not(target_os = "linux")))]
+fn current_uid_proc_count() -> u64 {
+    // PROC_UID_ONLY from <libproc.h>; not re-exported by libc, so spelled here.
+    const PROC_UID_ONLY: u32 = 4;
+    let uid = current_uid();
+    // SAFETY: a size query (null buffer, 0 size) only returns the needed byte
+    // length; no buffer is written.
+    let bytes = unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, std::ptr::null_mut(), 0) };
+    if bytes > 0 {
+        (bytes as u64) / (std::mem::size_of::<libc::c_int>() as u64)
+    } else {
+        64
+    }
+}
+
+/// Build the full rlimit table for the current platform + env (PARENT side).
+/// Single source of truth for the `pre_exec` plan, [`intended_rlimits`], and the
+/// child's snapshot resource set.
+#[cfg(unix)]
+fn build_rlimit_table() -> Vec<RlimitEntry> {
+    const MIB: u64 = 1024 * 1024;
+    let mut t = Vec::with_capacity(6);
+
+    // CPU seconds: soft → SIGXCPU, hard → SIGKILL. Bounds CPU spin.
+    let cpu = env_or_default("BWOC_TURN_RLIMIT_CPU_SECS", 300, 1, 600);
+    t.push(entry("CPU", libc::RLIMIT_CPU, cpu, 600, false));
+
+    // Open files: bounds descriptor exhaustion. (Close loop above runs to 1024.)
+    let nofile = env_or_default("BWOC_TURN_RLIMIT_NOFILE", 1024, 64, 8192);
+    t.push(entry("NOFILE", libc::RLIMIT_NOFILE, nofile, 8192, false));
+
+    // Max file size: closes the disk-fill DoS (one unbounded write).
+    let fsize = env_or_default("BWOC_TURN_RLIMIT_FSIZE_MIB", 8192, 1, 32768);
+    t.push(entry(
+        "FSIZE",
+        libc::RLIMIT_FSIZE,
+        fsize * MIB,
+        32768 * MIB,
+        false,
+    ));
+
+    // Address space + data segment bound memory — Linux only: macOS `setrlimit`
+    // rejects RLIMIT_AS/RLIMIT_DATA (EINVAL), so memory capping is Linux-only.
+    // The production host is Linux; the C4 notice documents this gap.
+    #[cfg(target_os = "linux")]
+    {
+        let as_mib = env_or_default("BWOC_TURN_RLIMIT_AS_MIB", 4096, 256, 8192);
+        t.push(entry(
+            "AS",
+            libc::RLIMIT_AS,
+            as_mib * MIB,
+            8192 * MIB,
+            false,
+        ));
+        let data_mib = env_or_default("BWOC_TURN_RLIMIT_DATA_MIB", 4096, 256, 8192);
+        t.push(entry(
+            "DATA",
+            libc::RLIMIT_DATA,
+            data_mib * MIB,
+            8192 * MIB,
+            false,
+        ));
+    }
+
+    // NPROC — PARTIAL containment: per-UID and RELATIVE (live usage + headroom),
+    // NOT an absolute per-turn cap. Bounds a runaway fork but does not isolate
+    // this turn's tree from the agent's other processes. A true per-turn cap
+    // (cgroup v2 pids.max) is deferred to ticket t9.
+    let headroom = env_or_default("BWOC_TURN_RLIMIT_NPROC_HEADROOM", 128, 1, 4096);
+    let usage = current_uid_proc_count();
+    t.push(entry(
+        "NPROC",
+        libc::RLIMIT_NPROC,
+        usage + headroom,
+        usage + headroom * 2,
+        true,
+    ));
+
+    t
+}
+
+/// The resource-limit plan the PARENT intends to apply, env-aware and
+/// platform-aware. Tests compare the child's actually-applied limits against
+/// this. (Relative limits — NPROC — are range-checked, not `==`.)
+#[cfg(unix)]
+pub fn intended_rlimits() -> Vec<RlimitView> {
+    build_rlimit_table()
+        .into_iter()
+        .map(|e| RlimitView {
+            name: e.name.to_string(),
+            soft: e.soft,
+            hard: e.hard,
+            relative: e.relative,
+        })
+        .collect()
+}
+
+/// A single limit as plain integers, captured by-copy into the `pre_exec`
+/// closure. No `String`, no allocation — safe to touch post-fork.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct RlimitSpec {
+    resource: RlimitRes,
+    soft: libc::rlim_t,
+    hard: libc::rlim_t,
+}
+
+/// Fixed-capacity, `Copy` plan moved into the `pre_exec` closure (≤ 6 limits).
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct RlimitPlan {
+    specs: [RlimitSpec; 6],
+    count: usize,
+}
+
+/// Lower the parent-computed table into the `Copy` plan the closure captures.
+#[cfg(unix)]
+fn build_rlimit_plan() -> RlimitPlan {
+    let zero = RlimitSpec {
+        resource: 0 as RlimitRes,
+        soft: 0,
+        hard: 0,
+    };
+    let mut specs = [zero; 6];
+    let mut count = 0;
+    for e in build_rlimit_table().into_iter().take(6) {
+        specs[count] = RlimitSpec {
+            resource: e.resource,
+            soft: e.soft as libc::rlim_t,
+            hard: e.hard as libc::rlim_t,
+        };
+        count += 1;
+    }
+    RlimitPlan { specs, count }
+}
+
+/// Child-side snapshot of the limits ACTUALLY in force after `pre_exec`, read via
+/// `getrlimit`. Drives the always-on snapshot gate proof.
+#[cfg(unix)]
+fn snapshot_rlimits() -> Vec<RlimitView> {
+    build_rlimit_table()
+        .into_iter()
+        .map(|e| {
+            let mut rl = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: getrlimit only reads the limit for a valid resource id.
+            let ok = unsafe { libc::getrlimit(e.resource, &mut rl) } == 0;
+            RlimitView {
+                name: e.name.to_string(),
+                soft: if ok { rl.rlim_cur } else { RLIM_INFINITY_U64 },
+                hard: if ok { rl.rlim_max } else { RLIM_INFINITY_U64 },
+                relative: e.relative,
+            }
+        })
+        .collect()
+}
+
 /// Introspection payload the child returns for a `selftest` request.
 ///
 /// Captured **before** any async runtime is built, so `fds` reflects exactly the
@@ -149,6 +494,9 @@ pub struct SelfTestReport {
     /// Reads a process-static atomic (initial 0), then sets it to 1. A fresh
     /// process always reports 0 — proves no shared static memory across turns.
     pub static_probe: u64,
+    /// The resource limits ACTUALLY in force in this child (read via `getrlimit`
+    /// after `pre_exec`), proving t6's `setrlimit` ran on the production path.
+    pub rlimits: Vec<RlimitView>,
 }
 
 // ---------------------------------------------------------------------------
@@ -418,10 +766,15 @@ fn roundtrip(
         cmd.env(ENV_TOKEN, &token);
     }
 
+    // C3/t6: compute the resource-limit plan in the PARENT (read env, measure
+    // UID usage, clamp to ceilings). It is captured by-copy as plain integers;
+    // the closure below never parses env or allocates.
+    let rlimit_plan = build_rlimit_plan();
+
     // SAFETY (C1): this closure runs in the forked child, after fork and before
     // exec. It calls ONLY raw libc, all async-signal-safe (`dup2`, `fcntl`,
-    // `close`) — no allocation, no locks, no Rust std that could deadlock a
-    // post-fork child. Do NOT introduce nix/rustix wrappers here.
+    // `close`, `setrlimit`) — no allocation, no locks, no Rust std that could
+    // deadlock a post-fork child. Do NOT introduce nix/rustix wrappers here.
     unsafe {
         cmd.pre_exec(move || {
             // Place the IPC socket at the agreed fd and clear CLOEXEC (dup2 of
@@ -440,9 +793,25 @@ fn roundtrip(
                 libc::close(fd);
                 fd += 1;
             }
-            // C3 / GAP(t6): resource limits go HERE — add raw-libc setrlimit
-            // calls (RLIMIT_AS / RLIMIT_NPROC / RLIMIT_CPU / RLIMIT_NOFILE /
-            // RLIMIT_FSIZE) in t6. t5 ships none (see the module C4 notice).
+            // C3 / t6: install POSIX resource limits. The plan (values +
+            // resource ids) was computed in the PARENT and captured as plain
+            // integers in `rlimit_plan`; here we only issue the async-signal-safe
+            // `setrlimit` syscall — no parsing, no allocation. Enforces
+            // CPU/NOFILE/FSIZE (+ AS/DATA on Linux) per-process; NPROC is a
+            // best-effort per-UID fork guard (full per-turn cap deferred to
+            // cgroup pids.max, ticket t9). See the module-level C4 notice.
+            let mut i = 0;
+            while i < rlimit_plan.count {
+                let s = rlimit_plan.specs[i];
+                let rl = libc::rlimit {
+                    rlim_cur: s.soft,
+                    rlim_max: s.hard,
+                };
+                if libc::setrlimit(s.resource, &rl) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                i += 1;
+            }
             Ok(())
         });
     }
@@ -555,6 +924,7 @@ pub fn run_executor_blocking() -> i32 {
             env_keys: std::env::vars().map(|(k, _)| k).collect(),
             ipc_fd: EXECUTOR_FD,
             static_probe: FRESH_PROBE.swap(1, Ordering::SeqCst),
+            rlimits: snapshot_rlimits(),
         };
         let content = serde_json::to_string(&report).unwrap_or_default();
         let _ = respond(&mut sock, content);
