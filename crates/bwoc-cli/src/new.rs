@@ -1421,6 +1421,9 @@ mod tests {
         assert!(validate_name("foo-").is_err());
     }
 
+    // Unix-only: create_symlinks returns an error on Windows (symlink
+    // support deferred to Phase 2, see create_symlinks).
+    #[cfg(unix)]
     #[test]
     fn create_symlinks_covers_all_seven_backends() {
         // Every backend that ships as a symlink in modules/agent-template/
