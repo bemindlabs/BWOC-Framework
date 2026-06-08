@@ -6,9 +6,15 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.9-0] — 2026-06-09 — 2.28.0
+
 ### Added
 
 - **`RouteTarget::Gateway` transport** in `routes.toml` — a third delivery transport alongside `local` and `mqtt`, for peers with no direct reachability (across NAT/firewalls/the open internet) reached through a `bwoc-gateway` relay. A route declares `transport = "gateway"` + `gateway = "wss://…/v1/connect"`; `bwoc send` resolves it and shells out to the `bwoc-gateway-send` sibling binary (dep-quarantine: `bwoc-core`/`bwoc-cli` never link a WebSocket/TLS client), piping the signed message envelope over stdin exactly as the MQTT path does. The sender's keypair is the gateway login, so the transport requires a signed agent sender (`user`/unsigned origins error with guidance). `bwoc peer` lists gateway routes. See `notes/2026-06-09_route-target-gateway.md`.
+
+### Fixed
+
+- **Flaky `process_isolation` test suite** (`bwoc-harness`) on `ubuntu-latest` CI — a different subset of its 12 sandbox tests failed each run. They each spawn the real turn-executor child and contend on process-wide machinery (capability token, per-turn `setrlimit`/cgroup, IPC fd, env scrub, PID reaping) when run in parallel. Serialized the suite with a dependency-free, poison-tolerant file-level lock. See `notes/2026-06-09_process-isolation-serial.md`.
 
 ## [v2026.6.8-0] — 2026-06-09 — 2.27.0
 
