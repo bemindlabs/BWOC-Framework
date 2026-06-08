@@ -46,18 +46,24 @@ pub enum MqttError {
     BadEnvelope,
 }
 
-/// A parsed broker address.
+/// A parsed broker address, with optional credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Broker {
     pub host: String,
     pub port: u16,
+    /// Username from `mqtt://user[:pass]@host` userinfo, if present.
+    pub username: Option<String>,
+    /// Password from `mqtt://user:pass@host` userinfo, if present.
+    pub password: Option<String>,
 }
 
 /// Default MQTT port.
 pub const DEFAULT_PORT: u16 = 1883;
 
-/// Parse a `mqtt://host[:port]` (or bare `host[:port]`) broker URL. The scheme,
-/// if present, must be `mqtt`. Defaults the port to [`DEFAULT_PORT`].
+/// Parse a `mqtt://[user[:pass]@]host[:port]` (or bare `host[:port]`) broker URL.
+/// The scheme, if present, must be `mqtt`. Optional `user:pass@` userinfo sets
+/// credentials (RFC 3986: the first `@` separates userinfo from host, so a literal
+/// `@` in the password must be percent-encoded). Port defaults to [`DEFAULT_PORT`].
 pub fn parse_broker(url: &str) -> Result<Broker, MqttError> {
     let rest = match url.split_once("://") {
         Some(("mqtt", r)) => r,
@@ -65,13 +71,25 @@ pub fn parse_broker(url: &str) -> Result<Broker, MqttError> {
         None => url,
     };
     let rest = rest.trim_end_matches('/');
-    let (host, port) = match rest.rsplit_once(':') {
+    // Split optional `userinfo@` (first `@`) from `host[:port]`.
+    let (userinfo, hostport) = match rest.split_once('@') {
+        Some((ui, hp)) => (Some(ui), hp),
+        None => (None, rest),
+    };
+    let (username, password) = match userinfo {
+        Some(ui) if !ui.is_empty() => match ui.split_once(':') {
+            Some((u, p)) => (Some(u.to_string()), Some(p.to_string())),
+            None => (Some(ui.to_string()), None),
+        },
+        _ => (None, None),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
         Some((h, p)) => (
             h,
             p.parse::<u16>()
                 .map_err(|_| MqttError::BadBroker(url.to_string()))?,
         ),
-        None => (rest, DEFAULT_PORT),
+        None => (hostport, DEFAULT_PORT),
     };
     if host.is_empty() {
         return Err(MqttError::BadBroker(url.to_string()));
@@ -79,6 +97,8 @@ pub fn parse_broker(url: &str) -> Result<Broker, MqttError> {
     Ok(Broker {
         host: host.to_string(),
         port,
+        username,
+        password,
     })
 }
 
@@ -135,6 +155,9 @@ pub fn append_envelope(inbox_path: &Path, envelope_line: &str) -> Result<(), Mqt
 fn mqtt_options(broker: &Broker, client_id: &str) -> MqttOptions {
     let mut opts = MqttOptions::new(client_id, &broker.host, broker.port);
     opts.set_keep_alive(Duration::from_secs(30));
+    if let Some(username) = &broker.username {
+        opts.set_credentials(username, broker.password.clone().unwrap_or_default());
+    }
     opts
 }
 
@@ -233,7 +256,9 @@ mod tests {
             parse_broker("mqtt://broker.local:1884").unwrap(),
             Broker {
                 host: "broker.local".into(),
-                port: 1884
+                port: 1884,
+                username: None,
+                password: None,
             }
         );
         // default port
@@ -241,11 +266,26 @@ mod tests {
             parse_broker("mqtt://host").unwrap(),
             Broker {
                 host: "host".into(),
-                port: 1883
+                port: 1883,
+                username: None,
+                password: None,
             }
         );
         // bare host:port (no scheme)
         assert_eq!(parse_broker("127.0.0.1:1883").unwrap().port, 1883);
+        // userinfo: user:pass@host:port
+        assert_eq!(
+            parse_broker("mqtt://bwoc:s3cret@broker.local:1883").unwrap(),
+            Broker {
+                host: "broker.local".into(),
+                port: 1883,
+                username: Some("bwoc".into()),
+                password: Some("s3cret".into()),
+            }
+        );
+        // userinfo: user only (no password)
+        let u = parse_broker("mqtt://bwoc@host").unwrap();
+        assert_eq!((u.username.as_deref(), u.password), (Some("bwoc"), None));
         // wrong scheme / empty host
         assert!(parse_broker("tcp://host:1883").is_err());
         assert!(parse_broker("mqtt://:1883").is_err());
