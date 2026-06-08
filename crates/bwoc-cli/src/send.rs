@@ -328,13 +328,7 @@ fn send(args: SendArgs) -> Result<(), SendError> {
             let bin = bwoc_core::exec::binary_or_name("bwoc-mqtt");
             // Redacted form (strip any `user:pass@` userinfo) for logs and errors —
             // the broker may carry credentials that must never be printed.
-            let broker_display = broker
-                .split_once("://")
-                .map(|(scheme, rest)| {
-                    let host = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
-                    format!("{scheme}://{host}")
-                })
-                .unwrap_or_else(|| broker.clone());
+            let broker_display = bwoc_core::routing::redact_broker(&broker);
             // Pass the broker (which may carry credentials) via the environment,
             // NOT `--broker`: a command-line arg would expose the password in
             // `ps`/process listings. The envelope likewise goes over stdin, not

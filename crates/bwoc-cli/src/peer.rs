@@ -110,10 +110,13 @@ fn run_list(routes: &Routes) -> i32 {
         };
         let target = match &route.target {
             RouteTarget::Local(ws) => ws.display().to_string(),
-            RouteTarget::Mqtt { broker, topic } => match topic {
-                Some(t) => format!("mqtt {broker} [{t}]"),
-                None => format!("mqtt {broker}"),
-            },
+            RouteTarget::Mqtt { broker, topic } => {
+                let broker = bwoc_core::routing::redact_broker(broker);
+                match topic {
+                    Some(t) => format!("mqtt {broker} [{t}]"),
+                    None => format!("mqtt {broker}"),
+                }
+            }
         };
         println!("{:<32} {:<12} {}", key, kind, target);
     }
