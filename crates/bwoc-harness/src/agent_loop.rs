@@ -81,11 +81,11 @@ use crate::checkpoint::{CheckpointConfig, RunState};
 use crate::error::{HarnessError, HarnessResult};
 use crate::policy::{Policy, PolicyOutcome, run_pipeline};
 use crate::provider::{ChatMessage, ProviderClient, Role, ToolCall};
-use crate::sandbox::{self, make_os_sandbox};
+use crate::sandbox::make_os_sandbox;
 use crate::session_trust::SessionTrust;
 use crate::telemetry::{Telemetry, TurnBuilder};
-use crate::tools::registry::dispatch;
 use crate::tools::{ToolContext, ToolRegistry};
+use crate::turn_executor::execute_proceeded;
 use bwoc_core::trust::TrustLevel;
 
 // ---------------------------------------------------------------------------
@@ -991,33 +991,24 @@ async fn execute_tool_calls(
 
             let (content, denied, capability_denied) = match outcome {
                 PolicyOutcome::Proceed => {
-                    // ── Layer 3: Sandbox ─────────────────────────────────────────
-                    // For run_command: use the sandboxed runner (env scrub + arg scan + cwd lock).
-                    // For all other tools: the sandbox path-confinement is already enforced
-                    // by ToolContext::resolve_path; run through dispatch as before.
-                    let result = if tool_name == "run_command" {
-                        // Extract the command string from the JSON args.
-                        match serde_json::from_str::<serde_json::Value>(args_json)
-                            .ok()
-                            .and_then(|v| v["command"].as_str().map(|s| s.to_string()))
-                        {
-                            Some(cmd) => {
-                                match sandbox::run_sandboxed(&cmd, &ctx.workdir, &*os_sandbox).await
-                                {
-                                    Ok(output) => output.into_tool_result(),
-                                    Err(e) => format!("error: {e}"),
-                                }
-                            }
-                            None => {
-                                // Malformed args: fall through to dispatch which will
-                                // return a proper "missing command argument" error.
-                                dispatch(registry, tool_name, args_json, ctx).await
-                            }
-                        }
-                    } else {
-                        dispatch(registry, tool_name, args_json, ctx).await
-                    };
-                    (result, false, false)
+                    // ── Layer 3: Process isolation (Phase 5 t5) ──────────────────
+                    // Execution of an approved call no longer happens in this
+                    // process. `execute_proceeded` re-execs the binary as an
+                    // isolated turn-executor child for marshallable (default-
+                    // registry) tools — run_command still goes through the
+                    // sandboxed runner, but now inside the child (child-of-child).
+                    // Un-marshallable (dynamic/MCP/credential) tools are denied
+                    // fail-closed; the child never reaches in-parent execution.
+                    let r = execute_proceeded(
+                        tool_name,
+                        args_json,
+                        ctx,
+                        registry,
+                        &*os_sandbox,
+                        turn_trust,
+                    )
+                    .await;
+                    (r.content, r.denied, r.capability_denied)
                 }
                 PolicyOutcome::CapabilityDenied { tool, reason } => {
                     // C4: structured log line — tool + reason + turn-trust — so a

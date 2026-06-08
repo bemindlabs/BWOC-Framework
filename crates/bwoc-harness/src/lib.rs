@@ -48,4 +48,5 @@ pub mod sandbox;
 pub mod session_trust;
 pub mod telemetry;
 pub mod tools;
+pub mod turn_executor;
 pub mod worker;

@@ -430,7 +430,7 @@ fn resolve_existing_prefix(p: &Path) -> PathBuf {
 // (a model-driven `run_command`; a third-party audit plugin). Re-exported here
 // so existing harness call sites, and `tools::auth` which builds on
 // `sandbox::scrub_env`, keep their import path.
-pub use bwoc_core::env_scrub::scrub_env;
+pub use bwoc_core::env_scrub::{ENV_ALLOWLIST, ENV_SENSITIVE_PATTERNS, scrub_env};
 
 // ---------------------------------------------------------------------------
 // Arg-level scan
