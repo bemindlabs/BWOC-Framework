@@ -75,21 +75,87 @@ fn main() -> ExitCode {
 /// file), else `BWOC_MQTT_BROKER`. Letting a daemon source the url from a file
 /// or env keeps credentials out of the process argv (visible in `ps`).
 fn resolve_broker(flag: Option<String>) -> Result<String, MqttError> {
+    resolve_broker_from(
+        flag,
+        std::env::var("BWOC_MQTT_BROKER_FILE").ok(),
+        std::env::var("BWOC_MQTT_BROKER").ok(),
+    )
+}
+
+/// Pure precedence core (env values passed in, so it is deterministic to test):
+/// `flag` > read(`file`) > `env`. Empty strings are treated as unset.
+fn resolve_broker_from(
+    flag: Option<String>,
+    file: Option<String>,
+    env: Option<String>,
+) -> Result<String, MqttError> {
     if let Some(b) = flag.filter(|s| !s.is_empty()) {
         return Ok(b);
     }
-    if let Ok(path) = std::env::var("BWOC_MQTT_BROKER_FILE") {
+    if let Some(path) = file.filter(|s| !s.is_empty()) {
         let url = std::fs::read_to_string(&path)?.trim().to_string();
         if !url.is_empty() {
             return Ok(url);
         }
     }
-    if let Ok(url) = std::env::var("BWOC_MQTT_BROKER") {
-        if !url.is_empty() {
-            return Ok(url);
-        }
+    if let Some(url) = env.filter(|s| !s.is_empty()) {
+        return Ok(url);
     }
     Err(MqttError::MissingBroker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flag_wins_over_file_and_env() {
+        let r = resolve_broker_from(
+            Some("mqtt://flag:1883".into()),
+            Some("/nope".into()),
+            Some("mqtt://env:1883".into()),
+        );
+        assert_eq!(r.unwrap(), "mqtt://flag:1883");
+    }
+
+    #[test]
+    fn file_read_when_no_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker");
+        std::fs::write(&path, "  mqtt://bwoc:p@host:1883\n").unwrap();
+        let r = resolve_broker_from(
+            None,
+            Some(path.to_string_lossy().into_owned()),
+            Some("mqtt://env:1883".into()),
+        );
+        // file beats env; whitespace trimmed
+        assert_eq!(r.unwrap(), "mqtt://bwoc:p@host:1883");
+    }
+
+    #[test]
+    fn env_fallback_when_no_flag_or_file() {
+        let r = resolve_broker_from(None, None, Some("mqtt://env:1883".into()));
+        assert_eq!(r.unwrap(), "mqtt://env:1883");
+    }
+
+    #[test]
+    fn empty_strings_are_unset() {
+        // empty flag + empty env, empty file path → MissingBroker
+        let r = resolve_broker_from(
+            Some(String::new()),
+            Some(String::new()),
+            Some(String::new()),
+        );
+        assert!(matches!(r, Err(MqttError::MissingBroker)));
+    }
+
+    #[test]
+    fn none_everywhere_errors() {
+        assert!(matches!(
+            resolve_broker_from(None, None, None),
+            Err(MqttError::MissingBroker)
+        ));
+    }
 }
 
 fn run(cli: Cli) -> Result<(), MqttError> {
