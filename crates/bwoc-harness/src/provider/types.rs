@@ -59,6 +59,31 @@ impl ChatMessage {
         }
     }
 
+    /// Construct a compaction **summary** note (gate t3).
+    ///
+    /// Folded as a `System`-role message (so the provider sees it as a system
+    /// note, exactly as the pre-t3 summary was), but stamped
+    /// [`Principal::Summary`] rather than [`Principal::SelfAgent`].
+    /// `folded_untrusted` is the **max-taint** of the folded window — `true` iff
+    /// any folded message carried untrusted taint — so summarizing an Untrusted
+    /// window can no longer launder it into the agent's own trust. A tainted
+    /// summary therefore carries untrusted taint
+    /// ([`Principal::carries_untrusted_taint`]); a clean one does not. This is
+    /// the only constructor producing a non-`SelfAgent` `System` message — the
+    /// reason the t3 invariant is `SelfAgent ⇒ System` (one-way), not `⇔`.
+    pub fn summary(content: impl Into<String>, folded_untrusted: bool) -> Self {
+        Self {
+            role: Role::System,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            principal: Principal::Summary {
+                tainted: folded_untrusted,
+            },
+        }
+    }
+
     /// Construct a user message with **undeclared** provenance
     /// ([`Principal::Unknown`], Untrusted) — the fail-closed default. Any caller
     /// that has not established provenance (e.g. a one-shot/queue task) gets
@@ -336,13 +361,29 @@ mod trust_tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// The Phase-5 t1 ingress invariant: a message is `SelfAgent`-principal
-    /// **if and only if** it is a `System`-role message. `SelfAgent` (the
-    /// agent's own constitution, the highest trust) is reserved exclusively for
-    /// the system prompt; nothing else — no assistant turn, no ingested external
-    /// content — may wear it, and the system prompt may wear nothing else.
+    /// The Phase-5 trust/role invariant, **relaxed at t3** (condition b).
+    ///
+    /// t1 enforced the biconditional `System ⇔ SelfAgent`. t3 must let a
+    /// compaction summary wear a `System` role while being a [`Principal::Summary`]
+    /// (not `SelfAgent`), so the biconditional is split into two one-way rules:
+    ///
+    /// 1. `SelfAgent ⇒ System` — the constitution's highest trust is still
+    ///    reserved exclusively for system-role messages; nothing ingested or
+    ///    model-derived may wear `SelfAgent`. ([`ChatMessage::system`] is still
+    ///    the only constructor that produces `SelfAgent`.)
+    /// 2. `System ⇒ {SelfAgent | Summary}` — the only two principals allowed on a
+    ///    system-role message are the constitution and a compaction summary note.
+    ///    `Summary` is the ONLY principal (besides `SelfAgent`) that may add a
+    ///    `System` role.
     fn invariant_holds(m: &ChatMessage) -> bool {
-        (m.role == Role::System) == (*m.principal() == Principal::SelfAgent)
+        let selfagent_implies_system =
+            *m.principal() != Principal::SelfAgent || m.role == Role::System;
+        let system_implies_selfagent_or_summary = m.role != Role::System
+            || matches!(
+                m.principal(),
+                Principal::SelfAgent | Principal::Summary { .. }
+            );
+        selfagent_implies_system && system_implies_selfagent_or_summary
     }
 
     #[test]
@@ -361,10 +402,36 @@ mod trust_tests {
                 },
                 "tg",
             ),
+            // t3: a summary wears System + Summary (both taint flags).
+            ChatMessage::summary("clean fold", false),
+            ChatMessage::summary("dirty fold", true),
         ];
         for m in &msgs {
             assert!(invariant_holds(m), "invariant broken by {:?}", m.role);
         }
+    }
+
+    #[test]
+    fn summary_note_is_system_role_but_not_selfagent() {
+        // The relaxed t3 invariant in action: a summary is a System message that
+        // is NOT the constitution, and its trust follows its taint flag for the
+        // scan while staying fail-closed Untrusted at the trust() boundary.
+        let dirty = ChatMessage::summary("folded untrusted window", true);
+        assert_eq!(dirty.role, Role::System);
+        assert!(matches!(
+            dirty.principal(),
+            Principal::Summary { tainted: true }
+        ));
+        assert_ne!(*dirty.principal(), Principal::SelfAgent);
+        assert_eq!(dirty.trust(), TrustLevel::Untrusted);
+        assert!(invariant_holds(&dirty));
+
+        let clean = ChatMessage::summary("folded trusted-only window", false);
+        // Even a clean summary is never Trusted (forge-proof), but it carries no
+        // taint for the scan.
+        assert_eq!(clean.trust(), TrustLevel::Untrusted);
+        assert!(!clean.principal().carries_untrusted_taint());
+        assert!(invariant_holds(&clean));
     }
 
     #[test]

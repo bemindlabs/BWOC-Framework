@@ -71,8 +71,18 @@ pub enum Principal {
     /// turn is never `SelfAgent`).
     Assistant,
     /// Output of a local tool — untrusted external content.
+    ///
+    /// DEFERRED (gate t3, condition c): a *source-aware* taint field on
+    /// `Tool` / `McpTool` (e.g. distinguishing a read confined to the agent's
+    /// own worktree from one that pulled in off-box bytes) is intentionally not
+    /// added here yet. t3 treats every tool output as one undifferentiated
+    /// Untrusted bucket — fail-closed and simpler. Refining this into a graded,
+    /// source-aware taint is the next gate; do it by adding a field to these two
+    /// variants and threading it through [`Principal::carries_untrusted_taint`].
     Tool { name: String },
     /// Output of a remote MCP tool — untrusted external content.
+    /// (See the [`Tool`](Principal::Tool) defer marker for the source-aware
+    /// taint refinement deferred past t3.)
     McpTool { server: String, name: String },
     /// A teammate agent's message from the shared team chat — untrusted.
     TeamPeer { agent: String },
@@ -82,6 +92,22 @@ pub enum Principal {
     /// An A2A sender. Untrusted even when `verified`: a signature proves *who*,
     /// not *safe*.
     A2aSender { from: String, verified: bool },
+    /// A compaction summary note that folded an earlier window of the history
+    /// (gate t3). `tainted` is the **max-taint** of the folded window: `true`
+    /// iff any folded message carried untrusted taint
+    /// ([`Principal::carries_untrusted_taint`]). It is the ONLY non-[`SelfAgent`]
+    /// principal permitted to wear a `System` role (the compaction note is
+    /// folded as a system message), which is why the t3 invariant relaxes
+    /// `System ⇔ SelfAgent` to the one-way `SelfAgent ⇒ System`.
+    ///
+    /// A `Summary` is **never** [`TrustLevel::Trusted`] — not even when
+    /// `tainted` is `false`. [`trust`](Principal::trust) is fail-closed here so a
+    /// *forged* `{"kind":"summary","tainted":false}` on disk or the wire can
+    /// never launder into Trusted. The `tainted` flag instead feeds
+    /// [`carries_untrusted_taint`](Principal::carries_untrusted_taint), which the
+    /// per-turn scan uses: a clean summary does not force a turn Untrusted, but
+    /// it can never *vouch* its way up to the constitution's trust either.
+    Summary { tainted: bool },
     /// Provenance not declared / not recognized — the fail-closed default.
     #[default]
     Unknown,
@@ -103,6 +129,26 @@ impl Principal {
     /// True when this provenance is [`TrustLevel::Untrusted`].
     pub fn is_untrusted(&self) -> bool {
         self.trust() == TrustLevel::Untrusted
+    }
+
+    /// Whether this provenance carries **untrusted taint** for the
+    /// taint-propagation scan and compaction max-taint fold (gate t3).
+    ///
+    /// For a [`Summary`](Principal::Summary) this is its `tainted` max-taint
+    /// flag — a *clean* summary (a fold of trusted-only content) carries no
+    /// taint, so it does not force a turn Untrusted. For every other principal
+    /// it is exactly `trust() == Untrusted`.
+    ///
+    /// This is deliberately **distinct from [`trust`](Principal::trust)**, which
+    /// is *always* Untrusted for a `Summary` (fail-closed against a forged
+    /// untainted summary laundering to Trusted). Use this — never `trust()` — to
+    /// decide whether a summary contributes taint, so a clean summary is not
+    /// over-tainted into latching every post-compaction session Untrusted.
+    pub fn carries_untrusted_taint(&self) -> bool {
+        match self {
+            Principal::Summary { tainted } => *tainted,
+            other => other.trust() == TrustLevel::Untrusted,
+        }
     }
 }
 
@@ -134,6 +180,10 @@ mod tests {
                 from: "peer".into(),
                 verified: true,
             },
+            // Listed in its `tainted` form: a Summary is never Trusted (see
+            // `exactly_two_principals_are_trusted`), and this representative
+            // proves it stays out of the trusted set.
+            Principal::Summary { tainted: true },
             Principal::Unknown,
         ]
     }
@@ -141,7 +191,7 @@ mod tests {
     #[test]
     fn exactly_two_principals_are_trusted() {
         let all = all_variants();
-        assert_eq!(all.len(), 9, "vocabulary changed — re-audit trust()");
+        assert_eq!(all.len(), 10, "vocabulary changed — re-audit trust()");
         let trusted: Vec<_> = all
             .iter()
             .filter(|p| p.trust() == TrustLevel::Trusted)
@@ -157,6 +207,34 @@ mod tests {
     fn default_is_unknown_and_untrusted() {
         assert_eq!(Principal::default(), Principal::Unknown);
         assert_eq!(Principal::default().trust(), TrustLevel::Untrusted);
+    }
+
+    #[test]
+    fn summary_is_never_trusted_even_when_clean() {
+        // A Summary is fail-closed at the trust() boundary regardless of its
+        // taint flag — this is what stops a forged untainted summary on disk /
+        // the wire from laundering into Trusted (see the proptests below).
+        assert_eq!(
+            Principal::Summary { tainted: true }.trust(),
+            TrustLevel::Untrusted
+        );
+        assert_eq!(
+            Principal::Summary { tainted: false }.trust(),
+            TrustLevel::Untrusted
+        );
+    }
+
+    #[test]
+    fn carries_untrusted_taint_reads_summary_flag_but_trust_for_others() {
+        // For a Summary, taint follows the max-taint flag (NOT trust()): a clean
+        // fold carries none, a dirty fold carries it.
+        assert!(!Principal::Summary { tainted: false }.carries_untrusted_taint());
+        assert!(Principal::Summary { tainted: true }.carries_untrusted_taint());
+        // For every other principal it is exactly `trust() == Untrusted`.
+        assert!(!Principal::LocalOperator.carries_untrusted_taint());
+        assert!(!Principal::SelfAgent.carries_untrusted_taint());
+        assert!(Principal::Tool { name: "t".into() }.carries_untrusted_taint());
+        assert!(Principal::Unknown.carries_untrusted_taint());
     }
 
     #[test]

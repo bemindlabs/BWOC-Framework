@@ -183,6 +183,16 @@ pub async fn compact_context(
     let excerpt = render(&history[1..split]);
     let removed = split - 1;
 
+    // Max-taint of the folded window (gate t3): the summary inherits untrusted
+    // taint iff ANY folded message carried it, by exactly the rule the per-turn
+    // scan applies (`taints_turn` — tool outputs count, the agent's own turn
+    // does not). This stops compaction from laundering an Untrusted window into
+    // the agent's own trust: the resulting note is a tainted `Principal::Summary`,
+    // not a Trusted `SelfAgent`.
+    let folded_untrusted = history[1..split]
+        .iter()
+        .any(|m| crate::session_trust::taints_turn(m.principal()));
+
     let messages = vec![
         ChatMessage::system(SUMMARIZE_SYSTEM),
         ChatMessage::user(format!("Conversation excerpt to summarize:\n\n{excerpt}")),
@@ -198,6 +208,9 @@ pub async fn compact_context(
     };
 
     let (note, outcome, mined_text) = if summary.trim().is_empty() {
+        // Truncation fallback: kept as a plain `user` note (Unknown → Untrusted,
+        // fail-closed). It is always-tainting regardless of the folded window —
+        // a conservative no-op next to the summary path's precise max-taint.
         (
             ChatMessage::user(format!(
                 "[context compacted: {removed} messages truncated to fit context window]"
@@ -208,9 +221,14 @@ pub async fn compact_context(
     } else {
         let trimmed = summary.trim().to_string();
         (
-            ChatMessage::system(format!(
-                "[Summary of {removed} earlier messages — the conversation continues below]\n{trimmed}"
-            )),
+            // Folded as a `Principal::Summary` note carrying the window's
+            // max-taint (gate t3) — NOT a Trusted `SelfAgent` system message.
+            ChatMessage::summary(
+                format!(
+                    "[Summary of {removed} earlier messages — the conversation continues below]\n{trimmed}"
+                ),
+                folded_untrusted,
+            ),
             Compaction::Summarized { removed },
             trimmed,
         )
@@ -438,36 +456,24 @@ mod tests {
         assert!(note.contains("context compacted"), "got note: {note}");
     }
 
-    /// GATE t2 TRACKING — KNOWN FAILING, INTENTIONALLY `#[ignore]`d.
+    /// GATE t3 — message-level taint propagation through compaction. Was
+    /// `#[ignore]`d at t2; now PASSES by real implementation (condition 4).
     ///
-    /// Phase 5 t1 (this gate) proves every *ingress* is labeled; it does **not**
-    /// fix taint propagation through compaction. When the unified context engine
-    /// summarizes a window that contained Untrusted content (a tool result, a
-    /// teammate message), the resulting note is built with `ChatMessage::system`
-    /// → `Principal::SelfAgent` → **Trusted**. That launders untrusted content
-    /// into the agent's own highest trust at the compaction boundary.
+    /// When the unified context engine summarizes a window that contained
+    /// Untrusted content (a tool result, a teammate message), the note is now
+    /// built with [`ChatMessage::summary`] carrying the window's **max-taint** →
+    /// [`Principal::Summary { tainted: true }`](bwoc_core::trust::Principal::Summary)
+    /// → **Untrusted**. The pre-t3 code built it with `ChatMessage::system` →
+    /// `SelfAgent` → Trusted, laundering untrusted content into the agent's own
+    /// highest trust at the compaction boundary; that hole is now closed.
     ///
-    /// This test asserts the *desired* message-level behavior — a summary that
-    /// folds any Untrusted message must itself be Untrusted (max-taint). It still
-    /// fails today, on purpose, and is kept ignored and named `gate_t2` (NOT
-    /// relabeled — no musavada).
-    ///
-    /// ## How t2 actually closes the *security* hole — the sticky latch
-    ///
-    /// t2 does **not** taint the summary message. Instead the capability gate is
-    /// protected by the monotonic session-trust latch
-    /// ([`crate::session_trust::SessionTrust`]): the moment any turn observes
-    /// Untrusted ingress, `untrusted_seen` latches set-once and is persisted
-    /// across compaction AND reload. So even though this summary is still labeled
-    /// `SelfAgent`/Trusted after the fold, the laundering can no longer re-open
-    /// effectful tools — the latch already holds the turn Untrusted (see
-    /// `gate_survives_compaction_no_effectful_reopen` below, which PASSES).
-    ///
-    /// What remains for a later refinement (and what this test tracks) is
-    /// *message-level* taint propagation into the summary itself — a
-    /// defense-in-depth nicety the gate does not need. Remove the `#[ignore]`
-    /// when that lands.
-    #[ignore = "gate t2: compaction must propagate Untrusted taint into the summary (gate itself is protected by the sticky latch)"]
+    /// This is defense-in-depth that complements — does not replace — the
+    /// monotonic session-trust latch
+    /// ([`crate::session_trust::SessionTrust`]), which independently holds the
+    /// turn Untrusted across compaction and reload (see
+    /// `gate_survives_compaction_no_effectful_reopen` below). The test kept its
+    /// `gate_t2` name from when it tracked the still-open hole (no relabel — no
+    /// musavada); the behavior it asserts is delivered by gate t3.
     #[tokio::test]
     async fn compaction_summary_inherits_untrusted_taint_gate_t2() {
         use bwoc_core::trust::TrustLevel;
@@ -540,14 +546,19 @@ mod tests {
         assert!(body.contains("THE SUMMARY"));
     }
 
-    /// GATE t2 — the monotonic latch must survive compaction (C1).
+    /// GATE t3 — defense in depth survives compaction (C1 + message-level taint).
     ///
-    /// This is the load-bearing test that the false "monotonic" claim required:
-    /// compaction folds an Untrusted window into a Trusted `SelfAgent` system
-    /// summary, so a *fresh scan* of the post-compaction history reads Trusted —
-    /// but the sticky latch, set on the pre-compaction turn, holds the turn
-    /// Untrusted, so the capability gate still refuses effectful tools. It
-    /// PASSES — that is the point.
+    /// Two independent protections now hold the turn Untrusted after compaction
+    /// folds an Untrusted window:
+    /// 1. The compaction note inherits the window's max-taint
+    ///    ([`Principal::Summary { tainted: true }`](bwoc_core::trust::Principal::Summary)),
+    ///    so even a *fresh scan* of the post-compaction history reads Untrusted
+    ///    (the t3 fix — pre-t3 it laundered to a Trusted `SelfAgent` and scanned
+    ///    Trusted).
+    /// 2. The monotonic sticky latch, set on the pre-compaction turn, holds the
+    ///    turn Untrusted regardless of any scan.
+    /// Either alone refuses the effectful tool; this asserts both. It PASSES —
+    /// that is the point.
     #[tokio::test]
     async fn gate_survives_compaction_no_effectful_reopen() {
         use crate::policy::{Mode, Policy, PolicyOutcome, run_pipeline};
@@ -571,9 +582,9 @@ mod tests {
             },
             format!("peer says {}", "x".repeat(120)),
         ));
-        // The tail is operator() (Trusted) so that, once the lone Untrusted
-        // teammate message is folded away, a fresh scan reads Trusted — isolating
-        // the laundering this test exists to demonstrate.
+        // The tail is operator() (Trusted). Pre-t3 a fresh post-compaction scan
+        // read Trusted here (the laundering); at t3 the folded teammate taints
+        // the summary, so the scan reads Untrusted — demonstrated below.
         for i in 0..10 {
             h.push(ChatMessage::operator(format!(
                 "message {i} {}",
@@ -594,14 +605,24 @@ mod tests {
             matches!(out, Compaction::Summarized { .. }),
             "precondition: the untrusted window must be folded; got {out:?}"
         );
-        // A fresh scan now reads Trusted — the laundering the gate_t2 test names.
+        // t3: the summary inherited the folded teammate's taint, so a fresh scan
+        // now reads Untrusted — the laundering the pre-t3 code allowed is closed.
         assert_eq!(
             scan_turn_trust(&h),
-            TrustLevel::Trusted,
-            "compaction laundered the window into a Trusted summary (expected)"
+            TrustLevel::Untrusted,
+            "t3: compaction must propagate taint — the summary is tainted Untrusted"
+        );
+        // And the summary note itself is a tainted Summary, not a Trusted SelfAgent.
+        assert!(
+            matches!(
+                h[1].principal(),
+                bwoc_core::trust::Principal::Summary { tainted: true }
+            ),
+            "the folded note must be a tainted Summary; got {:?}",
+            h[1].principal()
         );
 
-        // But the latch is sticky: post-compaction turn_trust stays Untrusted…
+        // The latch is independently sticky: post-compaction turn_trust stays Untrusted…
         assert_eq!(
             trust.observe(&h),
             TrustLevel::Untrusted,

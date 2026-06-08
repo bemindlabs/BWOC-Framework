@@ -1,11 +1,21 @@
 //! Policy / permission system and safety guardrails.
 //!
-//! Three-layer safety pipeline.  Every tool call passes through these layers
+//! Four-layer safety pipeline.  Every tool call passes through these layers
 //! **before** sandbox execution, in the order below:
 //!
 //! ```text
-//! GUARDRAILS → PERMISSION → SANDBOX → execute
+//! CAPABILITY GATE → GUARDRAILS → PERMISSION → SANDBOX → execute
 //! ```
+//!
+//! ## Layer 0 — Capability gate (Phase 5 t3)
+//!
+//! Trust-scoped and deny-only. On an **Untrusted** turn (the session-monotonic
+//! latch in [`crate::session_trust`] has observed untrusted ingress) tools are
+//! graded by blast radius ([`Capability`]): pure-read always proceeds; a
+//! worktree-confined write proceeds only when its target stays inside the
+//! worktree; every other effect (run_command, git, network egress, sub-agent
+//! spawn, unclassified) is refused. A **Trusted** turn is a no-op here. Returns
+//! [`PolicyOutcome::CapabilityDenied`] on a refusal.
 //!
 //! ## Layer 1 — Guardrails (`guardrails`)
 //!
@@ -41,24 +51,57 @@ pub use permission::{
 
 use bwoc_core::trust::TrustLevel;
 
-/// Layer-0 capability whitelist (Phase 5 t2 — saṃvara).
-///
-/// The **closed** set of PURE-READ tools an Untrusted turn may still invoke.
-/// The gate is **deny-only with zero allow-by-omission**: any tool not named
-/// here is refused when the turn's trust is [`TrustLevel::Untrusted`], so a
-/// newly-added tool is denied-by-default until it is deliberately classified.
-///
-/// Every entry is read-only and side-effect-free (verified against the tool
-/// implementations): `read_file`, `list_dir`, and `grep` only read the
-/// worktree; `memory_read` performs a single confined `read_to_string` of
-/// `memories/` with **no** write, lazy-index, or access-log side effect.
-/// Effectful tools (`write_file`, `edit_file`, `run_command`, `git`,
-/// `memory_write`, MCP, …) are absent by construction.
-const UNTRUSTED_CAPABILITY_WHITELIST: &[&str] = &["read_file", "list_dir", "grep", "memory_read"];
+/// Layer-0 capability tier, **graded by blast radius** (Phase 5 t3 — saṃvara,
+/// yudi's ruling (a)). This REPLACES t2's flat "deny every effectful tool on an
+/// untrusted turn": an Untrusted turn may still do the low-blast-radius things
+/// (read anything; write *inside its own worktree*) while the high-blast-radius
+/// effects stay gated. Grading is **deny-biased with zero allow-by-omission**:
+/// any tool not deliberately classified into [`Capability::PureRead`] or
+/// [`Capability::WorktreeWrite`] falls to [`Capability::Gated`] and is refused on
+/// an Untrusted turn, so a newly-added tool is denied-by-default.
+enum Capability {
+    /// Read-only and side-effect-free — allowed on ANY turn. `read_file`,
+    /// `list_dir`, `grep` only read the worktree; `memory_read` does a single
+    /// confined `read_to_string` of `memories/` with no write / index / log
+    /// side effect.
+    PureRead,
+    /// A write/edit whose blast radius is a single path argument — allowed on an
+    /// Untrusted turn ONLY when that target resolves *inside the worktree*
+    /// (path-confinement via [`crate::sandbox::confine_path`], which also rejects
+    /// symlink escapes). `path` is the raw target extracted from the args, or
+    /// `None` when the args are missing/malformed (fail-closed → denied).
+    WorktreeWrite { path: Option<String> },
+    /// Effectful beyond a confined worktree write — `run_command`, `git` (commit
+    /// / push), `run_gates`, the `bwoc_*` sub-agent / message / task tools, every
+    /// MCP tool (network egress), and any unclassified tool. Refused on an
+    /// Untrusted turn, always. Covers yudi's gated list: run_command, git push,
+    /// PR-create, network egress, and delete outside the worktree.
+    Gated,
+}
 
-/// Whether `tool_name` is on the closed pure-read capability whitelist.
-fn is_whitelisted_capability(tool_name: &str) -> bool {
-    UNTRUSTED_CAPABILITY_WHITELIST.contains(&tool_name)
+/// Classify `tool_name` into its capability tier, extracting the confinement
+/// target for worktree-confined writes from `arguments_json`.
+fn classify_capability(tool_name: &str, arguments_json: &str) -> Capability {
+    /// Pull a string field out of the (possibly malformed) JSON args.
+    fn arg_str(args_json: &str, key: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(args_json)
+            .ok()
+            .and_then(|v| v[key].as_str().map(str::to_string))
+    }
+    match tool_name {
+        "read_file" | "list_dir" | "grep" | "memory_read" => Capability::PureRead,
+        "write_file" | "edit_file" => Capability::WorktreeWrite {
+            path: arg_str(arguments_json, "path"),
+        },
+        // memory_write targets `memories/<name>` under the worktree; confine on
+        // that derived path so a `..`-escaping name is denied at the gate too.
+        "memory_write" => Capability::WorktreeWrite {
+            path: arg_str(arguments_json, "name").map(|n| format!("memories/{n}")),
+        },
+        // run_command, git, run_gates, bwoc_run/send/task, MCP (mcp__*), and any
+        // tool nobody classified — gated, zero allow-by-omission.
+        _ => Capability::Gated,
+    }
 }
 
 /// The outcome of the full policy pipeline (guardrails + permission).
@@ -69,11 +112,14 @@ fn is_whitelisted_capability(tool_name: &str) -> bool {
 pub enum PolicyOutcome {
     /// All policy layers approved; proceed to sandbox then execute.
     Proceed,
-    /// The Layer-0 capability gate refused an effectful tool because the turn's
-    /// trust was Untrusted (Phase 5 t2). Distinct from a guardrail or permission
-    /// denial — it is a trust-policy refusal — so the caller counts it
-    /// separately (`capability_denials`). The model receives the reason as the
-    /// tool result and can fall back to a whitelisted read-only tool.
+    /// The Layer-0 capability gate refused a tool because the turn's trust was
+    /// Untrusted and the tool's blast radius was too high for an untrusted turn
+    /// (Phase 5 t3): an out-of-worktree write, or a fully gated effect
+    /// (run_command / git / network / sub-agent / unclassified). Distinct from a
+    /// guardrail or permission denial — it is a trust-policy refusal — so the
+    /// caller counts it separately (`capability_denials`). The model receives the
+    /// reason as the tool result and can fall back to a pure-read tool or a
+    /// worktree-confined write.
     CapabilityDenied { tool: String, reason: String },
     /// A guardrail rule fired.  The model receives this as the tool result.
     GuardrailBlocked(GuardrailViolation),
@@ -89,7 +135,7 @@ impl PolicyOutcome {
         match self {
             PolicyOutcome::Proceed => None,
             PolicyOutcome::CapabilityDenied { tool, reason } => Some(format!(
-                "DENIED by capability gate [t2]: tool `{tool}` is not permitted on an \
+                "DENIED by capability gate [t3]: tool `{tool}` is not permitted on an \
                  untrusted turn — {reason}"
             )),
             PolicyOutcome::GuardrailBlocked(v) => Some(format!(
@@ -130,20 +176,42 @@ pub fn run_pipeline(
     is_tty: bool,
     turn_trust: TrustLevel,
 ) -> PolicyOutcome {
-    // Layer 0: Capability gate (Phase 5 t2). Runs FIRST and is deny-only — it
-    // can refuse, never grant. On an Untrusted turn, only the closed pure-read
-    // whitelist may proceed; every other (effectful) tool is refused before the
-    // guardrail/permission layers even run. A Trusted turn is a no-op here and
-    // falls straight through to the existing layers. Zero allow-by-omission:
-    // the check is membership in the whitelist, so an unclassified tool is
-    // denied by default.
-    if turn_trust == TrustLevel::Untrusted && !is_whitelisted_capability(tool_name) {
-        return PolicyOutcome::CapabilityDenied {
-            tool: tool_name.to_string(),
-            reason: "effectful capability blocked on an untrusted turn \
-                     (only pure-read tools are permitted)"
-                .to_string(),
-        };
+    // Layer 0: Capability gate (Phase 5 t3, ruling (a)). Runs FIRST and is
+    // deny-only — it can refuse, never grant. On an Untrusted turn the tool is
+    // graded by blast radius: pure-read always proceeds; a worktree-confined
+    // write proceeds ONLY when its target stays inside the worktree; everything
+    // else (run_command, git, network egress, sub-agent spawn, unclassified) is
+    // refused before the guardrail/permission layers run. A Trusted turn is a
+    // no-op here and falls straight through. Zero allow-by-omission: an
+    // unclassified tool is `Gated` and denied by default.
+    if turn_trust == TrustLevel::Untrusted {
+        match classify_capability(tool_name, arguments_json) {
+            Capability::PureRead => {} // always allowed — fall through
+            Capability::WorktreeWrite { path } => {
+                let confined = path
+                    .as_deref()
+                    .is_some_and(|p| crate::sandbox::confine_path(p, worktree_root).is_ok());
+                if !confined {
+                    return PolicyOutcome::CapabilityDenied {
+                        tool: tool_name.to_string(),
+                        reason: "write target escapes the worktree — an untrusted turn \
+                                 may write only inside its own worktree"
+                            .to_string(),
+                    };
+                }
+                // Confined write — fall through to guardrails/permission.
+            }
+            Capability::Gated => {
+                return PolicyOutcome::CapabilityDenied {
+                    tool: tool_name.to_string(),
+                    reason: "effectful capability blocked on an untrusted turn \
+                             (run_command / git / network / sub-agent / external delete \
+                             are gated; only pure-read and worktree-confined writes are \
+                             permitted)"
+                        .to_string(),
+                };
+            }
+        }
     }
 
     // Layer 1: Guardrails (non-overridable, always runs first).
@@ -321,17 +389,107 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_turn_denies_write_file() {
+    fn untrusted_turn_allows_worktree_confined_write() {
+        // Ruling (a): a write whose target stays inside the worktree proceeds
+        // even on an Untrusted turn. Uses a real tempdir so path-confinement
+        // canonicalization is apples-to-apples (macOS /tmp → /private/tmp).
+        let dir = tempfile::tempdir().unwrap();
+        let policy = allow_policy();
+        for (tool, args) in [
+            ("write_file", r#"{"path": "out.txt", "content": "x"}"#),
+            (
+                "edit_file",
+                r#"{"path": "sub/f.rs", "old_string": "a", "new_string": "b"}"#,
+            ),
+            ("memory_write", r#"{"name": "note.md", "content": "x"}"#),
+        ] {
+            let outcome = run_pipeline(
+                tool,
+                args,
+                dir.path(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+            );
+            assert!(
+                matches!(outcome, PolicyOutcome::Proceed),
+                "worktree-confined `{tool}` must proceed on an untrusted turn, got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn untrusted_turn_denies_out_of_worktree_write() {
+        // A write/edit whose target escapes the worktree is capability-denied on
+        // an Untrusted turn — even under allow-all. Includes a `..` escape, an
+        // absolute outside path, and a `..`-escaping memory name.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = allow_policy();
+        for (tool, args) in [
+            (
+                "write_file",
+                r#"{"path": "../../etc/passwd", "content": "x"}"#,
+            ),
+            (
+                "edit_file",
+                r#"{"path": "/etc/hosts", "old_string": "a", "new_string": "b"}"#,
+            ),
+            (
+                "memory_write",
+                r#"{"name": "../../escape.md", "content": "x"}"#,
+            ),
+        ] {
+            let outcome = run_pipeline(
+                tool,
+                args,
+                dir.path(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+            );
+            assert!(
+                matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+                "out-of-worktree `{tool}` must be capability-denied, got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn untrusted_turn_denies_write_with_malformed_args_fail_closed() {
+        // A worktree-confined-write tool whose args omit the target path is
+        // fail-closed (no path to confine → denied), never allow-by-omission.
+        let dir = tempfile::tempdir().unwrap();
         let policy = allow_policy();
         let outcome = run_pipeline(
             "write_file",
-            r#"{"path": "out.txt", "content": "x"}"#,
-            wt(),
+            r#"{"content": "x"}"#,
+            dir.path(),
             &policy,
             false,
             TrustLevel::Untrusted,
         );
         assert!(matches!(outcome, PolicyOutcome::CapabilityDenied { .. }));
+    }
+
+    #[test]
+    fn untrusted_turn_gates_effectful_non_write_tools() {
+        // The fully-gated tier: run_command, git, run_gates, the bwoc_* tools,
+        // and MCP tools are denied on an Untrusted turn regardless of args.
+        let policy = allow_policy();
+        for (tool, args) in [
+            ("git", r#"{"args": "push"}"#),
+            ("run_gates", "{}"),
+            ("bwoc_run", r#"{"task": "x"}"#),
+            ("bwoc_send", r#"{"to": "peer", "message": "x"}"#),
+            ("bwoc_task", r#"{"team": "t", "task": "x"}"#),
+            ("mcp__server__some_tool", "{}"),
+        ] {
+            let outcome = run_pipeline(tool, args, wt(), &policy, false, TrustLevel::Untrusted);
+            assert!(
+                matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+                "gated `{tool}` must be capability-denied on an untrusted turn, got {outcome:?}"
+            );
+        }
     }
 
     #[test]
@@ -408,7 +566,7 @@ mod tests {
         }
         .into_tool_result()
         .unwrap();
-        assert!(msg.contains("DENIED by capability gate [t2]"));
+        assert!(msg.contains("DENIED by capability gate [t3]"));
         assert!(msg.contains("run_command"));
     }
 }
