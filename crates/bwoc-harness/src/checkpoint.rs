@@ -48,6 +48,17 @@ pub struct RunState {
     /// in which case the resume guard is skipped.
     #[serde(default)]
     pub workdir: PathBuf,
+    /// Phase 5 t2 — the monotonic session-trust latch
+    /// ([`crate::session_trust::SessionTrust`]). Set-once / never-clear; once any
+    /// turn observes Untrusted ingress this is `true` for the rest of the run.
+    /// Persisted here so the latch survives reload AND a post-compaction
+    /// checkpoint (where the Untrusted messages have already been folded into a
+    /// Trusted summary and a fresh scan would otherwise read clean). `serde(default)`
+    /// → `false` on pre-t2 checkpoints; the loop re-scans the replayed history on
+    /// resume, so a clean default still re-latches if the history still carries
+    /// the taint.
+    #[serde(default)]
+    pub untrusted_seen: bool,
 }
 
 impl RunState {
@@ -201,6 +212,7 @@ mod tests {
             token_pressure_switches: 0,
             active_model: "mock".to_string(),
             workdir: PathBuf::from("/tmp/bwoc-wt"),
+            untrusted_seen: false,
         }
     }
 
@@ -221,6 +233,30 @@ mod tests {
             serde_json::to_value(&state).unwrap(),
             serde_json::to_value(&loaded).unwrap()
         );
+    }
+
+    #[test]
+    fn untrusted_seen_round_trips_and_legacy_defaults_false() {
+        // Phase 5 t2 — the monotonic trust latch must survive save/load (so it
+        // survives reload), and a pre-t2 checkpoint that omits the field must
+        // fail-safe to `false` (the per-turn re-scan re-latches if needed).
+        let tmp = TempDir::new().unwrap();
+        let cfg = CheckpointConfig {
+            run_id: "r-latch".to_string(),
+            root: tmp.path().to_path_buf(),
+            resume: None,
+        };
+        let mut state = sample_state("r-latch");
+        state.untrusted_seen = true;
+        cfg.save(&state).unwrap();
+        let loaded = RunState::load_from(&cfg.path()).unwrap();
+        assert!(loaded.untrusted_seen, "latch must persist across reload");
+
+        // Legacy JSON without the field → false (additive `serde(default)`).
+        let legacy = r#"{"run_id":"x","task":"t","history":[],"turns":1,
+            "compactions":0,"token_pressure_switches":0,"active_model":"m"}"#;
+        let parsed: RunState = serde_json::from_str(legacy).unwrap();
+        assert!(!parsed.untrusted_seen);
     }
 
     #[test]

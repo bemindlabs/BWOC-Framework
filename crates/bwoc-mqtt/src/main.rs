@@ -104,6 +104,46 @@ fn resolve_broker_from(
     Err(MqttError::MissingBroker)
 }
 
+fn run(cli: Cli) -> Result<(), MqttError> {
+    match cli.cmd {
+        Cmd::Publish {
+            broker,
+            topic,
+            payload,
+            client_id,
+        } => {
+            let broker: Broker = parse_broker(&resolve_broker(broker)?)?;
+            let payload = match payload {
+                Some(p) => p,
+                None => {
+                    let mut s = String::new();
+                    std::io::stdin().read_to_string(&mut s)?;
+                    s
+                }
+            };
+            let payload = payload.trim();
+            if payload.is_empty() {
+                eprintln!("bwoc-mqtt: empty payload");
+                return Ok(());
+            }
+            publish(&broker, &topic, payload, &client_id)?;
+            eprintln!("published to `{topic}`");
+            Ok(())
+        }
+        Cmd::Serve {
+            broker,
+            workspace,
+            topic,
+            client_id,
+        } => {
+            let broker = parse_broker(&resolve_broker(broker)?)?;
+            serve(&broker, &workspace, &topic, &client_id, |line| {
+                println!("{line}");
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,45 +195,5 @@ mod tests {
             resolve_broker_from(None, None, None),
             Err(MqttError::MissingBroker)
         ));
-    }
-}
-
-fn run(cli: Cli) -> Result<(), MqttError> {
-    match cli.cmd {
-        Cmd::Publish {
-            broker,
-            topic,
-            payload,
-            client_id,
-        } => {
-            let broker: Broker = parse_broker(&resolve_broker(broker)?)?;
-            let payload = match payload {
-                Some(p) => p,
-                None => {
-                    let mut s = String::new();
-                    std::io::stdin().read_to_string(&mut s)?;
-                    s
-                }
-            };
-            let payload = payload.trim();
-            if payload.is_empty() {
-                eprintln!("bwoc-mqtt: empty payload");
-                return Ok(());
-            }
-            publish(&broker, &topic, payload, &client_id)?;
-            eprintln!("published to `{topic}`");
-            Ok(())
-        }
-        Cmd::Serve {
-            broker,
-            workspace,
-            topic,
-            client_id,
-        } => {
-            let broker = parse_broker(&resolve_broker(broker)?)?;
-            serve(&broker, &workspace, &topic, &client_id, |line| {
-                println!("{line}");
-            })
-        }
     }
 }

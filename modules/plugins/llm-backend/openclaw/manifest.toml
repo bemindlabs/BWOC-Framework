@@ -1,0 +1,13 @@
+[plugin]
+name        = "openclaw"
+kind        = "llm-backend"
+version     = "0.1.0"
+description = "Inbound stub — register the OpenClaw Gateway agent runtime as an additional spawnable backend. Pairs with the outbound bwoc-plugin-openclaw adapter; runtime deferred."
+compat      = ">=2.26.0"
+entry       = "bwoc-llm-openclaw"
+
+# [config.schema] intentionally omitted — this is a stub. No runtime, no config
+# beyond the universal `enabled` key. The dispatch binary `bwoc-llm-openclaw` is
+# not yet built; the framework refuses to LOAD this plugin until it exists, so
+# the stub stays registered-but-disabled (documented intent), mirroring the
+# audit-iso-* stubs. See SPEC.md.

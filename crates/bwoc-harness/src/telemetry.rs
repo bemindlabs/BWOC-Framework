@@ -93,6 +93,13 @@ pub struct TurnMetrics {
     pub tool_calls: u32,
     /// Number of tool calls denied by the guardrail or permission layers.
     pub denials: u32,
+    /// Number of tool calls denied by the Layer-0 capability gate (Phase 5 t2):
+    /// an effectful tool refused because the turn's trust was Untrusted. Kept
+    /// SEPARATE from `denials` (it is a trust-policy refusal, not a guardrail or
+    /// permission denial) so the two failure modes are independently observable.
+    /// Additive on the wire — older readers and pre-t2 records are unaffected.
+    #[serde(default)]
+    pub capability_denials: u32,
     /// Number of verification gates that passed in this turn.
     pub gates_passed: u32,
     /// Number of verification gates that failed in this turn.
@@ -126,6 +133,10 @@ pub struct SessionTotals {
     pub tokens_out: u64,
     pub tool_calls: u64,
     pub denials: u64,
+    /// Total Layer-0 capability-gate refusals across all turns (Phase 5 t2),
+    /// accumulated separately from `denials`.
+    #[serde(default)]
+    pub capability_denials: u64,
     pub gates_passed: u64,
     pub gates_failed: u64,
     /// Total number of token-pressure–driven model switches across all turns.
@@ -140,6 +151,7 @@ impl SessionTotals {
         self.tokens_out += u64::from(turn.tokens_out);
         self.tool_calls += u64::from(turn.tool_calls);
         self.denials += u64::from(turn.denials);
+        self.capability_denials += u64::from(turn.capability_denials);
         self.gates_passed += u64::from(turn.gates_passed);
         self.gates_failed += u64::from(turn.gates_failed);
         self.token_pressure_switches += u64::from(turn.token_pressure_switch);
@@ -303,6 +315,9 @@ pub struct TurnBuilder {
     pub tokens_out: u32,
     pub tool_calls: u32,
     pub denials: u32,
+    /// Layer-0 capability-gate refusals this turn (Phase 5 t2), counted apart
+    /// from `denials`.
+    pub capability_denials: u32,
     pub gates_passed: u32,
     pub gates_failed: u32,
     pub context_tokens: u32,
@@ -325,6 +340,7 @@ impl TurnBuilder {
             tokens_out: 0,
             tool_calls: 0,
             denials: 0,
+            capability_denials: 0,
             gates_passed: 0,
             gates_failed: 0,
             context_tokens: 0,
@@ -343,6 +359,7 @@ impl TurnBuilder {
             latency_ms: self.start.elapsed().as_millis() as u64,
             tool_calls: self.tool_calls,
             denials: self.denials,
+            capability_denials: self.capability_denials,
             gates_passed: self.gates_passed,
             gates_failed: self.gates_failed,
             context_tokens: self.context_tokens,
@@ -725,6 +742,7 @@ mod tests {
             tokens_out: 50,
             tool_calls: 2,
             denials: 1,
+            capability_denials: 0,
             gates_passed: 2,
             gates_failed: 0,
             latency_ms: 200,
@@ -739,6 +757,7 @@ mod tests {
             tokens_out: 100,
             tool_calls: 1,
             denials: 0,
+            capability_denials: 0,
             gates_passed: 1,
             gates_failed: 1,
             latency_ms: 150,
@@ -769,6 +788,7 @@ mod tests {
             tokens_out: 50,
             tool_calls: 1,
             denials: 0,
+            capability_denials: 0,
             gates_passed: 2,
             gates_failed: 0,
             latency_ms: 300,
@@ -838,6 +858,7 @@ mod tests {
             tokens_out: 40,
             tool_calls: 1,
             denials: 0,
+            capability_denials: 0,
             gates_passed: 1,
             gates_failed: 0,
             latency_ms: 100,
@@ -900,6 +921,7 @@ mod tests {
             tokens_out: 50,
             tool_calls: 1,
             denials: 0,
+            capability_denials: 0,
             gates_passed: 1,
             gates_failed: 0,
             latency_ms: 200,

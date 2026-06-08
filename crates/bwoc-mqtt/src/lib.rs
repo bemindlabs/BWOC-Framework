@@ -69,9 +69,12 @@ pub const DEFAULT_PORT: u16 = 1883;
 /// credentials (RFC 3986: the first `@` separates userinfo from host, so a literal
 /// `@` in the password must be percent-encoded). Port defaults to [`DEFAULT_PORT`].
 pub fn parse_broker(url: &str) -> Result<Broker, MqttError> {
+    // Any parse failure echoes a *redacted* url — never the raw input, which may
+    // carry `user:pass@` userinfo that must not leak into error output / logs.
+    let bad = || MqttError::BadBroker(bwoc_core::routing::redact_broker(url));
     let rest = match url.split_once("://") {
         Some(("mqtt", r)) => r,
-        Some(_) => return Err(MqttError::BadBroker(url.to_string())),
+        Some(_) => return Err(bad()),
         None => url,
     };
     let rest = rest.trim_end_matches('/');
@@ -80,23 +83,21 @@ pub fn parse_broker(url: &str) -> Result<Broker, MqttError> {
         Some((ui, hp)) => (Some(ui), hp),
         None => (None, rest),
     };
+    // Userinfo is percent-decoded (RFC 3986): a literal `@`/`:` in the password
+    // is encoded as `%40`/`%3A`, so `mqtt://user:p%40ss@host` yields `p@ss`.
     let (username, password) = match userinfo {
         Some(ui) if !ui.is_empty() => match ui.split_once(':') {
-            Some((u, p)) => (Some(u.to_string()), Some(p.to_string())),
-            None => (Some(ui.to_string()), None),
+            Some((u, p)) => (Some(percent_decode(u)), Some(percent_decode(p))),
+            None => (Some(percent_decode(ui)), None),
         },
         _ => (None, None),
     };
     let (host, port) = match hostport.rsplit_once(':') {
-        Some((h, p)) => (
-            h,
-            p.parse::<u16>()
-                .map_err(|_| MqttError::BadBroker(url.to_string()))?,
-        ),
+        Some((h, p)) => (h, p.parse::<u16>().map_err(|_| bad())?),
         None => (hostport, DEFAULT_PORT),
     };
     if host.is_empty() {
-        return Err(MqttError::BadBroker(url.to_string()));
+        return Err(bad());
     }
     Ok(Broker {
         host: host.to_string(),
@@ -104,6 +105,37 @@ pub fn parse_broker(url: &str) -> Result<Broker, MqttError> {
         username,
         password,
     })
+}
+
+/// Minimal RFC 3986 percent-decoder for userinfo. Decodes `%XX` hex escapes to
+/// bytes (UTF-8, lossy on invalid sequences); leaves a malformed/truncated `%`
+/// untouched. No dependency — the only encoded chars expected here are the
+/// userinfo delimiters (`@` → `%40`, `:` → `%3A`).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// The topic for a recipient: the explicit `override`, else `bwoc/<id>/inbox`.
@@ -294,6 +326,28 @@ mod tests {
         assert!(parse_broker("tcp://host:1883").is_err());
         assert!(parse_broker("mqtt://:1883").is_err());
         assert!(parse_broker("mqtt://host:notaport").is_err());
+    }
+
+    #[test]
+    fn parse_broker_percent_decodes_userinfo() {
+        // `@` and `:` in the password are percent-encoded so the first-`@` /
+        // first-`:` split still works; the decoded value is the real credential.
+        let b = parse_broker("mqtt://user:p%40ss%3Aword@broker.local:1883").unwrap();
+        assert_eq!(b.username.as_deref(), Some("user"));
+        assert_eq!(b.password.as_deref(), Some("p@ss:word"));
+        // a stray, malformed `%` is left untouched (no panic).
+        let b = parse_broker("mqtt://u%zz@host").unwrap();
+        assert_eq!(b.username.as_deref(), Some("u%zz"));
+    }
+
+    #[test]
+    fn parse_broker_error_redacts_credentials() {
+        // A parse failure must not echo `user:pass@` back into the error string.
+        let err = parse_broker("mqtt://user:s3cret@host:notaport").unwrap_err();
+        let msg = err.to_string();
+        assert!(!msg.contains("s3cret"), "credentials leaked: {msg}");
+        assert!(!msg.contains("user:"), "userinfo leaked: {msg}");
+        assert!(msg.contains("host"), "redacted host should remain: {msg}");
     }
 
     #[test]

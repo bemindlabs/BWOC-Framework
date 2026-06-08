@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.9-0] — 2026-06-09 — 2.28.0
+
+### Added
+
+- **`RouteTarget::Gateway` transport** in `routes.toml` — a third delivery transport alongside `local` and `mqtt`, for peers with no direct reachability (across NAT/firewalls/the open internet) reached through a `bwoc-gateway` relay. A route declares `transport = "gateway"` + `gateway = "wss://…/v1/connect"`; `bwoc send` resolves it and shells out to the `bwoc-gateway-send` sibling binary (dep-quarantine: `bwoc-core`/`bwoc-cli` never link a WebSocket/TLS client), piping the signed message envelope over stdin exactly as the MQTT path does. The sender's keypair is the gateway login, so the transport requires a signed agent sender (`user`/unsigned origins error with guidance). `bwoc peer` lists gateway routes. See `notes/2026-06-09_route-target-gateway.md`.
+
+### Fixed
+
+- **Flaky `process_isolation` test suite** (`bwoc-harness`) on `ubuntu-latest` CI — a different subset of its 12 sandbox tests failed each run. They each spawn the real turn-executor child and contend on process-wide machinery (capability token, per-turn `setrlimit`/cgroup, IPC fd, env scrub, PID reaping) when run in parallel. Serialized the suite with a dependency-free, poison-tolerant file-level lock. See `notes/2026-06-09_process-isolation-serial.md`.
+
+## [v2026.6.8-0] — 2026-06-09 — 2.27.0
+
+### Added
+
+- **Phase 5 — *saṃvara* (trust-boundary & sandbox hardening).** Closes the untrusted-ingress surface that Phase 3's chat-connectors opened into the self-hosted `bwoc-harness`. The full 8-gate DoD plus the network-egress hard-blocker, each plan→Pavāraṇā→implement with adversarial red-team verification:
+  - **t1 — total ingress trust-labeling.** Every `ChatMessage` carries an immutable `Principal`; `TrustLevel` is *derived*, never stored (promote-to-trusted is unrepresentable); fail-closed. Fixes a teammate `role:System` laundering bug.
+  - **t2 / t3 — Layer-0 capability gate + taint propagation.** Untrusted turns are read-only by default (zero allow-by-omission); a sticky `untrusted_seen` latch survives compaction + reload; the graded gate allows worktree-confined writes while gating escape/persist/destruct.
+  - **t4 — egress-clean whitelist proof.** `PURE_READ_TOOLS` proven egress-clean by a fail-closed tripwire + static scan + a CI guard that makes allow-by-omission impossible.
+  - **t5 — per-turn process isolation.** Effectful tool execution runs in a re-exec'd, single-use turn-executor child with an unforgeable one-time token, env-scrub, and fd hygiene; un-marshallable tools fail closed.
+  - **t6 — per-turn `setrlimit`** (CPU / AS / NOFILE / FSIZE; relative best-effort NPROC).
+  - **t7a — executor FS jail** (Landlock / sandbox-exec) + `PR_SET_DUMPABLE` + yama (anti-ptrace) + jailed build/`core.hooksPath` (closes the `build.rs` RCE).
+  - **t8 — deferred-control fence**: an honest residual table + a CI `fence-guard` that fails if code assumes an un-shipped control.
+  - **t9 — per-turn cgroup v2 `pids.max`** (best-effort-when-delegated; CI-proven fork-bomb containment).
+  - **t11 — seccomp-bpf network-egress + ptrace hardening** (the no-fd invariant: arch-guard KILL, `close_range`, `pidfd_getfd`/`sendmmsg` denies, fail-closed on Linux).
+  - Linux-first; macOS degrades with loud skips, never silent-pass. Local same-uid covert channels are explicitly out of scope (network-egress containment, Linux). See `docs/en/THREAT-MODEL.en.md` fence + `notes/2026-06-08_phase5-samvara.md`.
+
+### Fixed
+
+- **Windows build + cfg-gating** of the unix-only sandbox/jail/seccomp/cgroup paths; **`c2_token_scrubbed_before_grandchild`** IPC-read flake stabilized.
+
 ## [v2026.6.7-1] — 2026-06-07 — 2.26.0
 
 ### Added

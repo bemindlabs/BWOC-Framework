@@ -21,9 +21,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::Stream;
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::types::{ChatCompletion, ChatMessage, StreamChunk, Tool};
+use super::types::{ChatCompletion, ChatMessage, Role, StreamChunk, Tool, ToolCall};
 use crate::error::HarnessError;
 
 // ---------------------------------------------------------------------------
@@ -398,6 +399,40 @@ impl ProviderClient for OllamaClient {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Egress projection of a [`ChatMessage`] — the exact OpenAI-compatible wire
+/// shape, deliberately **without** the `principal` provenance field.
+///
+/// Phase 5 t1 (yudi's ruling): a `ChatMessage` is never serialized directly into
+/// the provider body — its `principal` is an internal trust stamp that some
+/// OpenAI-compatible endpoints would reject as an unknown field, and which must
+/// never leak off-box. Serializing through this borrowing DTO is the single
+/// chokepoint that strips it, rather than a blanket `skip_serializing` (which
+/// would also drop it from the on-disk session, where it must be retained).
+#[derive(Serialize)]
+struct EgressMessage<'a> {
+    role: &'a Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<&'a Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a String>,
+}
+
+impl<'a> From<&'a ChatMessage> for EgressMessage<'a> {
+    fn from(m: &'a ChatMessage) -> Self {
+        Self {
+            role: &m.role,
+            content: m.content.as_ref(),
+            tool_calls: m.tool_calls.as_ref(),
+            tool_call_id: m.tool_call_id.as_ref(),
+            name: m.name.as_ref(),
+        }
+    }
+}
+
 fn build_request_body(
     messages: Vec<ChatMessage>,
     tools: Vec<Tool>,
@@ -405,9 +440,11 @@ fn build_request_body(
     stream: bool,
     reasoning_effort: Option<&str>,
 ) -> Value {
+    // Project to the egress DTO so `principal` never reaches the provider.
+    let egress: Vec<EgressMessage> = messages.iter().map(EgressMessage::from).collect();
     let mut body = json!({
         "model": model,
-        "messages": messages,
+        "messages": egress,
         "stream": stream,
     });
 
@@ -479,6 +516,31 @@ mod tests {
         );
 
         assert_eq!(body["reasoning_effort"], "medium");
+    }
+
+    #[test]
+    fn egress_body_never_leaks_principal() {
+        // Phase 5 t1: the provider body must carry no provenance field. Build a
+        // body from messages spanning every constructor and assert the wire form
+        // has neither `principal` nor its `kind` tag, while the real OpenAI
+        // fields survive.
+        let body = build_request_body(
+            vec![
+                ChatMessage::system("you are an agent"),
+                ChatMessage::operator("hi"),
+                ChatMessage::tool_result("call-1", "read_file", "file body"),
+            ],
+            Vec::new(),
+            "gpt-5.5",
+            false,
+            None,
+        );
+        let wire = serde_json::to_string(&body).unwrap();
+        assert!(!wire.contains("principal"), "principal leaked: {wire}");
+        assert!(!wire.contains("\"kind\""), "provenance tag leaked: {wire}");
+        // The OpenAI-compat fields are still present.
+        assert!(wire.contains("\"role\":\"system\""));
+        assert!(wire.contains("\"tool_call_id\":\"call-1\""));
     }
 
     #[test]

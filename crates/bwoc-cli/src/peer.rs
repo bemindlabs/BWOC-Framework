@@ -117,6 +117,7 @@ fn run_list(routes: &Routes) -> i32 {
                     None => format!("mqtt {broker}"),
                 }
             }
+            RouteTarget::Gateway { url } => format!("gateway {url}"),
         };
         println!("{:<32} {:<12} {}", key, kind, target);
     }

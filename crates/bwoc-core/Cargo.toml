@@ -15,3 +15,5 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Trust-labeling fuzz (Phase 5 t1). Dev-only — dep-quarantine intact.
+proptest = { workspace = true }

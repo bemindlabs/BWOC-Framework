@@ -11,6 +11,15 @@ repository.workspace = true
 name = "bwoc-harness"
 path = "src/main.rs"
 
+# Phase 5 t7a — the hostile turn-executor child (red-team). Built ONLY under the
+# `test-redteam` feature (required-features); the `sandbox_escape` gate spawns it
+# inside the executor FS jail and asserts every escape it attempts fails. Never
+# part of a normal build/ship.
+[[bin]]
+name = "sandbox_redteam"
+path = "src/bin/sandbox_redteam.rs"
+required-features = ["test-redteam"]
+
 # ---------------------------------------------------------------------------
 # Feature flags
 # ---------------------------------------------------------------------------
@@ -20,6 +29,11 @@ path = "src/main.rs"
 # Pulls the OTEL crate graph (heavy + network egress) ONLY under this feature —
 # the dep-quarantine holds for the default build.
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+
+# Phase 5 t7a — gate-only red-team suite (the hostile-child bin above +
+# `tests/sandbox_escape.rs`). Off by default; the gate enables it explicitly:
+#   cargo test -p bwoc-harness --features test-redteam --test sandbox_escape
+test-redteam = []
 
 [dependencies]
 # Lean shared types — bwoc-core carries only serde/toml/thiserror.
@@ -55,6 +69,10 @@ async-trait = "0.1"
 # TOML config parsing for .bwoc/harness-policy.toml
 toml = "0.8"
 
+# Per-turn throwaway cwd for the isolated turn-executor child (Phase 5 t5).
+# Promoted from dev-dependency: the parent now creates a tempdir at runtime.
+tempfile = "3"
+
 # OS keyring — scoped credential store for tool authentication.
 # Heavy dep (platform integration): lives in bwoc-harness ONLY per dep-quarantine.
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
@@ -62,13 +80,28 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "linux-
 # ---------------------------------------------------------------------------
 # Platform-specific dependencies
 # ---------------------------------------------------------------------------
+# Raw syscalls for the Phase 5 t5 turn-executor `pre_exec` (dup2/fcntl/close).
+# Unix-only and dep-quarantined to bwoc-harness; bwoc-core stays untouched.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Landlock LSM bindings for kernel-enforced filesystem access control.
 # Allowed here: bwoc-harness is the dep-quarantine crate for heavy/platform deps.
 landlock = "0.4"
+# Phase 5 t11 — pure-Rust seccomp-bpf compiler (Firecracker). NOT libseccomp
+# (no C dep, no FFI to a system lib). Compiles the egress deny-set filter in the
+# parent; installed in the child's pre_exec. Dep-quarantined to bwoc-harness.
+seccompiler = "0.5"
 
 [dev-dependencies]
 # HTTP mock server for offline provider tests
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
+# Ingress-labeling invariant fuzz (Phase 5 t1). Dev-only.
+proptest = { workspace = true }
+
+# Process-liveness check (kill(pid,0)) for the t5 reap/no-zombie test.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

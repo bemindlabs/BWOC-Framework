@@ -36,8 +36,15 @@ pub const ENV_ALLOWLIST: &[&str] = &[
     "GIT_AUTHOR_EMAIL",
     "GIT_COMMITTER_NAME",
     "GIT_COMMITTER_EMAIL",
-    // SSH agent socket (needed for git operations; not a secret itself).
-    "SSH_AUTH_SOCK",
+    // NOTE (Phase 5 t7a / C6): `SSH_AUTH_SOCK` was removed from this allowlist.
+    // An ssh-agent socket handed to the isolated turn-executor is a live
+    // *authority*: anything in the jail (or a `run_command` grandchild) could
+    // drive it to sign with the operator's keys — an egress the FS jail does not
+    // contain. (It was already pattern-stripped via "AUTH" below; removing it
+    // here makes the intent explicit and stops a future allowlist edit from
+    // re-exposing it.) `GPG_AGENT_INFO`, `GNUPGHOME`, and
+    // `DBUS_SESSION_BUS_ADDRESS` were never allowlisted (the allowlist is
+    // opt-in) and are additionally pattern-denied below for defence in depth.
 ];
 
 /// Credential-like name patterns — env vars whose names match these are
@@ -57,6 +64,15 @@ pub const ENV_SENSITIVE_PATTERNS: &[&str] = &[
     "GITHUB_TOKEN",
     "NPM_TOKEN",
     "PYPI_TOKEN",
+    // Phase 5 t7a / C6 — agent / session sockets that are live *authorities*,
+    // not just secrets: an ssh-agent or gpg-agent socket lets the holder sign
+    // with the operator's keys; the DBus session bus reaches the desktop
+    // session. None belong in an isolated turn-executor. ("AUTH" already covers
+    // SSH_AUTH_SOCK; these are explicit so the deny is self-documenting.)
+    "SSH_AUTH",
+    "GPG_AGENT",
+    "GNUPGHOME",
+    "DBUS_SESSION",
 ];
 
 /// Build a scrubbed environment map for a child process.
@@ -100,6 +116,31 @@ mod tests {
         assert!(!keep("MY_API_KEY"));
         // Not in the allowlist at all → dropped even though it's non-sensitive.
         assert!(!keep("GITHUB_ACTIONS"));
+    }
+
+    /// Phase 5 t7a / C6 — agent/session sockets must never reach the child:
+    /// dropped both by being off the allowlist AND by pattern, so a future
+    /// allowlist edit cannot re-expose them.
+    #[test]
+    fn c6_drops_agent_and_session_sockets() {
+        for k in [
+            "SSH_AUTH_SOCK",
+            "GPG_AGENT_INFO",
+            "GNUPGHOME",
+            "DBUS_SESSION_BUS_ADDRESS",
+        ] {
+            assert!(!keep(k), "C6: `{k}` must be scrubbed from the child env");
+            assert!(
+                !ENV_ALLOWLIST.contains(&k),
+                "C6: `{k}` must not be on the allowlist"
+            );
+            // Pattern-denied even if re-added to the allowlist (belt + braces).
+            let upper = k.to_uppercase();
+            assert!(
+                ENV_SENSITIVE_PATTERNS.iter().any(|p| upper.contains(*p)),
+                "C6: `{k}` must match a sensitive pattern"
+            );
+        }
     }
 
     #[test]

@@ -183,6 +183,16 @@ pub async fn compact_context(
     let excerpt = render(&history[1..split]);
     let removed = split - 1;
 
+    // Max-taint of the folded window (gate t3): the summary inherits untrusted
+    // taint iff ANY folded message carried it, by exactly the rule the per-turn
+    // scan applies (`taints_turn` — tool outputs count, the agent's own turn
+    // does not). This stops compaction from laundering an Untrusted window into
+    // the agent's own trust: the resulting note is a tainted `Principal::Summary`,
+    // not a Trusted `SelfAgent`.
+    let folded_untrusted = history[1..split]
+        .iter()
+        .any(|m| crate::session_trust::taints_turn(m.principal()));
+
     let messages = vec![
         ChatMessage::system(SUMMARIZE_SYSTEM),
         ChatMessage::user(format!("Conversation excerpt to summarize:\n\n{excerpt}")),
@@ -198,6 +208,9 @@ pub async fn compact_context(
     };
 
     let (note, outcome, mined_text) = if summary.trim().is_empty() {
+        // Truncation fallback: kept as a plain `user` note (Unknown → Untrusted,
+        // fail-closed). It is always-tainting regardless of the folded window —
+        // a conservative no-op next to the summary path's precise max-taint.
         (
             ChatMessage::user(format!(
                 "[context compacted: {removed} messages truncated to fit context window]"
@@ -208,9 +221,14 @@ pub async fn compact_context(
     } else {
         let trimmed = summary.trim().to_string();
         (
-            ChatMessage::system(format!(
-                "[Summary of {removed} earlier messages — the conversation continues below]\n{trimmed}"
-            )),
+            // Folded as a `Principal::Summary` note carrying the window's
+            // max-taint (gate t3) — NOT a Trusted `SelfAgent` system message.
+            ChatMessage::summary(
+                format!(
+                    "[Summary of {removed} earlier messages — the conversation continues below]\n{trimmed}"
+                ),
+                folded_untrusted,
+            ),
             Compaction::Summarized { removed },
             trimmed,
         )
@@ -291,7 +309,11 @@ mod tests {
         let mut h = vec![ChatMessage::system("sys")];
         h.push(big(true, 3000));
         h.push(ChatMessage::assistant(Some("call".into()), None));
-        h.push(ChatMessage::tool_result("call-1", "x".repeat(3000)));
+        h.push(ChatMessage::tool_result(
+            "call-1",
+            "read_file",
+            "x".repeat(3000),
+        ));
         h.push(big(true, 3000));
         h.push(big(false, 3000));
         if let Some(split) = plan_compaction(&h, 1500) {
@@ -434,6 +456,71 @@ mod tests {
         assert!(note.contains("context compacted"), "got note: {note}");
     }
 
+    /// GATE t3 — message-level taint propagation through compaction. Was
+    /// `#[ignore]`d at t2; now PASSES by real implementation (condition 4).
+    ///
+    /// When the unified context engine summarizes a window that contained
+    /// Untrusted content (a tool result, a teammate message), the note is now
+    /// built with [`ChatMessage::summary`] carrying the window's **max-taint** →
+    /// [`Principal::Summary { tainted: true }`](bwoc_core::trust::Principal::Summary)
+    /// → **Untrusted**. The pre-t3 code built it with `ChatMessage::system` →
+    /// `SelfAgent` → Trusted, laundering untrusted content into the agent's own
+    /// highest trust at the compaction boundary; that hole is now closed.
+    ///
+    /// This is defense-in-depth that complements — does not replace — the
+    /// monotonic session-trust latch
+    /// ([`crate::session_trust::SessionTrust`]), which independently holds the
+    /// turn Untrusted across compaction and reload (see
+    /// `gate_survives_compaction_no_effectful_reopen` below). The test kept its
+    /// `gate_t2` name from when it tracked the still-open hole (no relabel — no
+    /// musavada); the behavior it asserts is delivered by gate t3.
+    #[tokio::test]
+    async fn compaction_summary_inherits_untrusted_taint_gate_t2() {
+        use bwoc_core::trust::TrustLevel;
+
+        let mock = EngineMock::summarizing("a tidy summary of the secrets");
+        // The folded region (early messages) unambiguously contains Untrusted
+        // content — a teammate message and a tool result. The tail is plain user
+        // messages (no trailing tool result) so a summary is actually produced.
+        let mut h = vec![ChatMessage::system("sys prompt")];
+        h.push(ChatMessage::ingest(
+            bwoc_core::trust::Principal::TeamPeer {
+                agent: "peer".into(),
+            },
+            format!("peer leaked {}", "x".repeat(120)),
+        ));
+        h.push(ChatMessage::tool_result(
+            "c1",
+            "read_file",
+            format!("secret {}", "x".repeat(120)),
+        ));
+        for i in 0..10 {
+            h.push(ChatMessage::user(format!(
+                "message {i} {}",
+                "x".repeat(120)
+            )));
+        }
+
+        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        assert!(
+            matches!(out, Compaction::Summarized { .. }),
+            "precondition: the untrusted teammate/tool messages must be folded; got {out:?}"
+        );
+
+        let summary = &h[1];
+        assert_eq!(
+            summary.role,
+            Role::System,
+            "summary is folded as a system note"
+        );
+        // The taint that t2 must enforce, and that t1 deliberately does NOT:
+        assert_eq!(
+            summary.trust(),
+            TrustLevel::Untrusted,
+            "a summary folding Untrusted content must itself be Untrusted (gate t2)"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn engine_mines_folded_content_when_tier2_configured() {
@@ -457,5 +544,102 @@ mod tests {
         assert!(artifact.is_file(), "folded content must be persisted");
         let body = std::fs::read_to_string(artifact).unwrap();
         assert!(body.contains("THE SUMMARY"));
+    }
+
+    /// GATE t3 — defense in depth survives compaction (C1 + message-level taint).
+    ///
+    /// Two independent protections now hold the turn Untrusted after compaction
+    /// folds an Untrusted window:
+    /// 1. The compaction note inherits the window's max-taint
+    ///    ([`Principal::Summary { tainted: true }`](bwoc_core::trust::Principal::Summary)),
+    ///    so even a *fresh scan* of the post-compaction history reads Untrusted
+    ///    (the t3 fix — pre-t3 it laundered to a Trusted `SelfAgent` and scanned
+    ///    Trusted).
+    /// 2. The monotonic sticky latch, set on the pre-compaction turn, holds the
+    ///    turn Untrusted regardless of any scan.
+    /// Either alone refuses the effectful tool; this asserts both. It PASSES —
+    /// that is the point.
+    #[tokio::test]
+    async fn gate_survives_compaction_no_effectful_reopen() {
+        use crate::policy::{Mode, Policy, PolicyOutcome, run_pipeline};
+        use crate::session_trust::{SessionTrust, scan_turn_trust};
+        use bwoc_core::trust::{Principal, TrustLevel};
+
+        let allow_all = Policy {
+            default_mode: Mode::Allow,
+            tools: std::collections::HashMap::new(),
+            patterns: Vec::new(),
+        };
+        let wt = std::path::Path::new("/tmp/agent-luban/gate-survive");
+
+        // Build an over-budget history whose folded window carries Untrusted
+        // ingress (a teammate message), with a plain user tail so a summary is
+        // produced.
+        let mut h = vec![ChatMessage::system("sys prompt")];
+        h.push(ChatMessage::ingest(
+            Principal::TeamPeer {
+                agent: "peer".into(),
+            },
+            format!("peer says {}", "x".repeat(120)),
+        ));
+        // The tail is operator() (Trusted). Pre-t3 a fresh post-compaction scan
+        // read Trusted here (the laundering); at t3 the folded teammate taints
+        // the summary, so the scan reads Untrusted — demonstrated below.
+        for i in 0..10 {
+            h.push(ChatMessage::operator(format!(
+                "message {i} {}",
+                "x".repeat(120)
+            )));
+        }
+
+        // Pre-compaction: the latch observes the Untrusted teammate ingress.
+        let mut trust = SessionTrust::default();
+        assert_eq!(trust.observe(&h), TrustLevel::Untrusted);
+        assert!(trust.latched());
+
+        // Compact. The Untrusted teammate message is folded into a Trusted
+        // SelfAgent system summary.
+        let mock = EngineMock::summarizing("a tidy summary");
+        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        assert!(
+            matches!(out, Compaction::Summarized { .. }),
+            "precondition: the untrusted window must be folded; got {out:?}"
+        );
+        // t3: the summary inherited the folded teammate's taint, so a fresh scan
+        // now reads Untrusted — the laundering the pre-t3 code allowed is closed.
+        assert_eq!(
+            scan_turn_trust(&h),
+            TrustLevel::Untrusted,
+            "t3: compaction must propagate taint — the summary is tainted Untrusted"
+        );
+        // And the summary note itself is a tainted Summary, not a Trusted SelfAgent.
+        assert!(
+            matches!(
+                h[1].principal(),
+                bwoc_core::trust::Principal::Summary { tainted: true }
+            ),
+            "the folded note must be a tainted Summary; got {:?}",
+            h[1].principal()
+        );
+
+        // The latch is independently sticky: post-compaction turn_trust stays Untrusted…
+        assert_eq!(
+            trust.observe(&h),
+            TrustLevel::Untrusted,
+            "latch must not clear"
+        );
+        // …so the capability gate still refuses an effectful tool.
+        let outcome = run_pipeline(
+            "run_command",
+            r#"{"command": "echo hi"}"#,
+            wt,
+            &allow_all,
+            false,
+            trust.turn_trust(),
+        );
+        assert!(
+            matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+            "compaction must NOT re-open effectful tools; got {outcome:?}"
+        );
     }
 }
