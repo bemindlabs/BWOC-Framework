@@ -393,16 +393,21 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     // and the relay-replay threat is the cross-machine one.
     if cross_workspace {
         let nonce = env.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
-        if let Ok(mut guard) = ctx.replay.lock() {
-            if let Some(reason) = guard.check(&from, nonce, &envelope_ts) {
-                return TrustOutcome::Refuse(Refusal {
-                    envelope_offset,
-                    envelope_ts: envelope_ts.clone(),
-                    envelope_from: from.clone(),
-                    reason,
-                    missing: vec![],
-                });
-            }
+        // Recover the guard even if a prior holder panicked: a poisoned lock
+        // must NOT silently disable replay defense (fail-open). The inner set is
+        // still consistent — `check` only inserts after its decision.
+        let mut guard = ctx
+            .replay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(reason) = guard.check(&from, nonce, &envelope_ts) {
+            return TrustOutcome::Refuse(Refusal {
+                envelope_offset,
+                envelope_ts: envelope_ts.clone(),
+                envelope_from: from.clone(),
+                reason,
+                missing: vec![],
+            });
         }
     }
 
