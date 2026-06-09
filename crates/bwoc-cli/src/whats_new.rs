@@ -20,18 +20,22 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — gcloud IAM project bindings"
+    " — OpenRouter provider backend"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
 /// single line — they render in the banner and inform the upgrade notice.
+///
+/// RELEASE GATE: at least one bullet must cite the current `MAJOR.MINOR`
+/// (see `highlights_cite_current_version` below). This fails CI the moment
+/// the auto-version hook bumps the minor without anyone refreshing this
+/// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "`bwoc gcloud iam {get, add, remove}` — project IAM bindings (EPIC-12, LAST, #99)",
-    "Fourth + last write slice; first use of T4 — the risk matrix's top tier",
-    "add/remove refuse-by-default: workspace `writes_enabled` + typed `member role` confirm",
-    "Public principals (allUsers/allAuthenticatedUsers) refused; high-priv roles flagged",
-    "Completes the gcloud write ladder: compute (T1/T2) · storage (T3) · run (T2) · IAM (T4)",
-    "Prior 2.14.0: gcloud Cloud Run serverless (#98)",
+    "`bwoc-harness --backend openrouter` — drive any vendor's model through one OpenRouter key (2.29.0, #268)",
+    "`RouteTarget::Gateway` — cross-NAT/internet peer delivery via a `bwoc-gateway` relay (2.28.0, #262)",
+    "Standalone agent: gateway recv bridge + pinned-peer trust + replay defense + untrusted auto-process + container image",
+    "Phase 5 saṃvara — trust-boundary & sandbox hardening, full DoD signed off (2.27.0)",
+    "Authenticated MQTT brokers + central channel standard (#245)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
@@ -106,6 +110,25 @@ mod tests {
         assert!(!HIGHLIGHTS.is_empty());
         assert!(HIGHLIGHTS.len() <= 6, "keep the What's New list short");
         assert!(HIGHLIGHTS.iter().all(|h| !h.contains('\n')));
+    }
+
+    #[test]
+    fn highlights_cite_current_version() {
+        // RELEASE GATE — the stale-prose guard. The HEADLINE *number* is
+        // compile-derived so it can never lag the build, but the tagline and
+        // these bullets are hand-written and silently rotted for many releases
+        // (e.g. stuck on a `gcloud IAM` headline while the binary was several
+        // minors ahead). Require at least one bullet to name the current
+        // `MAJOR.MINOR`: the auto-version hook bumps the minor on release, this
+        // assertion then fails until someone refreshes the prose, so "update
+        // What's New every release" is enforced by CI rather than remembered.
+        let mm = major_minor();
+        let cites = HIGHLIGHTS.iter().any(|h| h.contains(&mm));
+        assert!(
+            cites,
+            "no What's New highlight cites the current version {mm} — refresh \
+             HEADLINE + HIGHLIGHTS for this release (cite `{mm}.x` in a bullet)"
+        );
     }
 
     #[test]
