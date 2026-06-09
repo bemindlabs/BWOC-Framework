@@ -6,7 +6,7 @@
 
 - **`crates/bwoc-agent/src/gateway.rs`** (new) — `GatewayRecvSupervisor`, a near-clone of `connectors.rs`. When `interconnect/gateway.toml` declares `enabled = true` + `url`, it supervises a `bwoc-gateway-recv` child (resolved via `bwoc_core::exec::sibling_binary`): initial spawn, respawn-on-exit with the same `RESPAWN_BACKOFF` crash-loop throttle, kill-on-shutdown, and a `.bwoc/gateway.status` health marker. agent-id comes from `gateway.toml` `agent_id` or falls back to `config.manifest.json` `agentId`.
 - **`crates/bwoc-agent/src/main.rs`** — `serve_core` builds + announces + ticks the gateway supervisor next to the connector supervisor (~4 call-site lines); the accept loop, inbox poller, and trust gate are untouched.
-- The `bwoc-gateway-recv` binary itself lives in the **`bwoc-gateway` repo** (separate PR) — it dials the relay, authenticates with the agent's ed25519 keypair (the keypair IS the login), and appends each relayed envelope's inner `body` to `.bwoc/inbox.jsonl`.
+- The `bwoc-gateway-recv` binary itself lives in the **`bwoc-gateway` repo** (separate PR) — it dials the relay, authenticates with the agent's ed25519 keypair (the keypair IS the login), and appends each relayed transport envelope's `body` to `.bwoc/inbox.jsonl` as one line. That `body` is the **full framework message envelope** (`{from,to,ts,messageId,message,nonce,sig}`) that `bwoc-gateway-send` placed there — i.e. exactly the line shape the inbox poller already expects, not a bare message string.
 
 ## Decisions
 
