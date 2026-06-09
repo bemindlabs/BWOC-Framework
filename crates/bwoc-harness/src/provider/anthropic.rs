@@ -54,7 +54,10 @@ const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 /// User home directory: `$HOME` on Unix, `%USERPROFILE%` on Windows — mirrors
 /// the `home_dir()` helpers elsewhere in the workspace (no extra crate), so the
 /// secrets fallback works on Windows where `HOME` is usually unset.
-fn home_dir() -> Option<std::path::PathBuf> {
+///
+/// `pub(crate)` so sibling providers (e.g. the OpenRouter wiring) reuse the same
+/// per-user secrets location.
+pub(crate) fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(std::path::PathBuf::from)
@@ -70,23 +73,37 @@ fn home_dir() -> Option<std::path::PathBuf> {
 /// permission guard is applied (see [`api_key_from_secrets`]). Returns an empty
 /// string when neither source has a key — surfaced as a clear error at first use.
 fn resolve_api_key() -> String {
-    if let Ok(k) = std::env::var(API_KEY_ENV) {
+    resolve_provider_api_key(API_KEY_ENV, "anthropic")
+}
+
+/// Resolve a provider API key: the `env_var` wins; otherwise fall back to the
+/// gitignored per-user `~/.bwoc/secrets.toml` `[<section>] api_key`.
+///
+/// Shared by every HTTP provider that needs a key (Anthropic via
+/// [`resolve_api_key`], OpenRouter via [`resolve_openrouter_api_key`]). The key
+/// is intentionally a **per-user** secret keyed off the home directory — not a
+/// per-workspace one — so a GUI-launched `bwoc-chat` (no workspace cwd) still
+/// finds it. The same `0600` permission guard applies (see
+/// [`api_key_from_secrets`]). Returns an empty string when neither source has a
+/// key — surfaced as a clear error at first use.
+pub(crate) fn resolve_provider_api_key(env_var: &str, section: &str) -> String {
+    if let Ok(k) = std::env::var(env_var) {
         if !k.trim().is_empty() {
             return k;
         }
     }
     home_dir()
         .map(|home| home.join(".bwoc").join("secrets.toml"))
-        .and_then(|p| api_key_from_secrets(&p))
+        .and_then(|p| api_key_from_secrets(&p, section))
         .unwrap_or_default()
 }
 
-/// Read `[anthropic] api_key` from a `secrets.toml` at `path`. Returns `None` on
+/// Read `[<section>] api_key` from a `secrets.toml` at `path`. Returns `None` on
 /// any error (missing file, parse failure, absent key). On Unix a
 /// group/world-accessible file is **refused** with a warning — the same
 /// "Adinnādāna at the file boundary" guard the Jira/figma secret resolvers
 /// apply (`chmod 600` required). Pure + tested.
-fn api_key_from_secrets(path: &std::path::Path) -> Option<String> {
+pub(crate) fn api_key_from_secrets(path: &std::path::Path, section: &str) -> Option<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -103,7 +120,7 @@ fn api_key_from_secrets(path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     let value: toml::Value = toml::from_str(&content).ok()?;
     let key = value
-        .get("anthropic")?
+        .get(section)?
         .get("api_key")?
         .as_str()?
         .trim()
@@ -637,11 +654,17 @@ mod tests {
         let path = dir.path().join("secrets.toml");
         write_secret(
             &path,
-            "[jira]\ntoken = \"x\"\n\n[anthropic]\napi_key = \"sk-ant-test123\"\n",
+            "[jira]\ntoken = \"x\"\n\n[anthropic]\napi_key = \"sk-ant-test123\"\n\n[openrouter]\napi_key = \"sk-or-test456\"\n",
         );
         assert_eq!(
-            api_key_from_secrets(&path),
+            api_key_from_secrets(&path, "anthropic"),
             Some("sk-ant-test123".to_string())
+        );
+        // The shared helper keys off the section name — a second provider's key
+        // reads from the same file without colliding.
+        assert_eq!(
+            api_key_from_secrets(&path, "openrouter"),
+            Some("sk-or-test456".to_string())
         );
     }
 
@@ -649,18 +672,18 @@ mod tests {
     fn api_key_from_secrets_none_when_missing_or_absent() {
         // Missing file.
         assert_eq!(
-            api_key_from_secrets(std::path::Path::new("/no/such/secrets.toml")),
+            api_key_from_secrets(std::path::Path::new("/no/such/secrets.toml"), "anthropic"),
             None
         );
         // File present but no [anthropic] api_key.
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("secrets.toml");
         write_secret(&path, "[jira]\ntoken = \"x\"\n");
-        assert_eq!(api_key_from_secrets(&path), None);
+        assert_eq!(api_key_from_secrets(&path, "anthropic"), None);
         // Empty key is treated as absent.
         let path2 = dir.path().join("s2.toml");
         write_secret(&path2, "[anthropic]\napi_key = \"\"\n");
-        assert_eq!(api_key_from_secrets(&path2), None);
+        assert_eq!(api_key_from_secrets(&path2, "anthropic"), None);
     }
 
     #[cfg(unix)]
@@ -672,7 +695,7 @@ mod tests {
         std::fs::write(&path, "[anthropic]\napi_key = \"sk-ant-leaky\"\n").unwrap();
         // 0644 → group/world-readable → must be refused even though the key is valid.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(api_key_from_secrets(&path), None);
+        assert_eq!(api_key_from_secrets(&path, "anthropic"), None);
     }
 
     #[test]
