@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use bwoc_core::manifest::Manifest;
 
+mod autoprocess;
 mod connectors;
 mod gateway;
 mod i18n;
@@ -265,6 +266,11 @@ where
     gateway.announce();
     gateway.tick(); // initial spawn (if active)
 
+    // Gateway auto-process (standalone agents): if opted in, a passing remote
+    // (non-`user`) inbox envelope drives an UNTRUSTED harness turn that replies.
+    let autoproc = autoprocess::AutoProcessor::detect(cwd);
+    autoproc.announce();
+
     // Single-threaded accept loop with poll. Each accept is non-blocking
     // and yields control quickly so the signal check stays responsive.
     while running.load(Ordering::SeqCst) {
@@ -272,8 +278,13 @@ where
             Accepted::Conn(stream) => handle_client(stream, &running, &start),
             Accepted::Idle => {
                 // Idle: check the inbox for new envelopes since last poll.
-                let new_pos =
-                    check_inbox_for_new(&inbox_path, inbox_pos, &trust_ctx, &refusals_path);
+                let new_pos = check_inbox_for_new(
+                    &inbox_path,
+                    inbox_pos,
+                    &trust_ctx,
+                    &refusals_path,
+                    &autoproc,
+                );
                 if new_pos != inbox_pos {
                     inbox_pos = new_pos;
                     save_cursor(&cursor_path, inbox_pos);
@@ -464,6 +475,7 @@ fn check_inbox_for_new(
     from_offset: u64,
     trust_ctx: &trust::TrustContext,
     refusals_path: &std::path::Path,
+    autoproc: &autoprocess::AutoProcessor,
 ) -> u64 {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -499,7 +511,15 @@ fn check_inbox_for_new(
         let trimmed = line.trim();
         if !trimmed.is_empty() {
             let envelope_offset = from_offset + consumed;
-            match trust::evaluate(trust_ctx, trimmed, envelope_offset) {
+            let outcome = trust::evaluate(trust_ctx, trimmed, envelope_offset);
+            // A delivered (Pass/Warn) envelope from a *remote* sender may drive
+            // an untrusted auto-process turn (opt-in). Done after the announce
+            // below so the audit log records arrival before the (blocking) turn.
+            let delivered = matches!(
+                outcome,
+                trust::TrustOutcome::Pass | trust::TrustOutcome::Warn { .. }
+            );
+            match outcome {
                 trust::TrustOutcome::Pass => announce(trimmed),
                 trust::TrustOutcome::Warn {
                     ref from,
@@ -513,10 +533,28 @@ fn check_inbox_for_new(
                     announce_refused(trimmed, refusal);
                 }
             }
+            if delivered && autoproc.is_active() {
+                maybe_auto_process(autoproc, trimmed);
+            }
         }
         consumed += line.len() as u64;
     }
     from_offset + consumed
+}
+
+/// Drive an untrusted auto-process turn for a delivered envelope from a remote
+/// agent sender. Skips `user`-origin (local operator) and malformed/empty
+/// lines — those are not remote messages to answer.
+fn maybe_auto_process(autoproc: &autoprocess::AutoProcessor, line: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return;
+    };
+    let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("");
+    let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+    if from.is_empty() || from == "user" || message.is_empty() {
+        return;
+    }
+    autoproc.handle(from, message);
 }
 
 /// Append one refusal record to `<agent>/.bwoc/inbox.refusals.jsonl`.
