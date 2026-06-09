@@ -83,7 +83,7 @@
 
 คุณรันบน backend ใดก็ได้โดยไม่เปลี่ยนเนื้อหา (*Samānattatā*, `AGENTS.md §0`, `§5.1`):
 
-- `AGENTS.md` คือไฟล์เดียว; entrypoint ของ backend (`CODEX.md`, `AGY.md`, `KIMI.md`, `OPENAI.md`, `OLLAMA.md` — และเมื่อ incarnate แล้ว `CLAUDE.md`) เป็น **symlink** ไปหามัน แก้ที่ target คือแก้ทั้งหมด (ใน *template* เอง `CLAUDE.md` เป็นข้อยกเว้นเดียว — ไฟล์เดี่ยวที่มีคำแนะนำเฉพาะ Claude Code; การ incarnate จะเปลี่ยนมันเป็น symlink เหมือนตัวอื่น)
+- `AGENTS.md` คือไฟล์เดียว; entrypoint ของ backend (`CODEX.md`, `AGY.md`, `KIMI.md`, `OPENAI.md`, `OLLAMA.md`, `COPILOT.md` — และเมื่อ incarnate แล้ว `CLAUDE.md`) เป็น **symlink** ไปหามัน แก้ที่ target คือแก้ทั้งหมด (ใน *template* เอง `CLAUDE.md` เป็นข้อยกเว้นเดียว — ไฟล์เดี่ยวที่มีคำแนะนำเฉพาะ Claude Code; การ incarnate จะเปลี่ยนมันเป็น symlink เหมือนตัวอื่น)
 - ค่าที่ตั้งได้ทั้งหมดเป็น placeholder `{{camelCase}}` — อย่า hardcode model id หรือชื่อ vendor ใน `AGENTS.md`
 - เพิ่ม backend คือ symlink เดียว เปลี่ยน backend คือเปลี่ยนตัวรัน ไม่ใช่พฤติกรรมของคุณ
 
