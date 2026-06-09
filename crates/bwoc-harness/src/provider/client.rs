@@ -91,6 +91,35 @@ pub trait ProviderClient: Send + Sync {
 /// [`OllamaClient::default_endpoint`] all reference this so they cannot drift.
 pub const DEFAULT_ENDPOINT: &str = "http://localhost:11434/v1";
 
+/// Default OpenRouter base URL. OpenRouter is a hosted, OpenAI-compatible
+/// aggregator that routes one key to any vendor's models (`openai/…`,
+/// `anthropic/…`, `google/…`, …). It speaks the exact OpenAI shape this client
+/// already implements; the only addition over plain Ollama is bearer auth.
+pub const OPENROUTER_DEFAULT_ENDPOINT: &str = "https://openrouter.ai/api/v1";
+
+/// Env var carrying the OpenRouter API key (OpenRouter's documented convention).
+pub const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
+
+/// Resolve the OpenRouter API key: `OPENROUTER_API_KEY` env wins, else the
+/// per-user `~/.bwoc/secrets.toml` `[openrouter] api_key` (chmod-600 guarded).
+/// Reuses the shared resolver so the security guard is identical to Anthropic's.
+pub fn resolve_openrouter_api_key() -> String {
+    super::anthropic::resolve_provider_api_key(OPENROUTER_API_KEY_ENV, "openrouter")
+}
+
+/// OpenRouter's optional app-attribution / ranking headers. Sent on every
+/// request so usage shows up under the BWOC project on openrouter.ai; harmless
+/// to any other OpenAI-compatible endpoint, which simply ignores them.
+pub fn openrouter_headers() -> Vec<(String, String)> {
+    vec![
+        (
+            "HTTP-Referer".to_string(),
+            "https://github.com/bemindlabs/bwoc".to_string(),
+        ),
+        ("X-Title".to_string(), "BWOC".to_string()),
+    ]
+}
+
 /// Per-request timeout applied to every HTTP call the client makes.
 ///
 /// Without it, `reqwest::Client::new()` has no request timeout, so a hung
@@ -110,6 +139,15 @@ pub struct OllamaClient {
     /// leaves the field off the body (provider default). Set via
     /// [`Self::with_reasoning_effort`] from the agent's manifest.
     reasoning_effort: Option<String>,
+    /// Optional bearer token attached as `Authorization: Bearer <key>` to every
+    /// request. `None` (the Ollama default) sends no auth header — a plain local
+    /// Ollama server needs none. Set via [`Self::with_api_key`] for hosted
+    /// OpenAI-compatible providers that require a key (e.g. OpenRouter).
+    api_key: Option<String>,
+    /// Extra HTTP headers sent on every request. Empty by default. Used for
+    /// provider-specific attribution headers (e.g. OpenRouter's optional
+    /// `HTTP-Referer` / `X-Title` ranking headers). Set via [`Self::with_headers`].
+    extra_headers: Vec<(String, String)>,
     client: Client,
 }
 
@@ -126,6 +164,8 @@ impl OllamaClient {
         Self {
             base_url: base_url.into(),
             reasoning_effort: None,
+            api_key: None,
+            extra_headers: Vec::new(),
             client,
         }
     }
@@ -141,6 +181,39 @@ impl OllamaClient {
     pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
         self.reasoning_effort = effort;
         self
+    }
+
+    /// Set the bearer token attached as `Authorization: Bearer <key>` to every
+    /// request. `None` or an empty/whitespace key leaves auth off (Ollama
+    /// behaviour). Returns `self` for chaining at construction.
+    pub fn with_api_key(mut self, api_key: Option<String>) -> Self {
+        self.api_key = api_key.filter(|k| !k.trim().is_empty());
+        self
+    }
+
+    /// Set extra HTTP headers attached to every request (e.g. OpenRouter's
+    /// optional `HTTP-Referer` / `X-Title` ranking headers). Returns `self` for
+    /// chaining at construction.
+    pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
+    }
+
+    /// Apply this client's auth + extra headers to an outgoing request builder.
+    ///
+    /// Attaches `Authorization: Bearer <key>` when an [`Self::api_key`] is set,
+    /// then every [`Self::extra_headers`] entry. A `None` key leaves the request
+    /// unauthenticated (plain Ollama), so the default path is byte-for-byte
+    /// unchanged. Called at every request site so completion, streaming, and the
+    /// `/models` probes all carry the same credentials.
+    fn auth(&self, mut rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(ref key) = self.api_key {
+            rb = rb.bearer_auth(key);
+        }
+        for (name, value) in &self.extra_headers {
+            rb = rb.header(name, value);
+        }
+        rb
     }
 
     fn completions_url(&self) -> String {
@@ -185,9 +258,7 @@ impl ProviderClient for OllamaClient {
         );
 
         let resp = self
-            .client
-            .post(self.completions_url())
-            .json(&body)
+            .auth(self.client.post(self.completions_url()).json(&body))
             .send()
             .await
             .map_err(|e| HarnessError::TransientProvider(format!("HTTP request failed: {e}")))?;
@@ -226,9 +297,7 @@ impl ProviderClient for OllamaClient {
         );
 
         let resp = self
-            .client
-            .post(self.completions_url())
-            .json(&body)
+            .auth(self.client.post(self.completions_url()).json(&body))
             .send()
             .await
             .map_err(|e| HarnessError::TransientProvider(format!("HTTP request failed: {e}")))?;
@@ -280,8 +349,7 @@ impl ProviderClient for OllamaClient {
     async fn validate_model(&self, model: &str) -> Result<(), HarnessError> {
         // GET /v1/models returns a list; check the model is present.
         let resp = self
-            .client
-            .get(self.models_url())
+            .auth(self.client.get(self.models_url()))
             .send()
             .await
             .map_err(|e| HarnessError::Provider(format!("Model list request failed: {e}")))?;
@@ -316,7 +384,7 @@ impl ProviderClient for OllamaClient {
     /// non-2xx, or parse error — yields an empty Vec so the auto-resolver
     /// degrades to "availability unknown" instead of failing the run.
     async fn list_models(&self) -> Vec<String> {
-        let Ok(resp) = self.client.get(self.models_url()).send().await else {
+        let Ok(resp) = self.auth(self.client.get(self.models_url())).send().await else {
             return Vec::new();
         };
         if !resp.status().is_success() {
@@ -541,6 +609,58 @@ mod tests {
         // The OpenAI-compat fields are still present.
         assert!(wire.contains("\"role\":\"system\""));
         assert!(wire.contains("\"tool_call_id\":\"call-1\""));
+    }
+
+    #[test]
+    fn with_api_key_filters_blank_keys() {
+        // A `Some("")` / whitespace key must be treated as "no auth" so a
+        // mis-set env var doesn't send `Authorization: Bearer ` (empty).
+        assert!(
+            OllamaClient::new(DEFAULT_ENDPOINT)
+                .with_api_key(None)
+                .api_key
+                .is_none()
+        );
+        assert!(
+            OllamaClient::new(DEFAULT_ENDPOINT)
+                .with_api_key(Some("  ".to_string()))
+                .api_key
+                .is_none()
+        );
+        assert_eq!(
+            OllamaClient::new(DEFAULT_ENDPOINT)
+                .with_api_key(Some("sk-or-abc".to_string()))
+                .api_key
+                .as_deref(),
+            Some("sk-or-abc")
+        );
+    }
+
+    #[test]
+    fn auth_attaches_bearer_and_extra_headers_only_when_set() {
+        use reqwest::header::AUTHORIZATION;
+
+        // No key → no Authorization header (plain Ollama path unchanged).
+        let plain = OllamaClient::new(DEFAULT_ENDPOINT);
+        let req = plain
+            .auth(plain.client.get(plain.models_url()))
+            .build()
+            .expect("request builds");
+        assert!(req.headers().get(AUTHORIZATION).is_none());
+
+        // Key + extra headers → both present (OpenRouter path).
+        let authed = OllamaClient::new("https://openrouter.ai/api/v1")
+            .with_api_key(Some("sk-or-xyz".to_string()))
+            .with_headers(vec![("X-Title".to_string(), "bwoc".to_string())]);
+        let req = authed
+            .auth(authed.client.get(authed.models_url()))
+            .build()
+            .expect("request builds");
+        assert_eq!(
+            req.headers().get(AUTHORIZATION).unwrap(),
+            "Bearer sk-or-xyz"
+        );
+        assert_eq!(req.headers().get("X-Title").unwrap(), "bwoc");
     }
 
     #[test]

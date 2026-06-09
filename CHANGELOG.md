@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.9-1] — 2026-06-09 — 2.29.0
+
+### Added
+
+- **`openrouter` provider backend** for `bwoc-harness` — drive any vendor's model (OpenAI / Anthropic / Google / Meta / NVIDIA / …) through [OpenRouter](https://openrouter.ai)'s hosted OpenAI-compatible aggregator with one key. OpenRouter speaks the exact OpenAI shape the harness already implements, so the existing `OllamaClient` was extended rather than duplicated: optional bearer auth (`with_api_key`) + attribution headers (`with_headers`) applied at every request site; `api_key = None` keeps the plain-Ollama path byte-for-byte unchanged. The key resolves from `OPENROUTER_API_KEY` or `~/.bwoc/secrets.toml` `[openrouter] api_key` (chmod-600 guarded, sharing Anthropic's resolver), and a missing key fails fast with an actionable message instead of a bare `HTTP 401`. Agent manifest: `"backend": "openrouter"`, optional `"baseUrl"` (defaults to `https://openrouter.ai/api/v1`). Wired through `bwoc-cli` (`spawn`/`run`/`chat`) and the chat TUI (`harness_argv` now forwards `--backend`, which is load-bearing for `openrouter` — without it requests fall through to the unauthenticated client). See `notes/2026-06-09_openrouter-provider-backend.md`. (#268)
+
 ## [v2026.6.9-0] — 2026-06-09 — 2.28.0
 
 ### Added
