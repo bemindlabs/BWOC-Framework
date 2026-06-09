@@ -126,8 +126,10 @@ mod tests {
         let cites = HIGHLIGHTS.iter().any(|h| h.contains(&mm));
         assert!(
             cites,
-            "no What's New highlight cites the current version {mm} — refresh \
-             HEADLINE + HIGHLIGHTS for this release (cite `{mm}.x` in a bullet)"
+            "no HIGHLIGHTS bullet cites the current version {mm} — refresh the \
+             HIGHLIGHTS list for this release (cite `{mm}.x` in a bullet). The \
+             HEADLINE tagline usually wants a pass too, but only HIGHLIGHTS is \
+             enforced here."
         );
     }
 
