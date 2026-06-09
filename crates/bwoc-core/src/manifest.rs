@@ -78,11 +78,14 @@ pub struct Manifest {
     /// Which spawn backend this agent uses.
     ///
     /// Accepted values: `"claude"` | `"agy"` | `"codex"` | `"kimi"` |
-    /// `"ollama"` | `"openai-compatible"`.
+    /// `"ollama"` | `"openai-compatible"` | `"openrouter"`.
     ///
     /// Required for `openai-compatible`; optional/ignored for vendor backends
-    /// that are selected on the CLI with `--backend`. When present, `bwoc
-    /// spawn` can auto-select the backend without an explicit flag.
+    /// that are selected on the CLI with `--backend`. `"openrouter"` (hosted
+    /// OpenAI-compatible aggregator) optionally takes `baseUrl`, defaulting to
+    /// `https://openrouter.ai/api/v1`; its key comes from `OPENROUTER_API_KEY`
+    /// or `~/.bwoc/secrets.toml`. When present, `bwoc spawn` can auto-select the
+    /// backend without an explicit flag.
     #[serde(rename = "backend", skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     /// Base URL of the OpenAI-compatible inference endpoint.

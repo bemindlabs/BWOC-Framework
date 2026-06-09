@@ -46,6 +46,7 @@ use crate::sessions::{SessionMarker, remove_marker, write_marker};
 /// - `"copilot"` → `Copilot`
 /// - `"ollama"` → `Ollama`
 /// - `"openai-compatible"` → `OpenAiCompatible`
+/// - `"openrouter"` → `OpenRouter`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Backend {
     Claude,
@@ -67,6 +68,13 @@ pub enum Backend {
     /// returns a clear error when it is absent.
     #[value(name = "openai-compatible")]
     OpenAiCompatible,
+    /// OpenRouter — hosted OpenAI-compatible aggregator routing one key to any
+    /// vendor's models.  Execs `bwoc-harness` with `--backend openrouter` so the
+    /// harness attaches bearer auth (key from `OPENROUTER_API_KEY` /
+    /// `~/.bwoc/secrets.toml`).  `baseUrl` is **optional** — the harness defaults
+    /// to `https://openrouter.ai/api/v1` when the manifest omits it.
+    #[value(name = "openrouter")]
+    OpenRouter,
 }
 
 /// Canonical backend entry filenames that mirror `AGENTS.md`. Single source of
@@ -98,7 +106,7 @@ impl Backend {
             Backend::Codex => Some("codex"),
             Backend::Kimi => Some("kimi"),
             Backend::Copilot => Some("copilot"),
-            Backend::Ollama | Backend::OpenAiCompatible => None,
+            Backend::Ollama | Backend::OpenAiCompatible | Backend::OpenRouter => None,
         }
     }
 
@@ -112,13 +120,17 @@ impl Backend {
             Backend::Copilot => "copilot",
             Backend::Ollama => "ollama",
             Backend::OpenAiCompatible => "openai-compatible",
+            Backend::OpenRouter => "openrouter",
         }
     }
 
     /// Returns `true` for backends that exec `bwoc-harness` rather than an
     /// external vendor CLI.
     pub fn uses_harness(self) -> bool {
-        matches!(self, Backend::Ollama | Backend::OpenAiCompatible)
+        matches!(
+            self,
+            Backend::Ollama | Backend::OpenAiCompatible | Backend::OpenRouter
+        )
     }
 
     /// CLI args that set the reasoning-effort level for a **vendor** backend,
@@ -145,7 +157,8 @@ impl Backend {
             | Backend::Kimi
             | Backend::Copilot
             | Backend::Ollama
-            | Backend::OpenAiCompatible => Vec::new(),
+            | Backend::OpenAiCompatible
+            | Backend::OpenRouter => Vec::new(),
         }
     }
 
@@ -195,6 +208,14 @@ impl Backend {
             // OpenAI-compatible endpoint: any model the server supports.
             // These are common examples; free-text input is always accepted.
             Backend::OpenAiCompatible => &["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
+            // OpenRouter uses `vendor/model` namespaced ids; one key reaches any
+            // vendor. Examples only — free-text input is always accepted.
+            Backend::OpenRouter => &[
+                "anthropic/claude-opus-4-8",
+                "openai/gpt-5.5",
+                "google/gemini-2.5-pro",
+                "meta-llama/llama-3.3-70b-instruct",
+            ],
         }
     }
 
@@ -325,7 +346,7 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     let workspace_root = find_workspace_root(&path);
 
     // ── Spawn the backend ────────────────────────────────────────────────────
-    // Harness backends (Ollama, OpenAiCompatible) → exec bwoc-harness.
+    // Harness backends (Ollama, OpenAiCompatible, OpenRouter) → exec bwoc-harness.
     // Vendor backends (Claude, Antigravity, Codex, Kimi) → exec their CLI.
     // Load the manifest once (best-effort) — used for harness `--endpoint` /
     // `--model` forwarding and vendor `reasoningEffort` passthrough.
@@ -362,7 +383,20 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
                     c.arg("--endpoint").arg(&url);
                 }
             }
-            _ => unreachable!("uses_harness() only true for Ollama and OpenAiCompatible"),
+            Backend::OpenRouter => {
+                // Unlike Ollama/OpenAiCompatible, OpenRouter MUST select its
+                // provider explicitly — without `--backend openrouter` the
+                // harness falls through to the unauthenticated OpenAI-compatible
+                // client and every request 401s. baseUrl is optional: the
+                // harness defaults to https://openrouter.ai/api/v1 when absent.
+                c.arg("--backend").arg("openrouter");
+                if let Some(url) = base_url {
+                    c.arg("--endpoint").arg(&url);
+                }
+            }
+            _ => unreachable!(
+                "uses_harness() only true for Ollama, OpenAiCompatible, and OpenRouter"
+            ),
         }
 
         // Forward the manifest's primaryModel as `--model` so harness backends
