@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — OpenRouter provider backend"
+    " — standalone agent: gateway-reachable, self-hosting container"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -33,7 +33,7 @@ pub const HEADLINE: &str = concat!(
 pub const HIGHLIGHTS: &[&str] = &[
     "`bwoc-harness --backend openrouter` — drive any vendor's model through one OpenRouter key (2.29.0, #268)",
     "`RouteTarget::Gateway` — cross-NAT/internet peer delivery via a `bwoc-gateway` relay (2.28.0, #262)",
-    "Standalone agent: gateway recv bridge + pinned-peer trust + replay defense + untrusted auto-process + container image",
+    "Standalone agent — gateway recv bridge + pinned-peer trust + replay defense + untrusted auto-process + container image (2.30.0, #269/#270/#271/#273)",
     "Phase 5 saṃvara — trust-boundary & sandbox hardening, full DoD signed off (2.27.0)",
     "Authenticated MQTT brokers + central channel standard (#245)",
 ];

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.9-2] — 2026-06-09 — 2.30.0
+
+The **standalone agent** release: an incarnated agent now runs as a self-hosted, gateway-reachable unit — receiving signed envelopes from peers across NAT/the internet, vetting them through the trust gate, auto-processing untrusted ones in a read-only turn, and shipping as a container image.
+
+### Added
+
+- **Standalone agent gateway receive bridge** — `bwoc-agent --serve` supervises a `bwoc-gateway-recv` child that maintains the `wss://` relay connection and drops inbound signed envelopes into the agent's inbox, so an agent behind NAT stays reachable without a direct listener. Network/TLS deps stay confined to the gateway binaries (dep-quarantine holds — `bwoc-agent`/`bwoc-core` never link WS/TLS). (#269)
+- **Pinned-peer keyring + replay defense** — remote senders are resolved against a pinned `.bwoc/peers.toml` keyring; the Kalyāṇamitta-7 trust gate verifies the signature, resolves the sender, and rejects replayed envelopes, so an unverifiable or replayed message from across a gateway is refused rather than delivered. (#270)
+- **Untrusted gateway auto-process + reply** — inbound envelopes from a gateway can be auto-processed in an untrusted, read-only turn (PureRead tools only) and replied to over the same transport, closing the loop for an unattended standalone agent while keeping the untrusted-ingress surface read-only. (#271)
+- **Standalone agent container image** — `deploy/standalone-agent.Dockerfile` builds a self-contained image (all five binaries on `PATH`, non-root `agent` user, `ENTRYPOINT ["bwoc-agent","--serve"]`); the ed25519 identity key and provider creds are mounted at run, never baked into a layer. (#273)
+- **Operating HANDBOOK (EN/TH)** for the agent template (`modules/agent-template/docs/{en,th}/HANDBOOK`) — a single onboarding read covering identity, memory, skills/mindsets, interconnect, backends, and verification gates. (#275)
+
+### Fixed
+
+- **t6 `RLIMIT_NPROC` floor counts tasks, not processes** (`bwoc-harness`) — the per-turn process-count limit was measured against processes rather than tasks (threads), which could trip the floor on legitimate multi-threaded turns. (#267)
+- **What's New release-gate** (`bwoc-cli`) — a CI-enforced assertion now fails the build until a `HIGHLIGHTS` bullet cites the current `MAJOR.MINOR`, so "update What's New every release" is enforced rather than remembered. (#274)
+
 ## [v2026.6.9-1] — 2026-06-09 — 2.29.0
 
 ### Added
