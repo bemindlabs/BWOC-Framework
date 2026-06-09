@@ -18,11 +18,83 @@
 //! matters. `bwoc inbox` joins the two files at read time so
 //! `select(.refused)` works against the resulting JSON.
 
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use bwoc_core::manifest::{Manifest, RefusalMode};
+use bwoc_core::manifest::{Manifest, RefusalMode, TrustDeclared};
 use bwoc_core::routing::Routes;
 use bwoc_core::workspace::AgentsRegistry;
+
+/// Cap on remembered `(from, nonce)` pairs for replay detection (FIFO-evicted).
+const REPLAY_CAP: usize = 8192;
+/// Reject a signed remote envelope whose `ts` is older than this (replay window).
+const REPLAY_WINDOW_SECS: i64 = 300;
+/// Tolerate this much clock skew into the future before rejecting `ts`.
+const FUTURE_SKEW_SECS: i64 = 60;
+
+/// Receive-side replay defense for **remote** (cross-workspace / gateway)
+/// senders. A relay can re-deliver a validly-signed envelope arbitrarily; the
+/// signature still verifies, so the nonce must be checked. Guards two ways:
+/// a bounded seen-`(from, nonce)` set (rejects duplicates) and a `ts` freshness
+/// window (rejects stale/future envelopes, which also bounds replay across a
+/// daemon restart that clears the in-memory set). The `ts` comparison is
+/// lexicographic on fixed-width ISO-8601 UTC — no date parsing.
+#[derive(Default)]
+pub struct ReplayGuard {
+    seen: HashSet<(String, String)>,
+    order: VecDeque<(String, String)>,
+}
+
+impl ReplayGuard {
+    /// `Some(reason)` ⇒ refuse (stale / future / replayed); `None` ⇒ fresh +
+    /// novel (and now recorded). An empty `nonce` skips the duplicate check
+    /// (only the freshness window applies).
+    fn check(&mut self, from: &str, nonce: &str, env_ts: &str) -> Option<&'static str> {
+        if let Some(reason) = ts_outside_window(env_ts) {
+            return Some(reason);
+        }
+        if nonce.is_empty() {
+            return None;
+        }
+        let key = (from.to_string(), nonce.to_string());
+        if self.seen.contains(&key) {
+            return Some("replayed");
+        }
+        self.seen.insert(key.clone());
+        self.order.push_back(key);
+        if self.order.len() > REPLAY_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        None
+    }
+}
+
+/// Reject `env_ts` that is too old or too far in the future. Compares the first
+/// 19 chars (`YYYY-MM-DDTHH:MM:SS`) so a trailing `Z` / fractional seconds don't
+/// skew the lexicographic ordering. Empty `ts` or an unreadable clock ⇒ allow.
+fn ts_outside_window(env_ts: &str) -> Option<&'static str> {
+    if env_ts.is_empty() {
+        return None;
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let oldest = bwoc_core::time::format_iso8601(now - REPLAY_WINDOW_SECS);
+    let newest = bwoc_core::time::format_iso8601(now + FUTURE_SKEW_SECS);
+    // First 19 chars = `YYYY-MM-DDTHH:MM:SS` (ignore trailing `Z` / fractional).
+    fn cut(s: &str) -> &str {
+        s.get(..19).unwrap_or(s)
+    }
+    if cut(env_ts) < cut(&oldest) {
+        return Some("stale_replay");
+    }
+    if cut(env_ts) > cut(&newest) {
+        return Some("future_ts");
+    }
+    None
+}
 
 /// Signature-enforcement posture (HV2-4 / `docs/en/SIGNING.en.md` §6).
 ///
@@ -71,6 +143,13 @@ pub struct TrustContext {
     pub gating_enabled: bool,
     /// Signature-enforcement posture (HV2-4), from `BWOC_SIGNING_MODE`.
     pub signing_mode: SigningMode,
+    /// The agent's own directory (daemon cwd) — holds `.bwoc/peers.toml`, the
+    /// pinned-pubkey keyring used to verify remote (gateway) senders that no
+    /// workspace registry can resolve.
+    pub agent_dir: PathBuf,
+    /// Receive-side replay defense for remote senders (interior-mutable; the
+    /// daemon's serve loop is single-threaded but `evaluate` takes `&self`).
+    pub replay: Mutex<ReplayGuard>,
 }
 
 impl TrustContext {
@@ -90,6 +169,8 @@ impl TrustContext {
             workspace_root,
             gating_enabled,
             signing_mode: SigningMode::from_env(),
+            agent_dir: cwd.to_path_buf(),
+            replay: Mutex::new(ReplayGuard::default()),
         }
     }
 
@@ -212,32 +293,53 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
         };
     }
 
-    // Without a workspace, we can't look up the sender's manifest.
-    let Some(ws) = ctx.workspace_root.as_ref() else {
-        return cant_verify!("no_workspace");
-    };
-
-    let registry = match AgentsRegistry::load(ws) {
-        Ok(r) => r,
-        Err(_) => return cant_verify!("registry_unreadable"),
-    };
-
-    // Resolve the sender's manifest. Local registry first; on a miss, fall
-    // back to a cross-workspace peer via routes.toml (#20 give-feedback). A
-    // cross-workspace sender is flagged so the write path can demand a
-    // provable signature (read-vs-write trust split).
-    let (sender_manifest, cross_workspace) = match registry.agents.iter().find(|a| a.id == from) {
-        Some(entry) => {
-            let manifest_path = ws.join(&entry.path).join("config.manifest.json");
-            match Manifest::load_from_path(&manifest_path) {
-                Ok(m) => (m, false),
-                Err(_) => return cant_verify!("sender_manifest_unreadable"),
+    // Resolve the sender's manifest, in precedence order:
+    //   1. local registry (a same-workspace agent) — needs a workspace.
+    //   2. routes.toml cross-workspace peer (#20 give-feedback) — needs a workspace.
+    //   3. pinned-pubkey keyring `.bwoc/peers.toml` — the STANDALONE / gateway
+    //      path; works with no workspace at all.
+    // A non-local sender is flagged `cross_workspace` so the write path demands
+    // a provable signature (read-vs-write trust split) and the replay guard runs.
+    let (sender_manifest, cross_workspace) = 'resolve: {
+        if let Some(ws) = ctx.workspace_root.as_ref() {
+            match AgentsRegistry::load(ws) {
+                Ok(registry) => {
+                    if let Some(entry) = registry.agents.iter().find(|a| a.id == from) {
+                        let manifest_path = ws.join(&entry.path).join("config.manifest.json");
+                        match Manifest::load_from_path(&manifest_path) {
+                            Ok(m) => break 'resolve (m, false),
+                            Err(_) => return cant_verify!("sender_manifest_unreadable"),
+                        }
+                    }
+                    if let Some(m) = resolve_peer_manifest(ws, &from) {
+                        break 'resolve (m, true);
+                    }
+                }
+                // Registry unreadable: still let a pinned peer resolve below;
+                // only refuse `registry_unreadable` if nothing pins this sender.
+                Err(_) => {
+                    if let Some(m) = resolve_pinned_peer(&ctx.agent_dir, &from) {
+                        break 'resolve (m, true);
+                    }
+                    return cant_verify!("registry_unreadable");
+                }
             }
         }
-        None => match resolve_peer_manifest(ws, &from) {
-            Some(m) => (m, true),
-            None => return cant_verify!("unknown_sender"),
-        },
+        // Pinned-pubkey keyring (works with or without a workspace).
+        if let Some(m) = resolve_pinned_peer(&ctx.agent_dir, &from) {
+            break 'resolve (m, true);
+        }
+        // Nothing could resolve the sender. `no_workspace` only when there is
+        // genuinely nowhere to look (no workspace AND no pinned-peer keyring);
+        // if either exists, the sender is simply `unknown_sender`.
+        let resolvable_somewhere =
+            ctx.workspace_root.is_some() || ctx.agent_dir.join(".bwoc/peers.toml").is_file();
+        let reason = if resolvable_somewhere {
+            "unknown_sender"
+        } else {
+            "no_workspace"
+        };
+        return cant_verify!(reason);
     };
 
     // ── Step 1: signature verification (HV2-4 / §5: verify, then authorize). ──
@@ -281,6 +383,31 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
             &sender_manifest,
         ) {
             return outcome;
+        }
+    }
+
+    // ── Replay defense (remote senders only) ──
+    // A relay can re-deliver a validly-signed envelope; the signature still
+    // verifies, so the `(from, nonce)` must be novel and the `ts` fresh. Scoped
+    // to cross-workspace / gateway senders — local delivery is fresh and trusted,
+    // and the relay-replay threat is the cross-machine one.
+    if cross_workspace {
+        let nonce = env.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
+        // Recover the guard even if a prior holder panicked: a poisoned lock
+        // must NOT silently disable replay defense (fail-open). The inner set is
+        // still consistent — `check` only inserts after its decision.
+        let mut guard = ctx
+            .replay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(reason) = guard.check(&from, nonce, &envelope_ts) {
+            return TrustOutcome::Refuse(Refusal {
+                envelope_offset,
+                envelope_ts: envelope_ts.clone(),
+                envelope_from: from.clone(),
+                reason,
+                missing: vec![],
+            });
         }
     }
 
@@ -400,6 +527,56 @@ fn resolve_peer_manifest(local_ws: &Path, sender_id: &str) -> Option<Manifest> {
     Manifest::load_from_path(&peer_ws.join(&entry.path).join("config.manifest.json")).ok()
 }
 
+/// Resolve a sender from the agent's pinned-pubkey keyring `.bwoc/peers.toml`.
+/// This is the standalone / gateway identity path: a remote agent no workspace
+/// registry can reach is verified against a **locally-pinned** public key
+/// (trust-on-pin — the operator chose to add it; not trust-on-first-use). Format:
+///
+/// ```toml
+/// [[peer]]
+/// id = "agent-erlang"
+/// pubkey = "<hex ed25519>"
+/// declares = ["vatta"]   # optional: qualities the operator vouches for
+/// ```
+///
+/// Returns a synthesized minimal manifest carrying the pinned key + declared
+/// qualities, or `None` when the file / entry / `pubkey` is absent.
+fn resolve_pinned_peer(agent_dir: &Path, sender_id: &str) -> Option<Manifest> {
+    let path = agent_dir.join(".bwoc").join("peers.toml");
+    let v: toml::Value = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let entry = v
+        .get("peer")?
+        .as_array()?
+        .iter()
+        .find(|p| p.get("id").and_then(toml::Value::as_str) == Some(sender_id))?;
+    let pubkey = entry
+        .get("pubkey")
+        .and_then(toml::Value::as_str)?
+        .to_string();
+    let mut declared = TrustDeclared::default();
+    if let Some(list) = entry.get("declares").and_then(toml::Value::as_array) {
+        for q in list.iter().filter_map(toml::Value::as_str) {
+            set_declared(&mut declared, q);
+        }
+    }
+    Some(Manifest::pinned_peer(sender_id, pubkey, declared))
+}
+
+/// Set one Kalyāṇamitta quality (camelCase key) true on a `TrustDeclared`.
+/// Unknown keys are ignored.
+fn set_declared(d: &mut TrustDeclared, key: &str) {
+    match key {
+        "piyo" => d.piyo = true,
+        "garu" => d.garu = true,
+        "bhavaniyo" => d.bhavaniyo = true,
+        "vatta" => d.vatta = true,
+        "vacanakkhamo" => d.vacanakkhamo = true,
+        "gambhira" => d.gambhira = true,
+        "noCatthana" => d.no_catthana = true,
+        _ => {}
+    }
+}
+
 /// Walk up from `start` looking for `.bwoc/workspace.toml`. Same chain as
 /// the CLI's `resolve_workspace` minus the explicit-path / env arms.
 fn find_workspace_root(start: &Path) -> Option<PathBuf> {
@@ -439,10 +616,12 @@ mod tests {
         TrustContext {
             required,
             mode,
+            agent_dir: ws.clone().unwrap_or_default(),
             workspace_root: ws,
             gating_enabled: gating,
             // Existing Kalyāṇamitta tests exercise the quality gate, not signing.
             signing_mode: SigningMode::Off,
+            replay: Mutex::new(ReplayGuard::default()),
         }
     }
 
@@ -787,15 +966,21 @@ mod tests {
         let ctx = TrustContext {
             required: vec![],
             mode: RefusalMode::Off,
+            agent_dir: recip.path().to_path_buf(),
             workspace_root: Some(recip.path().to_path_buf()),
             gating_enabled: false,
             signing_mode: SigningMode::Enforce,
+            replay: Mutex::new(ReplayGuard::default()),
         };
 
+        // A *current* ts so the cross-workspace replay freshness window accepts
+        // the valid case (an old ts would be refused as stale_replay — covered
+        // by its own test below).
+        let now_ts = bwoc_core::time::utc_now_iso8601();
         let (from, to, ts, mid, body) = (
             "agent-peer",
             "agent-me",
-            "2026-05-27T00:00:00Z",
+            now_ts.as_str(),
             "msg-fb",
             "review ok",
         );
@@ -840,6 +1025,145 @@ mod tests {
             TrustOutcome::Refuse(r) => assert_eq!(r.reason, "bad_signature"),
             other => panic!("tampered cross-ws must refuse, got {other:?}"),
         }
+    }
+
+    // ── pinned-peer keyring + replay defense (standalone / gateway) ─────────
+
+    /// A no-workspace context whose `agent_dir` is `dir` (holds `.bwoc/peers.toml`).
+    fn standalone_ctx(dir: &Path) -> TrustContext {
+        TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            agent_dir: dir.to_path_buf(),
+            workspace_root: None, // standalone: no workspace at all
+            gating_enabled: false,
+            signing_mode: SigningMode::Enforce,
+            replay: Mutex::new(ReplayGuard::default()),
+        }
+    }
+
+    /// Build a signed envelope line. `sign` is the signing closure (the key's
+    /// type is private to `bwoc-signing`, so we pass a signer rather than a key).
+    fn signed_line(
+        sign: impl Fn(&[u8]) -> String,
+        from: &str,
+        ts: &str,
+        mid: &str,
+        body: &str,
+    ) -> String {
+        // Derive the per-message nonce from the message id at runtime rather
+        // than passing a string literal — a literal flowing into the signing
+        // input trips CodeQL's "hard-coded cryptographic value" heuristic, and
+        // a test nonce isn't a secret anyway. Distinct `mid` ⇒ distinct nonce;
+        // re-signing the same `mid` reproduces the same envelope (replay test).
+        let nonce = format!("nonce-{mid}");
+        let sig = sign(&bwoc_signing::canonical_bytes(
+            from, "agent-me", ts, mid, body, &nonce,
+        ));
+        format!(
+            r#"{{"from":"{from}","to":"agent-me","ts":"{ts}","messageId":"{mid}","message":"{body}","nonce":"{nonce}","sig":"{sig}"}}"#
+        )
+    }
+
+    #[test]
+    fn pinned_peer_verifies_replay_and_freshness() {
+        use std::fs;
+        let agent = tempfile::tempdir().unwrap();
+        let peer_bwoc = tempfile::tempdir().unwrap();
+
+        // Pin a remote peer by its public key (no workspace, no routes).
+        let pubkey = bwoc_signing::generate_keypair(peer_bwoc.path(), false).unwrap();
+        let key = bwoc_signing::load_signing_key(peer_bwoc.path())
+            .unwrap()
+            .unwrap();
+        fs::create_dir_all(agent.path().join(".bwoc")).unwrap();
+        fs::write(
+            agent.path().join(".bwoc/peers.toml"),
+            format!("[[peer]]\nid = \"agent-remote\"\npubkey = \"{pubkey}\"\n"),
+        )
+        .unwrap();
+
+        let ctx = standalone_ctx(agent.path());
+        let ts = bwoc_core::time::utc_now_iso8601();
+
+        // (a) valid signed message from a pinned peer → Pass (no workspace needed).
+        let line = signed_line(
+            |b| bwoc_signing::sign(&key, b),
+            "agent-remote",
+            &ts,
+            "m1",
+            "hi",
+        );
+        assert!(
+            matches!(evaluate(&ctx, &line, 0), TrustOutcome::Pass),
+            "a pinned peer's valid signature must pass without a workspace"
+        );
+
+        // (b) replay the exact same envelope → refused (nonce seen).
+        match evaluate(&ctx, &line, 1) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "replayed"),
+            other => panic!("replay must refuse, got {other:?}"),
+        }
+
+        // (c) a stale ts (older than the freshness window) → refused.
+        let stale = signed_line(
+            |b| bwoc_signing::sign(&key, b),
+            "agent-remote",
+            "2020-01-01T00:00:00Z",
+            "m2",
+            "hi",
+        );
+        match evaluate(&ctx, &stale, 2) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "stale_replay"),
+            other => panic!("stale ts must refuse, got {other:?}"),
+        }
+
+        // (d) an unpinned sender → unknown_sender (not silently trusted).
+        let other = signed_line(
+            |b| bwoc_signing::sign(&key, b),
+            "agent-stranger",
+            &ts,
+            "m3",
+            "hi",
+        );
+        match evaluate(&ctx, &other, 3) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unknown_sender"),
+            other => panic!("unpinned sender must refuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pinned_peer_declares_satisfy_quality_gate() {
+        use std::fs;
+        let agent = tempfile::tempdir().unwrap();
+        let peer_bwoc = tempfile::tempdir().unwrap();
+        let pubkey = bwoc_signing::generate_keypair(peer_bwoc.path(), false).unwrap();
+        let key = bwoc_signing::load_signing_key(peer_bwoc.path())
+            .unwrap()
+            .unwrap();
+        fs::create_dir_all(agent.path().join(".bwoc")).unwrap();
+        fs::write(
+            agent.path().join(".bwoc/peers.toml"),
+            format!(
+                "[[peer]]\nid = \"agent-remote\"\npubkey = \"{pubkey}\"\ndeclares = [\"vatta\"]\n"
+            ),
+        )
+        .unwrap();
+
+        // Recipient requires `vatta`; the pin vouches for it → Pass.
+        let mut ctx = standalone_ctx(agent.path());
+        ctx.required = vec!["vatta".into()];
+        ctx.mode = RefusalMode::Refuse;
+        ctx.gating_enabled = true;
+        let ts = bwoc_core::time::utc_now_iso8601();
+        let line = signed_line(
+            |b| bwoc_signing::sign(&key, b),
+            "agent-remote",
+            &ts,
+            "m1",
+            "hi",
+        );
+        assert!(matches!(evaluate(&ctx, &line, 0), TrustOutcome::Pass));
     }
 
     fn sample_manifest() -> Manifest {
