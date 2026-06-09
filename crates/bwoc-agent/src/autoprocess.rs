@@ -163,8 +163,12 @@ impl AutoProcessor {
         writeln!(stdin, "{}", user.to_line().map_err(|e| e.to_string())?)
             .map_err(|e| format!("write user input: {e}"))?;
 
-        // Read events: accumulate token deltas, auto-deny any permission request,
-        // finish on the turn's `Message`.
+        // Read events: accumulate token deltas, auto-deny any permission
+        // request, and **finish when the turn ends** — `Message` (the final
+        // text) or, when the model produced no `Message` (e.g. an empty/errored
+        // turn), `TurnEnd`. Breaking only on `Message` would hang the daemon on
+        // any turn that ends without one (a model with no tool support, an empty
+        // completion, …), because `--chat` then blocks waiting for more input.
         let mut reply = String::new();
         let mut acc = String::new();
         let mut lines = 0usize;
@@ -181,14 +185,18 @@ impl AutoProcessor {
                 Ok(ChatEvent::Token { text }) => acc.push_str(&text),
                 Ok(ChatEvent::Message { text }) => {
                     reply = text;
-                    break; // turn complete
+                    break; // turn complete with a final message
+                }
+                Ok(ChatEvent::TurnEnd { .. }) => break, // turn complete (no Message)
+                Ok(ChatEvent::Error { message }) => {
+                    return Err(format!("harness turn error: {message}"));
                 }
                 Ok(ChatEvent::PermissionRequest { id, .. }) => {
                     // A remote sender can never approve a tool — deny + continue.
                     let deny = ChatInput::Permission { id, allow: false };
                     let _ = writeln!(stdin, "{}", deny.to_line().map_err(|e| e.to_string())?);
                 }
-                _ => {} // other events / unparsable lines: ignore
+                _ => {} // other events (ready/restored/bye) / unparsable: ignore
             }
         }
 
