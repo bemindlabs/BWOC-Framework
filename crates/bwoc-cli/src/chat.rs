@@ -317,6 +317,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "copilot" => Some(Backend::Copilot),
         "ollama" => Some(Backend::Ollama),
         "openai-compatible" => Some(Backend::OpenAiCompatible),
+        "openrouter" => Some(Backend::OpenRouter),
         _ => None,
     }
 }

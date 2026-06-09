@@ -126,10 +126,11 @@ struct Args {
     #[arg(long, short = 'e', default_value = bwoc_harness::provider::client::DEFAULT_ENDPOINT)]
     endpoint: String,
 
-    /// Provider backend: `ollama` / `openai-compatible` (OpenAI-compatible HTTP)
-    /// or `claude` / `anthropic` (Anthropic Messages API, key from
-    /// `ANTHROPIC_API_KEY`). Selects which provider client renders the model;
-    /// the chat/agent loops are backend-neutral.
+    /// Provider backend: `ollama` / `openai-compatible` (OpenAI-compatible HTTP),
+    /// `openrouter` (OpenAI-compatible aggregator, key from `OPENROUTER_API_KEY`
+    /// / `~/.bwoc/secrets.toml`), or `claude` / `anthropic` (Anthropic Messages
+    /// API, key from `ANTHROPIC_API_KEY`). Selects which provider client renders
+    /// the model; the chat/agent loops are backend-neutral.
     #[arg(long, default_value = "ollama")]
     backend: String,
 
@@ -734,8 +735,10 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 /// No setup output goes to stdout: the chat client reads that stream as JSON
 /// events. Status/warnings (model resolution, policy load) go to stderr.
 /// Build the provider client for `backend`. OpenAI-compatible backends
-/// (`ollama` / `openai-compatible`) hit `endpoint` directly; Anthropic backends
-/// (`claude` / `anthropic`) use the Messages API (key from `ANTHROPIC_API_KEY`),
+/// (`ollama` / `openai-compatible`) hit `endpoint` directly; `openrouter` is the
+/// same client with bearer auth + attribution headers, substituting OpenRouter's
+/// base URL when `--endpoint` is unset; Anthropic backends (`claude` /
+/// `anthropic`) use the Messages API (key from `ANTHROPIC_API_KEY`),
 /// substituting the Anthropic default endpoint when the caller left the
 /// OpenAI/Ollama default in place — i.e. a `claude` agent with no manifest
 /// `baseUrl`. `reasoning_effort` only applies to the OpenAI-compatible path.
@@ -744,14 +747,33 @@ fn build_provider(
     endpoint: &str,
     reasoning_effort: Option<String>,
 ) -> Arc<dyn ProviderClient> {
+    use bwoc_harness::provider::client as oai;
     match backend {
         "claude" | "anthropic" => {
-            let base = if endpoint == bwoc_harness::provider::client::DEFAULT_ENDPOINT {
+            let base = if endpoint == oai::DEFAULT_ENDPOINT {
                 bwoc_harness::provider::anthropic::ANTHROPIC_DEFAULT_ENDPOINT
             } else {
                 endpoint
             };
             Arc::new(AnthropicClient::new(base))
+        }
+        "openrouter" => {
+            // OpenRouter is OpenAI-compatible, so it reuses OllamaClient — the
+            // only additions are bearer auth (key from OPENROUTER_API_KEY /
+            // secrets.toml) and the optional attribution headers. Swap the
+            // Ollama-localhost default for OpenRouter's base when the caller
+            // left `--endpoint` unset (mirrors the Anthropic default swap above).
+            let base = if endpoint == oai::DEFAULT_ENDPOINT {
+                oai::OPENROUTER_DEFAULT_ENDPOINT
+            } else {
+                endpoint
+            };
+            Arc::new(
+                OllamaClient::new(base)
+                    .with_api_key(Some(oai::resolve_openrouter_api_key()))
+                    .with_headers(oai::openrouter_headers())
+                    .with_reasoning_effort(reasoning_effort),
+            )
         }
         _ => Arc::new(OllamaClient::new(endpoint).with_reasoning_effort(reasoning_effort)),
     }

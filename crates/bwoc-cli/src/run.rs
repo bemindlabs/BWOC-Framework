@@ -309,6 +309,31 @@ pub fn build_command(
             ];
             Ok((harness.to_string_lossy().into_owned(), args))
         }
+        Backend::OpenRouter => {
+            let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
+            // `--backend openrouter` is required so the harness attaches bearer
+            // auth; without it requests hit the unauthenticated OpenAI-compat
+            // path and 401. baseUrl is optional (harness defaults to
+            // https://openrouter.ai/api/v1).
+            let mut args = vec![
+                "--workdir".to_string(),
+                agent_dir.to_string_lossy().into_owned(),
+                "--task".to_string(),
+                task.to_string(),
+                "--model".to_string(),
+                primary_model.to_string(),
+                "--backend".to_string(),
+                "openrouter".to_string(),
+            ];
+            let manifest_path = agent_dir.join("config.manifest.json");
+            if let Ok(m) = Manifest::load_from_path(&manifest_path) {
+                if let Some(url) = m.base_url {
+                    args.push("--endpoint".to_string());
+                    args.push(url);
+                }
+            }
+            Ok((harness.to_string_lossy().into_owned(), args))
+        }
         Backend::Copilot => {
             // `copilot -p "<task>" --no-ask-user` — Copilot CLI's programmatic
             // mode. `--no-ask-user` is required headless (no TTY to answer
@@ -446,6 +471,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "copilot" => Some(Backend::Copilot),
         "ollama" => Some(Backend::Ollama),
         "openai-compatible" => Some(Backend::OpenAiCompatible),
+        "openrouter" => Some(Backend::OpenRouter),
         _ => None,
     }
 }

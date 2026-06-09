@@ -101,6 +101,7 @@ pub fn run(args: TuiArgs) -> i32 {
         &args.agent_path,
         model.as_deref(),
         &endpoint,
+        &args.backend_name,
         args.team_chat.as_deref(),
     );
 
@@ -180,15 +181,19 @@ pub fn run(args: TuiArgs) -> i32 {
 
 /// Build the `bwoc-harness` argv (excluding the program name) for a chat
 /// session against `agent_path`. Pure + tested: the wire contract with the
-/// harness is `--chat --workdir <p> [--model <m>] --endpoint <url>`.
+/// harness is `--chat --workdir <p> [--model <m>] --endpoint <url> --backend <b>`.
 ///
 /// `model = None` omits `--model`, letting the harness use its own default
 /// (the manifest had no `primaryModel`, which is unusual but not fatal).
+/// `backend` selects the provider client: `ollama` / `openai-compatible` both
+/// resolve to the OpenAI-compatible client, but `openrouter` is load-bearing —
+/// it tells the harness to attach bearer auth, without which every request 401s.
 /// `team_chat = Some(path)` appends `--team-chat <path>` (HV3-3a broadcast).
 fn harness_argv(
     agent_path: &std::path::Path,
     model: Option<&str>,
     endpoint: &str,
+    backend: &str,
     team_chat: Option<&std::path::Path>,
 ) -> Vec<String> {
     let mut argv = vec![
@@ -202,6 +207,8 @@ fn harness_argv(
     }
     argv.push("--endpoint".to_string());
     argv.push(endpoint.to_string());
+    argv.push("--backend".to_string());
+    argv.push(backend.to_string());
     if let Some(log) = team_chat {
         argv.push("--team-chat".to_string());
         argv.push(log.to_string_lossy().into_owned());
@@ -649,6 +656,7 @@ mod tests {
             std::path::Path::new("/ws/agent-pi"),
             Some("gpt-5.5"),
             "https://api.openai.com/v1",
+            "openai-compatible",
             None,
         );
         assert_eq!(
@@ -661,6 +669,8 @@ mod tests {
                 "gpt-5.5",
                 "--endpoint",
                 "https://api.openai.com/v1",
+                "--backend",
+                "openai-compatible",
             ]
         );
     }
@@ -671,6 +681,7 @@ mod tests {
             std::path::Path::new("/ws/agent-pi"),
             None,
             DEFAULT_ENDPOINT,
+            "ollama",
             None,
         );
         assert_eq!(
@@ -681,9 +692,29 @@ mod tests {
                 "/ws/agent-pi",
                 "--endpoint",
                 DEFAULT_ENDPOINT,
+                "--backend",
+                "ollama",
             ]
         );
         assert!(!argv.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn harness_argv_passes_openrouter_backend() {
+        // The TUI path must forward `--backend openrouter` so the harness
+        // attaches bearer auth; otherwise OpenRouter requests 401.
+        let argv = harness_argv(
+            std::path::Path::new("/ws/agent-or"),
+            Some("anthropic/claude-opus-4-8"),
+            DEFAULT_ENDPOINT,
+            "openrouter",
+            None,
+        );
+        let i = argv
+            .iter()
+            .position(|a| a == "--backend")
+            .expect("flag present");
+        assert_eq!(argv.get(i + 1).map(String::as_str), Some("openrouter"));
     }
 
     #[test]
@@ -692,6 +723,7 @@ mod tests {
             std::path::Path::new("/ws/agent-pi"),
             None,
             DEFAULT_ENDPOINT,
+            "ollama",
             Some(std::path::Path::new("/ws/.bwoc/teams/squad/chat.jsonl")),
         );
         // `--team-chat <path>` is appended as a trailing pair.
