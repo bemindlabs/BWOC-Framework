@@ -25,9 +25,14 @@ untrusted auto-process landed in the preceding PRs.
 
 - **Secrets are mounted at run, never baked.** The ed25519 identity
   (`.bwoc/agent.key`, 0600) and provider creds are injected via `-v`/`-e` at
-  `docker run`, never `COPY`-ed into a layer — an untrusted turn can read its
-  own image but not a runtime mount it has no path to. A named volume for
-  `.bwoc/` persists the inbox + read cursor across restarts.
+  `docker run`, never `COPY`-ed into a layer — so they never leak via the
+  published image. This is *not* runtime isolation, though: an untrusted
+  auto-process turn has PureRead tools (`read_file`) over the agent workdir, so
+  a key mounted at `/agent/.bwoc/agent.key` is readable and can be exfiltrated
+  via the reply channel. A standalone agent that both signs and auto-processes
+  untrusted gateway input must be assumed able to disclose its key; keeping the
+  key off the agent-readable path (a separate signer) is deferred. A named
+  volume for `.bwoc/` persists the inbox + read cursor across restarts.
 - **Five binaries in one image, not a sidecar.** `bwoc-agent --serve`
   supervises `bwoc-gateway-recv` as a child and shells out to `bwoc-harness`
   per turn; co-locating them keeps `sibling_binary` resolution trivial and the

@@ -19,7 +19,15 @@
 #           bwoc-agent:<name>
 #
 # The ed25519 identity key and provider credentials are mounted/injected at run,
-# never baked into a layer.
+# never baked into a layer — so they do not leak via the published image.
+#
+# WARNING: a runtime mount is NOT out of reach of the agent's own turns. An
+# untrusted auto-process turn has PureRead tools (read_file) over the agent
+# workdir, so a secret mounted under /agent/ — including /agent/.bwoc/agent.key
+# — can be read by a hostile inbound envelope and exfiltrated via the reply.
+# A standalone agent that both holds a signing key and auto-processes gateway
+# input can therefore disclose that key; true isolation needs the key kept
+# outside the agent-readable path (a separate signer), which this image omits.
 
 FROM rust:1-bookworm AS fw
 WORKDIR /src
