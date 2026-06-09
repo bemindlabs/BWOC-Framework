@@ -114,14 +114,18 @@ impl AutoProcessor {
             }
         };
         // Reply back through the routing table (transport=gateway for a remote
-        // peer). `--no-wakeup` since there's no local TUI to poke.
+        // peer). `--no-wakeup` since there's no local TUI to poke. The `--`
+        // separator terminates option parsing so a `from` or `reply` that
+        // happens to start with `-`/`--` (remote-controlled text) can never be
+        // misread as a flag (arg injection).
         match Command::new(bwoc)
             .arg("send")
-            .arg(from)
-            .arg(&reply)
             .arg("--from")
             .arg(&self.self_id)
             .arg("--no-wakeup")
+            .arg("--")
+            .arg(from)
+            .arg(&reply)
             .current_dir(&self.agent_dir)
             .status()
         {
@@ -176,6 +180,10 @@ impl AutoProcessor {
             let line = line.map_err(|e| format!("read harness: {e}"))?;
             lines += 1;
             if lines > MAX_EVENT_LINES {
+                // Reap the runaway child before bailing — otherwise it keeps
+                // running (and flooding) after we stop reading.
+                let _ = child.kill();
+                let _ = child.wait();
                 return Err("harness output exceeded line cap".into());
             }
             if line.trim().is_empty() {
@@ -193,8 +201,12 @@ impl AutoProcessor {
                 }
                 Ok(ChatEvent::PermissionRequest { id, .. }) => {
                     // A remote sender can never approve a tool — deny + continue.
+                    // Best-effort like the rest of the loop: a serialization
+                    // failure here must not abort the whole turn.
                     let deny = ChatInput::Permission { id, allow: false };
-                    let _ = writeln!(stdin, "{}", deny.to_line().map_err(|e| e.to_string())?);
+                    if let Ok(l) = deny.to_line() {
+                        let _ = writeln!(stdin, "{l}");
+                    }
                 }
                 _ => {} // other events (ready/restored/bye) / unparsable: ignore
             }
