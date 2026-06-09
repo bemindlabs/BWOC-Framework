@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.29.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `2.30.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.6.5`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 5 — *saṃvara* (trust-boundary & sandbox hardening), **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
-**Latest release:** [`v2026.6.9-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.9-0) *(2026-06-09 — **2.28.0**; minor — **`RouteTarget::Gateway`** transport for cross-NAT peer delivery via a `bwoc-gateway` relay. Prior: `v2026.6.8-0` 2.27.0 — Phase 5 saṃvara sandbox hardening)*
+**Latest release:** [`v2026.6.9-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.9-2) *(2026-06-09 — **2.30.0**; minor — **standalone agent**: gateway receive bridge, pinned-peer trust + replay defense, untrusted auto-process + reply, and a deployable container image. Prior: `v2026.6.9-1` 2.29.0 — OpenRouter provider backend)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-06-09T05:59:24Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-06-09T09:08:49Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
