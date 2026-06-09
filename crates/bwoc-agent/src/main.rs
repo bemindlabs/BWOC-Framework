@@ -19,6 +19,7 @@ use bwoc_core::manifest::Manifest;
 
 mod autoprocess;
 mod connectors;
+mod gateway;
 mod i18n;
 mod task_watch;
 mod trust;
@@ -258,6 +259,13 @@ where
     connectors.announce();
     connectors.tick(); // initial spawn (if active)
 
+    // Gateway receive bridge (standalone agents): if this agent declares an
+    // enabled gateway, spawn + keep alive the `bwoc-gateway-recv` subprocess
+    // that dials the relay and feeds inbound envelopes into the inbox above.
+    let mut gateway = gateway::GatewayRecvSupervisor::detect(cwd);
+    gateway.announce();
+    gateway.tick(); // initial spawn (if active)
+
     // Gateway auto-process (standalone agents): if opted in, a passing remote
     // (non-`user`) inbox envelope drives an UNTRUSTED harness turn that replies.
     let autoproc = autoprocess::AutoProcessor::detect(cwd);
@@ -289,6 +297,8 @@ where
                 }
                 // Keep the connector child alive (respawn on exit, backoff-bounded).
                 connectors.tick();
+                // Keep the gateway recv bridge alive (respawn = reconnect).
+                gateway.tick();
                 std::thread::sleep(Duration::from_millis(100));
             }
             Accepted::Fatal(e) => {
@@ -300,6 +310,7 @@ where
 
     // Graceful exit — stop the connector child, then remove PID file + endpoint.
     connectors.shutdown();
+    gateway.shutdown();
     if let Err(e) = std::fs::remove_file(&pid_path) {
         eprintln!(
             "bwoc-agent --serve: warning — failed to remove {}: {e}",
