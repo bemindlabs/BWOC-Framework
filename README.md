@@ -7,7 +7,7 @@ A framework for building AI coding agents grounded in Buddhist philosophy as an 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#tech-stack)
 [![Docs](https://img.shields.io/badge/docs-EN%20%7C%20TH-blue.svg)](modules/agent-template/docs/)
-[![Status](https://img.shields.io/badge/status-Phase%203%20%E2%9C%93%20%7C%20harness%20v1-green.svg)](#status)
+[![Status](https://img.shields.io/badge/status-Phase%205%20%E2%9C%93%20%7C%20sa%E1%B9%83vara-green.svg)](#status)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 Buddhist principles are used here as **engineering thinking aids** — not religious interpretation. Pali terms are section names; the content is technical.
