@@ -126,10 +126,11 @@ struct Args {
     #[arg(long, short = 'e', default_value = bwoc_harness::provider::client::DEFAULT_ENDPOINT)]
     endpoint: String,
 
-    /// Provider backend: `ollama` / `openai-compatible` (OpenAI-compatible HTTP)
-    /// or `claude` / `anthropic` (Anthropic Messages API, key from
-    /// `ANTHROPIC_API_KEY`). Selects which provider client renders the model;
-    /// the chat/agent loops are backend-neutral.
+    /// Provider backend: `ollama` / `openai-compatible` (OpenAI-compatible HTTP),
+    /// `openrouter` (OpenAI-compatible aggregator, key from `OPENROUTER_API_KEY`
+    /// / `~/.bwoc/secrets.toml`), or `claude` / `anthropic` (Anthropic Messages
+    /// API, key from `ANTHROPIC_API_KEY`). Selects which provider client renders
+    /// the model; the chat/agent loops are backend-neutral.
     #[arg(long, default_value = "ollama")]
     backend: String,
 
@@ -336,6 +337,7 @@ async fn run() -> HarnessResult<()> {
     if let Some(ref e) = reasoning_effort {
         println!("  effort   : {e}");
     }
+    ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> =
         build_provider(&args.backend, &args.endpoint, reasoning_effort);
 
@@ -734,8 +736,10 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 /// No setup output goes to stdout: the chat client reads that stream as JSON
 /// events. Status/warnings (model resolution, policy load) go to stderr.
 /// Build the provider client for `backend`. OpenAI-compatible backends
-/// (`ollama` / `openai-compatible`) hit `endpoint` directly; Anthropic backends
-/// (`claude` / `anthropic`) use the Messages API (key from `ANTHROPIC_API_KEY`),
+/// (`ollama` / `openai-compatible`) hit `endpoint` directly; `openrouter` is the
+/// same client with bearer auth + attribution headers, substituting OpenRouter's
+/// base URL when `--endpoint` is unset; Anthropic backends (`claude` /
+/// `anthropic`) use the Messages API (key from `ANTHROPIC_API_KEY`),
 /// substituting the Anthropic default endpoint when the caller left the
 /// OpenAI/Ollama default in place — i.e. a `claude` agent with no manifest
 /// `baseUrl`. `reasoning_effort` only applies to the OpenAI-compatible path.
@@ -744,17 +748,54 @@ fn build_provider(
     endpoint: &str,
     reasoning_effort: Option<String>,
 ) -> Arc<dyn ProviderClient> {
+    use bwoc_harness::provider::client as oai;
     match backend {
         "claude" | "anthropic" => {
-            let base = if endpoint == bwoc_harness::provider::client::DEFAULT_ENDPOINT {
+            let base = if endpoint == oai::DEFAULT_ENDPOINT {
                 bwoc_harness::provider::anthropic::ANTHROPIC_DEFAULT_ENDPOINT
             } else {
                 endpoint
             };
             Arc::new(AnthropicClient::new(base))
         }
+        "openrouter" => {
+            // OpenRouter is OpenAI-compatible, so it reuses OllamaClient — the
+            // only additions are bearer auth (key from OPENROUTER_API_KEY /
+            // secrets.toml) and the optional attribution headers. Swap the
+            // Ollama-localhost default for OpenRouter's base when the caller
+            // left `--endpoint` unset (mirrors the Anthropic default swap above).
+            let base = if endpoint == oai::DEFAULT_ENDPOINT {
+                oai::OPENROUTER_DEFAULT_ENDPOINT
+            } else {
+                endpoint
+            };
+            Arc::new(
+                OllamaClient::new(base)
+                    .with_api_key(Some(oai::resolve_openrouter_api_key()))
+                    .with_headers(oai::openrouter_headers())
+                    .with_reasoning_effort(reasoning_effort),
+            )
+        }
         _ => Arc::new(OllamaClient::new(endpoint).with_reasoning_effort(reasoning_effort)),
     }
+}
+
+/// Fail fast with an actionable message when a backend needs credentials that
+/// live outside the (generic) OpenAI-compatible client and would otherwise only
+/// surface as a bare `HTTP 401` at the first request. Mirrors
+/// [`AnthropicClient::require_key`]'s contract, but for `openrouter` — whose key
+/// the harness resolves, not the shared `OllamaClient`. A no-op for every other
+/// backend (vendor CLIs and plain Ollama need no key here).
+fn ensure_backend_credentials(backend: &str) -> HarnessResult<()> {
+    use bwoc_harness::provider::client as oai;
+    if backend == "openrouter" && oai::resolve_openrouter_api_key().trim().is_empty() {
+        return Err(bwoc_harness::error::HarnessError::Provider(format!(
+            "no OpenRouter API key — set `{env}` (e.g. `export {env}=sk-or-...`) or add an \
+             `[openrouter] api_key = \"sk-or-...\"` entry to ~/.bwoc/secrets.toml (chmod 600)",
+            env = oai::OPENROUTER_API_KEY_ENV
+        )));
+    }
+    Ok(())
 }
 
 async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<()> {
@@ -774,6 +815,7 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         }
         Err(_) => None,
     };
+    ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> =
         build_provider(&args.backend, &args.endpoint, reasoning_effort);
 
@@ -906,6 +948,17 @@ async fn load_system_prompt(workdir: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn ensure_backend_credentials_is_noop_for_non_openrouter() {
+        // Vendor CLIs and plain Ollama need no key at this gate — never errors
+        // regardless of the ambient OPENROUTER_API_KEY env. (The openrouter
+        // error path is env/home-dependent, so it's covered by the live smoke
+        // test rather than a race-prone unit test that mutates process env.)
+        for backend in ["ollama", "openai-compatible", "claude", "anthropic"] {
+            assert!(ensure_backend_credentials(backend).is_ok());
+        }
+    }
 
     #[tokio::test]
     async fn load_system_prompt_agents_md() {

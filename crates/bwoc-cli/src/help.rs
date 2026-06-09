@@ -227,6 +227,12 @@ binary, which drives the agentic loop against any OpenAI-compatible endpoint
 (default: http://localhost:11434/v1). Run `bwoc doctor` to check whether
 `bwoc-harness` is available and whether Ollama is reachable.
 
+The `openrouter` backend uses the same harness against OpenRouter, a hosted
+OpenAI-compatible aggregator that routes one key to any vendor's models
+(`anthropic/…`, `openai/…`, `google/…`). It needs an API key in
+`OPENROUTER_API_KEY` or `~/.bwoc/secrets.toml` (`[openrouter] api_key`,
+chmod 600); `baseUrl` is optional (defaults to https://openrouter.ai/api/v1).
+
 Three ways to set the backend:
   - At incarnation:   bwoc new my-agent --backend ollama
   - Manifest edit:    edit agents/<name>/config.manifest.json then update
