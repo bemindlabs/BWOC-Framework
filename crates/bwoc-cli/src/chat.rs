@@ -37,8 +37,8 @@ pub struct ChatArgs {
     pub tui: bool,
     /// Join a team's shared chat channel (HV3-3a): teammate replies are
     /// injected into context and this agent's replies broadcast back. Requires
-    /// `--tui` with a harness backend (ollama / openai-compatible); ignored
-    /// otherwise. The agent must be a member of the team.
+    /// `--tui` with a harness backend (ollama / openai-compatible / openrouter);
+    /// ignored otherwise. The agent must be a member of the team.
     pub team: Option<String>,
 }
 
@@ -112,7 +112,7 @@ pub fn run(args: ChatArgs) -> i32 {
     if team_chat.is_some() && !(args.tui && backend.uses_harness()) {
         eprintln!(
             "bwoc chat: --team needs --tui with a harness backend \
-             (ollama / openai-compatible); running this session solo."
+             (ollama / openai-compatible / openrouter); running this session solo."
         );
     }
 
@@ -131,7 +131,7 @@ pub fn run(args: ChatArgs) -> i32 {
         }
         eprintln!(
             "bwoc chat --tui: agent '{}' uses the '{}' backend, which the TUI can't drive \
-             (it only renders the bwoc-harness chat stream for ollama / openai-compatible). \
+             (it only renders the bwoc-harness chat stream for ollama / openai-compatible / openrouter). \
              Launching the backend CLI directly instead.",
             entry.id,
             backend.display_name()

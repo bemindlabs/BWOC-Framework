@@ -337,6 +337,7 @@ async fn run() -> HarnessResult<()> {
     if let Some(ref e) = reasoning_effort {
         println!("  effort   : {e}");
     }
+    ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> =
         build_provider(&args.backend, &args.endpoint, reasoning_effort);
 
@@ -779,6 +780,24 @@ fn build_provider(
     }
 }
 
+/// Fail fast with an actionable message when a backend needs credentials that
+/// live outside the (generic) OpenAI-compatible client and would otherwise only
+/// surface as a bare `HTTP 401` at the first request. Mirrors
+/// [`AnthropicClient::require_key`]'s contract, but for `openrouter` — whose key
+/// the harness resolves, not the shared `OllamaClient`. A no-op for every other
+/// backend (vendor CLIs and plain Ollama need no key here).
+fn ensure_backend_credentials(backend: &str) -> HarnessResult<()> {
+    use bwoc_harness::provider::client as oai;
+    if backend == "openrouter" && oai::resolve_openrouter_api_key().trim().is_empty() {
+        return Err(bwoc_harness::error::HarnessError::Provider(format!(
+            "no OpenRouter API key — set `{env}` (e.g. `export {env}=sk-or-...`) or add an \
+             `[openrouter] api_key = \"sk-or-...\"` entry to ~/.bwoc/secrets.toml (chmod 600)",
+            env = oai::OPENROUTER_API_KEY_ENV
+        )));
+    }
+    Ok(())
+}
+
 async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<()> {
     use bwoc_harness::chat_session::{self, ChatConfig};
 
@@ -796,6 +815,7 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         }
         Err(_) => None,
     };
+    ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> =
         build_provider(&args.backend, &args.endpoint, reasoning_effort);
 
@@ -928,6 +948,17 @@ async fn load_system_prompt(workdir: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn ensure_backend_credentials_is_noop_for_non_openrouter() {
+        // Vendor CLIs and plain Ollama need no key at this gate — never errors
+        // regardless of the ambient OPENROUTER_API_KEY env. (The openrouter
+        // error path is env/home-dependent, so it's covered by the live smoke
+        // test rather than a race-prone unit test that mutates process env.)
+        for backend in ["ollama", "openai-compatible", "claude", "anthropic"] {
+            assert!(ensure_backend_credentials(backend).is_ok());
+        }
+    }
 
     #[tokio::test]
     async fn load_system_prompt_agents_md() {
