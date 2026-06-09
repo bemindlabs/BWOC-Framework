@@ -41,6 +41,15 @@ const GIT_HARDENING: &[&str] = &[
     "core.sshCommand=/bin/false",
     "diff.external=",
     "protocol.ext.allow=never",
+    // Pin the excludes file to a jail-allowed path. git resolves
+    // `core.excludesFile` (default `$XDG_CONFIG_HOME/git/ignore`,
+    // i.e. `~/.config/git/ignore`) for `diff`/`ls-files`. Inside the FS jail
+    // that path is unreachable: when the file *exists* on the host, git aborts
+    // `fatal: cannot use <path> as an exclude file` (exit 128) and the diff is
+    // silently lost — a worker that only touched files reads as a no-op. Forcing
+    // it to /dev/null (already in the jail's rw dev allow-list) makes git skip
+    // user excludes entirely and closes one more config-driven external-read.
+    "core.excludesFile=/dev/null",
 ];
 
 /// Final assistant messages can be long; the envelope keeps a bounded preview
@@ -413,5 +422,53 @@ mod tests {
             DiffSummary::from_worktree(tmp.path()),
             DiffSummary::default()
         );
+    }
+
+    // Regression: an excludes file resolved OUTSIDE the worktree must not break
+    // the diff. Inside the FS jail such a path is unreadable, and a plain git
+    // `diff`/`ls-files` aborts `fatal: cannot use <p> as an exclude file`
+    // (exit 128) — losing the diff entirely. `GIT_HARDENING` pins
+    // `core.excludesFile=/dev/null`, so git skips it and the count survives.
+    // Hermetic: points `core.excludesFile` at a sibling temp dir (no global env
+    // mutation), reproducing the host's `~/.config/git/ignore` case on any CI.
+    #[test]
+    fn diff_summary_survives_external_excludes_file() {
+        let repo = TempDir::new().unwrap();
+        let r = repo.path();
+        // Excludes file lives outside the worktree → outside the jail's rw set.
+        let outside = TempDir::new().unwrap();
+        let excludes = outside.path().join("ignore");
+        std::fs::write(&excludes, "*.log\n").unwrap();
+
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(r)
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "git {args:?}"
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t.t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "core.excludesFile", excludes.to_str().unwrap()]);
+        std::fs::write(r.join("tracked.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "seed"]);
+
+        std::fs::write(r.join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(r.join("new.txt"), "x\n").unwrap();
+
+        let d = DiffSummary::from_worktree(r);
+        assert_eq!(
+            d.files_changed, 2,
+            "excludes outside jail must not zero: {d:?}"
+        );
+        assert_eq!(d.insertions, 1);
     }
 }
