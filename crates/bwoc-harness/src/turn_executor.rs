@@ -41,12 +41,13 @@
 //! memory bomb is NOT contained by this layer.
 //!
 //! **Best-effort only — NOT full containment:**
-//!   - `RLIMIT_NPROC` — soft = live per-UID process count + 128 (RELATIVE, not an
+//!   - `RLIMIT_NPROC` — soft = live per-UID task count + 128 (RELATIVE, not an
 //!     absolute per-turn cap). Even where enforced it is per-UID, so it bounds a
 //!     runaway fork but does **not** isolate this turn's process tree from the
 //!     agent's other processes, and a busy host can perturb it. This is
 //!     **PARTIAL** fork-bomb containment. Enforced on **Linux** (the kernel's
-//!     per-UID counter and `/proc` enumeration agree); **macOS accepts the
+//!     per-UID counter is over tasks/threads, which the usage measure now matches
+//!     by summing `/proc/<pid>/task`); **macOS accepts the
 //!     `setrlimit` but does not reliably enforce a usage-relative cap**, so on
 //!     macOS it provides no real fork containment. The value is still set (cheap,
 //!     finite, defence-in-depth) and the snapshot test proves it is finite.
@@ -350,6 +351,15 @@ fn current_uid() -> u32 {
 /// Best-effort count of live processes owned by this UID (PARENT side; alloc OK).
 /// Backs the RELATIVE NPROC limit. A conservative non-zero floor is used if the
 /// measurement is unavailable so the cap is never absurdly small.
+///
+/// Linux counts **tasks (threads), not processes**: the kernel enforces
+/// `RLIMIT_NPROC` against the per-UID task count (every thread bumps
+/// `user->processes` in `copy_process`), so the relative headroom must be
+/// measured in the same unit. Counting only `/proc/<pid>` entries under-reports
+/// usage on a heavily-threaded UID (a host running tokio/docker/etc. has far
+/// more threads than processes) — the resulting limit can land *below* current
+/// usage, and the very next `clone()` in the executor child fails `EAGAIN`. So
+/// for each owned process we add its `/proc/<pid>/task` thread count.
 #[cfg(all(unix, target_os = "linux"))]
 fn current_uid_proc_count() -> u64 {
     use std::os::unix::fs::MetadataExt;
@@ -364,7 +374,12 @@ fn current_uid_proc_count() -> u64 {
             }
             if let Ok(meta) = std::fs::metadata(ent.path()) {
                 if meta.uid() == uid {
-                    count += 1;
+                    // Tasks (threads) of this process — the unit the kernel caps.
+                    // A process whose task dir vanished still counts its main thread.
+                    match std::fs::read_dir(ent.path().join("task")) {
+                        Ok(tasks) => count += (tasks.flatten().count() as u64).max(1),
+                        Err(_) => count += 1,
+                    }
                 }
             }
         }
@@ -1312,6 +1327,44 @@ mod tests {
         assert!(ct_eq(b"abc", b"abc"));
         assert!(!ct_eq(b"abc", b"abd"));
         assert!(!ct_eq(b"abc", b"ab"));
+    }
+
+    // Regression: the kernel enforces RLIMIT_NPROC over TASKS (threads), so the
+    // relative-usage measure must count threads. Spawn N threads in THIS single
+    // process and assert the count rises with them — counting `/proc/<pid>` alone
+    // would not move (still one process), starving the executor's NPROC headroom
+    // on a heavily-threaded host. Threshold leaves slack for unrelated churn in
+    // the measurement window; pre-fix the delta is ~0 and this fails.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nproc_usage_counts_threads_not_processes() {
+        use std::sync::{Arc, Barrier};
+        const N: usize = 24;
+        let before = current_uid_proc_count();
+        // `live` releases once all N threads are running; `done` holds them alive
+        // until main has measured.
+        let live = Arc::new(Barrier::new(N + 1));
+        let done = Arc::new(Barrier::new(N + 1));
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let (l, d) = (live.clone(), done.clone());
+                std::thread::spawn(move || {
+                    l.wait();
+                    d.wait();
+                })
+            })
+            .collect();
+        live.wait(); // all N threads are now live
+        let during = current_uid_proc_count();
+        done.wait(); // let them exit
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert!(
+            during >= before + (N as u64) * 3 / 4,
+            "task count must track the {N} live threads (before={before}, during={during}); \
+             counting processes alone would not move"
+        );
     }
 
     #[test]
