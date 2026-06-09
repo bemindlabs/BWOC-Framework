@@ -305,6 +305,48 @@ impl Manifest {
         fs::write(path, format!("{json}\n"))?;
         Ok(())
     }
+
+    /// Build a **minimal sender manifest for a pinned remote peer** — an agent
+    /// known only by a pinned ed25519 public key (e.g. a standalone agent
+    /// reached over the gateway, recorded in `.bwoc/peers.toml`). It carries
+    /// just the identity the trust gate needs: the pinned `signingPublicKey` and
+    /// the `declared` qualities the operator vouched for. All other fields are
+    /// placeholders — this manifest is synthesized in-memory, never persisted.
+    pub fn pinned_peer(
+        agent_id: &str,
+        signing_public_key: String,
+        declared: TrustDeclared,
+    ) -> Self {
+        Self {
+            name: agent_id.trim_start_matches("agent-").to_string(),
+            agent_id: agent_id.to_string(),
+            agent_role: "pinned remote peer".into(),
+            primary_model: String::new(),
+            fallback_model: None,
+            auto_models: None,
+            reasoning_effort: None,
+            memory_path: "memories/".into(),
+            sessions_path: None,
+            deep_memory_cmd: None,
+            lint_cmd: String::new(),
+            format_cmd: String::new(),
+            test_cmd: String::new(),
+            build_cmd: String::new(),
+            worktree_base: None,
+            scope_description: None,
+            out_of_scope: None,
+            backend: None,
+            base_url: None,
+            trust: Some(TrustBlock {
+                schema_version: 1,
+                declared,
+                required_trust: vec![],
+                mode: None,
+                signing_public_key: Some(signing_public_key),
+            }),
+            version: "2.0".into(),
+        }
+    }
 }
 
 #[cfg(test)]
