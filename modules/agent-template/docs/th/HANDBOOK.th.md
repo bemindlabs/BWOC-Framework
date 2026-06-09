@@ -68,9 +68,9 @@
 
 ## 5. คุยกับผู้อื่น
 
-คุณติดต่อ agent อื่นผ่าน `interconnect/` (`AGENTS.md §3`, `§5.3`):
+คุณติดต่อ agent อื่นผ่าน `interconnect/` (`AGENTS.md §3`, `§5.3`; รูปแบบข้อความ + envelope ที่เป็นรูปธรรมอยู่ใน `interconnect/messaging.md`):
 
-- **ส่ง (Send)** — `bwoc send <agent> "…" --from <self>` ในฐานะ agent ที่มีชื่อ ข้อความของคุณถูก **sign**; trust gate ฝั่งรับ verify ต้นทาง `user` เปล่า ๆ ไว้สำหรับผู้ใช้ที่เป็นมนุษย์เท่านั้น
+- **ส่ง (Send)** — `bwoc send <agent> "…" --from <self>` ในฐานะ agent ที่มีชื่อ ข้อความของคุณถูก **sign เมื่อ agent ของคุณมี signing key** (ปกติของ agent ที่ incarnate แล้ว); trust gate ฝั่งรับ verify ลายเซ็นนั้น ต้นทาง `user` เปล่า ๆ ไว้สำหรับผู้ใช้ที่เป็นมนุษย์เท่านั้น
 - **รับ (Receive)** — envelope ขาเข้าลง inbox และต้องผ่าน **Kalyāṇamitta-7 trust gate** ก่อนคุณลงมือ: verify ลายเซ็น, resolve ผู้ส่ง (local registry, `routes.toml`, หรือ key ที่ pin ใน `peers.toml`), เช็ค replay envelope ที่ verify ไม่ได้หรือ replay จะถูกปฏิเสธ ไม่ส่งต่อ
 - **Routes** — `routes.toml` เลือก transport ต่อ peer: `local` (เครื่องเดียวกัน), `mqtt` (broker ร่วม), หรือ `gateway` (ข้าม NAT/อินเทอร์เน็ตผ่าน `bwoc-gateway` relay) contract ความเชื่อใจแบบ signed-envelope เดียวกันไม่ว่า transport ใด
 - **Teams** — `bwoc team list`; task list ร่วมประสาน Saṅgha เพิ่ม/ลบสมาชิกด้วยการแก้ `.bwoc/teams/<team>.toml`
@@ -83,7 +83,7 @@
 
 คุณรันบน backend ใดก็ได้โดยไม่เปลี่ยนเนื้อหา (*Samānattatā*, `AGENTS.md §0`, `§5.1`):
 
-- `AGENTS.md` คือไฟล์เดียว; `CLAUDE.md`, `CODEX.md`, `AGY.md`, `KIMI.md`, `OPENAI.md`, `OLLAMA.md` เป็น **symlink** ไปหามัน แก้ที่หนึ่งคือแก้ทั้งหมด
+- `AGENTS.md` คือไฟล์เดียว; entrypoint ของ backend (`CODEX.md`, `AGY.md`, `KIMI.md`, `OPENAI.md`, `OLLAMA.md` — และเมื่อ incarnate แล้ว `CLAUDE.md`) เป็น **symlink** ไปหามัน แก้ที่ target คือแก้ทั้งหมด (ใน *template* เอง `CLAUDE.md` เป็นข้อยกเว้นเดียว — ไฟล์เดี่ยวที่มีคำแนะนำเฉพาะ Claude Code; การ incarnate จะเปลี่ยนมันเป็น symlink เหมือนตัวอื่น)
 - ค่าที่ตั้งได้ทั้งหมดเป็น placeholder `{{camelCase}}` — อย่า hardcode model id หรือชื่อ vendor ใน `AGENTS.md`
 - เพิ่ม backend คือ symlink เดียว เปลี่ยน backend คือเปลี่ยนตัวรัน ไม่ใช่พฤติกรรมของคุณ
 
