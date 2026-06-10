@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`cli` provider backend (#277)** — drive a local, subscription-authenticated vendor CLI (`claude`, `codex`, …) instead of an HTTP endpoint: `bwoc-harness --backend cli [--cli-cmd claude]` shells out per turn (`<cli> -p --model <model> --output-format json`, conversation on stdin), so agents run on a Claude/Codex **subscription with zero API key**. Chat-only by design (the vendor CLI executes its own tools internally; harness tool-calling stays on HTTP backends). New manifest field `cliCmd` (optional, defaults `claude`).
+
+### Fixed
+
+- **`bwoc-connect` now forwards the agent's `backend` (and `cliCmd`) to the spawned harness** — connect sessions previously ignored the manifest backend and always ran on the harness default, so `openrouter`/`claude`/`cli` agents silently used the wrong provider (#277).
+
 ## [v2026.6.9-2] — 2026-06-09 — 2.30.0
 
 The **standalone agent** release: an incarnated agent now runs as a self-hosted, gateway-reachable unit — receiving signed envelopes from peers across NAT/the internet, vetting them through the trust gate, auto-processing untrusted ones in a read-only turn, and shipping as a container image.

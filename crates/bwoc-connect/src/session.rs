@@ -27,6 +27,12 @@ pub struct HarnessSessionFactory {
     agent_dir: PathBuf,
     model: Option<String>,
     endpoint: Option<String>,
+    /// Manifest `backend`, forwarded as `--backend` so a `cli` / `openrouter`
+    /// / `claude` agent gets the right provider (#277 — without this, connect
+    /// sessions silently ran on the harness default backend).
+    backend: Option<String>,
+    /// Manifest `cliCmd`, forwarded as `--cli-cmd` for `backend = "cli"`.
+    cli_cmd: Option<String>,
     /// When set, sessions are spawned with `--team-chat <path>` so they join
     /// the team's shared `chat.jsonl` (group rooms, PR2). `None` = solo (DM).
     team_chat: Option<PathBuf>,
@@ -43,11 +49,15 @@ impl HarnessSessionFactory {
         let manifest = Manifest::load_from_path(&agent_dir.join("config.manifest.json")).ok();
         let model = manifest.as_ref().map(|m| m.primary_model.clone());
         let endpoint = manifest.as_ref().and_then(|m| m.base_url.clone());
+        let backend = manifest.as_ref().and_then(|m| m.backend.clone());
+        let cli_cmd = manifest.as_ref().and_then(|m| m.cli_cmd.clone());
         Ok(Self {
             harness,
             agent_dir,
             model,
             endpoint,
+            backend,
+            cli_cmd,
             team_chat: None,
         })
     }
@@ -67,6 +77,8 @@ impl SessionFactory for HarnessSessionFactory {
             &self.agent_dir,
             self.model.as_deref(),
             self.endpoint.as_deref(),
+            self.backend.as_deref(),
+            self.cli_cmd.as_deref(),
             self.team_chat.as_deref(),
         )
         .await?;
@@ -86,6 +98,8 @@ impl HarnessSession {
         agent_dir: &Path,
         model: Option<&str>,
         endpoint: Option<&str>,
+        backend: Option<&str>,
+        cli_cmd: Option<&str>,
         team_chat: Option<&Path>,
     ) -> Result<Self, ConnectError> {
         let mut cmd = Command::new(harness);
@@ -95,6 +109,12 @@ impl HarnessSession {
         }
         if let Some(e) = endpoint {
             cmd.arg("--endpoint").arg(e);
+        }
+        if let Some(b) = backend {
+            cmd.arg("--backend").arg(b);
+        }
+        if let Some(c) = cli_cmd {
+            cmd.arg("--cli-cmd").arg(c);
         }
         if let Some(tc) = team_chat {
             cmd.arg("--team-chat").arg(tc);
