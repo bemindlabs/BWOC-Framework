@@ -1,5 +1,5 @@
 //! CLI-backed provider: drive a local, subscription-authenticated vendor CLI
-//! (`claude`, `codex`, `gemini`, …) instead of an HTTP endpoint (#277).
+//! instead of an HTTP endpoint (#277).
 //!
 //! Why: orgs that block API keys still have seats on Claude/Codex
 //! **subscriptions**, whose CLIs authenticate via their own OAuth login. This
@@ -7,10 +7,15 @@
 //! and the TUI) run on those models with **zero API key**: each turn shells out
 //! to `<cli> -p --model <model> --output-format json`, piping the conversation
 //! on **stdin** (no `ARG_MAX` limit) and parsing the JSON envelope the CLI
-//! prints (`{"result": "...", "is_error": false, ...}` — the documented
-//! `claude -p` print-mode shape, which `codex exec --json`-era CLIs mirror
-//! closely enough that the parser falls back to raw stdout when no JSON
-//! envelope is found).
+//! prints (`{"result": "...", "is_error": false, ...}`).
+//!
+//! **Targets the `claude` CLI's print mode.** The flag set (`-p`, `--model`,
+//! `--output-format json`) and the result envelope are Claude Code's
+//! documented non-interactive contract. Another vendor CLI works here only if
+//! it accepts the same flags — otherwise point `--cli-cmd` at a small wrapper
+//! script that adapts them. The raw-stdout fallback below tolerates a
+//! different *output* shape (plain text instead of the JSON envelope); it does
+//! not adapt *input* flags.
 //!
 //! **Chat-only by design.** Harness tool-calling is NOT available on this
 //! backend: a vendor CLI executes its *own* tools internally and its
@@ -61,13 +66,23 @@ impl CliClient {
 
     /// Flatten the OpenAI-shaped history into one print-mode prompt. Tool
     /// messages are folded in as labelled context so a mixed history (from a
-    /// session that previously ran on an HTTP backend) still reads coherently.
+    /// session that previously ran on an HTTP backend) still reads coherently:
+    /// a tool-call-only assistant message (content `None`, `tool_calls` set)
+    /// becomes a compact `[invoked tools: …]` note so the `Tool result:` lines
+    /// that follow it keep their antecedent instead of dangling.
     fn flatten(messages: &[ChatMessage]) -> String {
         let mut out = String::new();
         for m in messages {
-            let content = m.content.as_deref().unwrap_or("");
+            let mut content = m.content.as_deref().unwrap_or("").to_string();
             if content.is_empty() {
-                continue;
+                match &m.tool_calls {
+                    Some(calls) if !calls.is_empty() => {
+                        let names: Vec<&str> =
+                            calls.iter().map(|c| c.function.name.as_str()).collect();
+                        content = format!("[invoked tools: {}]", names.join(", "));
+                    }
+                    _ => continue,
+                }
             }
             let label = match m.role {
                 Role::System => "System",
@@ -77,7 +92,7 @@ impl CliClient {
             };
             out.push_str(label);
             out.push_str(":\n");
-            out.push_str(content);
+            out.push_str(&content);
             out.push_str("\n\n");
         }
         out.push_str("Assistant:\n");
@@ -113,21 +128,49 @@ impl CliClient {
             .map_err(|e| HarnessError::Provider(format!("cli backend: write prompt: {e}")))?;
         drop(stdin); // EOF so the CLI starts
 
-        let output = tokio::time::timeout(CLI_TURN_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| {
-                HarnessError::TransientProvider(format!(
+        // Collect output with a deadline, keeping ownership of `child` so the
+        // timeout branch can explicitly kill AND reap (no zombie left for the
+        // runtime's background reaper; `kill_on_drop` stays as a safety net for
+        // cancellation).
+        let mut stdout_pipe = child.stdout.take().ok_or_else(|| {
+            HarnessError::Provider("cli backend: failed to open child stdout".into())
+        })?;
+        let mut stderr_pipe = child.stderr.take().ok_or_else(|| {
+            HarnessError::Provider("cli backend: failed to open child stderr".into())
+        })?;
+        let collect = async {
+            use tokio::io::AsyncReadExt;
+            let mut out_buf = Vec::new();
+            let mut err_buf = Vec::new();
+            let (o, e, status) = tokio::join!(
+                stdout_pipe.read_to_end(&mut out_buf),
+                stderr_pipe.read_to_end(&mut err_buf),
+                child.wait()
+            );
+            o.map_err(|e| HarnessError::Provider(format!("cli backend: read stdout: {e}")))?;
+            e.map_err(|e| HarnessError::Provider(format!("cli backend: read stderr: {e}")))?;
+            let status =
+                status.map_err(|e| HarnessError::Provider(format!("cli backend: wait: {e}")))?;
+            Ok::<_, HarnessError>((status, out_buf, err_buf))
+        };
+        let (status, out_buf, err_buf) = match tokio::time::timeout(CLI_TURN_TIMEOUT, collect).await
+        {
+            Ok(res) => res?,
+            Err(_) => {
+                // `collect` (which borrowed `child`) is dropped; kill + reap.
+                let _ = child.kill().await; // SIGKILL + await reaps the zombie
+                return Err(HarnessError::TransientProvider(format!(
                     "cli backend: `{}` exceeded {}s for one turn (killed)",
                     self.cmd,
                     CLI_TURN_TIMEOUT.as_secs()
-                ))
-            })?
-            .map_err(|e| HarnessError::Provider(format!("cli backend: wait: {e}")))?;
+                )));
+            }
+        };
 
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&out_buf).into_owned();
+        let stderr = String::from_utf8_lossy(&err_buf).into_owned();
 
-        if !output.status.success() {
+        if !status.success() {
             let detail = if stderr.trim().is_empty() {
                 &stdout
             } else {
@@ -142,7 +185,7 @@ impl CliClient {
             }
             return Err(HarnessError::Provider(format!(
                 "cli backend: `{}` exited {}: {}",
-                self.cmd, output.status, detail
+                self.cmd, status, detail
             )));
         }
 
@@ -280,6 +323,26 @@ mod tests {
         assert!(prompt.contains("Assistant:\nhi!\n\n"));
         assert!(prompt.contains("Human:\nhow are you?\n\n"));
         assert!(prompt.ends_with("Assistant:\n"));
+    }
+
+    #[test]
+    fn flatten_renders_tool_call_only_assistant_as_note() {
+        use super::super::types::{FunctionCall, ToolCall};
+        let call = ToolCall {
+            id: "c1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let prompt = CliClient::flatten(&[
+            msg(Role::User, "do it"),
+            ChatMessage::assistant(None, Some(vec![call])),
+            ChatMessage::tool_result("c1", "read_file", "file contents"),
+        ]);
+        assert!(prompt.contains("Assistant:\n[invoked tools: read_file]"));
+        assert!(prompt.contains("Tool result:\nfile contents"));
     }
 
     #[test]
