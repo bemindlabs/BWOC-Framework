@@ -242,10 +242,14 @@ cmd_track() {
   #      spawns this entry with no argv, sets BWOC_OKR_OPERATION=track, and pipes
   #      {"operation":"track","key_result_id":"...","current":N,"evidence":"..."}.
   #   2. argv flags — for hand-invocation / smoke tests.
-  # Read stdin only when it is not a terminal, so an interactive `okr.sh track
-  # --key-result ...` never blocks waiting on stdin.
+  # Read stdin only on the dispatcher path: no argv AND the dispatcher's
+  # BWOC_OKR_OPERATION marker (SPEC §protocol). A bare non-TTY check would
+  # blocking-`cat` any open-but-idle stdin — CI steps, cron, pipelines — and
+  # hang forever (#279); argv invocations must never depend on stdin.
   local request=""
-  if [[ ! -t 0 ]]; then request="$(cat || true)"; fi
+  if [[ $# -eq 0 && -n "${BWOC_OKR_OPERATION:-}" && ! -t 0 ]]; then
+    request="$(cat || true)"
+  fi
   if [[ -n "$request" ]] && printf '%s' "$request" | jq -e 'type == "object"' >/dev/null 2>&1; then
     krid="$(printf '%s' "$request" | jq -r '.key_result_id // empty')"
     newcur="$(printf '%s' "$request" | jq -r 'if .current == null then "" else (.current | tostring) end')"
@@ -286,27 +290,41 @@ cmd_track() {
   local asof; asof="$(date -u +%Y-%m-%d)"
 
   # Rewrite the target block: replace `current`, optionally `evidence`, and
-  # re-stamp `as_of` (dropping any existing as_of, re-emitting it right after
-  # evidence). Reconstructs lines via index/substr rather than sub() so an `&`
-  # in an evidence value is never reinterpreted. Atomic via temp + mv.
+  # re-stamp `as_of` (dropping any existing as_of, re-emitting it after
+  # evidence). When the block has NO existing `evidence` line, the tail
+  # (evidence-if-requested + as_of) is flushed at the END of the block — next
+  # `[[key_result]]` header or EOF — so neither is silently lost (#278).
+  # Reconstructs lines via index/substr rather than sub() so an `&` in an
+  # evidence value is never reinterpreted. Atomic via temp + mv.
   local tmp; tmp="$(mktemp -t workspace-okrs.XXXXXX)"
   awk -v id="$krid" -v newcur="$newcur" -v setev="$setev" -v evk="$evkind" -v evv="$evval" -v asof="$asof" '
     function strval(line) { sub(/^[^=]*=[ \t]*/, "", line); gsub(/^"|"[ \t]*$/, "", line); return line }
-    /^\[\[key_result\]\]/ { intarget=0; print; next }
+    # Emit the pending tail for the target block when it never had an
+    # evidence line of its own: the requested evidence (if any) + as_of.
+    function flush_tail() {
+      if (intarget && !tail_done) {
+        if (setev == "1") { print "evidence      = { kind = \"" evk "\", value = \"" evv "\" }" }
+        print "as_of         = \"" asof "\""
+        tail_done = 1
+      }
+    }
+    /^\[\[key_result\]\]/ { flush_tail(); intarget=0; tail_done=0; print; next }
     /^[ \t]*key_result_id[ \t]*=/ { intarget = (strval($0) == id) ? 1 : 0; print; next }
     {
       if (intarget) {
         if ($0 ~ /^[ \t]*current[ \t]*=/) { pre=substr($0, 1, index($0, "=")); print pre " " newcur; next }
-        if ($0 ~ /^[ \t]*as_of[ \t]*=/)   { next }   # dropped; re-emitted after evidence
-        if ($0 ~ /^[ \t]*evidence[ \t]*=/) {
+        if ($0 ~ /^[ \t]*as_of[ \t]*=/)   { next }   # dropped; re-emitted with the tail
+        if (!tail_done && $0 ~ /^[ \t]*evidence[ \t]*=/) {
           pre = substr($0, 1, index($0, "="));
           if (setev == "1") { print pre " { kind = \"" evk "\", value = \"" evv "\" }" } else { print }
           print "as_of         = \"" asof "\"";
+          tail_done = 1
           next
         }
       }
       print
     }
+    END { flush_tail() }
   ' "$KEY_RESULTS_FILE" > "$tmp" || { rm -f "$tmp"; die "track: failed to rewrite $KEY_RESULTS_FILE" 1; }
   mv "$tmp" "$KEY_RESULTS_FILE"
 
