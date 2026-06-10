@@ -78,7 +78,8 @@ pub struct Manifest {
     /// Which spawn backend this agent uses.
     ///
     /// Accepted values: `"claude"` | `"agy"` | `"codex"` | `"kimi"` |
-    /// `"ollama"` | `"openai-compatible"` | `"openrouter"`.
+    /// `"ollama"` | `"openai-compatible"` | `"openrouter"` | `"cli"`
+    /// (subscription-authenticated local vendor CLI; see `cliCmd`).
     ///
     /// Required for `openai-compatible`; optional/ignored for vendor backends
     /// that are selected on the CLI with `--backend`. `"openrouter"` (hosted
@@ -88,6 +89,14 @@ pub struct Manifest {
     /// backend without an explicit flag.
     #[serde(rename = "backend", skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// Vendor CLI executable for `backend = "cli"` (e.g. `"claude"`, `"codex"`).
+    ///
+    /// The harness invokes it per turn as
+    /// `<cliCmd> -p --model <model> --output-format json` with the conversation
+    /// on stdin — subscription auth, no API key (#277). Optional; defaults to
+    /// `"claude"`. Ignored by every other backend.
+    #[serde(rename = "cliCmd", skip_serializing_if = "Option::is_none")]
+    pub cli_cmd: Option<String>,
     /// Base URL of the OpenAI-compatible inference endpoint.
     ///
     /// Required when `backend` is `"openai-compatible"`. Passed to the harness
@@ -336,6 +345,7 @@ impl Manifest {
             scope_description: None,
             out_of_scope: None,
             backend: None,
+            cli_cmd: None,
             base_url: None,
             trust: Some(TrustBlock {
                 schema_version: 1,
@@ -373,6 +383,7 @@ mod tests {
             scope_description: None,
             out_of_scope: None,
             backend: None,
+            cli_cmd: None,
             base_url: None,
             trust: None,
             version: "2.0".into(),

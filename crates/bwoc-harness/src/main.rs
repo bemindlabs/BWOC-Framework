@@ -13,7 +13,7 @@ use bwoc_harness::{
     agent_loop::{LoopConfig, VettedMode, run_loop},
     error::HarnessResult,
     policy::{HarnessPolicy, Policy},
-    provider::{AnthropicClient, ChatMessage, OllamaClient, ProviderClient},
+    provider::{AnthropicClient, ChatMessage, CliClient, OllamaClient, ProviderClient},
     tools::{ToolContext, registry::default_registry},
 };
 
@@ -128,11 +128,19 @@ struct Args {
 
     /// Provider backend: `ollama` / `openai-compatible` (OpenAI-compatible HTTP),
     /// `openrouter` (OpenAI-compatible aggregator, key from `OPENROUTER_API_KEY`
-    /// / `~/.bwoc/secrets.toml`), or `claude` / `anthropic` (Anthropic Messages
-    /// API, key from `ANTHROPIC_API_KEY`). Selects which provider client renders
-    /// the model; the chat/agent loops are backend-neutral.
+    /// / `~/.bwoc/secrets.toml`), `claude` / `anthropic` (Anthropic Messages
+    /// API, key from `ANTHROPIC_API_KEY`), or `cli` (local
+    /// subscription-authenticated vendor CLI via `--cli-cmd`; **no API key**,
+    /// chat-only). Selects which provider client renders the model; the
+    /// chat/agent loops are backend-neutral.
     #[arg(long, default_value = "ollama")]
     backend: String,
+
+    /// Vendor CLI executable for `--backend cli` (e.g. `claude`, `codex`).
+    /// Invoked per turn as `<cli-cmd> -p --model <model> --output-format json`
+    /// with the conversation on stdin. Ignored by other backends.
+    #[arg(long, default_value = bwoc_harness::provider::cli::DEFAULT_CLI_CMD)]
+    cli_cmd: String,
 
     /// Maximum number of agentic turns before giving up.
     #[arg(long, default_value_t = 20)]
@@ -338,8 +346,12 @@ async fn run() -> HarnessResult<()> {
         println!("  effort   : {e}");
     }
     ensure_backend_credentials(&args.backend)?;
-    let provider: Arc<dyn ProviderClient> =
-        build_provider(&args.backend, &args.endpoint, reasoning_effort);
+    let provider: Arc<dyn ProviderClient> = build_provider(
+        &args.backend,
+        &args.endpoint,
+        &args.cli_cmd,
+        reasoning_effort,
+    );
 
     // ── Auto model selection (primaryModel: "auto") ───────────────────────
     // When the agent's manifest declares `primaryModel: "auto"`, `bwoc run`
@@ -746,10 +758,14 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 fn build_provider(
     backend: &str,
     endpoint: &str,
+    cli_cmd: &str,
     reasoning_effort: Option<String>,
 ) -> Arc<dyn ProviderClient> {
     use bwoc_harness::provider::client as oai;
     match backend {
+        // Local subscription-authenticated vendor CLI (#277): one subprocess
+        // per turn, no key, chat-only (the CLI runs its own tools internally).
+        "cli" => Arc::new(CliClient::new(cli_cmd)),
         "claude" | "anthropic" => {
             let base = if endpoint == oai::DEFAULT_ENDPOINT {
                 bwoc_harness::provider::anthropic::ANTHROPIC_DEFAULT_ENDPOINT
@@ -816,8 +832,12 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         Err(_) => None,
     };
     ensure_backend_credentials(&args.backend)?;
-    let provider: Arc<dyn ProviderClient> =
-        build_provider(&args.backend, &args.endpoint, reasoning_effort);
+    let provider: Arc<dyn ProviderClient> = build_provider(
+        &args.backend,
+        &args.endpoint,
+        &args.cli_cmd,
+        reasoning_effort,
+    );
 
     if !args.skip_model_check {
         provider.validate_model(&args.model).await?;
