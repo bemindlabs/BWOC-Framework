@@ -6,14 +6,13 @@ Phase 5 post-release CI hygiene (tianting t17). The roundtrip-based `bwoc-harnes
 
 - `.github/workflows/ci.yml` build-and-test matrix:
   - `cargo test --workspace` → `--exclude bwoc-harness`
-  - new step: `cargo test -p bwoc-harness --lib --bins` (unit tests — no fork helpers, stay parallel)
-  - new step: `cargo test -p bwoc-harness --tests -- --test-threads=1` (integration bins serial)
+  - new step: `cargo test -p bwoc-harness -- --test-threads=1` (every harness test binary serial)
   - `sandbox_escape` (test-redteam) step also gets `-- --test-threads=1` — same roundtrip-based suite
 
 ## Decisions
 
 - **CI-side fix, not a serial lock in `roundtrip()`**: a process-wide mutex in src would serialize production turn spawns to cure a test-runner-only race — wrong layer (mattaññutā). Task wording allowed either; chose the one with zero prod impact.
-- Verified fork helpers (`run_isolated_selftest`/`run_isolated_forged`) are referenced only from `tests/*.rs`, so harness unit tests keep default parallelism.
+- **First attempt kept unit tests parallel** (fork helpers are referenced only from `tests/*.rs`) — and CI immediately disproved it: `provider::cli::tests::subprocess::complete_falls_back_to_raw_stdout` failed with **ETXTBSY (err 26)** on ubuntu. Second race in the same family: unit tests write+exec fake-CLI scripts, and a sibling thread's fork inherits the still-open write-fd, leaving the script "text file busy" at exec. So the whole crate runs `--test-threads=1`; the EBADFD task framing undercounted the racing surfaces.
 
 ## Status / deferred
 
