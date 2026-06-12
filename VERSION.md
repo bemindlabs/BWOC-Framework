@@ -7,7 +7,7 @@
 **Phase:** Phase 5 — *saṃvara* (trust-boundary & sandbox hardening), **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
 **Latest release:** [`v2026.6.9-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.9-2) *(2026-06-09 — **2.30.0**; minor — **standalone agent**: gateway receive bridge, pinned-peer trust + replay defense, untrusted auto-process + reply, and a deployable container image. Prior: `v2026.6.9-1` 2.29.0 — OpenRouter provider backend)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-06-12T07:59:30Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-06-12T09:17:19Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
