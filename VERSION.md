@@ -1,6 +1,6 @@
 # Version
 
-> **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on every Claude Code edit. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
+> **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
 **Software-Version:** `2.30.19`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.6.6`   *(canonical here — bumped on `.md` edits)*
@@ -64,7 +64,7 @@ Same-day reissues bump the patch number: `v2026.5.22-0`, `v2026.5.22-1`. CalVer 
 |---|---|
 | **MAJOR** | Breaking change to the framework specification (`AGENTS.md`), `config.manifest.json` schema, or any documented public CLI surface. |
 | **MINOR** | New capability that does not break existing agents — new CLI command, new optional manifest field, new specification section. |
-| **PATCH** | Backward-compatible fix or clarification — auto-bumped by the hook on every edit. |
+| **PATCH** | Backward-compatible fix or clarification — auto-bumped by the hook on edits made on `main` (feature branches skip the bump to avoid cross-PR version conflicts). |
 
 Pre-1.0 (`0.x.y`) on the Cargo side means the public Rust API is not yet stable. Crates.io publish is targeted for the `1.0.0` Cargo milestone; the CalVer release scheme on Git tags is independent of that.
 

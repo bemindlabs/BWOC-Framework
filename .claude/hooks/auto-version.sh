@@ -44,6 +44,22 @@ case "$rel" in
     ;;
 esac
 
+# Guard: only auto-bump on `main`. The version files (Cargo.toml
+# [workspace.package].version + VERSION.md Software/Document-Version) are a
+# single shared mutable line, so when a feature branch bumps them, EVERY other
+# open PR conflicts on that line the moment one of them lands first — observed
+# repeatedly across the Phase 6 PRs (each follow-up went DIRTY and needed a
+# manual rebase + resolve). Skipping the bump on non-main branches keeps every
+# feature branch from touching those lines, so concurrent PRs never collide
+# there. The dev-checkpoint version now advances via `scripts/bump-version.sh`
+# (and the next-bump sentinels) at release/integration time on `main`, not on
+# every per-edit keystroke. A detached HEAD or a git-less checkout is treated as
+# "not main" (fail-closed: skip the bump rather than mutate shared files).
+branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)"
+if [[ "$branch" != "main" ]]; then
+  exit 0
+fi
+
 now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 bump_patch() {
