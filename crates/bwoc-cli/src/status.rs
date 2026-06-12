@@ -195,6 +195,7 @@ fn emit_json(root: &Path, registry: &AgentsRegistry, name: Option<&str>) -> i32 
                 "id": a.id,
                 "path": a.path,
                 "backend": a.backend,
+                "trust_tier": backend_trust_label(&a.backend),
                 "status": a.status,
                 "incarnated": a.incarnated,
                 "primary_model": primary_model,
@@ -238,6 +239,18 @@ fn emit_json(root: &Path, registry: &AgentsRegistry, name: Option<&str>) -> i32 
     }
 }
 
+/// Short confinement-tier label for a backend (t30). `ambient` = the vendor CLI
+/// runs its own tools outside the harness, so the Phase 5 capability gate / jail
+/// and the #271 Untrusted read-only guarantee do NOT apply; `confined` = the
+/// harness owns the tool loop and enforces them.
+fn backend_trust_label(backend: &str) -> &'static str {
+    if bwoc_core::trust::backend_trust_tier(backend).is_ambient() {
+        "ambient"
+    } else {
+        "confined"
+    }
+}
+
 fn print_all(root: &Path, registry: &AgentsRegistry) -> i32 {
     println!();
     println!("Workspace: {}", root.display());
@@ -262,7 +275,11 @@ fn print_all(root: &Path, registry: &AgentsRegistry) -> i32 {
         "─".repeat(20),
     );
     let mut unhealthy = 0u32;
+    let mut ambient = 0u32;
     for a in &registry.agents {
+        if bwoc_core::trust::backend_trust_tier(&a.backend).is_ambient() {
+            ambient += 1;
+        }
         let health = probe(root, a);
         let model = read_primary_model(root, a).unwrap_or_else(|| "—".to_string());
         let mark = match health {
@@ -317,6 +334,13 @@ fn print_all(root: &Path, registry: &AgentsRegistry) -> i32 {
     } else {
         println!("All agents healthy. Run `bwoc status <name>` for per-agent detail.");
     }
+    if ambient > 0 {
+        println!(
+            "⚠ {ambient} agent(s) on an AMBIENT backend (e.g. `cli`) — the vendor CLI runs its \
+             own tools outside the harness, so tool-confinement and the #271 read-only guarantee \
+             do NOT apply. Gateway auto-process refuses these. See `bwoc status <name>`."
+        );
+    }
     println!();
     0
 }
@@ -354,6 +378,14 @@ fn print_one(root: &Path, registry: &AgentsRegistry, name: &str) -> i32 {
     println!("={}", "=".repeat(entry.id.len() + 5));
     println!("  path:        {}", entry.path);
     println!("  backend:     {}", entry.backend);
+    if bwoc_core::trust::backend_trust_tier(&entry.backend).is_ambient() {
+        println!(
+            "  trust:       ⚠ AMBIENT — vendor CLI runs its own tools; harness confinement \
+             & the #271 read-only guarantee do NOT apply"
+        );
+    } else {
+        println!("  trust:       confined (harness-enforced capability gate + per-turn jail)");
+    }
     println!("  status:      {}", entry.status);
     println!("  runtime:     {runtime}");
     println!("  incarnated:  {}", entry.incarnated);

@@ -41,6 +41,11 @@ pub struct AutoProcessor {
     model: Option<String>,
     endpoint: Option<String>,
     backend: Option<String>,
+    /// True when the manifest backend is an **ambient** tier (e.g. `cli`): the
+    /// model's tools run in a vendor subprocess the harness cannot confine, so
+    /// the Untrusted read-only guarantee (#271) is structurally unenforceable.
+    /// Auto-processing untrusted remote input on such a backend is refused.
+    ambient_backend: bool,
 }
 
 impl AutoProcessor {
@@ -50,6 +55,13 @@ impl AutoProcessor {
     pub fn detect(cwd: &Path) -> Self {
         let enabled = auto_process_enabled(&cwd.join("interconnect/gateway.toml"));
         let manifest = Manifest::load_from_path(&cwd.join("config.manifest.json")).ok();
+        let backend = manifest.as_ref().and_then(|m| m.backend.clone());
+        // An absent backend resolves to the default HTTP path (Confined); only
+        // an explicit ambient backend (`cli`) trips the refusal.
+        let ambient_backend = backend
+            .as_deref()
+            .map(|b| bwoc_core::trust::backend_trust_tier(b).is_ambient())
+            .unwrap_or(false);
         let (harness, bwoc) = if enabled {
             (
                 bwoc_core::exec::sibling_binary("bwoc-harness"),
@@ -69,13 +81,22 @@ impl AutoProcessor {
             bwoc,
             model: manifest.as_ref().map(|m| m.primary_model.clone()),
             endpoint: manifest.as_ref().and_then(|m| m.base_url.clone()),
-            backend: manifest.as_ref().and_then(|m| m.backend.clone()),
+            backend,
+            ambient_backend,
         }
     }
 
-    /// True when auto-processing is active (config on + binaries resolved).
+    /// True when auto-processing is active (config on + binaries resolved + the
+    /// backend can be confined). An **ambient** backend (`cli`) is refused here:
+    /// auto-processing feeds Untrusted internet input to a tool-capable harness,
+    /// and on an ambient backend the harness cannot enforce the read-only
+    /// posture (#271) — so the gate fails closed and never engages.
     pub fn is_active(&self) -> bool {
-        self.enabled && self.harness.is_some() && self.bwoc.is_some() && !self.self_id.is_empty()
+        self.enabled
+            && self.harness.is_some()
+            && self.bwoc.is_some()
+            && !self.self_id.is_empty()
+            && !self.ambient_backend
     }
 
     /// Log the auto-process posture once at startup.
@@ -85,6 +106,17 @@ impl AutoProcessor {
         }
         if self.is_active() {
             eprintln!("bwoc-agent --serve: gateway auto-process ON (untrusted harness turns)");
+        } else if self.ambient_backend {
+            // The security-relevant refusal: config asked for auto-process but
+            // the backend is ambient, so we fail closed rather than feed
+            // untrusted remote input to an unconfined tool-capable subprocess.
+            eprintln!(
+                "bwoc-agent --serve: ⚠ gateway auto-process REFUSED — backend `{}` is AMBIENT \
+                 (the vendor CLI runs its own tools outside the harness; the Untrusted read-only \
+                 guarantee #271 cannot be enforced). Switch to an HTTP backend to auto-process \
+                 remote messages.",
+                self.backend.as_deref().unwrap_or("cli")
+            );
         } else {
             eprintln!(
                 "bwoc-agent --serve: gateway auto-process requested but inactive — \
@@ -265,5 +297,49 @@ mod tests {
         write_gateway(tmp.path(), "enabled = true\nurl = \"wss://r\"\n");
         let ap = AutoProcessor::detect(tmp.path());
         assert!(!ap.is_active());
+    }
+
+    /// Auto-process is REFUSED on an ambient backend (`cli`) even when the flag
+    /// is on and a manifest is present: feeding Untrusted remote input to an
+    /// unconfined tool-capable subprocess would void the #271 read-only
+    /// guarantee, so the gate fails closed. (`is_active()` also requires the
+    /// sibling binaries, but `ambient_backend` must independently force it off —
+    /// this asserts the field is set so the refusal holds wherever it is read.)
+    #[test]
+    fn ambient_backend_refuses_auto_process() {
+        let tmp = TempDir::new().unwrap();
+        write_gateway(
+            tmp.path(),
+            "enabled = true\nurl = \"wss://r\"\nauto_process = true\n",
+        );
+        fs::write(
+            tmp.path().join("config.manifest.json"),
+            r#"{"name":"x","agentId":"agent-x","agentRole":"r","primaryModel":"m","backend":"cli","memoryPath":"memories/","lintCmd":"x","formatCmd":"x","testCmd":"x","buildCmd":"x","version":"1"}"#,
+        )
+        .unwrap();
+        let ap = AutoProcessor::detect(tmp.path());
+        assert!(ap.ambient_backend, "cli backend must be flagged ambient");
+        assert!(
+            !ap.is_active(),
+            "ambient backend must force auto-process off (fail-closed)"
+        );
+    }
+
+    /// A confined (HTTP) backend is NOT flagged ambient — the refusal is
+    /// specific to backends whose tools escape the harness.
+    #[test]
+    fn confined_backend_is_not_flagged_ambient() {
+        let tmp = TempDir::new().unwrap();
+        write_gateway(
+            tmp.path(),
+            "enabled = true\nurl = \"wss://r\"\nauto_process = true\n",
+        );
+        fs::write(
+            tmp.path().join("config.manifest.json"),
+            r#"{"name":"x","agentId":"agent-x","agentRole":"r","primaryModel":"m","backend":"claude","memoryPath":"memories/","lintCmd":"x","formatCmd":"x","testCmd":"x","buildCmd":"x","version":"1"}"#,
+        )
+        .unwrap();
+        let ap = AutoProcessor::detect(tmp.path());
+        assert!(!ap.ambient_backend, "claude backend must stay confined");
     }
 }

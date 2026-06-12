@@ -152,6 +152,65 @@ impl Principal {
     }
 }
 
+/// Whether the harness can enforce its per-turn tool-confinement (Phase 5 — the
+/// L1–L7 capability gate, FS jail, and egress filter) on a given **spawn
+/// backend**.
+///
+/// This is orthogonal to [`TrustLevel`] (which classifies *content
+/// provenance*). It classifies *where tool execution happens*:
+///
+/// - [`Confined`](BackendTrust::Confined) — the model returns `tool_calls` and
+///   **the harness executes them**, so every effectful action passes the policy
+///   gate ([`crate`] consumers: `bwoc_harness::policy`) and the per-turn jail.
+///   The `#271` guarantee — *an Untrusted turn is effectively read-only* — holds.
+/// - [`Ambient`](BackendTrust::Ambient) — the backend is a vendor subprocess
+///   that runs its **own** tools internally (`backend = "cli"`; see
+///   `bwoc_harness::provider::cli`). Tool execution escapes the harness
+///   entirely: no capability gate, no jail, no egress filter reach it. The
+///   `#271` read-only guarantee is **structurally unenforceable** here — not
+///   merely weakened. Untrusted ingress must never be auto-processed on such a
+///   backend (`bwoc-agent`'s gateway auto-process refuses it), and an
+///   interactive operator is loudly warned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendTrust {
+    /// Tool execution stays inside the harness — Phase 5 confinement applies.
+    Confined,
+    /// Tool execution escapes into a vendor subprocess — confinement does NOT
+    /// apply (full ambient authority).
+    Ambient,
+}
+
+impl BackendTrust {
+    /// True for [`Ambient`](BackendTrust::Ambient) — the harness cannot confine
+    /// this backend's tool use.
+    pub fn is_ambient(self) -> bool {
+        self == BackendTrust::Ambient
+    }
+}
+
+/// Classify a spawn-backend string into its [`BackendTrust`] tier.
+///
+/// **Known-ambient allowlist, fail-*safe* by construction.** Only `"cli"`
+/// relocates tool execution out of the harness today, so it is the sole
+/// [`Ambient`](BackendTrust::Ambient) value; every other backend (`claude`,
+/// `anthropic`, `openrouter`, `ollama`, `openai-compatible`, and the
+/// HTTP-routed vendor aliases) drives the harness's own tool loop and is
+/// [`Confined`](BackendTrust::Confined). An *unknown* backend is treated as
+/// Confined because the harness routes it to the OpenAI-compatible HTTP client
+/// (`build_provider`'s `_` arm), where the harness still owns tool execution.
+///
+/// ⚠ **Contract for new backends:** any future backend whose tools execute
+/// *outside* the harness (another delegated-CLI/agent provider) MUST be added to
+/// the `Ambient` arm here — the classification is the single source of truth the
+/// auto-process refusal, the operator warning, and `bwoc status`/`bwoc list`
+/// all read. The companion test `cli_is_the_only_ambient_backend` pins this.
+pub fn backend_trust_tier(backend: &str) -> BackendTrust {
+    match backend {
+        "cli" => BackendTrust::Ambient,
+        _ => BackendTrust::Confined,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +266,32 @@ mod tests {
     fn default_is_unknown_and_untrusted() {
         assert_eq!(Principal::default(), Principal::Unknown);
         assert_eq!(Principal::default().trust(), TrustLevel::Untrusted);
+    }
+
+    #[test]
+    fn cli_is_the_only_ambient_backend() {
+        // `cli` relocates tool execution into a vendor subprocess → ambient.
+        assert!(backend_trust_tier("cli").is_ambient());
+        // Every harness-confined backend keeps Phase 5 tool-confinement.
+        for b in [
+            "claude",
+            "anthropic",
+            "openrouter",
+            "ollama",
+            "openai-compatible",
+            "agy",
+            "codex",
+            "kimi",
+        ] {
+            assert_eq!(
+                backend_trust_tier(b),
+                BackendTrust::Confined,
+                "{b} must stay Confined — its tools run inside the harness"
+            );
+        }
+        // Fail-safe: an unknown backend routes to the HTTP client (harness owns
+        // the tool loop), so it is Confined, not silently Ambient.
+        assert_eq!(backend_trust_tier("something-new"), BackendTrust::Confined);
     }
 
     #[test]
