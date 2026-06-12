@@ -76,6 +76,7 @@ use crate::provider::{ChatMessage, ProviderClient};
 use crate::telemetry::Telemetry;
 use crate::tools::ToolContext;
 use crate::tools::registry::default_registry;
+use bwoc_core::trust::backend_trust_tier;
 
 // ---------------------------------------------------------------------------
 // Fixture types (parsed from task.toml)
@@ -166,6 +167,50 @@ pub struct EvalResult {
     pub final_response: String,
     /// Number of turns the agent took.
     pub turns: u32,
+    /// True when the fixture was **not run** because it is structurally
+    /// unscorable on the chosen backend (e.g. a tool-requiring fixture on an
+    /// ambient / chat-only backend — see [`run_fixture`]). A skipped fixture is
+    /// neither a pass nor a fail: a suite aggregator MUST exclude it from the
+    /// score denominator rather than count it as a 0.
+    #[serde(default)]
+    pub skipped: bool,
+    /// Why the fixture was skipped (present iff `skipped`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+impl EvalResult {
+    /// Build the result for a fixture that was skipped before running because
+    /// the backend cannot score it. Not pass, not fail — `skipped` so the
+    /// aggregator drops it from the denominator.
+    fn skipped(fixture_id: &str, reason: String) -> Self {
+        EvalResult {
+            fixture_id: fixture_id.to_string(),
+            passed: false,
+            score: 0.0,
+            checks: Vec::new(),
+            final_response: String::new(),
+            turns: 0,
+            skipped: true,
+            skip_reason: Some(reason),
+        }
+    }
+}
+
+/// Whether a fixture's rubric requires the agent to **act through tools** (write
+/// a file, run a gate) rather than merely produce a chat answer. Any
+/// `file_contains` / `file_matches` / `gates_must_pass` rubric is unscorable
+/// unless the agent actually used tools to change the work dir.
+///
+/// This is the eval analogue of t30's backend-trust split: an **ambient /
+/// chat-only** backend (`cli`) runs the vendor CLI's own tools out of harness
+/// reach, so the harness loop sees no `tool_calls` and the work dir is never
+/// touched — such a fixture would always score 0 for a *structural* reason, not
+/// a model-quality one. [`run_fixture`] skips it instead of recording a
+/// misleading failure.
+pub fn fixture_requires_tools(fixture: &Fixture) -> bool {
+    let r = &fixture.rubric;
+    !r.file_contains.is_empty() || !r.file_matches.is_empty() || r.gates_must_pass
 }
 
 // ---------------------------------------------------------------------------
@@ -180,13 +225,37 @@ pub struct EvalResult {
 /// for `file_matches` checks.
 ///
 /// In offline / CI usage, `provider` is a mock so no live model is contacted.
+///
+/// `backend` is the spawn-backend the `provider` represents. It gates the
+/// **ambient guard**: a tool-requiring fixture (see [`fixture_requires_tools`])
+/// on an ambient / chat-only backend (`cli`, where the vendor CLI runs its own
+/// tools out of harness reach — t30) is **skipped**, not run, because the
+/// harness loop would see no `tool_calls`, leave the work dir untouched, and
+/// score a structural 0 that looks like a model failure. The skip is returned
+/// as an [`EvalResult`] with `skipped = true`.
 pub async fn run_fixture(
     fixture: &Fixture,
     fixture_dir: &Path,
     workdir: &Path,
     provider: Arc<dyn ProviderClient>,
     loop_config: LoopConfig,
+    backend: &str,
 ) -> HarnessResult<EvalResult> {
+    // --- Ambient guard ------------------------------------------------------
+    // A chat-only backend cannot drive harness tools, so a tool-requiring
+    // fixture is unscorable on it. Skip (not fail) so the suite score is not
+    // poisoned by a structural mismatch.
+    if backend_trust_tier(backend).is_ambient() && fixture_requires_tools(fixture) {
+        return Ok(EvalResult::skipped(
+            &fixture.fixture.id,
+            format!(
+                "tool-requiring fixture skipped on ambient backend `{backend}` \
+                 (chat-only: the vendor CLI runs its own tools out of harness reach, \
+                 so the work dir is never touched)"
+            ),
+        ));
+    }
+
     // --- Seed the work directory --------------------------------------------
     let seed_dir = fixture_dir.join("seed");
     if seed_dir.exists() {
@@ -231,6 +300,8 @@ pub async fn run_fixture(
         checks,
         final_response: loop_result.final_response,
         turns: loop_result.turns,
+        skipped: false,
+        skip_reason: None,
     })
 }
 
@@ -588,6 +659,7 @@ contains = 'hello world'
             &workdir,
             provider,
             allow_all_config(),
+            "claude",
         )
         .await
         .unwrap();
@@ -636,6 +708,7 @@ contains = 'hello world'
             &workdir,
             provider,
             allow_all_config(),
+            "claude",
         )
         .await
         .unwrap();
@@ -690,6 +763,7 @@ contains = 'seeded content'
             &workdir,
             provider,
             allow_all_config(),
+            "claude",
         )
         .await
         .unwrap();
@@ -743,6 +817,7 @@ path = 'hello.txt'
             &workdir,
             provider,
             allow_all_config(),
+            "claude",
         )
         .await
         .unwrap();
@@ -846,6 +921,7 @@ path = 'hello.txt'
             &workdir,
             provider,
             allow_all_config(),
+            "claude",
         )
         .await
         .unwrap();
@@ -882,6 +958,7 @@ path = 'hello.txt'
             &workdir,
             provider,
             allow_all_config(),
+            "claude",
         )
         .await
         .unwrap();
@@ -891,5 +968,101 @@ path = 'hello.txt'
             "regression write-hello should fail with wrong content"
         );
         assert_eq!(result.score, 0.0);
+    }
+
+    // ── Ambient-backend guard (t31b) ─────────────────────────────────────────
+
+    #[test]
+    fn fixture_requires_tools_detects_rubric_kinds() {
+        // file_contains ⇒ needs tools.
+        let f = Fixture::from_toml(
+            "[fixture]\nid='a'\nname='a'\n[task]\nprompt='p'\n[rubric]\n[[rubric.file_contains]]\npath='x'\ncontains='y'\n",
+        )
+        .unwrap();
+        assert!(fixture_requires_tools(&f));
+
+        // gates_must_pass ⇒ needs tools.
+        let g = Fixture::from_toml(
+            "[fixture]\nid='b'\nname='b'\n[task]\nprompt='p'\n[rubric]\ngates_must_pass=true\n",
+        )
+        .unwrap();
+        assert!(fixture_requires_tools(&g));
+
+        // No rubric ⇒ pure chat, no tools needed.
+        let n = Fixture::from_toml("[fixture]\nid='c'\nname='c'\n[task]\nprompt='just answer'\n")
+            .unwrap();
+        assert!(!fixture_requires_tools(&n));
+    }
+
+    /// A tool-requiring fixture on an ambient backend (`cli`) is SKIPPED, not
+    /// run: the loop must not be invoked (the empty mock would error if it were)
+    /// and the result is marked `skipped` with a reason.
+    #[tokio::test]
+    async fn ambient_backend_skips_tool_fixture() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("work");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let fixture_dir = tmp.path().join("fixture");
+        std::fs::create_dir_all(&fixture_dir).unwrap();
+
+        let fixture = Fixture::from_toml(fixtures::WRITE_HELLO_TOML).unwrap();
+        // Empty mock: if run_fixture ran the loop, complete() would error and
+        // the call would return Err — so an Ok(skipped) proves it short-circuited.
+        let provider = Arc::new(MockProvider::new(vec![]));
+
+        let result = run_fixture(
+            &fixture,
+            &fixture_dir,
+            &workdir,
+            provider,
+            allow_all_config(),
+            "cli",
+        )
+        .await
+        .unwrap();
+
+        assert!(result.skipped, "tool fixture must be skipped on cli");
+        assert!(!result.passed);
+        assert!(
+            result
+                .skip_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("ambient backend `cli`"),
+            "skip_reason should name the backend: {:?}",
+            result.skip_reason
+        );
+        // The work dir was never touched.
+        assert!(!workdir.join("hello.txt").exists());
+    }
+
+    /// A no-rubric (pure chat) fixture is NOT skipped even on an ambient backend
+    /// — it needs no tools, so it runs normally.
+    #[tokio::test]
+    async fn ambient_backend_runs_chat_only_fixture() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("work");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let fixture_dir = tmp.path().join("fixture");
+        std::fs::create_dir_all(&fixture_dir).unwrap();
+
+        let fixture =
+            Fixture::from_toml("[fixture]\nid='chat'\nname='chat'\n[task]\nprompt='say hi'\n")
+                .unwrap();
+        let provider = Arc::new(MockProvider::new(vec![make_final("hi")]));
+
+        let result = run_fixture(
+            &fixture,
+            &fixture_dir,
+            &workdir,
+            provider,
+            allow_all_config(),
+            "cli",
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.skipped, "no-rubric fixture must run, not skip");
+        assert!(result.passed, "no checks ⇒ trivially passing");
     }
 }
