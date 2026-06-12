@@ -79,36 +79,26 @@ use std::sync::Arc;
 
 use crate::checkpoint::{CheckpointConfig, RunState};
 use crate::error::{HarnessError, HarnessResult};
-use crate::policy::{Policy, PolicyOutcome, run_pipeline};
-use crate::provider::{ChatMessage, ProviderClient, Role, ToolCall};
-use crate::sandbox::make_os_sandbox;
+use crate::policy::Policy;
+use crate::provider::{ChatMessage, ProviderClient, Role};
 use crate::session_trust::SessionTrust;
 use crate::telemetry::{Telemetry, TurnBuilder};
 use crate::tools::{ToolContext, ToolRegistry};
-use crate::turn_executor::execute_proceeded;
-use bwoc_core::trust::TrustLevel;
 
 // ---------------------------------------------------------------------------
-// Constants
+// Submodules (decomposition — production split; tests stay in this file)
 // ---------------------------------------------------------------------------
 
-/// Maximum retries for a single transient provider error before giving up on
-/// the current model and falling back (or returning an error).
-const MAX_TRANSIENT_RETRIES: u32 = 3;
+mod context;
+mod execute;
+mod provider;
 
-/// Base backoff in milliseconds.  Doubles each retry up to `MAX_BACKOFF_MS`.
-const BACKOFF_BASE_MS: u64 = 200;
-
-/// Maximum backoff cap in milliseconds (≈ 3 seconds).
-const MAX_BACKOFF_MS: u64 = 3_200;
-
-/// How many consecutive malformed-tool-call responses from a model before
-/// triggering fallback to the next model in the chain.
-const MALFORMED_TOOL_CALL_THRESHOLD: u32 = 2;
-
-/// Leave this fraction of the context limit as headroom before compacting.
-/// Compaction triggers when `context_tokens > context_limit * (1 - headroom)`.
-const CONTEXT_HEADROOM_FRAC: f64 = 0.10;
+use context::{
+    CONTEXT_HEADROOM_FRAC, MALFORMED_TOOL_CALL_THRESHOLD, estimate_context_tokens,
+    find_larger_vetted_model, has_malformed_tool_calls, model_effective_limit,
+};
+use execute::execute_tool_calls;
+use provider::call_with_retry_v2;
 
 // ---------------------------------------------------------------------------
 // Vetted-model mode
@@ -773,386 +763,6 @@ fn persist_checkpoint(
     }
 }
 
-/// Unified provider call helper that handles both stream and non-stream paths,
-/// returning `(ChatMessage, Option<Usage>)`.
-async fn call_provider_once(
-    provider: &dyn ProviderClient,
-    messages: Vec<ChatMessage>,
-    tools: Vec<crate::provider::Tool>,
-    model: &str,
-    stream: bool,
-) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
-    if stream {
-        // Streaming now exposes usage via stream_options.include_usage (HV2-7).
-        stream_and_accumulate(provider, messages, tools, model).await
-    } else {
-        let completion = provider.complete(messages, tools, model).await?;
-        let usage = completion.usage.clone();
-        let choice =
-            completion.choices.into_iter().next().ok_or_else(|| {
-                HarnessError::Provider("provider returned empty choices".to_string())
-            })?;
-        Ok((choice.message, usage))
-    }
-}
-
-/// Retry wrapper around [`call_provider_once`].
-pub(crate) async fn call_with_retry_v2(
-    provider: &dyn ProviderClient,
-    messages: Vec<ChatMessage>,
-    tools: Vec<crate::provider::Tool>,
-    model: &str,
-    stream: bool,
-) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
-    let mut attempt = 0u32;
-    loop {
-        match call_provider_once(provider, messages.clone(), tools.clone(), model, stream).await {
-            Ok(result) => return Ok(result),
-            Err(e) if e.is_transient() && attempt < MAX_TRANSIENT_RETRIES => {
-                attempt += 1;
-                let delay = backoff_ms(attempt);
-                eprintln!(
-                    "[bwoc-harness] transient error on `{model}` (attempt {attempt}/{MAX_TRANSIENT_RETRIES}): {e}. \
-                     Retrying in {delay}ms…"
-                );
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Compute bounded exponential backoff.
-///
-/// attempt 1 → 200ms, 2 → 400ms, 3 → 800ms, 4 → 1600ms … capped at 3200ms.
-fn backoff_ms(attempt: u32) -> u64 {
-    let raw = BACKOFF_BASE_MS.saturating_mul(1u64 << attempt.min(10));
-    raw.min(MAX_BACKOFF_MS)
-}
-
-/// Detect malformed tool calls: empty ID or unparseable JSON arguments.
-///
-/// The spike (llama3.2 3B) produced calls with empty IDs and garbled JSON.
-/// Detecting this early prevents the history from filling with garbage that
-/// confuses the next turn.
-fn has_malformed_tool_calls(calls: &[ToolCall]) -> bool {
-    calls.iter().any(|c| {
-        c.id.is_empty() || serde_json::from_str::<serde_json::Value>(&c.function.arguments).is_err()
-    })
-}
-
-/// Estimate the total context tokens from the current history.
-///
-/// Rough heuristic: 1 token ≈ 4 characters (works for English + code; good
-/// enough for a compaction trigger — exact counts come from `usage` fields).
-fn estimate_context_tokens(history: &[ChatMessage]) -> u32 {
-    let total_chars: usize = history
-        .iter()
-        .map(|m| m.content.as_deref().map_or(0, |c| c.len()))
-        .sum();
-    (total_chars / 4) as u32
-}
-
-/// Return the effective context-window token limit for `model`.
-///
-/// Precedence (highest → lowest):
-/// 1. Explicit entry in `config.model_context_limits` — operator static
-///    override; always wins so the operator can cap or extend a model's
-///    window deliberately.
-/// 2. `provider_queried` — value returned by [`ProviderClient::model_context_limit`]
-///    and cached by the loop (one network call per model per session).
-/// 3. `config.context_limit` — global default; used when neither source has
-///    information.  `0` means "no limit / compaction disabled".
-fn model_effective_limit(model: &str, config: &LoopConfig, provider_queried: Option<u32>) -> u32 {
-    // Layer 1 — static config (operator override wins).
-    let from_map = config.model_context_limits.get(model).copied().unwrap_or(0);
-    if from_map > 0 {
-        return from_map;
-    }
-
-    // Layer 2 — provider-queried value (dynamic, best-effort).
-    if let Some(queried) = provider_queried {
-        if queried > 0 {
-            return queried;
-        }
-    }
-
-    // Layer 3 — global default.
-    config.context_limit
-}
-
-/// Find the first model in `config.token_pressure_models` that:
-/// 1. Has a **strictly larger** effective limit than the current model's limit.
-/// 2. Passes the vetted-model gate (`vetted_models` is empty OR the model is
-///    listed in it), unless `vetted_mode` is `Off` (gate skipped entirely).
-///
-/// Returns `Some(model_id)` if found, `None` otherwise.
-///
-/// Site 3 — vetted-mode behaviour for token-pressure candidates:
-/// - `Off` — accept any candidate with a larger limit; no vetted check.
-/// - `Warn` — skip unvetted candidates with a warning (existing behaviour).
-/// - `Enforce` — same as `Warn` for candidates; the hard-refuse only applies
-///   to the primary model (site 1).
-///
-/// `provider_cache` is the per-session cache populated by
-/// [`ProviderClient::model_context_limit`] queries.
-fn find_larger_vetted_model(
-    current_model: &str,
-    config: &LoopConfig,
-    provider_cache: &HashMap<String, Option<u32>>,
-) -> Option<String> {
-    let current_limit = model_effective_limit(
-        current_model,
-        config,
-        provider_cache.get(current_model).copied().flatten(),
-    );
-
-    for candidate in &config.token_pressure_models {
-        if candidate == current_model {
-            continue;
-        }
-
-        // Site 3: apply vetted gate according to mode.
-        // Off → skip the gate entirely (any model is acceptable).
-        // Warn / Enforce → skip unvetted candidates with a warning.
-        if config.vetted_mode != VettedMode::Off
-            && !config.vetted_models.is_empty()
-            && !config.vetted_models.contains(candidate)
-        {
-            eprintln!(
-                "[bwoc-harness] token-pressure candidate `{candidate}` skipped: \
-                 not in vetted-models allowlist"
-            );
-            continue;
-        }
-
-        let candidate_limit = model_effective_limit(
-            candidate,
-            config,
-            provider_cache.get(candidate).copied().flatten(),
-        );
-        if candidate_limit > current_limit {
-            return Some(candidate.clone());
-        }
-    }
-    None
-}
-
-/// Dispatch all tool calls in a turn, passing each through the full safety
-/// pipeline: GUARDRAILS → PERMISSION → SANDBOX → execute.
-///
-/// Two phases: the guardrails→permission *decision* runs SEQUENTIALLY (the
-/// permission layer may prompt the operator on a TTY in `ask` mode, and
-/// concurrent prompts on one terminal would interleave and could misattribute
-/// an approval to the wrong call); the approved calls then SANDBOX→execute
-/// CONCURRENTLY (the HV2-7 win — the expensive step parallelises).
-///
-/// A blocked call returns the blocking reason as the tool result content so
-/// the model can adapt.  It is NOT a hard error that stops the loop.
-async fn execute_tool_calls(
-    calls: &[ToolCall],
-    registry: &ToolRegistry,
-    ctx: &ToolContext,
-    config: &LoopConfig,
-    turn_trust: TrustLevel,
-) -> Vec<ToolCallResult> {
-    let os_sandbox = make_os_sandbox(&ctx.workdir);
-
-    // ── Phase 0/1: Capability gate → Guardrails → Permission, SEQUENTIALLY ──
-    // Decide every call in order before any execution so an interactive `ask`
-    // prompt can't race another call's prompt for the same stdin/terminal. The
-    // Layer-0 capability gate (Phase 5 t2) consumes this turn's trust verdict.
-    let decisions: Vec<PolicyOutcome> = calls
-        .iter()
-        .map(|call| {
-            run_pipeline(
-                &call.function.name,
-                &call.function.arguments,
-                &ctx.workdir,
-                &config.policy,
-                config.is_tty,
-                turn_trust,
-            )
-        })
-        .collect();
-
-    // ── Phase 2: Sandbox → execute, CONCURRENTLY ────────────────────────────
-    // `join_all` preserves input order so results line up with `calls`; each
-    // call carries the decision already made for it in phase 1.
-    let futures = calls.iter().zip(decisions).map(|(call, outcome)| {
-        let os_sandbox = &*os_sandbox;
-        async move {
-            let tool_name = &call.function.name;
-            let args_json = &call.function.arguments;
-
-            let (content, denied, capability_denied) = match outcome {
-                PolicyOutcome::Proceed => {
-                    // ── Layer 3: Process isolation (Phase 5 t5) ──────────────────
-                    // Execution of an approved call no longer happens in this
-                    // process. `execute_proceeded` re-execs the binary as an
-                    // isolated turn-executor child for marshallable (default-
-                    // registry) tools — run_command still goes through the
-                    // sandboxed runner, but now inside the child (child-of-child).
-                    // Un-marshallable (dynamic/MCP/credential) tools are denied
-                    // fail-closed; the child never reaches in-parent execution.
-                    let r = execute_proceeded(
-                        tool_name,
-                        args_json,
-                        ctx,
-                        registry,
-                        &*os_sandbox,
-                        turn_trust,
-                    )
-                    .await;
-                    (r.content, r.denied, r.capability_denied)
-                }
-                PolicyOutcome::CapabilityDenied { tool, reason } => {
-                    // C4: structured log line — tool + reason + turn-trust — so a
-                    // capability refusal is observable in the harness log, not
-                    // only as a tool result fed back to the model.
-                    eprintln!(
-                        "[bwoc-harness] capability-gate DENY tool=`{tool}` \
-                         turn_trust={turn_trust:?} reason=`{reason}`"
-                    );
-                    let msg = PolicyOutcome::CapabilityDenied { tool, reason }
-                        .into_tool_result()
-                        .unwrap_or_else(|| "blocked".to_string());
-                    (msg, true, true)
-                }
-                blocked => {
-                    // Feed the denial back to the model as the tool result.
-                    let msg = blocked
-                        .into_tool_result()
-                        .unwrap_or_else(|| "blocked".to_string());
-                    (msg, true, false)
-                }
-            };
-
-            ToolCallResult {
-                call_id: call.id.clone(),
-                tool_name: call.function.name.clone(),
-                content,
-                denied,
-                capability_denied,
-            }
-        }
-    });
-
-    futures_util::future::join_all(futures).await
-}
-
-struct ToolCallResult {
-    call_id: String,
-    tool_name: String,
-    content: String,
-    /// Blocked by any policy layer (guardrail / permission / capability gate) —
-    /// the content is the refusal fed back to the model.
-    denied: bool,
-    /// Specifically refused by the Layer-0 capability gate (Phase 5 t2). Counted
-    /// into `capability_denials`, NOT `denials` (kept mutually exclusive).
-    capability_denied: bool,
-}
-
-/// Stream a response and accumulate content + tool_calls into a single
-/// [`ChatMessage`] as if it were a non-streaming completion.
-async fn stream_and_accumulate(
-    provider: &dyn ProviderClient,
-    messages: Vec<ChatMessage>,
-    tools: Vec<crate::provider::Tool>,
-    model: &str,
-) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
-    use futures_util::StreamExt;
-
-    let mut stream = provider.stream(messages, tools, model).await?;
-
-    let mut content_buf = String::new();
-    // tool_calls accumulation: index → (id, type, name, args_buf)
-    let mut tool_calls_acc: std::collections::HashMap<u32, ToolCallAccumulator> =
-        std::collections::HashMap::new();
-    // Usage arrives on the final chunk (stream_options.include_usage); keep the
-    // last non-empty one (HV2-7 — closes the streaming-usage gap).
-    let mut usage: Option<crate::provider::Usage> = None;
-
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result?;
-        if chunk.usage.is_some() {
-            usage = chunk.usage;
-        }
-        for delta_choice in chunk.choices {
-            let delta = delta_choice.delta;
-
-            if let Some(content) = delta.content {
-                content_buf.push_str(&content);
-            }
-
-            if let Some(tc_deltas) = delta.tool_calls {
-                for tc_delta in tc_deltas {
-                    let acc = tool_calls_acc.entry(tc_delta.index).or_default();
-                    if let Some(id) = tc_delta.id {
-                        acc.id = id;
-                    }
-                    if let Some(kind) = tc_delta.r#type {
-                        acc.kind = kind;
-                    }
-                    if let Some(func) = tc_delta.function {
-                        if let Some(name) = func.name {
-                            acc.name = name;
-                        }
-                        if let Some(args) = func.arguments {
-                            acc.args_buf.push_str(&args);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Assemble tool calls if any were accumulated.
-    let tool_calls: Vec<ToolCall> = if tool_calls_acc.is_empty() {
-        vec![]
-    } else {
-        let mut sorted: Vec<_> = tool_calls_acc.into_iter().collect();
-        sorted.sort_by_key(|(idx, _)| *idx);
-        sorted
-            .into_iter()
-            .map(|(_, acc)| ToolCall {
-                id: acc.id,
-                kind: acc.kind,
-                function: crate::provider::FunctionCall {
-                    name: acc.name,
-                    arguments: acc.args_buf,
-                },
-            })
-            .collect()
-    };
-
-    let message = ChatMessage::assistant(
-        if content_buf.is_empty() {
-            None
-        } else {
-            Some(content_buf)
-        },
-        if tool_calls.is_empty() {
-            None
-        } else {
-            Some(tool_calls)
-        },
-    );
-    Ok((message, usage))
-}
-
-#[derive(Default)]
-struct ToolCallAccumulator {
-    id: String,
-    kind: String,
-    name: String,
-    args_buf: String,
-}
-
 // ---------------------------------------------------------------------------
 // Tests (all offline — no real provider)
 // ---------------------------------------------------------------------------
@@ -1160,6 +770,10 @@ struct ToolCallAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Submodule items the tests exercise directly that the driver does not
+    // re-export (the loop calls them only indirectly).
+    use super::execute::stream_and_accumulate;
+    use super::provider::{MAX_BACKOFF_MS, MAX_TRANSIENT_RETRIES, backoff_ms};
     use crate::error::HarnessError;
     use crate::policy::{Mode, Policy};
     use crate::provider::types::FunctionCall;
@@ -1170,6 +784,7 @@ mod tests {
     use crate::telemetry::Telemetry;
     use crate::tools::registry::default_registry;
     use async_trait::async_trait;
+    use bwoc_core::trust::TrustLevel;
     use futures_util::Stream;
     use std::pin::Pin;
     use std::sync::Mutex;
