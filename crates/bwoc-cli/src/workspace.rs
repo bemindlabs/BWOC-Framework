@@ -330,6 +330,14 @@ pub fn run_list(args: ListArgs) -> i32 {
                     "id": a.id,
                     "path": a.path,
                     "backend": a.backend,
+                    // Confinement tier (t30): "ambient" backends (e.g. `cli`)
+                    // run their tools outside the harness — no Phase 5 gate/jail
+                    // and no #271 read-only guarantee.
+                    "trust_tier": if bwoc_core::trust::backend_trust_tier(&a.backend).is_ambient() {
+                        "ambient"
+                    } else {
+                        "confined"
+                    },
                     "status": a.status,
                     "incarnated": a.incarnated,
                     "running": running,
@@ -421,6 +429,19 @@ pub fn run_list(args: ListArgs) -> i32 {
             pad_visual(&uptime, 9),
             pad_visual(&inbox_cell, 7),
             a.path,
+        );
+    }
+    // Footer warning (t30): flag any AMBIENT backend so the operator sees the
+    // confinement gap the fixed-width BACKEND column can't convey.
+    let ambient = filtered
+        .iter()
+        .filter(|a| bwoc_core::trust::backend_trust_tier(&a.backend).is_ambient())
+        .count();
+    if ambient > 0 {
+        println!(
+            "⚠ {ambient} agent(s) on an AMBIENT backend — tools run outside the harness; \
+             confinement & the #271 read-only guarantee do NOT apply (gateway auto-process \
+             refuses them)."
         );
     }
     0

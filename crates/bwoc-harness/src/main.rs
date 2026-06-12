@@ -765,7 +765,22 @@ fn build_provider(
     match backend {
         // Local subscription-authenticated vendor CLI (#277): one subprocess
         // per turn, no key, chat-only (the CLI runs its own tools internally).
-        "cli" => Arc::new(CliClient::new(cli_cmd)),
+        // AMBIENT backend (t30): the vendor CLI executes its OWN tools outside
+        // the harness, so the Phase 5 capability gate / FS jail / egress filter
+        // do NOT reach them — the `#271` "Untrusted turn is read-only" guarantee
+        // is structurally unenforceable here. Warn loudly so an interactive
+        // operator makes an informed choice (the gateway auto-process path
+        // refuses this backend outright; see `bwoc-agent` autoprocess).
+        "cli" => {
+            eprintln!(
+                "[bwoc-harness] ⚠ SECURITY: `--backend cli` is an AMBIENT backend — the vendor \
+                 CLI `{cli_cmd}` runs its own tools with full ambient authority. Harness \
+                 tool-confinement (capability gate, FS jail, egress filter) does NOT apply, so \
+                 the Untrusted-turn read-only guarantee (#271) is NOT enforced. Use an HTTP \
+                 backend for any session that processes untrusted input."
+            );
+            Arc::new(CliClient::new(cli_cmd))
+        }
         "claude" | "anthropic" => {
             let base = if endpoint == oai::DEFAULT_ENDPOINT {
                 bwoc_harness::provider::anthropic::ANTHROPIC_DEFAULT_ENDPOINT
