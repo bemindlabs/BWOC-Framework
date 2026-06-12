@@ -202,12 +202,45 @@ impl SandboxExecSandbox {
     }
 }
 
+/// macOS network-egress escape-hatch env var — the platform-symmetric mirror of
+/// the Linux seccomp egress arm's gating posture.
+///
+/// **Linux has NO such toggle:** `seccomp::install_in_child` is unconditional and
+/// strictly fail-closed (the t11 closure theorem — egress containment is
+/// *mandatory*; the executor never falls back to an unfiltered child). To keep
+/// the two platforms' *posture* symmetric (Samānattatā — treat both backends
+/// equally), the macOS `(deny network*)` arm is likewise **on by default** with
+/// no production opt-out.
+///
+/// This var exists ONLY as a **test/operator escape-hatch seam**, gated so it
+/// cannot silently weaken a real run: it is honored only when set to exactly
+/// `"1"`. It exists so a local operator debugging a legitimately
+/// network-dependent subprocess tool (e.g. an MCP-over-TCP server, or a
+/// `git`-over-HTTPS helper the model invokes via `run_command`) can opt that one
+/// process out — the same role the Linux side fills by running such tools in the
+/// *parent* (never the sandboxed child). Default-absent ⇒ network denied.
+#[cfg(target_os = "macos")]
+pub const BWOC_SANDBOX_ALLOW_NET_ENV: &str = "BWOC_SANDBOX_ALLOW_NET";
+
+/// Whether the macOS network-egress escape-hatch is engaged. Fail-closed: any
+/// value other than exactly `"1"` (incl. absent/empty/`"0"`/`"true"`) ⇒ network
+/// stays denied. Mirrors the Linux posture where there is no opt-out at all.
+#[cfg(target_os = "macos")]
+fn sbpl_allow_net() -> bool {
+    std::env::var(BWOC_SANDBOX_ALLOW_NET_ENV).as_deref() == Ok("1")
+}
+
 /// Build a minimal SBPL (Sandbox Profile Language) profile for `sandbox-exec`.
 ///
 /// Policy:
-/// - Default: allow everything (network, ipc, etc. are out of scope here —
-///   the harness does not sandbox them at the OS level yet; arg-level scan
-///   handles the highest-risk patterns).
+/// - Default: allow everything **except** the two effect families we contain.
+/// - **Network egress: denied globally** (`(deny network*)`) — the macOS parity
+///   for the Linux seccomp egress arm (`seccomp.rs`, t11). `network*` covers the
+///   full `network-inbound`/`network-outbound`/`network-bind` family, the SBPL
+///   analogue of seccomp killing `socket`/`connect`/`bind`/`listen`/`accept*`
+///   (control A: the child cannot acquire OR use a network socket). Fail-closed
+///   and on-by-default, matching the Linux posture (which has no opt-out); the
+///   only seam is the [`BWOC_SANDBOX_ALLOW_NET_ENV`] test/operator escape-hatch.
 /// - File writes: denied globally; allowed inside the `worktree_root` subtree.
 ///
 /// We use `file-write*` to cover the full write operation family.
@@ -229,12 +262,28 @@ fn build_sbpl_profile(worktree_root: &Path) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
 
+    // Network-egress arm — the macOS parity for the Linux seccomp egress filter.
+    // Default-deny the whole `network*` family. SBPL evaluates rules top-to-
+    // bottom, last-match-wins, so this `(deny network*)` sits ABOVE the FS-jail
+    // rules and below `(allow default)`; FS-jail semantics are unchanged. The
+    // escape-hatch simply omits the deny line (network falls back to the
+    // `(allow default)` above) — it never re-orders the file-write rules.
+    let net_rule = if sbpl_allow_net() {
+        // Escape-hatch engaged (BWOC_SANDBOX_ALLOW_NET=1): no network deny.
+        // Mirrors "run the network tool in the parent" on Linux.
+        "; network egress allowed via BWOC_SANDBOX_ALLOW_NET escape-hatch"
+    } else {
+        "(deny network*)"
+    };
+
     format!(
         r#"(version 1)
 (allow default)
+{net_rule}
 (deny file-write*)
 (allow file-write* (subpath "{path}"))
 "#,
+        net_rule = net_rule,
         path = path_str
     )
 }
@@ -944,6 +993,119 @@ mod tests {
             profile.contains("allow file-write*"),
             "SBPL profile must allow writes inside worktree"
         );
+    }
+
+    // ── macOS network-egress parity (t29 / PHASE6-1) ─────────────────────────
+
+    /// Serializes the three tests below — they all mutate the same PROCESS-global
+    /// `BWOC_SANDBOX_ALLOW_NET` env var, so they must not run concurrently (a
+    /// parallel writer would clobber a reader's view). The lock is poison-tolerant
+    /// (we only need mutual exclusion, not the guarded data).
+    #[cfg(target_os = "macos")]
+    static NET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// By default (escape-hatch absent) the rendered SBPL profile must contain a
+    /// `(deny network*)` arm — the macOS parity for the Linux seccomp egress
+    /// filter. Asserts the rendered STRING, so it runs without spawning
+    /// sandbox-exec. Guards the env so a stray `BWOC_SANDBOX_ALLOW_NET` in the
+    /// shell cannot false-pass this default-deny test.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_profile_denies_network_by_default() {
+        let _guard = NET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialized by NET_ENV_LOCK; we restore the var after rendering.
+        let prev = std::env::var_os(BWOC_SANDBOX_ALLOW_NET_ENV);
+        unsafe { std::env::remove_var(BWOC_SANDBOX_ALLOW_NET_ENV) };
+
+        let tmp = TempDir::new().unwrap();
+        let profile = build_sbpl_profile(tmp.path());
+
+        if let Some(v) = prev {
+            unsafe { std::env::set_var(BWOC_SANDBOX_ALLOW_NET_ENV, v) };
+        }
+
+        assert!(
+            profile.contains("(deny network*)"),
+            "SBPL profile must deny network egress by default (Linux-parity); got:\n{profile}"
+        );
+        // The deny-network line must sit ABOVE the file-write rules so SBPL
+        // last-match-wins cannot let a later rule re-open network.
+        let net_at = profile.find("(deny network*)").unwrap();
+        let fw_at = profile.find("(deny file-write*)").unwrap();
+        assert!(
+            net_at < fw_at,
+            "network deny must precede the file-write rules"
+        );
+    }
+
+    /// With the escape-hatch engaged (`BWOC_SANDBOX_ALLOW_NET=1`) the rendered
+    /// profile must NOT deny network — the platform-symmetric opt-out seam — but
+    /// the FS-jail rules must be byte-for-byte unchanged.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_profile_network_escape_hatch_toggles() {
+        let _guard = NET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+
+        let prev = std::env::var_os(BWOC_SANDBOX_ALLOW_NET_ENV);
+
+        // SAFETY: serialized by NET_ENV_LOCK; var restored at the end.
+        unsafe { std::env::set_var(BWOC_SANDBOX_ALLOW_NET_ENV, "1") };
+        let allowed = build_sbpl_profile(tmp.path());
+        unsafe { std::env::remove_var(BWOC_SANDBOX_ALLOW_NET_ENV) };
+        let denied = build_sbpl_profile(tmp.path());
+
+        if let Some(v) = prev {
+            unsafe { std::env::set_var(BWOC_SANDBOX_ALLOW_NET_ENV, v) };
+        }
+
+        assert!(
+            !allowed.contains("(deny network*)"),
+            "escape-hatch=1 must NOT deny network; got:\n{allowed}"
+        );
+        assert!(
+            denied.contains("(deny network*)"),
+            "escape-hatch absent must deny network"
+        );
+
+        // FS-jail invariant: the file-write rules are identical regardless of the
+        // network toggle — the egress arm must not perturb the FS jail.
+        for needle in ["(deny file-write*)", "allow file-write* (subpath "] {
+            assert!(
+                allowed.contains(needle),
+                "FS-jail rule `{needle}` missing under escape-hatch"
+            );
+            assert!(
+                denied.contains(needle),
+                "FS-jail rule `{needle}` missing under default"
+            );
+        }
+    }
+
+    /// Fail-closed gating: any value other than exactly `"1"` keeps network
+    /// denied (absent/empty/`"0"`/`"true"` all deny). Mirrors the Linux posture
+    /// of having no real opt-out.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_network_escape_hatch_is_fail_closed() {
+        let _guard = NET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(BWOC_SANDBOX_ALLOW_NET_ENV);
+
+        for val in ["0", "true", "yes", "", " 1", "1 "] {
+            // SAFETY: serialized by NET_ENV_LOCK; var restored at the end.
+            unsafe { std::env::set_var(BWOC_SANDBOX_ALLOW_NET_ENV, val) };
+            let profile = build_sbpl_profile(tmp.path());
+            assert!(
+                profile.contains("(deny network*)"),
+                "value {val:?} must NOT engage the escape-hatch (fail-closed); got:\n{profile}"
+            );
+        }
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var(BWOC_SANDBOX_ALLOW_NET_ENV, v) },
+            None => unsafe { std::env::remove_var(BWOC_SANDBOX_ALLOW_NET_ENV) },
+        }
     }
 
     // ── Linux landlock ───────────────────────────────────────────────────────
