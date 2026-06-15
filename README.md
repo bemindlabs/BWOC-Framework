@@ -460,7 +460,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 ## Status
 
-**Current phase:** Phase 5 — _saṃvara_ (trust-boundary & sandbox hardening) — DoD met and fully signed off. Phases 1–4 DoD met before it: Phase 1 v2.0 end-to-end **uppāda** for one backend; Phase 2 _ṭhiti operations_ (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard); Phase 3 the cross-workspace interconnect mesh (view · learn · give-feedback) + Kalyāṇamitta-7 trust; Phase 4 fleet governance. The self-hosted **`bwoc-harness`** runtime provides a full agentic run loop plus an interactive **`--chat`** session with token streaming, persistent cross-restart memory, live permission modes, and full-machine file editing.
+**Current phase:** Phase 6 — _paññā_ (harness eval & cross-platform hardening) — **in progress** (t29 macOS network-egress parity in the sandbox SBPL, t30 `cli` ambient-backend trust tier, t31 agent_loop decomposition + eval ambient-backend guard; t32 deep-memory governance parked as premature). Phase 5 — _saṃvara_ (trust-boundary & sandbox hardening) — DoD met and fully signed off. Phases 1–4 DoD met before it: Phase 1 v2.0 end-to-end **uppāda** for one backend; Phase 2 _ṭhiti operations_ (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard); Phase 3 the cross-workspace interconnect mesh (view · learn · give-feedback) + Kalyāṇamitta-7 trust; Phase 4 fleet governance. The self-hosted **`bwoc-harness`** runtime provides a full agentic run loop plus an interactive **`--chat`** session with token streaming, persistent cross-restart memory, live permission modes, and full-machine file editing.
 
 **Latest release:** [`v2026.6.1-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.1-0) (2.19.0) shipped 2026-06-01 — agentic chat TUI (`bwoc chat --tui`, new `bwoc-tui` crate + `bwoc_core::chat_proto`) + `bwoc_run` cross-agent delegation; shell-operator-aware guardrails, provider request timeout, lead→worker budget propagation, audit-plugin env scrub. Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. First public release was [`v2026.5.23-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.5.23-1) (2026-05-23).
 
@@ -484,7 +484,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full list and [GitHub Releases](https
 | `bwoc-agent` runtime (Rust; `--serve` daemon on Unix)           | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 ✓ · Phase 5 ✓ · plugin-cycle ✓**          |
 | Reference agents (`agent-pi`, `agent-oracle`)                   | **Phase 3 ✓ (incarnated + personalized + `bwoc check` clean)** |
 | Fleet dashboard (`bwoc dashboard` TUI)                          | **Phase 2 ✓**                                                  |
-| `bwoc-harness` self-hosted runtime + interactive `--chat`       | **Phase 5 ✓ (_saṃvara_ sandbox hardening) — agentic loop, streaming, memory, permission modes** |
+| `bwoc-harness` self-hosted runtime + interactive `--chat`       | **Phase 5 ✓ (_saṃvara_ sandbox hardening) · Phase 6 ⋯ (_paññā_ harness eval + cross-platform hardening, in progress) — agentic loop, streaming, memory, permission modes** |
 
 For the full phase-by-phase plan with completed / in-progress / remaining items, see [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md) (Thai: [`docs/th/ROADMAP.th.md`](docs/th/ROADMAP.th.md)).
 
