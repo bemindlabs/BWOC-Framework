@@ -115,3 +115,74 @@ fn end_to_end_init_new_list() {
         "list output missing agent-alpha:\n{stdout}"
     );
 }
+
+#[test]
+fn end_to_end_set_updates_backend_and_model() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let ws = tmp.path();
+
+    // init + new beta (backend=claude, primaryModel=claude-opus-4-7).
+    let ok = Command::new(bin()).args(["init"]).arg(ws).status();
+    assert!(ok.is_ok_and(|s| s.success()), "init failed");
+    let status = Command::new(bin())
+        .arg("new")
+        .arg("beta")
+        .args(["--target"])
+        .arg(ws.join("agents/agent-beta"))
+        .args([
+            "--backend",
+            "claude",
+            "--role",
+            "set test",
+            "--primary-model",
+            "claude-opus-4-7",
+            "--lint-cmd",
+            "true",
+            "--format-cmd",
+            "true",
+            "--test-cmd",
+            "true",
+            "--build-cmd",
+            "true",
+        ])
+        .stdin(std::process::Stdio::null())
+        .status()
+        .expect("spawn bwoc new");
+    assert!(status.success(), "bwoc new failed: {status}");
+
+    // `bwoc set beta --backend ollama --primary-model qwen2.5 --fallback-model llama3.2`.
+    let status = Command::new(bin())
+        .args(["set", "beta"])
+        .args(["--workspace"])
+        .arg(ws)
+        .args([
+            "--backend",
+            "ollama",
+            "--primary-model",
+            "qwen2.5",
+            "--fallback-model",
+            "llama3.2",
+        ])
+        .status()
+        .expect("spawn bwoc set");
+    assert!(status.success(), "bwoc set failed: {status}");
+
+    // registry backend flipped to ollama.
+    let registry = std::fs::read_to_string(ws.join(".bwoc/agents.toml")).expect("read agents.toml");
+    assert!(
+        registry.contains("backend = \"ollama\""),
+        "backend not updated in registry:\n{registry}"
+    );
+
+    // manifest primaryModel + fallbackModel updated.
+    let manifest = std::fs::read_to_string(ws.join("agents/agent-beta/config.manifest.json"))
+        .expect("read manifest");
+    assert!(
+        manifest.contains("\"qwen2.5\""),
+        "primaryModel not updated:\n{manifest}"
+    );
+    assert!(
+        manifest.contains("\"llama3.2\""),
+        "fallbackModel not updated:\n{manifest}"
+    );
+}
