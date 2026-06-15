@@ -53,6 +53,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # bwoc-core (dep-quarantine HARD RULE). `bundled` compiles SQLite from source so
 # the CI matrix needs no system libsqlite3.
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Secret redaction on `mine` (deep-memory). Pure-Rust (no C extension / no
+# Windows-CI concern). Isolated to bwoc-deep-memory — NEVER bwoc-core.
+regex = "1"
 # Windows named-pipe transport for the daemon IPC (bwoc-agent --serve + the
 # ping/status/stop clients). cfg(windows)-only in bwoc-agent / bwoc-cli — the
 # Unix path stays on std's UnixListener/UnixStream, and bwoc-core never takes

@@ -21,3 +21,5 @@ thiserror = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 # Local vector store. `bundled` compiles SQLite from source (cross-platform CI).
 rusqlite = { workspace = true }
+# Secret redaction on `mine` — scrub credentials before they reach the store.
+regex = { workspace = true }
