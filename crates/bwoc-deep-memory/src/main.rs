@@ -131,6 +131,9 @@ fn main() -> ExitCode {
                         report.files,
                         db.display()
                     );
+                    if report.redacted > 0 {
+                        println!("redacted {} secret(s) before storing", report.redacted);
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => fail("mine", e),
