@@ -9,7 +9,9 @@
 //!     (`bwoc new` force-creates the full set), so a switch needs no file
 //!     changes beyond the registry field.
 //!   - `--primary-model` / `--fallback-model` → the agent's
-//!     `config.manifest.json` (the runtime reads the model from here).
+//!     `config.manifest.json`. The runtime reads `primaryModel` from here;
+//!     `fallbackModel` is metadata-only (shown in status/dashboards — runtime
+//!     fallback is `primaryModel: "auto"` + `autoModels`, not this field).
 //!
 //! At least one field must be given; unchanged values are reported as no-ops.
 
@@ -48,7 +50,7 @@ pub fn run(args: SetArgs) -> i32 {
         Ok(r) => r,
         Err(e) => {
             eprintln!("bwoc set: cannot read registry: {e}");
-            return 2;
+            return 1;
         }
     };
 
@@ -64,7 +66,7 @@ pub fn run(args: SetArgs) -> i32 {
             args.name,
             root.display()
         );
-        return 1;
+        return 2;
     };
     let manifest_path = root
         .join(&registry.agents[idx].path)
@@ -92,7 +94,7 @@ pub fn run(args: SetArgs) -> i32 {
                     "bwoc set: cannot read manifest {}: {e}",
                     manifest_path.display()
                 );
-                return 2;
+                return 1;
             }
         };
         if let Some(pm) = &args.primary_model {
@@ -110,7 +112,7 @@ pub fn run(args: SetArgs) -> i32 {
         if primary_change.is_some() || fallback_change.is_some() {
             if let Err(e) = m.save_to_path(&manifest_path) {
                 eprintln!("bwoc set: cannot write manifest: {e}");
-                return 2;
+                return 1;
             }
         }
     }
@@ -119,7 +121,7 @@ pub fn run(args: SetArgs) -> i32 {
     if registry_updated {
         if let Err(e) = registry.save(&root) {
             eprintln!("bwoc set: cannot write registry: {e}");
-            return 2;
+            return 1;
         }
     }
     let manifest_updated = primary_change.is_some() || fallback_change.is_some();

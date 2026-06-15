@@ -130,7 +130,8 @@ enum Commands {
         /// New `primaryModel` in `config.manifest.json` (a model id, or "auto").
         #[arg(long)]
         primary_model: Option<String>,
-        /// New `fallbackModel` in `config.manifest.json`.
+        /// New `fallbackModel` in `config.manifest.json` (metadata only —
+        /// shown in status/dashboards, not a runtime fallback).
         #[arg(long)]
         fallback_model: Option<String>,
         /// Workspace root (defaults: this flag > BWOC_WORKSPACE > ancestor walk).

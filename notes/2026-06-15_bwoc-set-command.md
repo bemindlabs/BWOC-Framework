@@ -13,9 +13,10 @@ without retire+recreate.
     registry entry. All backend symlinks (`CLAUDE.md`/`AGY.md`/…) already exist
     (`bwoc new` force-creates the full set), so a switch needs no file changes
     beyond the registry field.
-  - `--primary-model` / `--fallback-model` rewrite `config.manifest.json` (the
-    runtime reads the model from there) via `Manifest::load_from_path` /
-    `save_to_path`.
+  - `--primary-model` / `--fallback-model` rewrite `config.manifest.json` via
+    `Manifest::load_from_path` / `save_to_path`. The runtime reads `primaryModel`
+    from there; `fallbackModel` is metadata-only (status/dashboards — runtime
+    fallback is `primaryModel: "auto"` + `autoModels`).
   - At least one field required; unchanged values are reported as no-ops
     (`registry_updated` / `manifest_updated` = false). `--json` for scripting.
 - `crates/bwoc-cli/src/main.rs` — `mod set;` + `Commands::Set { … }` (inline
@@ -33,6 +34,10 @@ without retire+recreate.
 - **No symlink work on backend switch** — the full symlink set already exists,
   so the change is a single registry field. (Yoniso manasikāra: verified the
   template ships all seven backend symlinks regardless of the chosen backend.)
+- **Exit-code contract** (review follow-up): `2` = user/input error
+  (nothing-to-change, no workspace, agent-not-found), `1` = operational/IO
+  failure (registry/manifest read or write). Aligns `set` with the rest of the
+  CLI; scripts can distinguish a bad invocation from a runtime fault.
 
 ## Status / deferred
 
