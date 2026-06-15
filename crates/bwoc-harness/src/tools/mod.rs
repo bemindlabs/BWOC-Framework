@@ -10,6 +10,7 @@
 //! Full sandbox (OS-level, allowlist, env scrub) is P2.
 
 pub mod auth;
+pub mod computer;
 pub mod extra_tools;
 pub mod impls;
 pub mod registry;
