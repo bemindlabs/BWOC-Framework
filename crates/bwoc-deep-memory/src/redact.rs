@@ -41,9 +41,11 @@ fn rules() -> &'static [Rule] {
             ),
             // `key = value` / `key: value` assignment with a secret-ish key and a
             // contiguous value of 8+ token chars. Keep the key + separator +
-            // optional opening quote; redact only the value.
+            // optional opening quote; redact only the value. The value class
+            // includes `=` so base64 secrets (incl. trailing `=` padding) are
+            // consumed whole — otherwise the tail after a `=` would survive.
             r(
-                r#"(?i)\b(api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|auth)\b(\s*[:=]\s*)(["']?)([A-Za-z0-9/+_.\-]{8,})"#,
+                r#"(?i)\b(api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|auth)\b(\s*[:=]\s*)(["']?)([A-Za-z0-9/+_.\-=]{8,})"#,
                 "$1$2$3[REDACTED]",
             ),
             // AWS access key id.
@@ -96,6 +98,14 @@ mod tests {
         assert_eq!(n, 1);
         assert!(out.starts_with("api_key = [REDACTED]"));
         assert!(!out.contains("abcdef0123456789"));
+    }
+
+    #[test]
+    fn base64_value_with_padding_fully_redacted() {
+        // The `=` padding must be consumed — otherwise the tail after `=` leaks.
+        let (out, n) = redact("token = c2VjcmV0dmFsdWVoZXJl=");
+        assert_eq!(n, 1);
+        assert_eq!(out, "token = [REDACTED]");
     }
 
     #[test]

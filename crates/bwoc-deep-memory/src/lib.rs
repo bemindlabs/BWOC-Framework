@@ -208,7 +208,7 @@ mod tests {
             MineReport {
                 files: 0,
                 stored: 0,
-                redacted: 0
+                redacted: 0,
             }
         );
     }
