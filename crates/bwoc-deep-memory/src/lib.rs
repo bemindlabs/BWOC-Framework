@@ -17,6 +17,7 @@
 
 pub mod embed;
 pub mod mine;
+pub mod redact;
 pub mod store;
 
 use embed::{EmbedError, Embedder};
@@ -43,6 +44,8 @@ pub struct MineReport {
     pub files: usize,
     /// Chunks embedded and inserted.
     pub stored: usize,
+    /// Secrets scrubbed out of chunk text before embedding (across all chunks).
+    pub redacted: usize,
 }
 
 /// `mine <path> --mode <mode>`: ingest session files into the store.
@@ -56,12 +59,24 @@ pub fn mine(
     mode: &str,
     ts: i64,
 ) -> Result<MineReport, VerbError> {
-    let chunks = mine::collect(path)?;
+    let mut chunks = mine::collect(path)?;
     if chunks.is_empty() {
         return Ok(MineReport {
             files: 0,
             stored: 0,
+            redacted: 0,
         });
+    }
+    // Scrub secrets before anything leaves the process — the redacted text is
+    // what gets embedded AND stored, so a credential never reaches the embedding
+    // endpoint or the SQLite file.
+    let mut redacted = 0;
+    for chunk in &mut chunks {
+        let (clean, n) = redact::redact(&chunk.text);
+        if n > 0 {
+            chunk.text = clean;
+            redacted += n;
+        }
     }
     let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
     let vectors = embedder.embed(&texts)?;
@@ -85,6 +100,7 @@ pub fn mine(
     Ok(MineReport {
         files: sources.len(),
         stored,
+        redacted,
     })
 }
 
@@ -191,9 +207,33 @@ mod tests {
             report,
             MineReport {
                 files: 0,
-                stored: 0
+                stored: 0,
+                redacted: 0
             }
         );
+    }
+
+    #[test]
+    fn mine_redacts_secrets_before_storing() {
+        let dir = std::env::temp_dir().join(format!("bwoc-redact-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("leak.md"),
+            "Set the deploy key. api_key = sk_live_abcdef0123456789 then restart.",
+        )
+        .unwrap();
+
+        let store = Store::open_in_memory().unwrap();
+        let emb = StubEmbedder::new(32);
+        let report = mine(&store, &emb, &dir, "convos", 1000).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(report.redacted, 1);
+        // The stored memory must not carry the secret.
+        let hits = search(&store, &emb, "deploy key restart", 1).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("[REDACTED]"));
+        assert!(!hits[0].text.contains("abcdef0123456789"));
     }
 
     #[test]

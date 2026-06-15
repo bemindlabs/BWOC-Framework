@@ -378,6 +378,7 @@ name = "bwoc-deep-memory"
 version = "2.30.19"
 dependencies = [
  "clap",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
