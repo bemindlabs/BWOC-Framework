@@ -48,6 +48,7 @@ mod run;
 mod sangha;
 mod send;
 mod sessions;
+mod set;
 mod skill;
 mod spawn;
 mod start;
@@ -118,6 +119,27 @@ enum Commands {
     Doctor(DoctorArgs),
     /// Retire an agent — remove it from the workspace's registry (vaya).
     Retire(RetireArgs),
+    /// Update an incarnated agent's backend and/or model in place (CRUD update).
+    Set {
+        /// Agent name (with or without the `agent-` prefix).
+        name: String,
+        /// New backend — rewrites the `.bwoc/agents.toml` entry. All backend
+        /// symlinks already exist, so no file changes are needed beyond it.
+        #[arg(long, value_enum)]
+        backend: Option<spawn::Backend>,
+        /// New `primaryModel` in `config.manifest.json` (a model id, or "auto").
+        #[arg(long)]
+        primary_model: Option<String>,
+        /// New `fallbackModel` in `config.manifest.json`.
+        #[arg(long)]
+        fallback_model: Option<String>,
+        /// Workspace root (defaults: this flag > BWOC_WORKSPACE > ancestor walk).
+        #[arg(long)]
+        workspace: Option<std::path::PathBuf>,
+        /// Emit JSON instead of the human-readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage the agent → base-project binding (worktreeBase): list / show / set.
     Debase(DebaseArgs),
     /// Link agents to remote-control sessions and manage them: link / list / status / unlink.
@@ -2269,6 +2291,24 @@ fn main() -> ExitCode {
         }
         Some(Commands::Retire(args)) => {
             let code = retire::run(args.into());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Set {
+            name,
+            backend,
+            primary_model,
+            fallback_model,
+            workspace,
+            json,
+        }) => {
+            let code = set::run(set::SetArgs {
+                name,
+                backend,
+                primary_model,
+                fallback_model,
+                workspace,
+                json,
+            });
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Debase(args)) => {
