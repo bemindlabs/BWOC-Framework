@@ -6,13 +6,30 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.6.15-0] — 2026-06-15 — 2.31.0
+
+The **subscription-CLI backend + Phase 6 (paññā)** release: agents can now run on a Claude/Codex subscription with no API key, the harness eval framework and sandbox hardening extend across backends and platforms, the deep-memory store stops being a secret sink, and an **experimental** computer-use scaffold lands behind a feature flag.
+
 ### Added
 
 - **`cli` provider backend (#277)** — drive a local, subscription-authenticated vendor CLI (`claude`, `codex`, …) instead of an HTTP endpoint: `bwoc-harness --backend cli [--cli-cmd claude]` shells out per turn (`<cli> -p --model <model> --output-format json`, conversation on stdin), so agents run on a Claude/Codex **subscription with zero API key**. Chat-only by design (the vendor CLI executes its own tools internally; harness tool-calling stays on HTTP backends). New manifest field `cliCmd` (optional, defaults `claude`).
+- **macOS network-egress parity in the sandbox SBPL (t29, #283)** — the seccomp network-egress containment from Phase 5 now has a macOS Seatbelt (SBPL) equivalent, so the no-egress invariant holds on macOS as well as Linux.
+- **`cli` ambient-backend trust tier (t30, #284)** — the `cli` backend is host-credentialed (ambient), so it is refused for untrusted auto-process: an unverified inbound message can never drive a subscription CLI.
+- **Eval skips tool-fixtures on an ambient backend (t31b, #286)** — the eval harness recognizes ambient (chat-only) backends and skips tool-call fixtures that cannot apply to them, instead of scoring them as failures.
+- **Deep-memory `mine` secret redaction (#289)** — credentials (API keys, bearer/Slack/GitHub tokens, JWTs, PEM private keys, `key=value` secrets) are scrubbed from mined session text **before** embedding and storage, so the deep-memory store never becomes a secret sink. `mine` reports the redaction count. Pure-Rust (`regex`), quarantined to `bwoc-deep-memory`.
+- **Computer-use scaffold — experimental (#291, #292)** — a backend-neutral `ComputerAction` model + Anthropic native-tool serialization (`computer_20250124` + beta header), and a headless-browser `ComputerExecutor` (CDP via `chromiumoxide`) behind the optional **`browser`** feature. **Experimental:** not wired into the agent loop; the default build pulls zero browser deps; security gating (screenshot taint + capability gate + autoprocess refusal) is still ahead.
+
+### Changed
+
+- **`agent_loop.rs` decomposed into a directory module (t31a, #285)** — internal structure only; no behavior change.
+- **Auto-version hook bumps shared version lines only on `main`, not feature branches (#287)** — feature branches no longer touch `Cargo.toml`/`VERSION.md` shared lines, so concurrent PRs never collide on the version.
+- **Fork-heavy integration tests serialized in CI (t17, #282)** — avoids resource-contention flakiness in the sandbox/process tests.
+- **`VERSION.md` / README / ROADMAP mark Phase 6 — _paññā_ (#290)** — harness eval & cross-platform hardening; t29–t31 done, t32 (deep-memory sqlite-vec / governance) parked as premature.
 
 ### Fixed
 
 - **`bwoc-connect` now forwards the agent's `backend` (and `cliCmd`) to the spawned harness** — connect sessions previously ignored the manifest backend and always ran on the harness default, so `openrouter`/`claude`/`cli` agents silently used the wrong provider (#277).
+- **`bwoc okr track` no longer hangs on idle stdin nor drops `as_of`/`evidence` (#280)** — the track verb blocked on stdin even when all fields were supplied as flags (hanging non-interactively) and silently discarded `as_of`/`evidence`; both fixed.
 
 ## [v2026.6.9-2] — 2026-06-09 — 2.30.0
 
