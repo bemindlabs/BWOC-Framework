@@ -267,7 +267,20 @@ impl<E: ComputerExecutor + 'static> ToolImpl for ComputerTool<E> {
                 "amount": { "type": "integer", "description": "Scroll amount in clicks." },
                 "ms": { "type": "integer", "description": "Milliseconds for `wait`." }
             },
-            "required": ["action"]
+            "required": ["action"],
+            // Per-action required fields — keeps the schema honest with the
+            // runtime enum, so the model can't emit e.g. `{action:"click"}`
+            // (schema-valid but a guaranteed deserialize failure).
+            "oneOf": [
+                { "properties": { "action": { "const": "screenshot" } }, "required": ["action"] },
+                { "properties": { "action": { "const": "mouse_move" } }, "required": ["action", "coordinate"] },
+                { "properties": { "action": { "const": "click" } }, "required": ["action", "coordinate"] },
+                { "properties": { "action": { "const": "double_click" } }, "required": ["action", "coordinate"] },
+                { "properties": { "action": { "const": "type" } }, "required": ["action", "text"] },
+                { "properties": { "action": { "const": "key" } }, "required": ["action", "keys"] },
+                { "properties": { "action": { "const": "scroll" } }, "required": ["action", "coordinate", "direction", "amount"] },
+                { "properties": { "action": { "const": "wait" } }, "required": ["action", "ms"] }
+            ]
         })
     }
 
@@ -371,6 +384,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(obs, Observation::Ack);
+    }
+
+    #[test]
+    fn schema_requires_per_action_fields() {
+        let tool = ComputerTool::new(MockExecutor::default());
+        let schema = tool.parameters_schema();
+        let branches = schema["oneOf"].as_array().expect("oneOf present");
+        // The click branch must require `coordinate`, not just `action`.
+        let click = branches
+            .iter()
+            .find(|b| b["properties"]["action"]["const"] == "click")
+            .expect("click branch");
+        let required: Vec<&str> = click["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"coordinate"));
     }
 
     #[tokio::test]
