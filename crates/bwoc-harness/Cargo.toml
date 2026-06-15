@@ -30,6 +30,12 @@ required-features = ["test-redteam"]
 # the dep-quarantine holds for the default build.
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 
+# Computer-use headless-browser executor (Phase 6/7). The default build has ZERO
+# browser deps — the action→CDP mapping in `tools::browser` is pure and always
+# compiled/tested; only the live `BrowserExecutor` (chromiumoxide + a runtime
+# Chrome/Chromium) is gated here. Enable with: cargo build --features browser
+browser = ["dep:chromiumoxide"]
+
 # Phase 5 t7a — gate-only red-team suite (the hostile-child bin above +
 # `tests/sandbox_escape.rs`). Off by default; the gate enables it explicitly:
 #   cargo test -p bwoc-harness --features test-redteam --test sandbox_escape
@@ -45,6 +51,11 @@ bwoc-core = { path = "../bwoc-core" }
 opentelemetry = { version = "0.32", optional = true }
 opentelemetry_sdk = { version = "0.32", optional = true }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"], optional = true }
+
+# Headless-browser computer-use executor — OPTIONAL, behind the `browser`
+# feature only (pulls a CDP/WebSocket crate graph + needs a runtime Chrome).
+# Dep-quarantine: never enters the default build, never bwoc-core.
+chromiumoxide = { version = "0.9", optional = true }
 
 # Async runtime — required for streaming + concurrent tool execution + queue
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "io-std", "time"] }
