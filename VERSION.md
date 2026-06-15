@@ -4,7 +4,7 @@
 
 **Software-Version:** `2.30.19`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.6.6`   *(canonical here — bumped on `.md` edits)*
-**Phase:** Phase 5 — *saṃvara* (trust-boundary & sandbox hardening), **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
+**Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
 **Latest release:** [`v2026.6.9-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.9-2) *(2026-06-09 — **2.30.0**; minor — **standalone agent**: gateway receive bridge, pinned-peer trust + replay defense, untrusted auto-process + reply, and a deployable container image. Prior: `v2026.6.9-1` 2.29.0 — OpenRouter provider backend)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
 **Last-Updated:** `2026-06-12T09:17:19Z`   *(UTC, ISO 8601 — stamped on every edit)*
@@ -94,6 +94,8 @@ Same-day reissue? `v2026.5.22-1`, `v2026.5.22-2`, etc.
 | Phase 2 | **ṭhiti** commands — list, status, log, send, supervision. |
 | Phase 3 | **vaya** + interconnect — stop, retire, inter-agent protocol. |
 | Phase 4 | Reference agents, fleet dashboard. |
+| Phase 5 | **saṃvara** — trust-boundary & sandbox hardening (re-exec isolation, Landlock/seccomp FS+network jail, capability gate). |
+| Phase 6 | **paññā** — harness eval framework + cross-platform sandbox hardening. |
 
 See the [README Status table](README.md#status) for current phase progress.
 
