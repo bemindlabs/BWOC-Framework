@@ -86,7 +86,12 @@ pub fn cdp_plan(action: &ComputerAction) -> Vec<CdpCall> {
                 mouse_event("mouseReleased", *x, *y, b, 1),
             ]
         }
+        // A double-click is two full click cycles with an incrementing
+        // clickCount (1 then 2) — Chromium keys `dblclick` off that, so a single
+        // press/release with clickCount=2 is registered as one click on many pages.
         ComputerAction::DoubleClick { coordinate: (x, y) } => vec![
+            mouse_event("mousePressed", *x, *y, "left", 1),
+            mouse_event("mouseReleased", *x, *y, "left", 1),
             mouse_event("mousePressed", *x, *y, "left", 2),
             mouse_event("mouseReleased", *x, *y, "left", 2),
         ],
@@ -253,22 +258,25 @@ mod live {
                     Ok(Observation::Ack)
                 }
                 ComputerAction::DoubleClick { coordinate: (x, y) } => {
-                    self.mouse(
-                        DispatchMouseEventType::MousePressed,
-                        *x,
-                        *y,
-                        CdpMouseButton::Left,
-                        2,
-                    )
-                    .await?;
-                    self.mouse(
-                        DispatchMouseEventType::MouseReleased,
-                        *x,
-                        *y,
-                        CdpMouseButton::Left,
-                        2,
-                    )
-                    .await?;
+                    // Two click cycles with clickCount 1 then 2 — see `cdp_plan`.
+                    for clicks in [1, 2] {
+                        self.mouse(
+                            DispatchMouseEventType::MousePressed,
+                            *x,
+                            *y,
+                            CdpMouseButton::Left,
+                            clicks,
+                        )
+                        .await?;
+                        self.mouse(
+                            DispatchMouseEventType::MouseReleased,
+                            *x,
+                            *y,
+                            CdpMouseButton::Left,
+                            clicks,
+                        )
+                        .await?;
+                    }
                     Ok(Observation::Ack)
                 }
                 ComputerAction::Type { text } => {
@@ -339,9 +347,27 @@ mod tests {
     }
 
     #[test]
-    fn double_click_uses_click_count_two() {
+    fn double_click_is_two_cycles_with_incrementing_count() {
         let plan = cdp_plan(&ComputerAction::DoubleClick { coordinate: (1, 2) });
-        assert!(plan.iter().all(|c| c.params["clickCount"] == 2));
+        assert_eq!(plan.len(), 4);
+        let kinds: Vec<&str> = plan
+            .iter()
+            .map(|c| c.params["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "mousePressed",
+                "mouseReleased",
+                "mousePressed",
+                "mouseReleased"
+            ]
+        );
+        let counts: Vec<i64> = plan
+            .iter()
+            .map(|c| c.params["clickCount"].as_i64().unwrap())
+            .collect();
+        assert_eq!(counts, [1, 1, 2, 2]);
     }
 
     #[test]
