@@ -10,7 +10,7 @@
 //! the dep-quarantine HARD RULE holds (`bwoc-agent` stays lean).
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Wait between a child exit and a respawn (avoids a crash-loop spinning hot).
@@ -97,12 +97,27 @@ impl ConnectorSupervisor {
             }
         }
         self.last_spawn = Some(Instant::now());
-        match Command::new(exe)
-            .arg(platform)
-            .arg("--agent")
-            .arg(&self.agent_dir)
-            .spawn()
+        // Capture the connector child's stdout+stderr to `<agent>/.bwoc/connector.log`.
+        // Inheriting the daemon's stdio sent it into the void under launchd, so a
+        // connector that failed (e.g. a wedged keychain read, a token error) did so
+        // invisibly — "no stderr/log even with RUST_LOG=debug" (#305). A file makes
+        // the failure readable.
+        let mut cmd = Command::new(exe);
+        cmd.arg(platform).arg("--agent").arg(&self.agent_dir);
+        let log_path = self.agent_dir.join(".bwoc").join("connector.log");
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
         {
+            if let (Ok(out), Ok(err)) = (f.try_clone(), f.try_clone()) {
+                cmd.stdout(Stdio::from(out)).stderr(Stdio::from(err));
+            }
+        }
+        match cmd.spawn() {
             Ok(c) => {
                 let pid = c.id();
                 eprintln!("bwoc-agent --serve: spawned connector '{platform}' (pid {pid})");

@@ -244,7 +244,10 @@ pub async fn run_bridge(
     let mut offset: i64 = 0;
     let mut sessions: HashMap<i64, Box<dyn AgentSession>> = HashMap::new();
     let mut polls = 0usize;
+    let mut announced = false;
     let mention_only = config.group.as_ref().is_none_or(|g| g.mention_only);
+
+    eprintln!("[bwoc-connect] poll loop started (offset {offset}); awaiting messages");
 
     loop {
         if let Some(max) = max_polls {
@@ -264,6 +267,16 @@ pub async fn run_bridge(
                 continue;
             }
         };
+
+        // First successful poll confirms the loop is live — the #305 failure mode
+        // was a silent never-poll, so make "is it polling?" answerable.
+        if !announced {
+            eprintln!("[bwoc-connect] polling active (first getUpdates returned ok)");
+            announced = true;
+        }
+        if !messages.is_empty() {
+            eprintln!("[bwoc-connect] drained {} message(s)", messages.len());
+        }
 
         for msg in messages {
             offset = offset.max(msg.update_id + 1);
