@@ -2,10 +2,11 @@
 //! BWOC agent: `bwoc-connect <telegram|discord> --agent <dir>`.
 //!
 //! Args are hand-parsed (no `clap` — this crate stays minimal; its weight is
-//! the network stack, not the CLI). Token resolution is the **OS keyring**
-//! (`bwoc/<platform>` · agent-dir basename) on macOS/Windows, with the platform
-//! env var (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) as the fallback — and
-//! the only path on Linux (no Secret Service dep; the headless target uses env).
+//! the network stack, not the CLI). Token resolution is **env-first** — the
+//! platform env var (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) wins because it
+//! is explicit and can never block — with the **OS keyring**
+//! (`bwoc/<platform>` · agent-dir basename, macOS/Windows) as a timeout-bounded
+//! fallback. Linux is env-only (no Secret Service dep). See `resolve_token`.
 
 use std::path::PathBuf;
 
@@ -236,7 +237,9 @@ fn keyring_lookup(service: &str, account: &str) -> Option<String> {
     use std::time::Duration;
     let (tx, rx) = mpsc::channel();
     let (s, a) = (service.to_string(), account.to_string());
-    std::thread::spawn(move || {
+    // Detached on purpose: if it hangs on a Keychain prompt we abandon it (the
+    // process exits cleanly regardless). Bind the handle so it isn't a silent drop.
+    let _worker = std::thread::spawn(move || {
         let tok = keyring::Entry::new(&s, &a)
             .ok()
             .and_then(|e| e.get_password().ok())

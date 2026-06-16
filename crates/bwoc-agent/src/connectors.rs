@@ -108,14 +108,26 @@ impl ConnectorSupervisor {
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(f) = std::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
         {
-            if let (Ok(out), Ok(err)) = (f.try_clone(), f.try_clone()) {
-                cmd.stdout(Stdio::from(out)).stderr(Stdio::from(err));
-            }
+            Ok(f) => match (f.try_clone(), f.try_clone()) {
+                (Ok(out), Ok(err)) => {
+                    cmd.stdout(Stdio::from(out)).stderr(Stdio::from(err));
+                }
+                _ => eprintln!(
+                    "bwoc-agent --serve: could not dup {} handle; connector stdio inherited \
+                     (its logs may be lost)",
+                    log_path.display()
+                ),
+            },
+            Err(e) => eprintln!(
+                "bwoc-agent --serve: could not open {} ({e}); connector stdio inherited \
+                 (its logs may be lost)",
+                log_path.display()
+            ),
         }
         match cmd.spawn() {
             Ok(c) => {
