@@ -135,7 +135,7 @@ pub fn cdp_plan(action: &ComputerAction) -> Vec<CdpCall> {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "browser")]
-pub use live::BrowserExecutor;
+pub use live::{BrowserExecutor, LazyBrowserExecutor};
 
 #[cfg(feature = "browser")]
 mod live {
@@ -324,6 +324,45 @@ mod live {
 
         fn display_size(&self) -> (u32, u32) {
             self.viewport
+        }
+    }
+
+    /// Launches a [`BrowserExecutor`] on first use so it can be registered in the
+    /// synchronous `default_registry()`. One headless browser per harness
+    /// process; actions serialize behind the lock (a single page does one thing
+    /// at a time anyway). The browser is never launched if the `computer` tool is
+    /// never called — so opting into the `browser` feature costs nothing until an
+    /// agent actually requests computer-use (which the policy gate must allow).
+    pub struct LazyBrowserExecutor {
+        start_url: String,
+        inner: tokio::sync::Mutex<Option<BrowserExecutor>>,
+    }
+
+    impl LazyBrowserExecutor {
+        pub fn new(start_url: impl Into<String>) -> Self {
+            Self {
+                start_url: start_url.into(),
+                inner: tokio::sync::Mutex::new(None),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ComputerExecutor for LazyBrowserExecutor {
+        async fn execute(&self, action: &ComputerAction) -> Result<Observation, HarnessError> {
+            let mut guard = self.inner.lock().await;
+            if guard.is_none() {
+                *guard = Some(BrowserExecutor::launch(&self.start_url).await?);
+            }
+            guard
+                .as_ref()
+                .expect("just launched above")
+                .execute(action)
+                .await
+        }
+
+        fn display_size(&self) -> (u32, u32) {
+            DEFAULT_VIEWPORT
         }
     }
 }

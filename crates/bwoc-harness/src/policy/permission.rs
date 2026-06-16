@@ -243,6 +243,14 @@ pub fn resolve_effective_mode(policy: &Policy, tool_name: &str, arguments_json: 
     resolve_mode(policy, tool_name, arguments_json).mode
 }
 
+/// Tools that default to `ask` regardless of `default_mode`. These have a wide
+/// blast radius (computer-use can drive the screen and keyboard), so an operator
+/// must approve them unless they opt in with an explicit per-tool policy entry.
+/// In non-interactive (no-TTY) runs these fail-safe to *deny*, so autoprocess
+/// never silently drives computer-use — defense in depth with the Layer-0
+/// capability gate (`computer` is `Gated`) and the t30 ambient-backend refusal.
+pub const ASK_BY_DEFAULT_TOOLS: &[&str] = &["computer"];
+
 /// Resolve the effective mode without applying `ask` logic.
 fn resolve_mode(policy: &Policy, tool_name: &str, arguments_json: &str) -> ResolvedMode {
     // 1. Per-tool override.
@@ -266,11 +274,31 @@ fn resolve_mode(policy: &Policy, tool_name: &str, arguments_json: &str) -> Resol
     // narrow security fix (Mattaññutā).
     for rule in &policy.patterns {
         if arguments_json.contains(&rule.pattern) {
+            // A pattern may *tighten* a high-blast-radius tool to `deny`, but it
+            // must never *grant* one: only an explicit per-tool entry (step 1)
+            // opts in. Otherwise an incidental `allow` pattern matching the JSON
+            // args would bypass ask-by-default + the non-TTY fail-safe. Skip the
+            // grant and fall through to the ask-by-default gate below.
+            if ASK_BY_DEFAULT_TOOLS.contains(&tool_name) && rule.mode == Mode::Allow {
+                continue;
+            }
             return ResolvedMode {
                 mode: rule.mode.clone(),
                 reason: rule.reason.clone(),
             };
         }
+    }
+
+    // 2b. High-blast-radius tools default to `ask` even when `default_mode` is
+    // `allow`. A per-tool entry (step 1) still wins, so an operator can opt in.
+    if ASK_BY_DEFAULT_TOOLS.contains(&tool_name) {
+        return ResolvedMode {
+            mode: Mode::Ask,
+            reason: Some(format!(
+                "`{tool_name}` is high-blast-radius (computer-use); approval required \
+                 unless explicitly set in `.bwoc/harness-policy.toml`"
+            )),
+        };
     }
 
     // 3. Default.
@@ -307,6 +335,19 @@ fn apply_mode(
         Mode::Ask => {
             if is_tty {
                 prompt_operator(tool_name, arguments_json)
+            } else if ASK_BY_DEFAULT_TOOLS.contains(&tool_name) {
+                // High-blast-radius tool with no explicit per-tool grant (an
+                // explicit `allow` would have resolved to `Allow` upstream and
+                // never reached here). Non-TTY → fail-safe *deny* regardless of
+                // `default_mode`, so autoprocess can never silently drive it.
+                PermissionDecision::Deny {
+                    reason: format!(
+                        "tool `{tool_name}` is computer-use (high blast radius) and requires \
+                         operator approval, but no TTY is available. Denied by fail-safe \
+                         policy. Set `{tool_name} = \"allow\"` in `.bwoc/harness-policy.toml` \
+                         to permit it in autonomous mode."
+                    ),
+                }
             } else {
                 // Non-TTY: fail-safe to default_mode (which is deny unless
                 // explicitly set to allow, which would be unusual).
@@ -588,6 +629,59 @@ mode    = 'allow'
         );
         assert!(
             matches!(d, PermissionDecision::Deny { reason } if reason.contains("explicit denial"))
+        );
+    }
+
+    #[test]
+    fn computer_asks_by_default_even_under_allow_default() {
+        // `allow` default must NOT silently allow computer-use; it resolves to ask.
+        let mode = resolve_effective_mode(&allow_all(), "computer", r#"{"action":"screenshot"}"#);
+        assert_eq!(mode, Mode::Ask);
+    }
+
+    #[test]
+    fn computer_denied_non_tty_despite_allow_default() {
+        // No TTY + no explicit grant → fail-safe deny, even with default allow.
+        let d = evaluate(
+            &allow_all(),
+            "computer",
+            r#"{"action":"screenshot"}"#,
+            false,
+        );
+        assert!(
+            matches!(d, PermissionDecision::Deny { reason } if reason.contains("computer-use"))
+        );
+    }
+
+    #[test]
+    fn computer_explicit_allow_opts_in() {
+        // An explicit per-tool allow lets the operator run it autonomously.
+        let policy = policy_with_tool_rule("computer", Mode::Allow);
+        let d = evaluate(&policy, "computer", r#"{"action":"screenshot"}"#, false);
+        assert_eq!(d, PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn computer_cannot_be_allowed_via_pattern() {
+        // An `allow` *pattern* matching the computer args must NOT grant it —
+        // only an explicit per-tool entry opts in. It falls through to
+        // ask-by-default, and non-TTY fail-safe denies despite the allow default.
+        let policy = policy_with_pattern("screenshot", Mode::Allow, None);
+        assert_eq!(
+            resolve_effective_mode(&policy, "computer", r#"{"action":"screenshot"}"#),
+            Mode::Ask
+        );
+        let d = evaluate(&policy, "computer", r#"{"action":"screenshot"}"#, false);
+        assert!(matches!(d, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn computer_pattern_deny_still_tightens() {
+        // Patterns may *tighten* a high-blast tool — a `deny` pattern still wins.
+        let policy = policy_with_pattern("screenshot", Mode::Deny, Some("no screenshots"));
+        let d = evaluate(&policy, "computer", r#"{"action":"screenshot"}"#, false);
+        assert!(
+            matches!(d, PermissionDecision::Deny { reason } if reason.contains("no screenshots"))
         );
     }
 }

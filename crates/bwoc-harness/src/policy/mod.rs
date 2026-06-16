@@ -309,6 +309,26 @@ mod tests {
         assert!(matches!(outcome, PolicyOutcome::GuardrailBlocked(_)));
     }
 
+    #[test]
+    fn computer_use_denied_on_untrusted_turn() {
+        // The `computer` tool is `Gated`, so the Layer-0 capability gate refuses
+        // it on an Untrusted turn even under an allow policy — computer-use can
+        // never be driven by untrusted (taint-bearing) context.
+        let policy = allow_policy();
+        let outcome = run_pipeline(
+            "computer",
+            r#"{"action":"screenshot"}"#,
+            wt(),
+            &policy,
+            false,
+            TrustLevel::Untrusted,
+        );
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::CapabilityDenied { tool, .. } if tool == "computer"
+        ));
+    }
+
     // ── Permission deny after guardrails pass ────────────────────────────────
 
     #[test]
@@ -626,6 +646,7 @@ mod tests {
             ("bwoc_send", "{}", Capability::Gated),
             ("bwoc_run", "{}", Capability::Gated),
             ("mcp__srv__tool", "{}", Capability::Gated),
+            ("computer", r#"{"action":"screenshot"}"#, Capability::Gated),
             ("totally_unknown_tool", "{}", Capability::Gated),
         ];
         for (tool, args, expected) in cases {

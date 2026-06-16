@@ -207,14 +207,17 @@ impl ProviderClient for AnthropicClient {
         model: &str,
     ) -> Result<ChatCompletion, HarnessError> {
         self.require_key()?;
+        let beta = anthropic_beta_for(&tools);
         let body = build_anthropic_body(messages, tools, model, self.max_tokens, false);
 
-        let resp = self
-            .auth(self.client.post(self.messages_url()))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| HarnessError::TransientProvider(format!("HTTP request failed: {e}")))?;
+        let mut req = self.auth(self.client.post(self.messages_url()));
+        if let Some(b) = beta {
+            req = req.header("anthropic-beta", b);
+        }
+        let resp =
+            req.json(&body).send().await.map_err(|e| {
+                HarnessError::TransientProvider(format!("HTTP request failed: {e}"))
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -239,15 +242,18 @@ impl ProviderClient for AnthropicClient {
         use futures_util::StreamExt;
 
         self.require_key()?;
+        let beta = anthropic_beta_for(&tools);
         let mut body = build_anthropic_body(messages, tools, model, self.max_tokens, true);
         body["stream"] = json!(true);
 
-        let resp = self
-            .auth(self.client.post(self.messages_url()))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| HarnessError::TransientProvider(format!("HTTP request failed: {e}")))?;
+        let mut req = self.auth(self.client.post(self.messages_url()));
+        if let Some(b) = beta {
+            req = req.header("anthropic-beta", b);
+        }
+        let resp =
+            req.json(&body).send().await.map_err(|e| {
+                HarnessError::TransientProvider(format!("HTTP request failed: {e}"))
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -449,16 +455,37 @@ fn build_anthropic_body(
         let mapped: Vec<Value> = tools
             .into_iter()
             .map(|t| {
-                json!({
-                    "name": t.function.name,
-                    "description": t.function.description,
-                    "input_schema": t.function.parameters,
-                })
+                // The `computer` tool is a *provider-defined* native tool keyed by
+                // `type` (not a custom function), and the request must also carry
+                // the computer-use beta header (see `anthropic_beta_for`). The
+                // display geometry matches the headless-browser executor viewport
+                // so the model reasons in the right coordinate space.
+                if t.function.name == "computer" {
+                    let (w, h) = crate::tools::browser::DEFAULT_VIEWPORT;
+                    crate::tools::computer::anthropic_tool_spec(w, h, None)
+                } else {
+                    json!({
+                        "name": t.function.name,
+                        "description": t.function.description,
+                        "input_schema": t.function.parameters,
+                    })
+                }
             })
             .collect();
         body["tools"] = json!(mapped);
     }
     body
+}
+
+/// The `anthropic-beta` header value required when the request carries the
+/// `computer` native tool, or `None` when no computer tool is present. Keeping
+/// this a pure function of the tool list lets `complete`/`stream` attach the
+/// header without re-inspecting the (already-moved) tools.
+fn anthropic_beta_for(tools: &[Tool]) -> Option<&'static str> {
+    tools
+        .iter()
+        .any(|t| t.function.name == "computer")
+        .then_some(crate::tools::computer::ANTHROPIC_COMPUTER_BETA)
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +787,38 @@ mod tests {
         assert_eq!(body["tools"][0]["name"], "grep");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
         assert!(body["tools"][0].get("parameters").is_none());
+    }
+
+    #[test]
+    fn computer_tool_serializes_as_native_not_custom_function() {
+        // A `computer` tool must become the provider-native spec (keyed by
+        // `type`, no `input_schema`), while sibling tools keep the custom shape.
+        let tools = vec![
+            Tool::function("grep", "search", json!({"type": "object"})),
+            Tool::function("computer", "drive a gui", json!({"type": "object"})),
+        ];
+        let body = build_anthropic_body(vec![ChatMessage::user("x")], tools, "claude-x", 50, false);
+        let arr = body["tools"].as_array().unwrap();
+        let comp = arr.iter().find(|t| t["name"] == "computer").unwrap();
+        assert_eq!(comp["type"], "computer_20250124");
+        assert!(comp.get("input_schema").is_none());
+        let (w, h) = crate::tools::browser::DEFAULT_VIEWPORT;
+        assert_eq!(comp["display_width_px"], w);
+        assert_eq!(comp["display_height_px"], h);
+        // The sibling custom function is untouched.
+        let grep = arr.iter().find(|t| t["name"] == "grep").unwrap();
+        assert_eq!(grep["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn beta_header_only_when_computer_present() {
+        let no_comp = vec![Tool::function("grep", "s", json!({}))];
+        assert!(anthropic_beta_for(&no_comp).is_none());
+        let with_comp = vec![Tool::function("computer", "c", json!({}))];
+        assert_eq!(
+            anthropic_beta_for(&with_comp),
+            Some(crate::tools::computer::ANTHROPIC_COMPUTER_BETA)
+        );
     }
 
     #[test]
