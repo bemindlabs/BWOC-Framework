@@ -13,12 +13,13 @@
 //!    tool (`{name, description, input_schema}`) to a provider-defined tool keyed
 //!    by `type`.
 //!
-//! Deliberately **not wired** into [`default_registry`] or the turn-executor yet
-//! — this spike answers "does the neutral abstraction hold and map to the wire
-//! format?" before the GUI/container/security investment (Yoniso manasikāra:
-//! verify the design against the real provider shape first). Live-loop wiring,
-//! the containerized executor, screenshot taint, and the capability gate are the
-//! next slices.
+//! Wired into the live loop behind the `browser` feature: [`default_registry`]
+//! registers the tool with a lazily-launched headless-browser executor, the
+//! Anthropic provider emits the native [`anthropic_tool_spec`] + beta header, and
+//! the policy pipeline gates it — `computer` is `Capability::Gated` (refused on
+//! untrusted turns), ask-by-default, and autoprocess-refused when there is no
+//! TTY. Default builds pull zero browser deps and never register it. Screenshot
+//! image-block transport and richer key-chord parsing remain later slices.
 //!
 //! [`default_registry`]: super::registry::default_registry
 

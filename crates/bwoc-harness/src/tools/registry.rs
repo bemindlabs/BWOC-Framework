@@ -82,6 +82,17 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(BwocRun);
     reg.register(MemoryRead);
     reg.register(MemoryWrite);
+    // Computer-use (headless browser) — opt-in via the `browser` feature; the
+    // browser launches lazily on first use. Registration only exposes the tool;
+    // the policy pipeline gates it (`computer` is `Gated` → refused on untrusted
+    // turns, ask-by-default, autoprocess-refused). Default builds pull zero
+    // browser deps and do not register it.
+    #[cfg(feature = "browser")]
+    {
+        use super::browser::LazyBrowserExecutor;
+        use super::computer::ComputerTool;
+        reg.register(ComputerTool::new(LazyBrowserExecutor::new("about:blank")));
+    }
     reg
 }
 
