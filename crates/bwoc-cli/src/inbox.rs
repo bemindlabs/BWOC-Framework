@@ -35,6 +35,10 @@ pub struct InboxArgs {
     /// tagged with its recipient. `--clear` is still refused with `--all`
     /// (mass-clear is too destructive — clear one agent at a time).
     pub all: bool,
+    /// Print the resolved inbox path for `<agent>` and exit, without reading
+    /// it. Lets an external writer derive the same path the CLI reads (issue
+    /// #302). Requires a single agent (not `--all`).
+    pub path: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,7 +103,17 @@ fn inbox(args: InboxArgs) -> Result<(), InboxError> {
             workspace: workspace.clone(),
         })?;
 
-    let inbox_path = workspace.join(&entry.path).join(".bwoc/inbox.jsonl");
+    let inbox_path = entry.inbox_path(&workspace);
+
+    // --path short-circuit: print the resolved inbox path and exit, without
+    // reading it. Lets an external writer (e.g. a launchd `gateway-recv`) derive
+    // the exact path the CLI reads — `--inbox "$(bwoc inbox <agent> --path)"` —
+    // instead of hardcoding one that can drift from the registry (issue #302).
+    if args.path {
+        println!("{}", inbox_path.display());
+        return Ok(());
+    }
+
     let messages = read_messages(&inbox_path)?;
 
     // --count short-circuit: just the integer, before --limit/--json
@@ -279,7 +293,7 @@ fn inbox_all(
     if json {
         let mut per_agent: Vec<serde_json::Value> = Vec::with_capacity(registry.agents.len());
         for entry in &registry.agents {
-            let inbox_path = workspace.join(&entry.path).join(".bwoc/inbox.jsonl");
+            let inbox_path = entry.inbox_path(workspace);
             let messages = read_messages(&inbox_path)?;
             let view: Vec<&serde_json::Value> = if let Some(n) = limit {
                 messages.iter().rev().take(n).rev().collect()
@@ -304,7 +318,7 @@ fn inbox_all(
 
     // Human mode. One section per agent.
     for entry in &registry.agents {
-        let inbox_path = workspace.join(&entry.path).join(".bwoc/inbox.jsonl");
+        let inbox_path = entry.inbox_path(workspace);
         let messages = read_messages(&inbox_path)?;
         let view: Vec<&serde_json::Value> = if let Some(n) = limit {
             messages.iter().rev().take(n).rev().collect()
@@ -554,7 +568,7 @@ fn watch_inbox_all(
     // emits only envelopes that arrive from here on.
     let mut tails: Vec<Tail> = Vec::with_capacity(registry.agents.len());
     for entry in &registry.agents {
-        let path = workspace.join(&entry.path).join(".bwoc/inbox.jsonl");
+        let path = entry.inbox_path(workspace);
         let messages = read_messages(&path)?; // missing inbox -> empty (graceful)
         let view: Vec<&serde_json::Value> = if let Some(n) = limit {
             messages.iter().rev().take(n).rev().collect()

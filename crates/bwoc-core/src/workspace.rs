@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +63,24 @@ pub struct AgentEntry {
     pub backend: String,
     pub incarnated: String,
     pub status: String,
+}
+
+impl AgentEntry {
+    /// The agent's directory on disk: `<workspace>/<path>`.
+    pub fn dir(&self, workspace: &Path) -> PathBuf {
+        workspace.join(&self.path)
+    }
+
+    /// The canonical inbox path: `<workspace>/<path>/.bwoc/inbox.jsonl`.
+    ///
+    /// Single source of truth for "where does this agent's inbox live". The
+    /// `bwoc inbox` reader, the a2a/gateway writer, and `bwoc check` all resolve
+    /// through here, so a reader and a writer can never disagree about the path
+    /// (issue #302). External writers (e.g. a launchd `gateway-recv`) should
+    /// derive the path via `bwoc inbox <agent> --path` rather than hardcode it.
+    pub fn inbox_path(&self, workspace: &Path) -> PathBuf {
+        self.dir(workspace).join(".bwoc/inbox.jsonl")
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -184,5 +202,24 @@ mod tests {
         let back = AgentsRegistry::load(&dir).unwrap();
         assert_eq!(reg, back);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_entry_inbox_path_is_canonical() {
+        // The single source of truth the `bwoc inbox` reader and the a2a/gateway
+        // writer both resolve through (issue #302) — they can't disagree.
+        let entry = AgentEntry {
+            id: "agent-foo".into(),
+            path: "agents/agent-foo".into(),
+            backend: "claude".into(),
+            incarnated: "2026-05-22T06:00:00Z".into(),
+            status: "active".into(),
+        };
+        let ws = Path::new("/ws");
+        assert_eq!(entry.dir(ws), Path::new("/ws/agents/agent-foo"));
+        assert_eq!(
+            entry.inbox_path(ws),
+            Path::new("/ws/agents/agent-foo/.bwoc/inbox.jsonl")
+        );
     }
 }

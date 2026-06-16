@@ -423,7 +423,10 @@ fn resolve_agent(
             eprintln!("bwoc-a2a: failed to read manifest for '{agent}': {e}");
             1u8
         })?;
-    let inbox = agent_dir.join(".bwoc/inbox.jsonl");
+    // Single source of truth for the inbox path — the same resolver `bwoc inbox`
+    // reads through, so the a2a/gateway writer and the CLI reader can't disagree
+    // (issue #302).
+    let inbox = entry.inbox_path(&workspace);
     Ok((manifest, inbox, workspace))
 }
 
