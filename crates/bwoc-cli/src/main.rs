@@ -2034,6 +2034,11 @@ struct NewArgs {
     /// Useful for scripted multi-agent setup.
     #[arg(long)]
     json: bool,
+    /// Non-interactive: never prompt. The four gate commands fall back to their
+    /// stack-detected defaults (or `true` when unknown), so a fleet can be
+    /// scaffolded from a script with just `--role` + `--primary-model`.
+    #[arg(long, visible_alias = "non-interactive")]
+    yes: bool,
 }
 
 impl NewArgs {
@@ -2063,6 +2068,7 @@ impl NewArgs {
             mindsets: self.mindsets,
             skills: self.skills,
             json: self.json,
+            yes: self.yes,
         }
     }
 }
