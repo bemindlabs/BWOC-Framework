@@ -73,11 +73,15 @@ impl AgentEntry {
 
     /// The canonical inbox path: `<workspace>/<path>/.bwoc/inbox.jsonl`.
     ///
-    /// Single source of truth for "where does this agent's inbox live". The
-    /// `bwoc inbox` reader, the a2a/gateway writer, and `bwoc check` all resolve
-    /// through here, so a reader and a writer can never disagree about the path
-    /// (issue #302). External writers (e.g. a launchd `gateway-recv`) should
-    /// derive the path via `bwoc inbox <agent> --path` rather than hardcode it.
+    /// One resolver for "where does this agent's inbox live", shared by the
+    /// registry-driven readers/writers — the `bwoc inbox` reader and the
+    /// a2a/gateway writer (`resolve_agent`) both go through here, so a reader and
+    /// a writer can never disagree about the path (issue #302). External writers
+    /// (e.g. a launchd `gateway-recv`) should derive the path via
+    /// `bwoc inbox <agent> --path` rather than hardcode it.
+    ///
+    /// (`bwoc check` computes the same suffix against the agent dir it is already
+    /// pointed at, not via the registry, so it does not call this.)
     pub fn inbox_path(&self, workspace: &Path) -> PathBuf {
         self.dir(workspace).join(".bwoc/inbox.jsonl")
     }
