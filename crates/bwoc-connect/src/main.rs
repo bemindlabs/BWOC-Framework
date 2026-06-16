@@ -2,10 +2,11 @@
 //! BWOC agent: `bwoc-connect <telegram|discord> --agent <dir>`.
 //!
 //! Args are hand-parsed (no `clap` — this crate stays minimal; its weight is
-//! the network stack, not the CLI). Token resolution is the **OS keyring**
-//! (`bwoc/<platform>` · agent-dir basename) on macOS/Windows, with the platform
-//! env var (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) as the fallback — and
-//! the only path on Linux (no Secret Service dep; the headless target uses env).
+//! the network stack, not the CLI). Token resolution is **env-first** — the
+//! platform env var (`TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN`) wins because it
+//! is explicit and can never block — with the **OS keyring**
+//! (`bwoc/<platform>` · agent-dir basename, macOS/Windows) as a timeout-bounded
+//! fallback. Linux is env-only (no Secret Service dep). See `resolve_token`.
 
 use std::path::PathBuf;
 
@@ -185,43 +186,76 @@ fn team_chat_path(agent_dir: &std::path::Path, team: &str) -> PathBuf {
         .join("chat.jsonl")
 }
 
-/// Resolve the bot token: **OS keyring first** (macOS/Windows; service
-/// `bwoc/<platform>`, account = the agent dir's basename), **env var fallback**
-/// (every platform; the only path on Linux — see `keyring_lookup`). A
-/// missing/locked/absent keyring is never fatal — it falls through to the env.
+/// Resolve the bot token: **env var first** (every platform), **OS keyring
+/// fallback** (macOS/Windows; service `bwoc/<platform>`, account = the agent
+/// dir's basename).
+///
+/// Env wins because it is explicit and — unlike the OS keyring — can never
+/// block. A keyring read from a daemon-spawned subprocess (e.g. the connector
+/// child of `bwoc-agent --serve`) has no interactive session to answer a
+/// Keychain authorization prompt, so it can hang indefinitely; that wedged the
+/// poll loop before it ever called `getUpdates` (#305). Checking env first means
+/// the documented `TELEGRAM_BOT_TOKEN` path never touches the keychain, and the
+/// keyring read itself is now timeout-bounded as a backstop.
 fn resolve_token(
     platform: &str,
     agent_dir: &std::path::Path,
     token_env: &str,
 ) -> Result<String, ConnectError> {
+    // Trim — a token stored with a trailing newline (common from `echo`/paste)
+    // would otherwise corrupt the Bot auth header.
+    if let Ok(tok) = std::env::var(token_env) {
+        if !tok.trim().is_empty() {
+            eprintln!("[bwoc-connect] token: env {token_env}");
+            return Ok(tok.trim().to_string());
+        }
+    }
     let account = agent_dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "agent".to_string());
     let service = format!("bwoc/{platform}");
-    // Trim on the way out — a token stored with a trailing newline (common from
-    // `echo`/copy-paste) would otherwise corrupt the Bot auth header.
     if let Some(tok) = keyring_lookup(&service, &account) {
         eprintln!("[bwoc-connect] token: keyring {service}·{account}");
         return Ok(tok.trim().to_string());
     }
-    match std::env::var(token_env) {
-        Ok(tok) if !tok.trim().is_empty() => Ok(tok.trim().to_string()),
-        _ => Err(ConnectError::NoToken(format!(
-            "{token_env} (or, on macOS/Windows, keyring entry {service}·{account})"
-        ))),
-    }
+    Err(ConnectError::NoToken(format!(
+        "{token_env} (or, on macOS/Windows, keyring entry {service}·{account})"
+    )))
 }
 
 /// Non-empty token from the OS keyring, or `None`. macOS/Windows query the
 /// native store; Linux has no keyring backend (env-only — see Cargo.toml).
+///
+/// The native read runs on a worker thread with a short timeout: a Keychain call
+/// from a non-interactive (daemon-spawned) process can block on an authorization
+/// prompt no one can answer (#305), so a hung read degrades to `None` — falling
+/// through to the env error instead of wedging the connector forever.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn keyring_lookup(service: &str, account: &str) -> Option<String> {
-    let tok = keyring::Entry::new(service, account)
-        .ok()?
-        .get_password()
-        .ok()?;
-    (!tok.trim().is_empty()).then_some(tok)
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let (tx, rx) = mpsc::channel();
+    let (s, a) = (service.to_string(), account.to_string());
+    // Detached on purpose: if it hangs on a Keychain prompt we abandon it (the
+    // process exits cleanly regardless). Bind the handle so it isn't a silent drop.
+    let _worker = std::thread::spawn(move || {
+        let tok = keyring::Entry::new(&s, &a)
+            .ok()
+            .and_then(|e| e.get_password().ok())
+            .filter(|t| !t.trim().is_empty());
+        let _ = tx.send(tok); // receiver may have timed out and gone — ignore.
+    });
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(tok) => tok,
+        Err(_) => {
+            eprintln!(
+                "[bwoc-connect] warning: keyring read timed out (no interactive session to \
+                 authorize it?); set the bot token via env to avoid the keychain."
+            );
+            None
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
