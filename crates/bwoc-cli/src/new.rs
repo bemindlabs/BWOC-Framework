@@ -70,12 +70,12 @@ pub struct NewArgs {
     /// skill_stubs, persona_filled }` instead of the human-readable
     /// incarnation report. Useful for scripted multi-agent setup.
     pub json: bool,
-    /// Non-interactive: never prompt. The four gate commands fall back to their
-    /// stack-detected defaults (or `true` when the stack is unknown) instead of
-    /// being required, so a fleet can be provisioned from a script with just
-    /// `--role` + `--primary-model`. `--role`/`--primary-model` are still
-    /// required (no sensible default). Implied on a non-TTY stdin only for the
-    /// gate commands; this flag also opts in explicitly (and on a TTY).
+    /// Non-interactive: never prompt, **even on a TTY** (it forces the same
+    /// defaulting path a non-TTY stdin takes). The four gate commands fall back
+    /// to their stack-detected default (or `true` when the stack is unknown)
+    /// instead of being required, so a fleet can be provisioned from a script
+    /// with just `--role` + `--primary-model`. Those two are still required —
+    /// they have no sensible default.
     pub yes: bool,
 }
 
@@ -582,7 +582,11 @@ fn resolve(
     });
 
     let descriptions = read_descriptions(&template)?;
-    let tty = io::stdin().is_terminal();
+    // `--yes` forces non-interactive resolution even on a real terminal: it
+    // takes the same defaulting path a non-TTY run does, so it never blocks on a
+    // prompt. (This also makes the `--yes` unit tests deterministic regardless of
+    // the terminal `cargo test` runs under.)
+    let tty = io::stdin().is_terminal() && !args.yes;
 
     // First pass — collect missing fields without prompting, so we can fail
     // fast with the complete list when stdin is not a TTY.
