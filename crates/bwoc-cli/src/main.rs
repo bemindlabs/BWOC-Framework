@@ -55,6 +55,7 @@ mod start;
 mod status;
 mod stop;
 mod supervise;
+mod triage;
 mod trust;
 mod update;
 mod user_home;
@@ -179,6 +180,10 @@ enum Commands {
     Run(RunCliArgs),
     /// Read messages from an agent's inbox (`.bwoc/inbox.jsonl`).
     Inbox(InboxArgs),
+    /// Rule-based coordinator loop over an agent's gateway inbox: classify each
+    /// message (ack / escalate / forward) without running a model, advance a
+    /// cursor (exactly-once), and digest. No LLM — safe for ambient backends.
+    Triage(TriageArgs),
     /// Tail an agent's daemon log (`.bwoc/agent.log`) — daemon stderr.
     Log(LogArgs),
     /// Read workspace-level memory (`.bwoc/memory/`).
@@ -1329,6 +1334,37 @@ impl From<InboxArgs> for inbox::InboxArgs {
 }
 
 #[derive(Args, Debug)]
+struct TriageArgs {
+    /// Agent whose inbox to triage. Matches by id ("agent-foo") or bare name.
+    agent: String,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit a machine-readable JSON digest instead of the human one.
+    #[arg(long)]
+    json: bool,
+    /// Poll continuously after draining the backlog (Ctrl-C to stop). Without
+    /// it, drain the current backlog once and exit.
+    #[arg(long = "loop")]
+    loop_: bool,
+    /// Classify + digest only: no receipts, no forwarding, cursor not advanced.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+}
+
+impl From<TriageArgs> for triage::TriageArgs {
+    fn from(a: TriageArgs) -> Self {
+        Self {
+            agent: a.agent,
+            workspace: a.workspace,
+            json: a.json,
+            loop_: a.loop_,
+            dry_run: a.dry_run,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 struct ChatArgs {
     /// Agent name. Matches by id ("agent-foo") or bare name ("foo").
     name: String,
@@ -2437,6 +2473,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Inbox(args)) => {
             let code = inbox::run(args.into());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Triage(args)) => {
+            let code = triage::run(args.into());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Log(args)) => {
