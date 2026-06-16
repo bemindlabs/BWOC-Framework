@@ -70,6 +70,13 @@ pub struct NewArgs {
     /// skill_stubs, persona_filled }` instead of the human-readable
     /// incarnation report. Useful for scripted multi-agent setup.
     pub json: bool,
+    /// Non-interactive: never prompt. The four gate commands fall back to their
+    /// stack-detected defaults (or `true` when the stack is unknown) instead of
+    /// being required, so a fleet can be provisioned from a script with just
+    /// `--role` + `--primary-model`. `--role`/`--primary-model` are still
+    /// required (no sensible default). Implied on a non-TTY stdin only for the
+    /// gate commands; this flag also opts in explicitly (and on a TTY).
+    pub yes: bool,
 }
 
 /// All required fields resolved to concrete strings; ready for incarnate.
@@ -581,23 +588,29 @@ fn resolve(
     // fast with the complete list when stdin is not a TTY.
     if !tty {
         let mut missing = Vec::new();
+        // role and primaryModel have no sensible default — always required.
         if args.role.is_none() {
             missing.push("agentRole".to_string());
         }
         if args.primary_model.is_none() {
             missing.push("primaryModel".to_string());
         }
-        if args.lint_cmd.is_none() {
-            missing.push("lintCmd".to_string());
-        }
-        if args.format_cmd.is_none() {
-            missing.push("formatCmd".to_string());
-        }
-        if args.test_cmd.is_none() {
-            missing.push("testCmd".to_string());
-        }
-        if args.build_cmd.is_none() {
-            missing.push("buildCmd".to_string());
+        // The four gate commands have stack-derived defaults; with `--yes` they
+        // fall back to those (or `true`) rather than being required. Without it,
+        // a non-TTY run must supply them explicitly (the original fail-fast).
+        if !args.yes {
+            if args.lint_cmd.is_none() {
+                missing.push("lintCmd".to_string());
+            }
+            if args.format_cmd.is_none() {
+                missing.push("formatCmd".to_string());
+            }
+            if args.test_cmd.is_none() {
+                missing.push("testCmd".to_string());
+            }
+            if args.build_cmd.is_none() {
+                missing.push("buildCmd".to_string());
+            }
         }
         if !missing.is_empty() {
             return Err(NewError::MissingFields(missing));
@@ -630,7 +643,7 @@ fn resolve(
         &descriptions,
         tty,
         bundle,
-        suggested_cmd(kind, "lintCmd"),
+        suggested_cmd(kind, "lintCmd").or_else(|| args.yes.then_some("true")),
     )?;
     let format_cmd = resolve_one(
         args.format_cmd,
@@ -638,7 +651,7 @@ fn resolve(
         &descriptions,
         tty,
         bundle,
-        suggested_cmd(kind, "formatCmd"),
+        suggested_cmd(kind, "formatCmd").or_else(|| args.yes.then_some("true")),
     )?;
     let test_cmd = resolve_one(
         args.test_cmd,
@@ -646,7 +659,7 @@ fn resolve(
         &descriptions,
         tty,
         bundle,
-        suggested_cmd(kind, "testCmd"),
+        suggested_cmd(kind, "testCmd").or_else(|| args.yes.then_some("true")),
     )?;
     let build_cmd = resolve_one(
         args.build_cmd,
@@ -654,7 +667,7 @@ fn resolve(
         &descriptions,
         tty,
         bundle,
-        suggested_cmd(kind, "buildCmd"),
+        suggested_cmd(kind, "buildCmd").or_else(|| args.yes.then_some("true")),
     )?;
 
     // Persona scope is optional but recommended — promptable on TTY.
@@ -807,8 +820,13 @@ fn resolve_one(
         return Ok(v);
     }
     if !tty {
-        // Defensive: fail-fast guard should have caught this earlier.
-        return Err(NewError::MissingFields(vec![key.to_string()]));
+        // Non-TTY: accept the stack-derived default when one is offered (the
+        // `--yes` path passes one — `suggested_cmd` or `true`). Otherwise the
+        // fail-fast guard already listed this as a genuinely-missing field.
+        return match suggestion {
+            Some(s) => Ok(s.to_string()),
+            None => Err(NewError::MissingFields(vec![key.to_string()])),
+        };
     }
     let desc = descriptions
         .get(key)
@@ -1359,6 +1377,7 @@ mod tests {
             mindsets: None,
             skills: None,
             json: false,
+            yes: false,
         }
     }
 
@@ -1577,6 +1596,47 @@ mod tests {
     }
 
     #[test]
+    fn yes_defaults_gate_commands_non_tty() {
+        // With --yes (issue #298), only role + primaryModel are required; the
+        // four gate commands fall back to a stack default (or `true`). cargo
+        // test runs non-TTY, so this exercises the scripted-provisioning path.
+        let mut args = args_with_role_only();
+        args.primary_model = Some("test-model".to_string());
+        args.yes = true;
+        args.template =
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules/agent-template"));
+        let bundle = i18n::bundle_for("en");
+        let resolved = resolve(args, &bundle).expect("--yes resolves without the cmd flags");
+        // Every gate is filled (a detected default or the `true` fallback).
+        assert!(!resolved.lint_cmd.is_empty());
+        assert!(!resolved.format_cmd.is_empty());
+        assert!(!resolved.test_cmd.is_empty());
+        assert!(!resolved.build_cmd.is_empty());
+    }
+
+    #[test]
+    fn yes_still_requires_role_and_model() {
+        // --yes never invents a role/model — those have no sensible default.
+        let mut args = args_with_role_only();
+        args.role = None;
+        args.primary_model = None;
+        args.yes = true;
+        args.template =
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules/agent-template"));
+        let bundle = i18n::bundle_for("en");
+        match resolve(args, &bundle) {
+            Err(NewError::MissingFields(fields)) => {
+                assert!(fields.contains(&"agentRole".to_string()));
+                assert!(fields.contains(&"primaryModel".to_string()));
+                // gate commands are NOT required under --yes.
+                assert!(!fields.contains(&"lintCmd".to_string()));
+            }
+            Ok(_) => panic!("expected MissingFields(role, model), got Ok"),
+            Err(e) => panic!("expected MissingFields(role, model), got {e:?}"),
+        }
+    }
+
+    #[test]
     fn descriptions_loaded_from_template() {
         let template =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules/agent-template");
@@ -1636,6 +1696,7 @@ mod tests {
             mindsets: None,
             skills: None,
             json: false,
+            yes: false,
         };
 
         let bundle = i18n::bundle_for("en");
