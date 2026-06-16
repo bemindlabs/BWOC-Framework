@@ -721,7 +721,8 @@ fn resolve_workspace(explicit: Option<&Path>) -> Option<PathBuf> {
 pub struct FleetStatusArgs {
     /// Workspace root. Resolution: explicit > BWOC_WORKSPACE env > ancestor walk.
     pub workspace: Option<PathBuf>,
-    /// Emit a machine-readable JSON array instead of the human table.
+    /// Emit a machine-readable JSON object (`{ workspace, agents: [...] }`)
+    /// instead of the human table.
     pub json: bool,
 }
 
@@ -779,17 +780,37 @@ pub fn status(args: FleetStatusArgs) -> i32 {
 }
 
 /// Count non-empty inbox lines and the age (seconds) of the file's last change.
-/// A missing inbox yields `(0, None)` — not an error (no one has written yet).
+///
+/// A *missing* inbox yields `(0, None)` — not an error (no one has written yet).
+/// Any *other* I/O error (permission denied, corruption) is surfaced as a stderr
+/// warning rather than silently masked as "empty inbox", then degrades to the
+/// same `(0, …)` / `None` so one unreadable inbox doesn't abort the whole report.
 fn inbox_stats(path: &Path, now: std::time::SystemTime) -> (usize, Option<u64>) {
-    let count = std::fs::read_to_string(path)
-        .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0);
+    use std::io::ErrorKind::NotFound;
+    let count = match std::fs::read_to_string(path) {
+        Ok(c) => c.lines().filter(|l| !l.trim().is_empty()).count(),
+        Err(e) if e.kind() == NotFound => 0,
+        Err(e) => {
+            eprintln!(
+                "bwoc fleet status: warning — cannot read inbox {}: {e}",
+                path.display()
+            );
+            0
+        }
+    };
     // `Some(age)` whenever the inbox file exists (age clamps to 0 if its mtime
     // is somehow ahead of `now` — clock skew), `None` only when there is no file.
-    let last_seen_secs = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .map(|mt| now.duration_since(mt).map(|d| d.as_secs()).unwrap_or(0));
+    let last_seen_secs = match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(mt) => Some(now.duration_since(mt).map(|d| d.as_secs()).unwrap_or(0)),
+        Err(e) if e.kind() == NotFound => None,
+        Err(e) => {
+            eprintln!(
+                "bwoc fleet status: warning — cannot stat inbox {}: {e}",
+                path.display()
+            );
+            None
+        }
+    };
     (count, last_seen_secs)
 }
 
@@ -866,10 +887,13 @@ fn emit_status_json(workspace: &Path, rows: &[AgentStatus]) {
         "workspace": workspace.display().to_string(),
         "agents": agents,
     });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
-    );
+    // Surface a serialization failure on stderr rather than silently emitting
+    // `{}` — consistent with `emit_json` for fleet health, so automation can
+    // tell a broken run from an empty fleet.
+    match serde_json::to_string_pretty(&value) {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("bwoc fleet status: failed to serialize status JSON: {e}"),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
