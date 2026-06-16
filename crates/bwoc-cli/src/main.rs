@@ -1282,6 +1282,12 @@ struct InboxArgs {
     /// With `--json`, emits `{"count": N}`.
     #[arg(long)]
     count: bool,
+    /// Print the resolved inbox path for `<agent>` and exit (no read). Lets an
+    /// external writer derive the same path the CLI reads, e.g.
+    /// `--inbox "$(bwoc inbox agent-foo --path)"` (issue #302). Needs a single
+    /// agent — conflicts with `--all`.
+    #[arg(long, conflicts_with = "all")]
+    path: bool,
 }
 
 impl From<InboxArgs> for inbox::InboxArgs {
@@ -1296,6 +1302,7 @@ impl From<InboxArgs> for inbox::InboxArgs {
             yes: a.yes,
             count: a.count,
             all: a.all,
+            path: a.path,
         }
     }
 }
