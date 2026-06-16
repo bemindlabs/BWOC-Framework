@@ -274,6 +274,14 @@ fn resolve_mode(policy: &Policy, tool_name: &str, arguments_json: &str) -> Resol
     // narrow security fix (Mattaññutā).
     for rule in &policy.patterns {
         if arguments_json.contains(&rule.pattern) {
+            // A pattern may *tighten* a high-blast-radius tool to `deny`, but it
+            // must never *grant* one: only an explicit per-tool entry (step 1)
+            // opts in. Otherwise an incidental `allow` pattern matching the JSON
+            // args would bypass ask-by-default + the non-TTY fail-safe. Skip the
+            // grant and fall through to the ask-by-default gate below.
+            if ASK_BY_DEFAULT_TOOLS.contains(&tool_name) && rule.mode == Mode::Allow {
+                continue;
+            }
             return ResolvedMode {
                 mode: rule.mode.clone(),
                 reason: rule.reason.clone(),
@@ -651,5 +659,29 @@ mode    = 'allow'
         let policy = policy_with_tool_rule("computer", Mode::Allow);
         let d = evaluate(&policy, "computer", r#"{"action":"screenshot"}"#, false);
         assert_eq!(d, PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn computer_cannot_be_allowed_via_pattern() {
+        // An `allow` *pattern* matching the computer args must NOT grant it —
+        // only an explicit per-tool entry opts in. It falls through to
+        // ask-by-default, and non-TTY fail-safe denies despite the allow default.
+        let policy = policy_with_pattern("screenshot", Mode::Allow, None);
+        assert_eq!(
+            resolve_effective_mode(&policy, "computer", r#"{"action":"screenshot"}"#),
+            Mode::Ask
+        );
+        let d = evaluate(&policy, "computer", r#"{"action":"screenshot"}"#, false);
+        assert!(matches!(d, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn computer_pattern_deny_still_tightens() {
+        // Patterns may *tighten* a high-blast tool — a `deny` pattern still wins.
+        let policy = policy_with_pattern("screenshot", Mode::Deny, Some("no screenshots"));
+        let d = evaluate(&policy, "computer", r#"{"action":"screenshot"}"#, false);
+        assert!(
+            matches!(d, PermissionDecision::Deny { reason } if reason.contains("no screenshots"))
+        );
     }
 }

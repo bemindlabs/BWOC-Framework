@@ -28,8 +28,10 @@ the headless-browser direction over a full Xvfb desktop container.
      already, by the no-allow-by-omission default; now covered by the golden
      table + a `run_pipeline` test). Refused on any **Untrusted** turn.
   2. **Ask-by-default** — `policy/permission.rs::ASK_BY_DEFAULT_TOOLS = ["computer"]`.
-     Resolves to `ask` even when `default_mode = "allow"`; an explicit per-tool
-     entry still wins (operator opt-in).
+     Resolves to `ask` even when `default_mode = "allow"`; only an explicit
+     per-tool entry grants it (operator opt-in). A matching `allow` **pattern**
+     can't grant it either (patterns may *tighten* to deny, never loosen) — else
+     an incidental arg-substring match would bypass the gate. Caught in review.
   3. **Autoprocess refusal** — in the ask-by-default non-TTY path, computer-use
      **fail-safe denies** regardless of `default_mode`, so an autonomous run
      never silently drives the screen. Complements the t30 ambient-backend
