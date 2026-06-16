@@ -25,7 +25,9 @@ untrusted message to a model.
   `forwarded_by`).
 - Writes a **receipt** per message to `.bwoc/inbox.triage.jsonl` (the ack trail,
   also a step toward #299's read-receipt ask), **advances the cursor**
-  (exactly-once — messages never reprocess or accumulate), and prints a digest
+  (at-least-once per pass — a clean run processes each once; a crash mid-pass may
+  replay that pass on restart, which is harmless since actions are idempotent-
+  friendly), and prints a digest
   (`--json` twin). `--loop` polls; `--dry-run` previews without side effects.
 
 ## Decisions

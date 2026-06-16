@@ -7,8 +7,15 @@
 //! new envelopes from a persisted byte cursor (`.bwoc/inbox.triage.cursor`),
 //! classifies each by **deterministic rules** — no model is run on the untrusted
 //! message, so it is safe even for an ambient (`cli`) backend the harness cannot
-//! confine — emits a receipt to `.bwoc/inbox.triage.jsonl`, advances the cursor
-//! (exactly-once), and prints a digest.
+//! confine — emits a receipt to `.bwoc/inbox.triage.jsonl`, advances the cursor,
+//! and prints a digest.
+//!
+//! Delivery is **at-least-once per pass**: the cursor is persisted only after a
+//! pass's forwards + receipts, so a clean run processes each message exactly
+//! once, but a crash mid-pass re-processes that pass's messages on restart (a
+//! duplicate forward / receipt is possible). Actions are deliberately
+//! idempotent-friendly (forwards are content-addressable appends; escalate is a
+//! digest line) so a replay is harmless rather than corrupting.
 //!
 //! Actions: `ack` (record + drop), `escalate` (flag for the operator in the
 //! digest), `forward` (re-deliver the envelope to another agent's inbox via the
@@ -113,8 +120,18 @@ impl Config {
     /// the file is absent.
     fn load(agent_dir: &Path) -> Result<Self, TriageError> {
         let path = agent_dir.join("interconnect/triage.toml");
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return Ok(Self::builtin());
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(r) => r,
+            // Absent → the built-in default. A *present-but-unreadable* file
+            // (permission, transient I/O) is a real error, not "no config" —
+            // surface it rather than silently escalating everything.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::builtin()),
+            Err(e) => {
+                return Err(TriageError::Config(format!(
+                    "cannot read {}: {e}",
+                    path.display()
+                )));
+            }
         };
         let toml_cfg: TriageConfigToml =
             toml::from_str(&raw).map_err(|e| TriageError::Config(e.to_string()))?;
@@ -293,10 +310,20 @@ fn drain(
         let from = env.get("from").and_then(|v| v.as_str()).unwrap_or("—");
         let ts = env.get("ts").and_then(|v| v.as_str()).unwrap_or("—");
         let message = env.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        let action = config.classify(from, message);
-        if !dry_run {
-            if let Action::Forward(target) = &action {
-                forward(env, target, agent_id, workspace, registry)?;
+        let mut action = config.classify(from, message);
+        if let Action::Forward(target) = &action {
+            match resolve_target(registry, target) {
+                // Target missing: a recorded-forward that never delivers would
+                // drop the message (cursor advances, nothing receives it).
+                // Downgrade to escalate so it's surfaced, not lost.
+                None => {
+                    eprintln!(
+                        "bwoc triage: warning — forward target '{target}' not in workspace; escalating instead"
+                    );
+                    action = Action::Escalate;
+                }
+                Some(entry) if !dry_run => forward(env, entry, agent_id, workspace)?,
+                Some(_) => {} // dry-run: would forward, but don't.
             }
         }
         triaged.push(Triaged {
@@ -316,24 +343,28 @@ fn drain(
     Ok(cursor + consumed)
 }
 
-/// Re-deliver an envelope to `target`'s inbox via the shared resolver, tagging
-/// it with the triaging agent + a `forwarded_by` marker so loops are visible.
-fn forward(
-    env: &serde_json::Value,
+/// Resolve a forward `target` (id or bare name) to a registered agent.
+fn resolve_target<'a>(
+    registry: &'a AgentsRegistry,
     target: &str,
-    triaged_by: &str,
-    workspace: &Path,
-    registry: &AgentsRegistry,
-) -> Result<(), TriageError> {
-    let target_id = if target.starts_with("agent-") {
+) -> Option<&'a bwoc_core::workspace::AgentEntry> {
+    let id = if target.starts_with("agent-") {
         target.to_string()
     } else {
         format!("agent-{target}")
     };
-    let Some(target_entry) = registry.agents.iter().find(|a| a.id == target_id) else {
-        eprintln!("bwoc triage: warning — forward target '{target}' not in workspace; skipped");
-        return Ok(());
-    };
+    registry.agents.iter().find(|a| a.id == id)
+}
+
+/// Re-deliver an envelope to `target_entry`'s inbox via the shared resolver,
+/// tagging it with the triaging agent + a `forwarded_by` marker so loops are
+/// visible. The caller has already confirmed the target exists.
+fn forward(
+    env: &serde_json::Value,
+    target_entry: &bwoc_core::workspace::AgentEntry,
+    triaged_by: &str,
+    workspace: &Path,
+) -> Result<(), TriageError> {
     let mut forwarded = env.clone();
     if let Some(obj) = forwarded.as_object_mut() {
         obj.insert(
@@ -451,7 +482,30 @@ fn truncate(s: &str, max: usize) -> String {
 // ── Cursor + reader (mirrors the daemon's byte-offset scheme) ──────────────────
 
 fn load_cursor(path: &Path) -> Option<u64> {
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    // A missing cursor is the normal first run (start at 0, drain the backlog).
+    // A present-but-unreadable/malformed cursor is different: silently resetting
+    // to 0 would replay the entire backlog without a signal, so warn first.
+    match std::fs::read_to_string(path) {
+        Ok(s) => match s.trim().parse() {
+            Ok(v) => Some(v),
+            Err(_) => {
+                eprintln!(
+                    "bwoc triage: warning — malformed cursor {} ({:?}); restarting from 0",
+                    path.display(),
+                    s.trim()
+                );
+                None
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!(
+                "bwoc triage: warning — cannot read cursor {} ({e}); restarting from 0",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 fn save_cursor(path: &Path, value: u64) -> Result<(), TriageError> {
@@ -694,6 +748,43 @@ mod tests {
         .unwrap();
         assert!(!cursor_path.exists(), "dry-run must not persist a cursor");
         assert!(!receipts.exists(), "dry-run must not write receipts");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn forward_to_missing_target_escalates_not_drops() {
+        let (root, reg) = setup("badtarget");
+        write_inbox(
+            &root,
+            "agent-orch",
+            &[r#"{"ts":"t1","from":"agent-a","message":"deploy"}"#],
+        );
+        let entry = reg.agents.iter().find(|a| a.id == "agent-orch").unwrap();
+        let agent_dir = entry.dir(&root);
+        let receipts = agent_dir.join(".bwoc/inbox.triage.jsonl");
+        let mut cfg = Config::builtin();
+        cfg.rules.push(Rule {
+            pattern: "deploy".into(),
+            action: Action::Forward("agent-ghost".into()),
+        });
+        drain(
+            "agent-orch",
+            &entry.inbox_path(&root),
+            &agent_dir.join(".bwoc/inbox.triage.cursor"),
+            &receipts,
+            &root,
+            &reg,
+            &cfg,
+            0,
+            true,
+            false,
+        )
+        .unwrap();
+        // A forward to a non-existent target must NOT silently drop the message:
+        // it is recorded as escalate, not forward.
+        let recs = fs::read_to_string(&receipts).unwrap();
+        assert!(recs.contains(r#""action":"escalate""#));
+        assert!(!recs.contains(r#""action":"forward""#));
         let _ = fs::remove_dir_all(&root);
     }
 }
