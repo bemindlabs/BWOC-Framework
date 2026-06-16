@@ -220,9 +220,10 @@ enum Commands {
     /// aliases (`notes`, `retro`, `research`) are thin wrappers over this.
     #[command(name = "doc", subcommand)]
     Doc(DocKindSubcommand),
-    /// Fleet governance — Aparihāniya-dhamma 7 health signals (read-only, report-only).
-    #[command(name = "fleet", subcommand)]
-    Fleet(FleetCommand),
+    /// Fleet status + governance. Bare `bwoc fleet` shows the status overview;
+    /// `health` runs the Aparihāniya-dhamma 7 signals (read-only, report-only).
+    #[command(name = "fleet")]
+    Fleet(FleetArgs),
     /// Framework skills under `modules/skills/<name>/` — list, show, verify
     /// (read), plus init, install, enable, disable, remove (write).
     /// See `docs/en/SKILLS.en.md`.
@@ -721,10 +722,30 @@ struct SkillVerifyArgs {
     json: bool,
 }
 
+#[derive(Args, Debug)]
+struct FleetArgs {
+    /// Subcommand. Absent → the status overview (issue #297).
+    #[command(subcommand)]
+    command: Option<FleetCommand>,
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum FleetCommand {
+    /// Per-agent status overview: backend, status, pending inbox count, last-seen
+    /// (table or `--json`, non-TTY friendly). The default when no subcommand given.
+    Status(FleetStatusArgs),
     /// Check all 7 Aparihāniya-dhamma fleet-governance signals (read-only).
     Health(FleetHealthArgs),
+}
+
+#[derive(Args, Debug)]
+struct FleetStatusArgs {
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit a machine-readable JSON object instead of the human table.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -2605,8 +2626,17 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Fleet(sub)) => {
-            let code = match sub {
-                FleetCommand::Health(args) => fleet::run(fleet::FleetHealthArgs {
+            let code = match sub.command {
+                // Bare `bwoc fleet` → the status overview (issue #297).
+                None => fleet::status(fleet::FleetStatusArgs {
+                    workspace: None,
+                    json: false,
+                }),
+                Some(FleetCommand::Status(args)) => fleet::status(fleet::FleetStatusArgs {
+                    workspace: args.workspace,
+                    json: args.json,
+                }),
+                Some(FleetCommand::Health(args)) => fleet::run(fleet::FleetHealthArgs {
                     workspace: args.workspace,
                     json: args.json,
                     stale_days: args.stale_days,

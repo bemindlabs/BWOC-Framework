@@ -710,6 +710,192 @@ fn resolve_workspace(explicit: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+// ── `bwoc fleet status` ───────────────────────────────────────────────────────
+//
+// A per-agent status overview — the "which agents are stuck?" view (issue #297).
+// Plain text + `--json`, both non-TTY-friendly (no TUI). For each registered
+// agent it reports backend, registry status, the pending inbox count (via the
+// shared `AgentEntry::inbox_path` resolver), and how long since the inbox last
+// changed (the best available "last seen" without a live daemon probe).
+
+pub struct FleetStatusArgs {
+    /// Workspace root. Resolution: explicit > BWOC_WORKSPACE env > ancestor walk.
+    pub workspace: Option<PathBuf>,
+    /// Emit a machine-readable JSON object (`{ workspace, agents: [...] }`)
+    /// instead of the human table.
+    pub json: bool,
+}
+
+struct AgentStatus {
+    id: String,
+    backend: String,
+    status: String,
+    pending: usize,
+    /// Seconds since the inbox file last changed; `None` when no inbox exists.
+    last_seen_secs: Option<u64>,
+}
+
+pub fn status(args: FleetStatusArgs) -> i32 {
+    let workspace = match resolve_workspace(args.workspace.as_deref()) {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "bwoc fleet status: no workspace found \
+                 (no .bwoc/workspace.toml in cwd or ancestors). \
+                 Pass --workspace, set BWOC_WORKSPACE, or run `bwoc init` first."
+            );
+            return 2;
+        }
+    };
+    let registry = match AgentsRegistry::load(&workspace) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("bwoc fleet status: failed to read agents registry: {e}");
+            return 1;
+        }
+    };
+
+    let now = std::time::SystemTime::now();
+    let rows: Vec<AgentStatus> = registry
+        .agents
+        .iter()
+        .map(|entry| {
+            let (pending, last_seen_secs) = inbox_stats(&entry.inbox_path(&workspace), now);
+            AgentStatus {
+                id: entry.id.clone(),
+                backend: entry.backend.clone(),
+                status: entry.status.clone(),
+                pending,
+                last_seen_secs,
+            }
+        })
+        .collect();
+
+    if args.json {
+        emit_status_json(&workspace, &rows);
+    } else {
+        print_status_table(&workspace, &rows);
+    }
+    0
+}
+
+/// Count non-empty inbox lines and the age (seconds) of the file's last change.
+///
+/// A *missing* inbox yields `(0, None)` — not an error (no one has written yet).
+/// Any *other* I/O error (permission denied, corruption) is surfaced as a stderr
+/// warning rather than silently masked as "empty inbox", then degrades to the
+/// same `(0, …)` / `None` so one unreadable inbox doesn't abort the whole report.
+fn inbox_stats(path: &Path, now: std::time::SystemTime) -> (usize, Option<u64>) {
+    use std::io::ErrorKind::NotFound;
+    let count = match std::fs::read_to_string(path) {
+        Ok(c) => c.lines().filter(|l| !l.trim().is_empty()).count(),
+        Err(e) if e.kind() == NotFound => 0,
+        Err(e) => {
+            eprintln!(
+                "bwoc fleet status: warning — cannot read inbox {}: {e}",
+                path.display()
+            );
+            0
+        }
+    };
+    // `Some(age)` whenever the inbox file exists (age clamps to 0 if its mtime
+    // is somehow ahead of `now` — clock skew), `None` only when there is no file.
+    let last_seen_secs = match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(mt) => Some(now.duration_since(mt).map(|d| d.as_secs()).unwrap_or(0)),
+        Err(e) if e.kind() == NotFound => None,
+        Err(e) => {
+            eprintln!(
+                "bwoc fleet status: warning — cannot stat inbox {}: {e}",
+                path.display()
+            );
+            None
+        }
+    };
+    (count, last_seen_secs)
+}
+
+/// Render a seconds-ago age as a compact "2d 3h" / "5h 12m" / "just now" /
+/// "never" string for the human table.
+fn humanize_age(secs: Option<u64>) -> String {
+    let Some(s) = secs else {
+        return "never".to_string();
+    };
+    if s < 60 {
+        return "just now".to_string();
+    }
+    let (d, h, m) = (s / 86_400, (s % 86_400) / 3_600, (s % 3_600) / 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
+}
+
+fn print_status_table(workspace: &Path, rows: &[AgentStatus]) {
+    println!();
+    println!(
+        "Fleet status — {} ({} agent(s))",
+        workspace.display(),
+        rows.len()
+    );
+    println!();
+    if rows.is_empty() {
+        println!("(no agents registered — `bwoc new` to incarnate one)");
+        println!();
+        return;
+    }
+    let id_w = rows.iter().map(|r| r.id.len()).max().unwrap_or(5).max(5);
+    let be_w = rows
+        .iter()
+        .map(|r| r.backend.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    println!(
+        "  {:<id_w$}  {:<be_w$}  {:<8}  {:>7}  LAST-SEEN",
+        "AGENT", "BACKEND", "STATUS", "PENDING"
+    );
+    for r in rows {
+        println!(
+            "  {:<id_w$}  {:<be_w$}  {:<8}  {:>7}  {}",
+            r.id,
+            r.backend,
+            r.status,
+            r.pending,
+            humanize_age(r.last_seen_secs),
+        );
+    }
+    println!();
+}
+
+fn emit_status_json(workspace: &Path, rows: &[AgentStatus]) {
+    let agents: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "agent": r.id,
+                "backend": r.backend,
+                "status": r.status,
+                "pending": r.pending,
+                "last_seen_secs": r.last_seen_secs,
+            })
+        })
+        .collect();
+    let value = serde_json::json!({
+        "workspace": workspace.display().to_string(),
+        "agents": agents,
+    });
+    // Surface a serialization failure on stderr rather than silently emitting
+    // `{}` — consistent with `emit_json` for fleet health, so automation can
+    // tell a broken run from an empty fleet.
+    match serde_json::to_string_pretty(&value) {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("bwoc fleet status: failed to serialize status JSON: {e}"),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1086,5 +1272,60 @@ mod tests {
         let result = condition_6_honor_shared_resources(ws, &git);
         assert_eq!(result.status, ConditionStatus::Info, "{}", result.finding);
         assert!(result.finding.contains("not a git repo"));
+    }
+
+    // ── fleet status (#297) ──────────────────────────────────────────────────
+
+    #[test]
+    fn humanize_age_buckets() {
+        assert_eq!(humanize_age(None), "never");
+        assert_eq!(humanize_age(Some(10)), "just now");
+        assert_eq!(humanize_age(Some(5 * 60)), "5m");
+        assert_eq!(humanize_age(Some(3 * 3600 + 12 * 60)), "3h 12m");
+        assert_eq!(humanize_age(Some(2 * 86400 + 3 * 3600)), "2d 3h");
+    }
+
+    #[test]
+    fn inbox_stats_counts_nonempty_lines_and_missing_is_zero() {
+        let ws = fresh_workspace("status-stats");
+        add_agent(&ws, "agent-alpha");
+        let now = std::time::SystemTime::now();
+        // Missing inbox → (0, None).
+        let inbox = ws.join("agents/agent-alpha/.bwoc/inbox.jsonl");
+        assert_eq!(inbox_stats(&inbox, now), (0, None));
+        // Two envelopes + a blank line → count 2, and a Some(age).
+        fs::write(&inbox, "{\"a\":1}\n\n{\"b\":2}\n").unwrap();
+        let (count, age) = inbox_stats(&inbox, now);
+        assert_eq!(count, 2);
+        assert!(age.is_some());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn status_exits_zero_with_and_without_agents() {
+        let ws = fresh_workspace("status-run");
+        // Empty fleet.
+        assert_eq!(
+            status(FleetStatusArgs {
+                workspace: Some(ws.clone()),
+                json: true,
+            }),
+            0
+        );
+        // With an agent + a pending message.
+        add_agent(&ws, "agent-alpha");
+        fs::write(
+            ws.join("agents/agent-alpha/.bwoc/inbox.jsonl"),
+            "{\"from\":\"x\",\"message\":\"hi\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            status(FleetStatusArgs {
+                workspace: Some(ws.clone()),
+                json: false,
+            }),
+            0
+        );
+        let _ = fs::remove_dir_all(&ws);
     }
 }
