@@ -56,6 +56,7 @@ mod start;
 mod status;
 mod stop;
 mod supervise;
+mod tasks;
 mod triage;
 mod trust;
 mod update;
@@ -199,6 +200,9 @@ enum Commands {
     /// Manage a team's shared task list (add / list / claim / complete).
     #[command(subcommand)]
     Task(TaskCommand),
+    /// Query task status across **every** team (fleet-wide): filter by `--agent`
+    /// (claimant) / `--state` (pending|in_progress|completed), table or `--json`.
+    Tasks(TasksCliArgs),
     /// View peer workspaces declared in routes.toml (read-only cross-workspace view, #20).
     #[command(subcommand)]
     Peer(PeerCommand),
@@ -1863,6 +1867,33 @@ impl From<EvalCliArgs> for eval::EvalArgs {
 }
 
 #[derive(Args, Debug)]
+struct TasksCliArgs {
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Show only tasks claimed by this agent (id or bare name).
+    #[arg(long)]
+    agent: Option<String>,
+    /// Show only tasks in this state: `pending` | `in_progress` | `completed`.
+    #[arg(long)]
+    state: Option<String>,
+    /// Emit a machine-readable JSON object instead of the human table.
+    #[arg(long)]
+    json: bool,
+}
+
+impl From<TasksCliArgs> for tasks::TasksArgs {
+    fn from(a: TasksCliArgs) -> Self {
+        Self {
+            workspace: a.workspace,
+            agent: a.agent,
+            state: a.state,
+            json: a.json,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 struct DoctorArgs {
     /// Workspace root to diagnose. Defaults: BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
@@ -2644,6 +2675,10 @@ fn main() -> ExitCode {
                     json,
                 } => sangha::run_task_review(workspace, team, task, false, json),
             };
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Tasks(args)) => {
+            let code = tasks::run(args.into());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Peer(sub)) => {
