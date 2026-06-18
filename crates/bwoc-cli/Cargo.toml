@@ -30,10 +30,8 @@ unic-langid = { workspace = true }
 include_dir = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
-
-[dev-dependencies]
-# Integration smoke test (crates/bwoc-cli/tests/smoke.rs) — isolates the
-# end-to-end init/new/list path against a real tempdir.
+# `bwoc eval` runs a fixture in an auto-cleaned isolated work dir; the smoke
+# test (tests/smoke.rs) also uses it (a regular dep is visible to tests too).
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
