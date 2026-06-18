@@ -61,8 +61,9 @@ struct Args {
     #[arg(long, conflicts_with_all = ["task", "resume", "lead", "chat"])]
     eval: Option<PathBuf>,
 
-    /// Emit machine-readable JSON instead of a human report (eval mode).
-    #[arg(long)]
+    /// Emit machine-readable JSON instead of a human report. Eval-mode only —
+    /// `--chat` already speaks a JSONL event stream, so clap requires `--eval`.
+    #[arg(long, requires = "eval")]
     json: bool,
 
     /// Path to the Saṅgha `tasks.jsonl` (required with `--lead`).
@@ -793,10 +794,24 @@ async fn run_eval_mode(
         bwoc_harness::error::HarnessError::Other(format!("parse {}: {e}", fixture_toml.display()))
     })?;
 
-    let reasoning_effort =
-        bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
-            .ok()
-            .and_then(|m| m.reasoning_effort);
+    // An eval work dir usually has no manifest (a fresh temp dir), so absence is
+    // normal and silent — but a *present-but-malformed* one is worth surfacing
+    // (mirrors the main run path), not silently dropped.
+    let manifest_path = workdir.join("config.manifest.json");
+    let reasoning_effort = if manifest_path.exists() {
+        match bwoc_core::manifest::Manifest::load_from_path(&manifest_path) {
+            Ok(m) => m.reasoning_effort,
+            Err(e) => {
+                eprintln!(
+                    "[bwoc-harness] warning: ignoring malformed {}: {e}",
+                    manifest_path.display()
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let provider = build_provider(
         &args.backend,
         &args.endpoint,
@@ -809,7 +824,7 @@ async fn run_eval_mode(
         fallback_models: Vec::new(),
         vetted_models: Vec::new(),
         vetted_mode: VettedMode::Warn,
-        max_iterations: 20,
+        max_iterations: args.max_iterations,
         stream: false,
         // Eval runs in an isolated, seeded work dir — a controlled benchmark, not
         // untrusted input — so tools are allowed: a tool-requiring fixture must be
@@ -838,10 +853,16 @@ async fn run_eval_mode(
     .await?;
 
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
-        );
+        // A serialization failure is a real fault — surface it and exit non-zero
+        // rather than emitting a misleading empty `{}` with a success status.
+        match serde_json::to_string_pretty(&result) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                eprintln!("[bwoc-harness] eval: failed to serialize result: {e}");
+                let _ = std::io::stdout().flush();
+                std::process::exit(1);
+            }
+        }
     } else {
         let status = if result.skipped {
             "SKIP"

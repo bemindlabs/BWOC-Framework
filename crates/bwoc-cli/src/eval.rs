@@ -33,20 +33,31 @@ pub fn run(args: EvalArgs) -> i32 {
             "bwoc eval: `bwoc-harness` binary not found (install it / add it to PATH). \
              The eval runner + provider stack live there; `bwoc` only spawns it."
         );
-        return 1;
+        // 2 = user/input error (a missing prerequisite), matching `bwoc spawn`'s
+        // HarnessNotFound mapping and the CLI's exit-code contract.
+        return 2;
     };
 
+    // A fresh temp dir (unique + auto-cleaned on drop) unless the caller supplied
+    // one — the fixture seeds it and tool-requiring fixtures write into it, so
+    // defaulting to cwd would litter it. Held in scope until the child exits.
+    let _tmp: Option<tempfile::TempDir>;
     let workdir = match &args.workdir {
-        Some(w) => w.clone(),
-        None => {
-            // Unique per process so concurrent `bwoc eval` runs don't collide.
-            let d = std::env::temp_dir().join(format!("bwoc-eval-{}", std::process::id()));
-            if let Err(e) = std::fs::create_dir_all(&d) {
-                eprintln!("bwoc eval: cannot create work dir {}: {e}", d.display());
+        Some(w) => {
+            _tmp = None;
+            w.clone()
+        }
+        None => match tempfile::tempdir() {
+            Ok(d) => {
+                let p = d.path().to_path_buf();
+                _tmp = Some(d);
+                p
+            }
+            Err(e) => {
+                eprintln!("bwoc eval: cannot create temp work dir: {e}");
                 return 1;
             }
-            d
-        }
+        },
     };
 
     let mut cmd = Command::new(&harness);
@@ -83,8 +94,9 @@ mod tests {
     #[test]
     fn missing_harness_is_a_clean_error() {
         // With no sibling/PATH `bwoc-harness` in the unit-test environment the
-        // command resolves to None and returns exit 1 rather than panicking.
-        // (When a harness IS present this test is a no-op assertion on the type.)
+        // command resolves to None and returns exit 2 (user/input error — a
+        // missing prerequisite) rather than panicking. (When a harness IS present
+        // this test is a no-op.)
         if bwoc_core::exec::sibling_binary("bwoc-harness").is_none() {
             let code = run(EvalArgs {
                 fixture: PathBuf::from("/nonexistent/fixture"),
@@ -94,7 +106,7 @@ mod tests {
                 workdir: None,
                 json: false,
             });
-            assert_eq!(code, 1);
+            assert_eq!(code, 2);
         }
     }
 }
