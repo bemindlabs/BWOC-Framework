@@ -11,6 +11,7 @@ pub mod env_scrub;
 pub mod error;
 pub mod exec;
 pub mod identity;
+pub mod inbox;
 pub mod ipc;
 pub mod lifecycle;
 pub mod manifest;

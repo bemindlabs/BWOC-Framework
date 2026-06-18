@@ -454,15 +454,23 @@ fn handle_send_message(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespo
         "kind": "a2a",
     });
 
-    if let Err(e) = append_line(ctx.inbox_path, &envelope.to_string()) {
-        return JsonRpcResponse::err(
-            resolved_id(req),
-            INTERNAL_ERROR,
-            format!("inbox write failed: {e}"),
-        );
+    // Idempotent delivery (#299): a re-sent `messageId` (a peer retry on a lost
+    // ack) is acked but not appended a second time. A read error degrades to
+    // "not a duplicate" — the append below surfaces any real I/O fault.
+    let already =
+        bwoc_core::inbox::is_duplicate(ctx.inbox_path, &message.message_id).unwrap_or(false);
+    if !already {
+        if let Err(e) = append_line(ctx.inbox_path, &envelope.to_string()) {
+            return JsonRpcResponse::err(
+                resolved_id(req),
+                INTERNAL_ERROR,
+                format!("inbox write failed: {e}"),
+            );
+        }
     }
 
-    // Minimal A2A ack: a Message from the agent confirming receipt.
+    // Minimal A2A ack: a Message from the agent confirming receipt (same ack
+    // whether freshly delivered or a suppressed duplicate — idempotent).
     let ack = serde_json::json!({
         "role": "ROLE_AGENT",
         "parts": [{ "text": format!("delivered to {} inbox", ctx.agent_id) }],
