@@ -79,8 +79,6 @@
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use bwoc_core::team::Team;
@@ -865,10 +863,6 @@ fn route_turn(
             ));
         };
         let inbox = workspace.join(&entry.path).join(".bwoc/inbox.jsonl");
-        if let Some(parent) = inbox.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {e}", parent.display()))?;
-        }
         let envelope = serde_json::json!({
             "ts": ts,
             "messageId": message_id,
@@ -878,13 +872,14 @@ fn route_turn(
             "kind": "council-turn",
         });
         let line = serde_json::to_string(&envelope).map_err(|e| format!("serialize turn: {e}"))?;
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&inbox)
-            .map_err(|e| format!("open {}: {e}", inbox.display()))?;
-        writeln!(f, "{line}").map_err(|e| format!("write {}: {e}", inbox.display()))?;
-        delivered += 1;
+        // Idempotent: the same council turn (one `messageId`) re-delivered to a
+        // recipient is suppressed, not stacked (#299 — council notices arrived 3×).
+        match bwoc_core::inbox::append_envelope_deduped(&inbox, message_id, &line)
+            .map_err(|e| format!("deliver to {}: {e}", inbox.display()))?
+        {
+            bwoc_core::inbox::Delivery::Delivered => delivered += 1,
+            bwoc_core::inbox::Delivery::Duplicate => {}
+        }
     }
     Ok(delivered)
 }

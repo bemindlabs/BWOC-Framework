@@ -16,7 +16,6 @@
 //! that's offline or paused, and establishes the JSONL inbox format
 //! so the future daemon can read from a stable file shape.
 
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -323,16 +322,20 @@ fn send(args: SendArgs) -> Result<(), SendError> {
 
     match target {
         Target::LocalInbox { inbox_path } => {
-            if let Some(dir) = inbox_path.parent() {
-                std::fs::create_dir_all(dir)?;
+            // Idempotent append: a re-send of the same `messageId` is suppressed
+            // rather than stacking a duplicate line (#299).
+            let delivery =
+                bwoc_core::inbox::append_envelope_deduped(&inbox_path, &message_id, &line)?;
+
+            if delivery == bwoc_core::inbox::Delivery::Duplicate {
+                println!();
+                println!(
+                    "Already delivered to {recipient_id} — duplicate [id {message_id}] suppressed."
+                );
+                println!("  Inbox: {}", inbox_path.display());
+                println!();
+                return Ok(());
             }
-            // Append-only — multiple `bwoc send` calls just stack lines; the
-            // recipient's daemon tracks which have been consumed.
-            let mut f = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&inbox_path)?;
-            writeln!(f, "{line}")?;
 
             // Best-effort tmux wakeup (local only; a remote peer can't be poked
             // from here). Suppressed via --no-wakeup / BWOC_DISABLE_TMUX_WAKEUP.
