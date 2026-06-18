@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use bwoc_deep_memory::embed::HttpEmbedder;
 use bwoc_deep_memory::store::Store;
-use bwoc_deep_memory::{mine, render, search, wake_up};
+use bwoc_deep_memory::{mine, prune, render, search, wake_up};
 use clap::{Parser, Subcommand};
 
 /// Default embedding endpoint (local Ollama / OpenAI-compatible).
@@ -66,6 +66,21 @@ enum Command {
         /// Tool-defined mode tag stored with each memory.
         #[arg(long, default_value = "convos")]
         mode: String,
+    },
+    /// Apply a retention policy: drop old or excess memories.
+    ///
+    /// Specify at least one of `--older-than-days` / `--keep` (they combine as
+    /// a union). Operator/cron command — not part of the recall contract.
+    Prune {
+        /// Delete memories older than N days.
+        #[arg(long)]
+        older_than_days: Option<u32>,
+        /// Keep only the newest N memories; delete the rest.
+        #[arg(long)]
+        keep: Option<usize>,
+        /// Report what would be deleted without deleting.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -137,6 +152,28 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => fail("mine", e),
+            }
+        }
+        Command::Prune {
+            older_than_days,
+            keep,
+            dry_run,
+        } => {
+            if older_than_days.is_none() && keep.is_none() {
+                eprintln!(
+                    "bwoc-deep-memory prune: specify at least one of \
+                     --older-than-days / --keep"
+                );
+                return ExitCode::FAILURE;
+            }
+            let older_than = older_than_days.map(|d| now_unix() - i64::from(d) * 86_400);
+            match prune(&store, older_than, keep, dry_run) {
+                Ok(n) => {
+                    let verb = if dry_run { "would prune" } else { "pruned" };
+                    println!("{verb} {n} memory(ies) from {}", db.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail("prune", e),
             }
         }
     }

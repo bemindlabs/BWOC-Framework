@@ -120,6 +120,21 @@ pub fn wake_up(store: &Store, limit: usize) -> Result<Vec<Memory>, VerbError> {
     Ok(store.recent(limit)?)
 }
 
+/// `prune`: apply a retention policy to the store, returning rows pruned.
+///
+/// An **operator** verb (cron / maintenance), not part of the agent-facing
+/// `wake-up | search | mine` recall contract — it never runs mid-session, so
+/// it stays out of the `DeepMemory` trait. `older_than`/`keep_newest` are the
+/// two retention rules (union); `dry_run` counts without deleting.
+pub fn prune(
+    store: &Store,
+    older_than: Option<i64>,
+    keep_newest: Option<usize>,
+    dry_run: bool,
+) -> Result<i64, VerbError> {
+    Ok(store.prune(older_than, keep_newest, dry_run)?)
+}
+
 /// Render memories as human-readable text (used by both `search` and
 /// `wake-up`). Each entry is a `source`-tagged block.
 pub fn render(memories: &[Memory], show_score: bool) -> String {
