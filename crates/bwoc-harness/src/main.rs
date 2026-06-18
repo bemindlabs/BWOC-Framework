@@ -54,6 +54,17 @@ struct Args {
     #[arg(long, conflicts_with_all = ["task", "resume", "lead"])]
     chat: bool,
 
+    /// Evaluation mode: run a single eval fixture directory (containing
+    /// `fixture.toml` + optional `seed/` / `expected/`) against `--backend` and
+    /// print the scored [`EvalResult`]. Exit 0 if it passed (or was skipped),
+    /// 1 if it failed. Mutually exclusive with task/resume/lead/chat.
+    #[arg(long, conflicts_with_all = ["task", "resume", "lead", "chat"])]
+    eval: Option<PathBuf>,
+
+    /// Emit machine-readable JSON instead of a human report (eval mode).
+    #[arg(long)]
+    json: bool,
+
     /// Path to the Saṅgha `tasks.jsonl` (required with `--lead`).
     #[arg(long, requires = "lead")]
     tasks: Option<PathBuf>,
@@ -307,6 +318,12 @@ async fn run() -> HarnessResult<()> {
     // before the human-readable banner below and emits nothing to stdout itself.
     if args.chat {
         return run_chat_mode(&args, &workdir).await;
+    }
+
+    // ── Eval mode: run one fixture, score it, exit. Runs before the banner so
+    // `--json` keeps stdout to a single clean JSON object.
+    if let Some(fixture_dir) = args.eval.clone() {
+        return run_eval_mode(&args, &fixture_dir, &workdir).await;
     }
 
     println!("bwoc-harness P1 starting");
@@ -755,6 +772,111 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 /// substituting the Anthropic default endpoint when the caller left the
 /// OpenAI/Ollama default in place — i.e. a `claude` agent with no manifest
 /// `baseUrl`. `reasoning_effort` only applies to the OpenAI-compatible path.
+/// Eval mode: run one fixture directory against the configured backend, score
+/// it, print the [`EvalResult`], and exit 0 (pass or skip) / 1 (fail). A failed
+/// fixture is a normal eval *outcome*, not a harness error, so it sets the exit
+/// code directly rather than returning `Err` (which would read as a crash).
+async fn run_eval_mode(
+    args: &Args,
+    fixture_dir: &std::path::Path,
+    workdir: &std::path::Path,
+) -> HarnessResult<()> {
+    use bwoc_harness::eval::{Fixture, run_fixture};
+    use bwoc_harness::policy::permission::Mode;
+    use std::io::Write as _;
+
+    ensure_backend_credentials(&args.backend)?;
+
+    let fixture_toml = fixture_dir.join("fixture.toml");
+    let raw = std::fs::read_to_string(&fixture_toml)?; // Io is #[from] → exit 1
+    let fixture = Fixture::from_toml(&raw).map_err(|e| {
+        bwoc_harness::error::HarnessError::Other(format!("parse {}: {e}", fixture_toml.display()))
+    })?;
+
+    let reasoning_effort =
+        bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
+            .ok()
+            .and_then(|m| m.reasoning_effort);
+    let provider = build_provider(
+        &args.backend,
+        &args.endpoint,
+        &args.cli_cmd,
+        reasoning_effort,
+    );
+
+    let config = LoopConfig {
+        model: args.model.clone(),
+        fallback_models: Vec::new(),
+        vetted_models: Vec::new(),
+        vetted_mode: VettedMode::Warn,
+        max_iterations: 20,
+        stream: false,
+        // Eval runs in an isolated, seeded work dir — a controlled benchmark, not
+        // untrusted input — so tools are allowed: a tool-requiring fixture must be
+        // able to write files / run gates to be scorable at all.
+        policy: Policy {
+            default_mode: Mode::Allow,
+            tools: std::collections::HashMap::new(),
+            patterns: Vec::new(),
+        },
+        is_tty: false,
+        context_limit: 0,
+        model_context_limits: std::collections::HashMap::new(),
+        token_pressure_models: Vec::new(),
+        checkpoint: None,
+        budget: bwoc_harness::budget::BudgetConfig::default(),
+    };
+
+    let result = run_fixture(
+        &fixture,
+        fixture_dir,
+        workdir,
+        provider,
+        config,
+        &args.backend,
+    )
+    .await?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        let status = if result.skipped {
+            "SKIP"
+        } else if result.passed {
+            "PASS"
+        } else {
+            "FAIL"
+        };
+        let passed = result.checks.iter().filter(|c| c.passed).count();
+        println!(
+            "[{status}] {} — score {:.2} ({passed}/{} checks), {} turn(s)",
+            result.fixture_id,
+            result.score,
+            result.checks.len(),
+            result.turns
+        );
+        if let Some(reason) = &result.skip_reason {
+            println!("  skipped: {reason}");
+        }
+        for c in &result.checks {
+            let mark = if c.passed { "✓" } else { "✗" };
+            println!("  {mark} {} — {}", c.check, c.detail);
+        }
+    }
+
+    // Flush before the explicit exit (stdout is block-buffered when piped).
+    let _ = std::io::stdout().flush();
+    // Skip = structural non-score, treated as success (the suite drops it).
+    std::process::exit(if result.passed || result.skipped {
+        0
+    } else {
+        1
+    });
+}
+
 fn build_provider(
     backend: &str,
     endpoint: &str,

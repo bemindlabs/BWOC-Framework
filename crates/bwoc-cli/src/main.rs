@@ -21,6 +21,7 @@ mod debase;
 mod deep_memory_cmd;
 mod doc_cmd;
 mod doctor;
+mod eval;
 mod figma;
 mod fleet;
 mod gcloud;
@@ -118,6 +119,9 @@ enum Commands {
     List(ListArgs),
     /// Diagnose environment + workspace; with `--auto`, fix safe issues in place. `--json` for structured output.
     Doctor(DoctorArgs),
+    /// Run one eval fixture through `bwoc-harness` against a backend and report
+    /// the score (exit 0 = pass/skip, 1 = fail). `--json` for structured output.
+    Eval(EvalCliArgs),
     /// Retire an agent — remove it from the workspace's registry (vaya).
     Retire(RetireArgs),
     /// Update an incarnated agent's backend and/or model in place (CRUD update).
@@ -1824,6 +1828,41 @@ impl From<RetireArgs> for retire::RetireArgs {
 }
 
 #[derive(Args, Debug)]
+struct EvalCliArgs {
+    /// The fixture directory (holds `fixture.toml` + optional `seed/` / `expected/`).
+    fixture: PathBuf,
+    /// Provider backend forwarded to the harness (`ollama` / `openai-compatible` /
+    /// `claude` / `openrouter` / `cli`). Omitted ⇒ the harness default.
+    #[arg(long)]
+    backend: Option<String>,
+    /// Model id forwarded to the harness.
+    #[arg(long)]
+    model: Option<String>,
+    /// OpenAI-compatible endpoint base URL forwarded to the harness.
+    #[arg(long)]
+    endpoint: Option<String>,
+    /// Work dir to seed the fixture into. Default: a fresh temp dir (isolated).
+    #[arg(long)]
+    workdir: Option<PathBuf>,
+    /// Emit the scored result as JSON instead of a human report.
+    #[arg(long)]
+    json: bool,
+}
+
+impl From<EvalCliArgs> for eval::EvalArgs {
+    fn from(a: EvalCliArgs) -> Self {
+        Self {
+            fixture: a.fixture,
+            backend: a.backend,
+            model: a.model,
+            endpoint: a.endpoint,
+            workdir: a.workdir,
+            json: a.json,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 struct DoctorArgs {
     /// Workspace root to diagnose. Defaults: BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
@@ -2358,6 +2397,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Doctor(args)) => {
             let code = doctor::run(args.into());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Eval(args)) => {
+            let code = eval::run(args.into());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Retire(args)) => {
