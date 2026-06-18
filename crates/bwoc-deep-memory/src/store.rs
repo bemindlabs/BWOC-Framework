@@ -121,6 +121,63 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(StoreError::from)
     }
 
+    /// Apply a retention policy and return how many rows were pruned.
+    ///
+    /// Two independent rules, applied as a **union** (a row is pruned if it
+    /// matches *either*):
+    /// - `older_than`: drop rows with `ts < older_than` (TTL by age).
+    /// - `keep_newest`: keep only the newest `n` rows (by `ts` desc, `id` desc)
+    ///   and drop the rest (cap by count).
+    ///
+    /// `dry_run` counts the victims without deleting — same number a real run
+    /// would remove. With neither rule set the result is `0` (the CLI requires
+    /// at least one rule, so this is a defensive no-op, never an accidental
+    /// table wipe). Deletes run in a single transaction.
+    pub fn prune(
+        &self,
+        older_than: Option<i64>,
+        keep_newest: Option<usize>,
+        dry_run: bool,
+    ) -> Result<i64, StoreError> {
+        use std::collections::BTreeSet;
+        let mut victims: BTreeSet<i64> = BTreeSet::new();
+
+        if let Some(cut) = older_than {
+            let mut stmt = self.conn.prepare("SELECT id FROM memories WHERE ts < ?1")?;
+            let ids = stmt.query_map([cut], |r| r.get::<_, i64>(0))?;
+            for id in ids {
+                victims.insert(id?);
+            }
+        }
+        if let Some(keep) = keep_newest {
+            // Rows beyond the newest `keep` (ts desc, id desc). `LIMIT -1` means
+            // "no limit" in SQLite, so OFFSET alone selects everything after the
+            // survivors.
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM memories ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?1")?;
+            let ids = stmt.query_map([keep as i64], |r| r.get::<_, i64>(0))?;
+            for id in ids {
+                victims.insert(id?);
+            }
+        }
+
+        let pruned = victims.len() as i64;
+        if dry_run || victims.is_empty() {
+            return Ok(pruned);
+        }
+
+        let txn = self.conn.unchecked_transaction()?;
+        {
+            let mut del = txn.prepare("DELETE FROM memories WHERE id = ?1")?;
+            for id in &victims {
+                del.execute([id])?;
+            }
+        }
+        txn.commit()?;
+        Ok(pruned)
+    }
+
     /// Top-`limit` memories by cosine similarity to `query_vec`.
     ///
     /// Brute force: loads every row's embedding and scores in Rust. Rows whose
@@ -246,6 +303,62 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].text, "near");
         assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn prune_older_than_drops_only_old_rows() {
+        let s = Store::open_in_memory().unwrap();
+        s.insert("a", "old", "m", 100, &[1.0, 0.0]).unwrap();
+        s.insert("b", "mid", "m", 200, &[1.0, 0.0]).unwrap();
+        s.insert("c", "new", "m", 300, &[1.0, 0.0]).unwrap();
+        // ts < 250 → drops "old" (100) and "mid" (200), keeps "new" (300).
+        assert_eq!(s.prune(Some(250), None, false).unwrap(), 2);
+        assert_eq!(s.count().unwrap(), 1);
+        assert_eq!(s.recent(1).unwrap()[0].text, "new");
+    }
+
+    #[test]
+    fn prune_keep_newest_caps_by_count() {
+        let s = Store::open_in_memory().unwrap();
+        for (src, ts) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+            s.insert(src, src, "m", ts, &[1.0, 0.0]).unwrap();
+        }
+        // keep newest 2 → drops the 2 oldest.
+        assert_eq!(s.prune(None, Some(2), false).unwrap(), 2);
+        assert_eq!(s.count().unwrap(), 2);
+        let kept = s.recent(10).unwrap();
+        assert_eq!(kept[0].text, "d");
+        assert_eq!(kept[1].text, "c");
+    }
+
+    #[test]
+    fn prune_dry_run_counts_without_deleting() {
+        let s = Store::open_in_memory().unwrap();
+        s.insert("a", "old", "m", 100, &[1.0, 0.0]).unwrap();
+        s.insert("b", "new", "m", 300, &[1.0, 0.0]).unwrap();
+        assert_eq!(s.prune(Some(200), None, true).unwrap(), 1);
+        assert_eq!(s.count().unwrap(), 2); // nothing actually removed
+    }
+
+    #[test]
+    fn prune_union_of_both_rules_counts_each_row_once() {
+        let s = Store::open_in_memory().unwrap();
+        // ts: a=1 b=2 c=3 d=4. older_than=3 → {a,b}; keep_newest=1 → {a,b,c}.
+        // Union is {a,b,c}; "a"/"b" overlap and must not be double-counted.
+        for (src, ts) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+            s.insert(src, src, "m", ts, &[1.0, 0.0]).unwrap();
+        }
+        assert_eq!(s.prune(Some(3), Some(1), false).unwrap(), 3);
+        assert_eq!(s.count().unwrap(), 1);
+        assert_eq!(s.recent(1).unwrap()[0].text, "d");
+    }
+
+    #[test]
+    fn prune_no_rule_is_noop() {
+        let s = Store::open_in_memory().unwrap();
+        s.insert("a", "keep", "m", 1, &[1.0, 0.0]).unwrap();
+        assert_eq!(s.prune(None, None, false).unwrap(), 0);
+        assert_eq!(s.count().unwrap(), 1);
     }
 
     #[test]
