@@ -50,12 +50,16 @@ pub fn append_envelope_deduped(path: &Path, message_id: &str, line: &str) -> io:
 /// Exposed for writers that have their own append path (e.g. the a2a receiver's
 /// size-capped writer) and only need the dedup *check* before delivering.
 pub fn is_duplicate(path: &Path, message_id: &str) -> io::Result<bool> {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
+    use std::io::BufRead;
+    // Stream line-by-line rather than slurping the whole inbox — a CLI inbox has
+    // no size cap, so a large one shouldn't be read fully into memory per check.
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
     };
-    for line in content.lines() {
+    for line in io::BufReader::new(file).lines() {
+        let line = line?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;

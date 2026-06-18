@@ -455,10 +455,19 @@ fn handle_send_message(req: &JsonRpcRequest, ctx: &ServeContext) -> JsonRpcRespo
     });
 
     // Idempotent delivery (#299): a re-sent `messageId` (a peer retry on a lost
-    // ack) is acked but not appended a second time. A read error degrades to
-    // "not a duplicate" — the append below surfaces any real I/O fault.
-    let already =
-        bwoc_core::inbox::is_duplicate(ctx.inbox_path, &message.message_id).unwrap_or(false);
+    // ack) is acked but not appended a second time. A failed dedup read is a real
+    // fault, not "not a duplicate" — surfacing it keeps the idempotency guarantee
+    // from silently degrading into a re-delivery.
+    let already = match bwoc_core::inbox::is_duplicate(ctx.inbox_path, &message.message_id) {
+        Ok(d) => d,
+        Err(e) => {
+            return JsonRpcResponse::err(
+                resolved_id(req),
+                INTERNAL_ERROR,
+                format!("inbox dedup read failed: {e}"),
+            );
+        }
+    };
     if !already {
         if let Err(e) = append_line(ctx.inbox_path, &envelope.to_string()) {
             return JsonRpcResponse::err(
@@ -558,6 +567,37 @@ mod tests {
         assert_eq!(v["kind"], "a2a");
         assert_eq!(v["message"], "review my design");
         assert_eq!(v["messageId"], "m1");
+    }
+
+    #[test]
+    fn duplicate_message_id_is_acked_but_delivered_once() {
+        // A peer retry on a lost ack re-sends the same `messageId`; it must be
+        // acked (idempotent from the peer's view) but appended only once (#299).
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join(".bwoc/inbox.jsonl");
+        let ctx = ServeContext {
+            agent_id: "agent-me",
+            inbox_path: &inbox,
+            tasks: None,
+        };
+        let send = || {
+            dispatch(
+                &req(
+                    method::SEND_MESSAGE,
+                    serde_json::json!({"message":{"role":"ROLE_USER","parts":[{"text":"hi"}],"messageId":"dup1"}}),
+                ),
+                &ctx,
+            )
+            .expect("a request with an id gets a response")
+        };
+        assert!(send().error.is_none(), "first delivery ok");
+        assert!(send().error.is_none(), "retry is acked, not an error");
+        let body = std::fs::read_to_string(&inbox).unwrap();
+        assert_eq!(
+            body.lines().filter(|l| !l.trim().is_empty()).count(),
+            1,
+            "the same messageId must be delivered exactly once"
+        );
     }
 
     #[test]
