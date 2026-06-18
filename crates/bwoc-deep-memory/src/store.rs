@@ -152,30 +152,36 @@ impl Store {
         if let Some(keep) = keep_newest {
             // Rows beyond the newest `keep` (ts desc, id desc). `LIMIT -1` means
             // "no limit" in SQLite, so OFFSET alone selects everything after the
-            // survivors.
+            // survivors. Clamp an absurd `keep` (> i64::MAX) to i64::MAX rather
+            // than letting `as i64` wrap negative — a huge offset selects no
+            // victims, the safe direction (prune nothing extra).
+            let offset = i64::try_from(keep).unwrap_or(i64::MAX);
             let mut stmt = self
                 .conn
                 .prepare("SELECT id FROM memories ORDER BY ts DESC, id DESC LIMIT -1 OFFSET ?1")?;
-            let ids = stmt.query_map([keep as i64], |r| r.get::<_, i64>(0))?;
+            let ids = stmt.query_map([offset], |r| r.get::<_, i64>(0))?;
             for id in ids {
                 victims.insert(id?);
             }
         }
 
-        let pruned = victims.len() as i64;
         if dry_run || victims.is_empty() {
-            return Ok(pruned);
+            return Ok(victims.len() as i64);
         }
 
+        // Atomic delete; return the number of rows actually removed (which can
+        // be < victims.len() only if another process deleted some between
+        // selection and here — truthful over the optimistic selection count).
         let txn = self.conn.unchecked_transaction()?;
+        let mut deleted = 0i64;
         {
             let mut del = txn.prepare("DELETE FROM memories WHERE id = ?1")?;
             for id in &victims {
-                del.execute([id])?;
+                deleted += del.execute([id])? as i64;
             }
         }
         txn.commit()?;
-        Ok(pruned)
+        Ok(deleted)
     }
 
     /// Top-`limit` memories by cosine similarity to `query_vec`.
