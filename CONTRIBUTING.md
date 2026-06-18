@@ -127,13 +127,13 @@ When writing or reviewing docs, apply these principles from the framework itself
 
 ## Questions
 
-- General questions → open a [Discussion](https://github.com/bmt-bwol-ops/bwoc-framwork/discussions) (or an issue tagged `question` if discussions are not enabled).
+- General questions → open a [Discussion](https://github.com/bemindlabs/BWOC-Framework/discussions) (or an issue tagged `question` if discussions are not enabled).
 - Sensitive matters → email **info@bemind.tech**.
 
 ---
 
 ## Recognition
 
-Contributors are credited in commit history and release notes. Significant contributors may be invited to the maintainer team — see [CODEOWNERS](.github/CODEOWNERS).
+Contributors are credited in commit history and release notes. Significant contributors may be invited to the maintainer team.
 
 Thank you for helping the framework grow.
