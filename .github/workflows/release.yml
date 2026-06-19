@@ -33,6 +33,10 @@ permissions:
 # keeping the deprecation banner gone through the cutover window.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Force HTTP/1.1 + retry for crates.io fetches — avoids the intermittent
+  # "Error in the HTTP2 framing layer" curl transient (see ci.yml).
+  CARGO_HTTP_MULTIPLEXING: false
+  CARGO_NET_RETRY: 10
 
 jobs:
   # Create the release shell once before any matrix builds — eliminates

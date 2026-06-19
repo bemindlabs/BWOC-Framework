@@ -34,6 +34,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Force HTTP/1.1 + retry for crates.io fetches — avoids the intermittent
+  # "Error in the HTTP2 framing layer" curl transient (see ci.yml).
+  CARGO_HTTP_MULTIPLEXING: false
+  CARGO_NET_RETRY: 10
   # Small, fast model — enough to prove the agent loop talks to the backend.
   OLLAMA_MODEL: "qwen2.5:0.5b"
   # Pinned Ollama version (reproducibility). Bump deliberately.
