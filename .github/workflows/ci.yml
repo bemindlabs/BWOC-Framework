@@ -19,6 +19,11 @@ permissions:
 # deprecation banner stays gone through the cutover window.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # crates.io fetches intermittently fail with "Error in the HTTP2 framing
+  # layer" (a curl/HTTP-2 transient that flaked `build + test` repeatedly).
+  # Force HTTP/1.1 for the registry download and retry transient net errors.
+  CARGO_HTTP_MULTIPLEXING: false
+  CARGO_NET_RETRY: 10
 
 jobs:
   # Phase 5 t8 — deferred-control fence-guard. Pure docs + shell (no Rust
