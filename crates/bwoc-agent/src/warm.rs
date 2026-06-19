@@ -165,6 +165,13 @@ impl WarmHarness {
     /// tmux wake), `false` when it declined (inactive, plan-gated, or a spawn/turn
     /// failure) so the caller can fall back. Best-effort: never panics, never
     /// crashes the daemon.
+    ///
+    /// **Blocking:** the turn runs synchronously, so the single-threaded `--serve`
+    /// loop (inbox poll, connector/gateway supervision, SIGTERM handling) is
+    /// blocked until the task finishes — one task at a time. This mirrors
+    /// [`crate::autoprocess`]'s identical tradeoff (acceptable for a dedicated
+    /// standalone agent); moving daemon-side harness turns off the accept thread
+    /// (a worker pool / async) is a shared follow-up for both paths, not warm-only.
     pub fn process_task(&mut self, team: &str, task: &str, title: &str) -> bool {
         if !self.is_active() {
             return false;
@@ -178,7 +185,7 @@ impl WarmHarness {
             return false;
         }
 
-        let reply = match self.run_task_turn(title) {
+        let reply = match self.run_task_turn(team, task, title) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("bwoc-agent --serve: warm turn failed for {team}/{task}: {e}");
@@ -228,13 +235,15 @@ impl WarmHarness {
             .unwrap_or(false)
     }
 
-    /// Ensure a live resident harness, then drive one trusted turn on `title`,
-    /// returning the assistant's final reply text.
-    fn run_task_turn(&mut self, title: &str) -> Result<String, String> {
+    /// Ensure a live resident harness, then drive one trusted turn on the task,
+    /// returning the assistant's final reply text. The `team`/`task` id is in the
+    /// prompt so the model can refer to it unambiguously (e.g. for `bwoc task`
+    /// calls, commit messages, or logs) even when titles collide.
+    fn run_task_turn(&mut self, team: &str, task: &str, title: &str) -> Result<String, String> {
         self.ensure_child()?;
         let prompt = format!(
-            "You have claimed this Saṅgha task. Complete it, then briefly summarize \
-             what you did.\n\nTask: {title}"
+            "You have claimed Saṅgha task `{team}/{task}`. Complete it, then briefly \
+             summarize what you did.\n\nTask: {title}"
         );
         // A claimed team task is trusted operator/teammate-originated work →
         // LocalOperator, so effectful tools are permitted (the agent must DO it).
@@ -335,17 +344,12 @@ impl WarmHarness {
             return;
         };
         let summary: String = reply.trim().chars().take(200).collect();
+        // Build with per-arg `.arg()` so the workspace path passes as an `OsStr`
+        // (a `to_string_lossy()` would corrupt a non-UTF8 path).
         match Command::new(bwoc)
-            .args([
-                "task",
-                "complete",
-                team,
-                task,
-                "--as",
-                &self.self_id,
-                "--workspace",
-                &root.to_string_lossy(),
-            ])
+            .args(["task", "complete", team, task, "--as", &self.self_id])
+            .arg("--workspace")
+            .arg(root)
             .current_dir(&self.agent_dir)
             .output()
         {
@@ -368,13 +372,32 @@ impl WarmHarness {
     }
 
     /// Send `quit`, then reap the child and remove the pid file. Idempotent.
+    ///
+    /// The wait is **bounded**: if the harness ignores `quit` (or hangs), this
+    /// must not block the single-threaded `--serve` loop / SIGTERM handling
+    /// forever. Poll `try_wait` briefly, then `kill` and reap — `kill` (SIGKILL)
+    /// guarantees the final `wait` returns promptly.
     fn reap(&mut self) {
         if let Some(mut r) = self.resident.take() {
             if let Ok(l) = ChatInput::Quit.to_line() {
                 let _ = writeln!(r.stdin, "{l}");
             }
-            drop(r.stdin);
-            let _ = r.child.wait();
+            drop(r.stdin); // EOF — a well-behaved harness exits on this alone
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match r.child.try_wait() {
+                    Ok(Some(_)) => break, // exited cleanly
+                    Err(_) => break,      // unwaitable — stop polling
+                    Ok(None) => {
+                        if Instant::now() >= deadline {
+                            let _ = r.child.kill();
+                            let _ = r.child.wait();
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
         }
         let _ = std::fs::remove_file(self.agent_dir.join(".bwoc").join("harness.pid"));
     }
@@ -414,8 +437,12 @@ mod tests {
         }
     }
 
-    /// An ambient backend (`cli`) is flagged so warm execution is refused even if
-    /// the env/binaries were present (fail-closed, mirroring autoprocess).
+    /// A `cli` backend sets the env-independent `ambient_backend` flag — the
+    /// invariant that forces warm off wherever `is_active()` is evaluated (it
+    /// `&& !self.ambient_backend`s). `is_active()` is also false here because the
+    /// test doesn't set `BWOC_WARM`/resolve binaries; the field is the part that
+    /// guarantees the fail-closed refusal even once those are present. Mirrors
+    /// autoprocess's `ambient_backend_refuses_auto_process`.
     #[test]
     fn ambient_backend_is_flagged_and_refused() {
         let tmp = TempDir::new().unwrap();
