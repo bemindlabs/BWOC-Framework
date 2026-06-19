@@ -1,6 +1,6 @@
 # 2026-06-19 — Design: warm / served agent mode (issue #301)
 
-**Status: approved 2026-06-19. PR A shipped (see "PR A — shipped" below); PR B/C pending.**
+**Status: approved 2026-06-19. PR A (#315) + PR B (#316) merged; PR C (docs, #317) in review — #301 closes when PR C merges.**
 
 ## Resolved decisions (architect, 2026-06-19)
 
@@ -195,6 +195,22 @@ declines without spawning, plan-gate detection). fmt + clippy clean; 48
 bwoc-agent tests pass. The live resident lifecycle (real harness child speaking
 `chat_proto`) needs a real backend → manual/e2e follow-up, matching the
 autoprocess test depth (which also unit-tests gating only).
+
+## PR C — docs (in review as #317; closes #301 on merge)
+
+Deliberately minimal (Mattaññutā):
+
+- Added a `BWOC_WARM` row to the README environment-variable table — the genuine
+  doc gap (it sits beside its siblings `BWOC_TASK_WAKEUP` / `BWOC_AUTO_CLAIM`).
+- **Dropped the `warmMode` manifest field.** The sibling daemon opt-ins are
+  env-only; a manifest field for warm alone would be an inconsistent second
+  config surface. `BWOC_WARM=1` is the whole opt-in.
+- **No ARCHITECTURE/ROADMAP additions.** ARCHITECTURE has no daemon-execution
+  section (it frames coordination as file-based) and the ROADMAP is phase-level;
+  warm mode is sub-phase detail already captured in `CHANGELOG.md` (PR A + B
+  entries). Adding it to either would be gold-plating.
+
+Closes #301.
 
 ## Related
 

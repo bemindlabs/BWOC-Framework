@@ -321,6 +321,7 @@ The `bwoc` CLI and `bwoc-agent` daemon read and respect the following environmen
 | `BWOC_TRUST_GATING` | Enables the Kalyāṇamitta-7 trust system (checks manifest, peer trust, and refuses unauthorized inbox envelopes at the daemon). | `1` to enable, otherwise disabled |
 | `BWOC_TASK_WAKEUP` | Opt-in flag for `bwoc-agent --serve` to ping the agent's tmux session when a new claimable task is available. | `1` to enable, otherwise disabled |
 | `BWOC_AUTO_CLAIM` | Opt-in flag for `bwoc-agent --serve` to automatically claim and wake up the agent when a new task becomes claimable. | `1` to enable, otherwise disabled |
+| `BWOC_WARM` | Opt-in flag for `bwoc-agent --serve` to run an auto-claimed task in a resident `bwoc-harness --headless` (warm — no per-task cold-start) instead of tmux-waking a session. Confined (harness) backends only; `requires_plan` tasks fall back to the wake path. | `1` to enable, otherwise disabled |
 | `BWOC_DISABLE_TMUX_WAKEUP` | Opt-out flag to suppress tmux wakeup pings during `bwoc send` (useful in CI or testing). | `1` to suppress |
 | `BWOC_NO_WHATSNEW` | Suppresses the one-line "you upgraded" notice printed to stderr on the first run of a new `MAJOR.MINOR` version. | `1` to suppress |
 | `BWOC_NO_UPDATE_CHECK` | Opts out of the startup update-check (the network drift guard that compares the running version against the latest release). | Set to any value to opt out |
