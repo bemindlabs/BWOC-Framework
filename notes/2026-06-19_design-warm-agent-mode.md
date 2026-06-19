@@ -1,6 +1,6 @@
 # 2026-06-19 — Design: warm / served agent mode (issue #301)
 
-**Status: approved 2026-06-19. PR A in progress.**
+**Status: approved 2026-06-19. PR A shipped (see "PR A — shipped" below); PR B/C pending.**
 
 ## Resolved decisions (architect, 2026-06-19)
 
@@ -63,11 +63,12 @@ wire format, but:
   machine frontend — named distinctly to avoid colliding with
   `bwoc-agent --serve` and to switch the permission policy, below.)
 - **Non-interactive permission policy.** `--chat` routes permission prompts to
-  the operator; a daemon has no one to ask. `--warm` runs a fixed policy:
-  Allow confined tools within the worktree sandbox, **Deny** anything escaping
-  it (no mid-turn `permission_request` events). This reuses the existing
-  `permission`/`policy.rs` machinery with a preset, not a new gate — and leans
-  on Phase 5 confinement (harness tools are already sandboxed).
+  the operator; a daemon has no one to ask. `--headless` starts the session in
+  **auto-approve mode** (`ChatConfig.headless` → `drive()` starts
+  `session_mode = Bypass`): an `ask`-mode tool runs without emitting a
+  `permission_request` or blocking on an answer. It does **not** replace the
+  permission policy — guardrails, policy `deny` rules, and the Phase-5 worktree
+  sandbox all remain in force; only the interactive prompt is skipped.
 - **Same persistence.** Reuses `.bwoc/chat-session.json`, so a restarted daemon
   respawns the harness and the conversation continues for free.
 
@@ -77,7 +78,7 @@ Today the daemon only watches inbox/tasks and announces / tmux-pings
 (`crates/bwoc-agent/src/main.rs:280-291`); it spawns no backend. Warm mode adds,
 **behind an opt-in flag** (default off — Mattaññutā, no behavior change):
 
-1. **Spawn** one resident `bwoc-harness --warm` child — lazily on the first
+1. **Spawn** one resident `bwoc-harness --headless` child — lazily on the first
    routable message, or eagerly at startup. Track its pid in `.bwoc/harness.pid`
    (separate from `.bwoc/agent.pid`).
 2. **Route** `check_inbox_for_new()` → existing trust gate → on accept, write a
@@ -100,7 +101,7 @@ Today the daemon only watches inbox/tasks and announces / tmux-pings
 
 ## Phasing (one concern per PR)
 
-- **PR A — `bwoc-harness --warm`** (headless loop + preset non-interactive
+- **PR A — `bwoc-harness --headless`** (headless loop + preset non-interactive
   policy). Independently testable against the stub provider; no daemon changes.
   Lands and ships value on its own (a warm loop a gateway/script can drive).
 - **PR B — daemon supervision** (`bwoc-agent --serve` spawns/feeds/reaps the
@@ -121,19 +122,15 @@ Today the daemon only watches inbox/tasks and announces / tmux-pings
   `chat-session.json`, so reloaded turns keep provenance for the Phase 5 t1
   ingress-labeling invariant.
 
-## Open questions for the architect
+## Open questions — resolved (architect, 2026-06-19)
 
-1. **Eager vs lazy spawn** — start the resident harness at daemon startup, or on
-   first routable message? Lazy saves idle cost; eager removes first-message
-   latency. (Lean: lazy, with an eager opt-in later.)
-2. **Idle shutdown** — should the resident harness self-exit after N idle
-   minutes to free the model, respawning on the next message? (Lean: yes, with a
-   generous default; bounds GPU/RAM for an idle agent.)
-3. **`--warm` naming** — `--warm` vs `--served` vs `--headless`. (Lean: `--warm`
-   — pairs with the issue's "warm mode" language; `--serve` is taken by the
-   daemon.)
-4. **Result delivery** — append turn output to the inbox as a receipt
-   (reuse #299), to a separate `.bwoc/results.jsonl`, or both?
+1. **Spawn/idle (PR B):** lazy spawn on first routable message + idle-exit after
+   N idle minutes (frees model GPU/RAM), respawn on the next message.
+2. **Flag naming:** `--headless`.
+3. **Result delivery (PR B):** inbox receipt, reusing the #299 receipt path.
+
+(See "Resolved decisions" at the top — repeated here so the section that posed
+them now records the answers.)
 
 ## PR A — shipped (the `--headless` loop)
 
