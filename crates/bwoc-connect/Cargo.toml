@@ -51,6 +51,10 @@ tempfile = "3"
 # amount, not every-platform-completeness). See `keyring_lookup` in main.rs.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# iMessage connector (#229): read-only poll of `~/Library/Messages/chat.db`.
+# macOS-only — there is no server iMessage API; the connector hard-errors on
+# other platforms, so SQLite is pulled in only here.
+rusqlite = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

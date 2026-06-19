@@ -26,18 +26,22 @@ async fn main() {
 async fn run() -> Result<(), ConnectError> {
     let args: Vec<String> = std::env::args().collect();
 
-    // platform → (config filename, token env var)
-    let (platform, token_env) = match args.get(1).map(String::as_str) {
-        Some("telegram") => ("telegram", "TELEGRAM_BOT_TOKEN"),
-        Some("discord") => ("discord", "DISCORD_BOT_TOKEN"),
-        Some("line") => ("line", "LINE_CHANNEL_ACCESS_TOKEN"),
+    // platform → token env var (`None` for iMessage — it drives the local
+    // Messages.app, there is no bot token).
+    let (platform, token_env): (&str, Option<&str>) = match args.get(1).map(String::as_str) {
+        Some("telegram") => ("telegram", Some("TELEGRAM_BOT_TOKEN")),
+        Some("discord") => ("discord", Some("DISCORD_BOT_TOKEN")),
+        Some("line") => ("line", Some("LINE_CHANNEL_ACCESS_TOKEN")),
+        Some("imessage") => ("imessage", None),
         Some(other) => {
             return Err(ConnectError::Config(format!(
-                "unknown connector '{other}' (supported: telegram, discord, line)"
+                "unknown connector '{other}' (supported: telegram, discord, line, imessage)"
             )));
         }
         None => {
-            eprintln!("usage: bwoc-connect <telegram|discord|line> --agent <dir> [--max-polls N]");
+            eprintln!(
+                "usage: bwoc-connect <telegram|discord|line|imessage> --agent <dir> [--max-polls N]"
+            );
             return Err(ConnectError::Config("missing connector".into()));
         }
     };
@@ -77,6 +81,21 @@ async fn run() -> Result<(), ConnectError> {
             .map(|u| bwoc_connect::line::hash_id(u))
             .collect();
     }
+    // iMessage handles are strings too — fold `[imessage].allow_handles` into the
+    // numeric `allow_from` with the same hash the transport applies (#229).
+    if platform == "imessage" {
+        let im_cfg = cfg.imessage.as_ref().ok_or_else(|| {
+            ConnectError::Config(format!(
+                "imessage connector needs an [imessage] block in {}",
+                cfg_path.display()
+            ))
+        })?;
+        cfg.allow_from = im_cfg
+            .allow_handles
+            .iter()
+            .map(|h| bwoc_connect::imessage::hash_id(h))
+            .collect();
+    }
     if cfg.allow_from.is_empty() {
         eprintln!(
             "[bwoc-connect] warning: allow_from is empty — the bridge will ignore \
@@ -85,17 +104,47 @@ async fn run() -> Result<(), ConnectError> {
         );
     }
 
-    let token = resolve_token(platform, &agent_dir, token_env)?;
+    // Token platforms resolve a bot token; iMessage has none (drives local
+    // Messages.app), so `token_env` is `None` and we skip resolution.
+    let token = match token_env {
+        Some(env) => Some(resolve_token(platform, &agent_dir, env)?),
+        None => None,
+    };
     // Build the platform transport. Telegram resolves its @username up front
     // (validates the token + enables group mention-gating); Discord connects
-    // its gateway. Both expose the same `Transport`.
+    // its gateway. iMessage opens the local chat.db. All expose the same
+    // `Transport`.
     let transport: Box<dyn Transport> = match platform {
         "telegram" => {
-            let mut t = TelegramTransport::new(&token)?;
+            let mut t = TelegramTransport::new(token.as_deref().expect("telegram token"))?;
             t.resolve_identity().await?;
             Box::new(t)
         }
-        "discord" => Box::new(DiscordTransport::connect(&token).await?),
+        "discord" => {
+            Box::new(DiscordTransport::connect(token.as_deref().expect("discord token")).await?)
+        }
+        "imessage" => {
+            #[cfg(target_os = "macos")]
+            {
+                let im = cfg
+                    .imessage
+                    .as_ref()
+                    .expect("imessage block validated above");
+                let db = expand_tilde(&im.db_path);
+                Box::new(bwoc_connect::imessage::ImessageTransport::open(
+                    &db,
+                    im.poll_interval_secs,
+                )?)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err(ConnectError::Config(
+                    "the imessage connector is macOS-only — it drives the local Messages.app via \
+                     osascript + reads ~/Library/Messages/chat.db; there is no server iMessage API"
+                        .into(),
+                ));
+            }
+        }
         "line" => {
             // The channel secret (webhook signature) is separate from the access
             // token; env-only (it's a server credential, like the headless path).
@@ -103,8 +152,13 @@ async fn run() -> Result<(), ConnectError> {
                 .map_err(|_| ConnectError::NoToken("LINE_CHANNEL_SECRET".into()))?;
             let lc = cfg.line.as_ref().expect("line block validated above");
             Box::new(
-                bwoc_connect::line::LineTransport::start(&token, &secret, &lc.bind, &lc.path)
-                    .await?,
+                bwoc_connect::line::LineTransport::start(
+                    token.as_deref().expect("line token"),
+                    &secret,
+                    &lc.bind,
+                    &lc.path,
+                )
+                .await?,
             )
         }
         _ => unreachable!("platform validated above"),
@@ -134,6 +188,7 @@ async fn run() -> Result<(), ConnectError> {
     let peer_prefix = match platform {
         "discord" => "dc",
         "line" => "ln",
+        "imessage" => "im",
         _ => "tg",
     };
     let group_bridge = match (group_factory.as_ref(), group_chat_log.as_ref()) {
@@ -269,6 +324,19 @@ fn valid_team_id(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Expand a leading `~/` against `$HOME` (the iMessage `chat.db` default lives
+/// under the user's home). Leaves the path unchanged if there's no leading `~/`
+/// or `HOME` is unset. macOS-only (the only place the iMessage path is built).
+#[cfg(target_os = "macos")]
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::Path::new(&home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
 }
 
 /// Value of `--flag <value>` from argv, or `None`.

@@ -21,6 +21,9 @@ const KNOWN: &[(&str, &str)] = &[
     ("telegram", "connectors/telegram.toml"),
     ("discord", "connectors/discord.toml"),
     ("line", "connectors/line.toml"),
+    // macOS-only; on a non-Mac host `bwoc-connect imessage` hard-errors loudly
+    // rather than crash-looping (the connector refuses early — see its main).
+    ("imessage", "connectors/imessage.toml"),
 ];
 
 pub struct ConnectorSupervisor {
