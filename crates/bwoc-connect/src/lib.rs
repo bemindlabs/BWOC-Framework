@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 pub mod discord;
+pub mod imessage;
 pub mod line;
 pub mod session;
 pub mod telegram;
@@ -77,6 +78,33 @@ pub struct TelegramConfig {
     /// `allow_from` (see `line::hash_id`).
     #[serde(default)]
     pub line: Option<LineConfig>,
+    /// iMessage-only block (#229). iMessage handles are strings (phone/email),
+    /// so its allow-list lives here and `main` hashes it into `allow_from` (see
+    /// `imessage::hash_id`), the same pattern as LINE.
+    #[serde(default)]
+    pub imessage: Option<ImessageConfig>,
+}
+
+/// iMessage connector config (`connectors/imessage.toml`, under `[imessage]`).
+/// macOS-only — there is no server iMessage API.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImessageConfig {
+    /// Handles (phone `+1…` / email) permitted to reach the agent. **Empty ⇒
+    /// nobody** (closed by default).
+    #[serde(default)]
+    pub allow_handles: Vec<String>,
+    /// Path to the Messages SQLite DB. Defaults to the standard per-user
+    /// location; overridable for tests / non-default homes.
+    #[serde(default = "default_imessage_db")]
+    pub db_path: String,
+    /// Seconds between `chat.db` reads (no long-poll for a local file).
+    #[serde(default)]
+    pub poll_interval_secs: Option<u64>,
+}
+
+fn default_imessage_db() -> String {
+    // `~/Library/Messages/chat.db`. `~` is expanded by `main` against $HOME.
+    "~/Library/Messages/chat.db".to_string()
 }
 
 /// LINE connector config (`connectors/line.toml`, under `[line]`).
@@ -571,6 +599,7 @@ mod tests {
             allow_from: allow.to_vec(),
             group: None,
             line: None,
+            imessage: None,
         }
     }
 
@@ -744,6 +773,7 @@ mod tests {
                 mention_only,
             }),
             line: None,
+            imessage: None,
         }
     }
 

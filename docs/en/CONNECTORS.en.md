@@ -7,7 +7,9 @@ nav_order: 13
 # Chat Connectors
 
 **Chat connectors** let a human reach a BWOC agent from an everyday chat app —
-**Telegram**, **Discord**, or **LINE** — in a private DM or a shared group room.
+**Telegram**, **Discord**, **LINE**, or **iMessage** — in a private DM (all
+platforms) or a shared group room (platform-dependent; iMessage is DM-only for
+now).
 They are operator-facing infrastructure: the network code lives in one crate
 (`bwoc-connect`) so the `bwoc` CLI, agent runtime, and core stay lean
 (dep-quarantine).
@@ -16,19 +18,20 @@ They are operator-facing infrastructure: the network code lives in one crate
 
 ---
 
-## The three platforms
+## The four platforms
 
 | Platform | Receive | Send | Streaming | Runs on |
 |---|---|---|---|---|
 | **Telegram** | long-poll (`getUpdates`) | `sendMessage` | ✅ edit-in-place | anywhere |
 | **Discord** | gateway websocket | REST `createMessage` | ✅ edit-in-place | anywhere |
 | **LINE** | inbound **webhook** (HTTPS) | reply-token / push | ✗ (no edit API) | anywhere (needs a public URL) |
+| **iMessage** | read-only `chat.db` poll | `osascript` → Messages.app | ✗ (no edit API) | **macOS only** (signed into iMessage) |
 
-All three share the same routing core (`run_bridge`): allow-list filtering,
+All four share the same routing core (`run_bridge`): allow-list filtering,
 DM-vs-group handling, group→team bridging, and per-chat session reuse. Adding a
 platform is a new `Transport` implementation, not new routing.
 
-> [!note] **macOS-only platforms are not included.** iMessage has no server API (it requires driving Messages.app on a Mac); it is **spec'd but not built** — see the design note `notes/2026-06-07_imessage-connector-design.md`.
+> [!note] **iMessage is macOS-only and free.** There is no server iMessage API — it drives the **local Messages.app** on a logged-in Mac (`osascript` to send) and reads the local `~/Library/Messages/chat.db` (read-only) to receive. It runs only on a macOS agent host; on any other OS the connector hard-errors. DM-first, non-streaming MVP — design in `notes/2026-06-07_imessage-connector-design.md`.
 
 ---
 
@@ -57,6 +60,16 @@ bind           = "0.0.0.0:8080"         # the inbound webhook server's address
 path           = "/webhook"             # webhook path (put an HTTPS proxy in front)
 ```
 
+```toml
+# connectors/imessage.toml  — macOS only; handles are strings (phone/email)
+enabled = true
+
+[imessage]
+allow_handles = ["+15551234567", "friend@icloud.com"]  # CLOSED BY DEFAULT
+# db_path defaults to ~/Library/Messages/chat.db; override only if needed
+# poll_interval_secs = 2
+```
+
 > [!warning] **Closed by default.** An empty or absent allow-list permits **nobody** — there are no public bots. List the exact user ids that may reach the agent. Non-allow-listed senders are ignored entirely (Sīla over completeness).
 
 ### Tokens
@@ -73,6 +86,12 @@ Tokens are **never** stored in the config. They resolve, in order:
      verifies the webhook's `X-Line-Signature`).
 
 A missing or locked keyring is never fatal — it falls through to the env var.
+
+**iMessage uses no token.** It drives the local Messages.app, so instead of a
+credential it needs two one-time macOS **TCC grants**: **Full Disk Access** (to
+read `chat.db`) and **Automation → Messages** (to send via `osascript`). The
+connector fails with a clear message if either is missing rather than silently
+polling nothing.
 
 ---
 
@@ -126,6 +145,10 @@ turn end. This is automatic — a transport advertises `supports_edit`.
   never approve a tool call.
 - **LINE** webhooks are verified (`X-Line-Signature` = base64(HMAC-SHA256(channel
   secret, body)), constant-time); unsigned/forged requests are rejected.
+- **iMessage** opens `chat.db` **read-only**, and the agent speaks as the **Mac's
+  own Apple ID** — there is no separate bot account, so replies look like they
+  came from you. Automating Messages is **against Apple's ToS** (personal-use
+  automation only); treat it as a personal bridge, not a public bot platform.
 
 ---
 
@@ -138,6 +161,11 @@ turn end. This is automatic — a transport advertises `supports_edit`.
   replies stay free.
 - **Discord gateway RESUME** is deferred — reconnects re-IDENTIFY (works, just
   not the lighter resume path).
+- **iMessage** is DM-first and **non-streaming** (AppleScript can't edit a sent
+  message); group rooms and edit/streaming (the BlueBubbles / `imessage-rs`
+  private-API path) are deferred. On recent macOS the message body can live in
+  `attributedBody` rather than `text`; the poll decodes it best-effort and skips
+  a row it can't decode rather than surfacing garbage.
 
 ## Related
 
