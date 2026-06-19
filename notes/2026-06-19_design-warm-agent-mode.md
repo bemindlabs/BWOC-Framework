@@ -1,6 +1,6 @@
 # 2026-06-19 — Design: warm / served agent mode (issue #301)
 
-**Status: approved 2026-06-19. All three PRs shipped (#315 A, #316 B, PR C docs) — #301 complete.**
+**Status: approved 2026-06-19. PR A (#315) + PR B (#316) merged; PR C (docs, #317) in review — #301 closes when PR C merges.**
 
 ## Resolved decisions (architect, 2026-06-19)
 
@@ -196,7 +196,7 @@ bwoc-agent tests pass. The live resident lifecycle (real harness child speaking
 `chat_proto`) needs a real backend → manual/e2e follow-up, matching the
 autoprocess test depth (which also unit-tests gating only).
 
-## PR C — shipped (docs)
+## PR C — docs (in review as #317; closes #301 on merge)
 
 Deliberately minimal (Mattaññutā):
 
