@@ -54,11 +54,22 @@ struct Args {
     #[arg(long, conflicts_with_all = ["task", "resume", "lead"])]
     chat: bool,
 
+    /// Headless / served session (issue #301): the same multi-turn
+    /// `chat_proto` loop as `--chat`, but driven by a machine frontend (e.g. the
+    /// `bwoc-agent --serve` daemon) instead of a human. Because no one is present
+    /// to answer permission prompts, `ask`-mode tools auto-approve — the turn
+    /// never blocks — while layer-1 guardrails, policy `deny` rules, and the
+    /// worktree sandbox still confine it. This keeps one resident process warm
+    /// across messages instead of cold-starting per message. Must not be combined
+    /// with `--unrestricted` (which would lift the confining sandbox).
+    #[arg(long, conflicts_with_all = ["task", "resume", "lead", "chat", "unrestricted"])]
+    headless: bool,
+
     /// Evaluation mode: run a single eval fixture directory (containing
     /// `fixture.toml` + optional `seed/` / `expected/`) against `--backend` and
     /// print the scored [`EvalResult`]. Exit 0 if it passed (or was skipped),
     /// 1 if it failed. Mutually exclusive with task/resume/lead/chat.
-    #[arg(long, conflicts_with_all = ["task", "resume", "lead", "chat"])]
+    #[arg(long, conflicts_with_all = ["task", "resume", "lead", "chat", "headless"])]
     eval: Option<PathBuf>,
 
     /// Emit machine-readable JSON instead of a human report. Eval-mode only —
@@ -318,7 +329,14 @@ async fn run() -> HarnessResult<()> {
     // stdout must carry ONLY the JSON-line event stream, so this path runs
     // before the human-readable banner below and emits nothing to stdout itself.
     if args.chat {
-        return run_chat_mode(&args, &workdir).await;
+        return run_chat_mode(&args, &workdir, false).await;
+    }
+
+    // ── Headless / served session (#301) ──────────────────────────────────
+    // Same multi-turn loop as `--chat`, but driven by a machine frontend with
+    // no human to answer prompts (see `run_chat_mode`'s `headless` arg).
+    if args.headless {
+        return run_chat_mode(&args, &workdir, true).await;
     }
 
     // ── Eval mode: run one fixture, score it, exit. Runs before the banner so
@@ -972,7 +990,16 @@ fn ensure_backend_credentials(backend: &str) -> HarnessResult<()> {
     Ok(())
 }
 
-async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<()> {
+/// Drives the interactive `--chat` loop, or — when `headless` is true — the
+/// served `--headless` variant (#301): identical wiring (provider, system
+/// prompt, deep memory, tools), but the session starts in auto-approve mode so a
+/// machine frontend's turn never blocks on a permission prompt. Both paths reuse
+/// the same `chat_session` driver and `.bwoc/chat-session.json` persistence.
+async fn run_chat_mode(
+    args: &Args,
+    workdir: &std::path::Path,
+    headless: bool,
+) -> HarnessResult<()> {
     use bwoc_harness::chat_session::{self, ChatConfig};
 
     // Provider — same reasoning-effort wiring as run().
@@ -1062,6 +1089,9 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         // into a team's shared `chat.jsonl`. The host (`bwoc chat --team`)
         // resolves the workspace-relative path; unset = solo session.
         team_chat_log: args.team_chat.clone(),
+        // #301: served mode auto-approves `ask` tools (no human to prompt);
+        // guardrails + deny rules + sandbox still confine the session.
+        headless,
     };
 
     let outcome = chat_session::run(provider, registry, ctx, config).await;
@@ -1070,7 +1100,8 @@ async fn run_chat_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
     // chat driver saves `.bwoc/chat-session.json` after each turn, so this
     // captures the whole session regardless of how it ended.
     if let Some(dm) = &deep_memory {
-        dm.mine(&workdir.join(".bwoc").join("chat-session.json"), "chat")
+        let mode = if headless { "served" } else { "chat" };
+        dm.mine(&workdir.join(".bwoc").join("chat-session.json"), mode)
             .await;
     }
 

@@ -63,6 +63,17 @@ pub struct ChatConfig {
     /// before each user turn, and this agent's reply is appended after. `None`
     /// (the default) keeps the session solo — no broadcast, no behaviour change.
     pub team_chat_log: Option<PathBuf>,
+    /// Headless / served mode (issue #301). When `true` there is **no human
+    /// frontend** to answer permission prompts, so the session starts in
+    /// auto-approve mode: `ask`-mode tools run without emitting a
+    /// [`ChatEvent::PermissionRequest`] (the turn never blocks on a
+    /// [`ChatInput::Permission`]). Safety still holds — layer-1 guardrails,
+    /// policy `deny` rules, and the Phase-5 worktree sandbox all remain in
+    /// force; only the interactive `ask` prompt is bypassed. `false` (the
+    /// default) is the interactive `--chat` behaviour. A daemon driving a warm
+    /// agent sets this; it must never be combined with `--unrestricted` (that
+    /// lifts the sandbox the autonomy relies on).
+    pub headless: bool,
 }
 
 /// Default chat context budget (heuristic tokens) — conservative for the local
@@ -80,6 +91,7 @@ impl Default for ChatConfig {
             max_turn_iterations: 20,
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
             team_chat_log: None,
+            headless: false,
         }
     }
 }
@@ -202,7 +214,15 @@ where
     let mut completion_tokens: u64 = 0;
 
     // Session permission mode (live-toggled via `SetMode`); only relaxes `ask`.
-    let mut session_mode = SessionMode::Default;
+    // Headless / served mode (#301) starts in `Bypass`: with no human frontend
+    // to answer prompts, `ask`-mode tools auto-approve so a turn never blocks.
+    // Layer-1 guardrails, policy `deny` rules, and the worktree sandbox still
+    // confine it — only the interactive prompt is skipped.
+    let mut session_mode = if config.headless {
+        SessionMode::Bypass
+    } else {
+        SessionMode::Default
+    };
 
     // Team chat broadcast cursor (HV3-3a): how many lines of the shared log
     // this session has already injected. Starts at 0 so the first user turn
@@ -1164,6 +1184,7 @@ mod tests {
             // compaction tests set their own budget.
             max_context_tokens: 0,
             team_chat_log: None,
+            headless: false,
         }
     }
 
@@ -1179,6 +1200,32 @@ mod tests {
         let lines = BufReader::new(stdin.as_bytes()).lines();
         let mut out: Vec<u8> = Vec::new();
         drive(provider, registry, ctx, config(policy), lines, &mut out)
+            .await
+            .unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Like [`run_scripted`] but with `config.headless = true` (#301) — the
+    /// served/no-human path that starts in auto-approve mode.
+    async fn run_scripted_headless(
+        responses: Vec<ChatCompletion>,
+        policy: Policy,
+        stdin: &str,
+        ctx: ToolContext,
+    ) -> Vec<String> {
+        let provider = Arc::new(MockProvider::new(responses));
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        let cfg = ChatConfig {
+            headless: true,
+            ..config(policy)
+        };
+        drive(provider, registry, ctx, cfg, lines, &mut out)
             .await
             .unwrap();
         String::from_utf8(out)
@@ -1431,6 +1478,88 @@ mod tests {
         assert!(
             tmp.path().join("x.txt").exists(),
             "the file must be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_auto_approves_ask_tool_without_prompt() {
+        // #301: a served (headless) session has no human to answer prompts. An
+        // `ask`-mode write_file must run WITHOUT emitting a PermissionRequest and
+        // WITHOUT any permission answer on stdin — the turn must not block. The
+        // stdin carries only the user message and quit (no `permission` line); in
+        // interactive mode the turn would stall waiting for an answer and the
+        // `quit` would be read as a deny, so this would fail.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let mut policy = allow_all();
+        policy.tools.insert("write_file".to_string(), Mode::Ask);
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"write it\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let lines = run_scripted_headless(
+            vec![
+                tool_call_response("write_file", r#"{"path":"h.txt","content":"hi"}"#),
+                final_response("done"),
+            ],
+            policy,
+            stdin,
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::PermissionRequest { .. })),
+            "headless must not raise a permission prompt"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ChatEvent::ToolResult { ok, name, .. } if *ok && name == "write_file"
+            )),
+            "the ask-mode tool must have executed"
+        );
+        assert!(
+            tmp.path().join("h.txt").exists(),
+            "the file must be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_still_denies_policy_deny_rule() {
+        // Headless auto-approves `ask`, but a policy `deny` must still block — the
+        // sandbox/guardrail/deny layers are not bypassed, only the human prompt.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let mut policy = allow_all();
+        policy.tools.insert("write_file".to_string(), Mode::Deny);
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"write it\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let lines = run_scripted_headless(
+            vec![
+                tool_call_response("write_file", r#"{"path":"nope.txt","content":"x"}"#),
+                final_response("done"),
+            ],
+            policy,
+            stdin,
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ChatEvent::ToolResult { ok, name, .. } if !*ok && name == "write_file"
+            )),
+            "a denied tool must fail even in headless mode"
+        );
+        assert!(
+            !tmp.path().join("nope.txt").exists(),
+            "the denied write must not land"
         );
     }
 
