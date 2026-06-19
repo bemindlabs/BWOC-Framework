@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
+- **Warm task execution in `bwoc-agent --serve`** (issue #301, PR B of 3, opt-in `BWOC_WARM=1`, default off): when auto-claim wins a Saṅgha task, it runs in a **resident `bwoc-harness --headless`** (lazy-spawned, idle-reaped after 600s, respawned on demand) instead of cold-starting / tmux-waking — eliminating per-task backend cold-start. Trusted task path only (`Principal::LocalOperator`); untrusted gateway input keeps its existing read-only `--chat` + auto-deny path. Confined backends only (ambient `cli` refused); `requires_plan` tasks are skipped to preserve the Pavāraṇā lead-approval gate. Completion is recorded via `bwoc task complete`.
 - **`bwoc-harness --headless`** — a served/warm session mode (issue #301, PR A of 3): the same multi-turn `chat_proto` loop as `--chat`, but driven by a machine frontend instead of a human. `ask`-mode tools auto-approve so a turn never blocks on a permission prompt, while guardrails, policy `deny` rules, and the worktree sandbox still confine it. Conflicts with `--unrestricted` (which would lift that sandbox). This is the standalone warm loop; daemon supervision (resident process, lazy spawn + idle-exit, inbox routing) follows in PR B.
 
 ## [v2026.6.15-0] — 2026-06-15 — 2.31.0
