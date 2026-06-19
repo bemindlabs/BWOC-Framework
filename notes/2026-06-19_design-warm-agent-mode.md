@@ -156,6 +156,46 @@ Implemented the standalone served loop; no daemon changes yet.
 Deferred to PR B: daemon supervision (lazy spawn, idle-exit, inbox→stdin
 routing, receipts, reap/respawn, ambient fallback).
 
+## PR B — shipped (daemon warm supervision)
+
+Implemented `crates/bwoc-agent/src/warm.rs` (`WarmHarness`) + wiring into
+`task_watch.rs` and `main.rs`. Opt-in via `BWOC_WARM=1`, default off.
+
+- **Trusted task path only** (the architect's scoping call). When auto-claim wins
+  a Saṅgha task and warm is active, the task is fed into a **resident
+  `bwoc-harness --headless`** as a trusted `Principal::LocalOperator` (effectful
+  tools allowed — the agent *does* its own queue's work), then marked complete
+  via `bwoc task complete`. Untrusted gateway input stays on the existing
+  `autoprocess` `--chat` + auto-deny path — never routed here.
+- **Lifecycle:** lazy spawn on first task (`.bwoc/harness.pid` written),
+  idle-reap after 600s (frees the model; respawns on next task), dead-child
+  respawn on the next task, quit+reap on daemon shutdown and on `Drop`.
+- **Confined backends only:** ambient (`cli`) is refused (announce logs it), same
+  fail-closed rule as autoprocess — headless auto-approve can't be confined when
+  tools escape the harness.
+- **Governance:** a `requires_plan` task is **skipped** (falls back to tmux-wake)
+  — the daemon can't stand in for the lead's Pavāraṇā plan approval.
+
+### Result delivery — deviation from the literal "inbox receipt" decision
+
+The approved decision was "inbox receipt (reuse #299)". On building it surfaced
+that a **task** has no sender to receipt back to (`Team` has no lead field, `Task`
+no requester), so the #299 inbox-*message* receipt doesn't map onto the task
+path. The task's authoritative receipt is its **`Completed` state** (set by
+`bwoc task complete`, visible fleet-wide via `bwoc tasks`), plus a logged
+summary. The #299 inbox-receipt reuse properly attaches to a future warm
+inbox-*message* path (messages have senders) — which is also nearer the untrusted
+boundary we deliberately kept separate. Flagged for the architect rather than
+inventing a fake recipient.
+
+### Tests / verification
+
+5 unit tests (warm-off inert, ambient refused, confined not-flagged, inactive
+declines without spawning, plan-gate detection). fmt + clippy clean; 48
+bwoc-agent tests pass. The live resident lifecycle (real harness child speaking
+`chat_proto`) needs a real backend → manual/e2e follow-up, matching the
+autoprocess test depth (which also unit-tests gating only).
+
 ## Related
 
 - issue #301; `crates/bwoc-harness/src/chat_session.rs`,

@@ -80,7 +80,12 @@ impl TaskWatch {
     /// Announce any claimable task not seen before; record it. Also drops
     /// from `seen` any task that is no longer claimable (claimed/completed),
     /// so if it ever returns to pending it announces afresh.
-    pub fn poll(&mut self) {
+    ///
+    /// `warm` is the resident-harness executor (#301): when it is active and
+    /// auto-claim wins the race, the claimed task is run in the warm harness
+    /// instead of tmux-waking a human session. When warm is inactive (the
+    /// default) the behaviour is unchanged.
+    pub fn poll(&mut self, warm: &mut crate::warm::WarmHarness) {
         if self.workspace_root.is_none() {
             return;
         }
@@ -96,10 +101,10 @@ impl TaskWatch {
                 // newly inserted ⇒ not seen before ⇒ announce.
                 eprintln!("bwoc-agent: task available ← {team}/{task}: {title}");
                 if self.auto_claim {
-                    // Claim it for this agent + wake it to work the task.
+                    // Claim it for this agent + work the task.
                     // A lost race (someone claimed first) just logs — the
                     // task leaves the claimable set and drops from `seen`.
-                    self.try_auto_claim(team, task, title);
+                    self.try_auto_claim(team, task, title, warm);
                 } else if self.wakeup {
                     wake_session(&self.agent_id, team, task, title);
                 }
@@ -114,7 +119,13 @@ impl TaskWatch {
     /// duplicated lock logic — the CLI handles the race), then wake the
     /// agent to work it. Best-effort: a lost race or any failure logs and
     /// returns. Only called when `BWOC_AUTO_CLAIM=1`.
-    fn try_auto_claim(&self, team: &str, task: &str, title: &str) {
+    fn try_auto_claim(
+        &self,
+        team: &str,
+        task: &str,
+        title: &str,
+        warm: &mut crate::warm::WarmHarness,
+    ) {
         let Some(root) = &self.workspace_root else {
             return;
         };
@@ -135,9 +146,13 @@ impl TaskWatch {
         match result {
             Ok(o) if o.status.success() => {
                 eprintln!("bwoc-agent: auto-claimed {team}/{task} — {title}");
-                // The agent now owns work — tell it regardless of the
-                // wakeup flag (auto-claim implies "go do this").
-                wake_session(&self.agent_id, team, task, title);
+                // The agent now owns work. With warm mode active, run it in the
+                // resident harness; otherwise wake a live session to work it
+                // (auto-claim implies "go do this"). Warm declines (returns
+                // false) on plan-gated tasks or a turn failure → fall back.
+                if !warm.process_task(team, task, title) {
+                    wake_session(&self.agent_id, team, task, title);
+                }
             }
             Ok(o) => {
                 let err = String::from_utf8_lossy(&o.stderr);
@@ -273,7 +288,9 @@ mod tests {
         )
         .unwrap();
         let before = w.seen.len();
-        w.poll();
+        // Warm executor is inactive here (no BWOC_WARM) — poll just announces.
+        let mut warm = crate::warm::WarmHarness::detect(&root, Some(&root));
+        w.poll(&mut warm);
         assert!(w.seen.contains(&("squad".to_string(), "t2".to_string())));
         assert_eq!(w.seen.len(), before + 1);
 

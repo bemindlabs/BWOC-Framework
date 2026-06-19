@@ -23,6 +23,7 @@ mod gateway;
 mod i18n;
 mod task_watch;
 mod trust;
+mod warm;
 
 fn main() -> ExitCode {
     // Lightweight arg handling — keeps the daemon binary clap-free (it
@@ -271,6 +272,12 @@ where
     let autoproc = autoprocess::AutoProcessor::detect(cwd);
     autoproc.announce();
 
+    // Warm task execution (#301): when `BWOC_WARM=1` and the backend is
+    // confinable, a claimed Saṅgha task runs in a resident `bwoc-harness
+    // --headless` instead of cold-starting / tmux-waking. Off by default.
+    let mut warm = warm::WarmHarness::detect(cwd, trust_ctx.workspace_root.as_deref());
+    warm.announce();
+
     // Single-threaded accept loop with poll. Each accept is non-blocking
     // and yields control quickly so the signal check stays responsive.
     while running.load(Ordering::SeqCst) {
@@ -292,9 +299,11 @@ where
                 // Saṅgha tasks change rarely — poll on a slower cadence than
                 // the 100ms inbox tick to avoid re-reading team files 10×/s.
                 if !task_watch.is_inert() && last_task_poll.elapsed() >= TASK_POLL_EVERY {
-                    task_watch.poll();
+                    task_watch.poll(&mut warm);
                     last_task_poll = Instant::now();
                 }
+                // Reap the resident warm harness if it has gone idle (#301).
+                warm.tick_idle();
                 // Keep the connector child alive (respawn on exit, backoff-bounded).
                 connectors.tick();
                 // Keep the gateway recv bridge alive (respawn = reconnect).
@@ -311,6 +320,7 @@ where
     // Graceful exit — stop the connector child, then remove PID file + endpoint.
     connectors.shutdown();
     gateway.shutdown();
+    warm.shutdown();
     if let Err(e) = std::fs::remove_file(&pid_path) {
         eprintln!(
             "bwoc-agent --serve: warning — failed to remove {}: {e}",
