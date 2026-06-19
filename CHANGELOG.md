@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`bwoc-harness --headless`** — a served/warm session mode (issue #301, PR A of 3): the same multi-turn `chat_proto` loop as `--chat`, but driven by a machine frontend instead of a human. `ask`-mode tools auto-approve so a turn never blocks on a permission prompt, while guardrails, policy `deny` rules, and the worktree sandbox still confine it. Conflicts with `--unrestricted` (which would lift that sandbox). This is the standalone warm loop; daemon supervision (resident process, lazy spawn + idle-exit, inbox routing) follows in PR B.
+
 ## [v2026.6.15-0] — 2026-06-15 — 2.31.0
 
 The **subscription-CLI backend + Phase 6 (paññā)** release: agents can now run on a Claude/Codex subscription with no API key, the harness eval framework and sandbox hardening extend across backends and platforms, the deep-memory store stops being a secret sink, and an **experimental** computer-use scaffold lands behind a feature flag.
