@@ -7,8 +7,9 @@ nav_order: 13
 # Chat Connectors
 
 **Chat connectors** let a human reach a BWOC agent from an everyday chat app —
-**Telegram**, **Discord**, **LINE**, or **iMessage** — in a private DM or a
-shared group room.
+**Telegram**, **Discord**, **LINE**, or **iMessage** — in a private DM (all
+platforms) or a shared group room (platform-dependent; iMessage is DM-only for
+now).
 They are operator-facing infrastructure: the network code lives in one crate
 (`bwoc-connect`) so the `bwoc` CLI, agent runtime, and core stay lean
 (dep-quarantine).

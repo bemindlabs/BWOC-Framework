@@ -191,14 +191,22 @@ mod macos {
         fn read_new(&self, offset: i64) -> Result<Vec<Incoming>, ConnectError> {
             let conn = Connection::open_with_flags(&self.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .map_err(|e| ConnectError::Transport(format!("open chat.db: {e}")))?;
-            // DM-first MVP: join handle for the sender's address; skip group
-            // chats (chat rooms with style 43 / multiple participants) — group
-            // addressing via chat GUID is a follow-up.
+            // DM-first MVP: restrict to **1:1** chats and skip group rooms.
+            // `chat.style` is 45 for a direct (1:1) chat and 43 for a group, so
+            // the join to chat_message_join → chat + `c.style = 45` filters group
+            // messages out in SQL — without it a group message would be emitted
+            // as a DM to its sender (wrong routing + a privacy leak). Group
+            // addressing via chat GUID is a follow-up. `GROUP BY m.ROWID` dedupes
+            // a message that maps to more than one chat row.
             let mut stmt = conn
                 .prepare(
                     "SELECT m.ROWID, h.id, m.text, m.attributedBody \
-                     FROM message m JOIN handle h ON m.handle_id = h.ROWID \
-                     WHERE m.ROWID >= ?1 AND m.is_from_me = 0 \
+                     FROM message m \
+                     JOIN handle h ON m.handle_id = h.ROWID \
+                     JOIN chat_message_join cmj ON cmj.message_id = m.ROWID \
+                     JOIN chat c ON c.ROWID = cmj.chat_id \
+                     WHERE m.ROWID >= ?1 AND m.is_from_me = 0 AND c.style = 45 \
+                     GROUP BY m.ROWID \
                      ORDER BY m.ROWID ASC",
                 )
                 .map_err(|e| ConnectError::Transport(format!("prepare query: {e}")))?;
@@ -260,6 +268,9 @@ mod macos {
             let output = tokio::process::Command::new("osascript")
                 .arg("-e")
                 .arg(&script)
+                // Reap the child if this task is cancelled mid-send (don't orphan
+                // an osascript process) — matches the rest of the crate.
+                .kill_on_drop(true)
                 .output()
                 .await
                 .map_err(|e| ConnectError::Transport(format!("spawn osascript: {e}")))?;
@@ -302,13 +313,25 @@ mod macos {
                 "CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
                  CREATE TABLE message (ROWID INTEGER PRIMARY KEY, handle_id INTEGER, \
                     text TEXT, attributedBody BLOB, is_from_me INTEGER);
+                 CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, style INTEGER);
+                 CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
                  INSERT INTO handle (ROWID, id) VALUES (1, '+15551234567');
-                 -- incoming peer message
+                 INSERT INTO handle (ROWID, id) VALUES (2, '+15559990000');
+                 -- a 1:1 chat (style 45) and a group chat (style 43)
+                 INSERT INTO chat (ROWID, style) VALUES (100, 45);
+                 INSERT INTO chat (ROWID, style) VALUES (200, 43);
+                 -- incoming DM (must be returned)
                  INSERT INTO message (ROWID, handle_id, text, attributedBody, is_from_me) \
                     VALUES (10, 1, 'hello there', NULL, 0);
-                 -- our own outbound reply (must be skipped)
+                 INSERT INTO chat_message_join (chat_id, message_id) VALUES (100, 10);
+                 -- our own outbound reply (must be skipped: is_from_me=1)
                  INSERT INTO message (ROWID, handle_id, text, attributedBody, is_from_me) \
-                    VALUES (11, 1, 'my reply', NULL, 1);",
+                    VALUES (11, 1, 'my reply', NULL, 1);
+                 INSERT INTO chat_message_join (chat_id, message_id) VALUES (100, 11);
+                 -- incoming GROUP message (must be skipped: chat.style=43)
+                 INSERT INTO message (ROWID, handle_id, text, attributedBody, is_from_me) \
+                    VALUES (12, 2, 'group hi', NULL, 0);
+                 INSERT INTO chat_message_join (chat_id, message_id) VALUES (200, 12);",
             )
             .unwrap();
             path
@@ -319,7 +342,16 @@ mod macos {
             let path = seed_db("map");
             let t = ImessageTransport::open(&path, Some(0)).unwrap();
             let got = t.read_new(0).unwrap();
-            assert_eq!(got.len(), 1, "only the inbound (is_from_me=0) row");
+            assert_eq!(
+                got.len(),
+                1,
+                "only the inbound 1:1 DM — outbound (is_from_me=1) and the group \
+                 message (chat.style=43) are both excluded"
+            );
+            assert!(
+                !got.iter().any(|m| m.update_id == 12),
+                "the group-room message must not be surfaced as a DM"
+            );
             let m = &got[0];
             assert_eq!(m.update_id, 10);
             assert_eq!(m.text, "hello there");

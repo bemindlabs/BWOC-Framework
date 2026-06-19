@@ -7,7 +7,8 @@ nav_order: 13
 # Chat Connectors (ตัวเชื่อมแชต)
 
 **Chat connectors** ให้คนคุยกับ BWOC agent จากแอปแชตที่ใช้ทุกวัน —
-**Telegram**, **Discord**, **LINE** หรือ **iMessage** — ได้ทั้งแบบ DM ส่วนตัวและห้องกลุ่มร่วมกัน
+**Telegram**, **Discord**, **LINE** หรือ **iMessage** — แบบ DM ส่วนตัวได้ทุกแพลตฟอร์ม
+ส่วนห้องกลุ่มร่วมกันขึ้นกับแพลตฟอร์ม (iMessage รองรับเฉพาะ DM ในตอนนี้)
 เป็นโครงสร้างฝั่ง operator: โค้ดเครือข่ายอยู่ใน crate เดียว (`bwoc-connect`) เพื่อให้
 `bwoc` CLI, runtime ของ agent และ core บางเบา (dep-quarantine).
 
