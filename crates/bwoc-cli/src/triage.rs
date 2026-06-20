@@ -215,6 +215,9 @@ struct Triaged {
     from: String,
     message: String,
     action: Action,
+    /// Source envelope's `messageId`, when present — lets a sender query "was my
+    /// message consumed?" via `bwoc receipts` (#299 read-receipt half).
+    message_id: Option<String>,
 }
 
 fn triage(args: TriageArgs) -> Result<(), TriageError> {
@@ -310,6 +313,10 @@ fn drain(
         let from = env.get("from").and_then(|v| v.as_str()).unwrap_or("—");
         let ts = env.get("ts").and_then(|v| v.as_str()).unwrap_or("—");
         let message = env.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        let message_id = env
+            .get("messageId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let mut action = config.classify(from, message);
         if let Action::Forward(target) = &action {
             match resolve_target(registry, target) {
@@ -331,6 +338,7 @@ fn drain(
             from: from.to_string(),
             message: message.to_string(),
             action,
+            message_id,
         });
     }
 
@@ -410,6 +418,9 @@ fn append_receipts(
             "action": t.action.label(),
             "message": truncate(&t.message, 200),
         });
+        if let Some(mid) = &t.message_id {
+            rec["messageId"] = serde_json::Value::String(mid.clone());
+        }
         if let Action::Forward(target) = &t.action {
             rec["target"] = serde_json::Value::String(target.clone());
         }
@@ -640,7 +651,7 @@ mod tests {
             &root,
             "agent-orch",
             &[
-                r#"{"ts":"t1","from":"agent-a","message":"coordinate please"}"#,
+                r#"{"ts":"t1","from":"agent-a","messageId":"msg-aaa","message":"coordinate please"}"#,
                 r#"{"ts":"t2","from":"agent-b","message":"FYI heads up"}"#,
             ],
         );
@@ -668,6 +679,10 @@ mod tests {
         assert_eq!(new_cursor, fs::metadata(&inbox).unwrap().len());
         let recs = fs::read_to_string(&receipts).unwrap();
         assert_eq!(recs.lines().filter(|l| !l.trim().is_empty()).count(), 2);
+        // The source `messageId` rides into the receipt (#299 read-receipt half),
+        // so `bwoc receipts` can key consumption by message; the message without
+        // one simply omits the field.
+        assert!(recs.contains("\"messageId\":\"msg-aaa\""));
         let again = drain(
             "agent-orch",
             &inbox,

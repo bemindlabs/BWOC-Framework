@@ -531,6 +531,17 @@ Interactive workflow (typical):
 `bwoc list` shows the INBOX column with each agent's pending count
 (rendered as \"—\" for empty inboxes).
 
+Receipts (sammā-vācā honesty — know if a message landed and was read):
+  - `bwoc send` stamps a `messageId` on each envelope and is
+    idempotent: re-sending the same id is suppressed and reported as a
+    duplicate (delivery receipt) instead of double-delivering. (Older
+    or external envelopes without an id are still delivered.)
+  - `bwoc receipts` answers \"was my message consumed?\" A recipient's
+    `bwoc triage` records a receipt (keyed by messageId) when it
+    processes a message; `bwoc receipts --message-id <id>` (or
+    `--from` / `--agent`, `--json`) surfaces that across the fleet. No
+    receipt yet = not consumed.
+
 See: bwoc help daemon     — what reads inbox.jsonl on the daemon side
      bwoc help lifecycle  — the state machine inbox commands work with
 ";

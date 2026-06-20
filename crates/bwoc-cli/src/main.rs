@@ -42,6 +42,7 @@ mod okr;
 mod peer;
 mod ping;
 mod plugin;
+mod receipts;
 mod remote;
 mod report;
 mod retire;
@@ -203,6 +204,9 @@ enum Commands {
     /// Query task status across **every** team (fleet-wide): filter by `--agent`
     /// (claimant) / `--state` (pending|in_progress|completed), table or `--json`.
     Tasks(TasksCliArgs),
+    /// Query read receipts — "was my message consumed?" — across recipients'
+    /// triage logs: filter by `--message-id` / `--from` / `--agent`, table or `--json` (#299).
+    Receipts(ReceiptsCliArgs),
     /// View peer workspaces declared in routes.toml (read-only cross-workspace view, #20).
     #[command(subcommand)]
     Peer(PeerCommand),
@@ -1894,6 +1898,37 @@ impl From<TasksCliArgs> for tasks::TasksArgs {
 }
 
 #[derive(Args, Debug)]
+struct ReceiptsCliArgs {
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Show only the receipt for this source message id (the `bwoc send` `[id …]`).
+    #[arg(long = "message-id")]
+    message_id: Option<String>,
+    /// Show only receipts for messages from this sender (e.g. `user`, `agent-x`).
+    #[arg(long)]
+    from: Option<String>,
+    /// Show only receipts recorded by this recipient agent (id or bare name).
+    #[arg(long)]
+    agent: Option<String>,
+    /// Emit a machine-readable JSON object instead of the human table.
+    #[arg(long)]
+    json: bool,
+}
+
+impl From<ReceiptsCliArgs> for receipts::ReceiptsArgs {
+    fn from(a: ReceiptsCliArgs) -> Self {
+        Self {
+            workspace: a.workspace,
+            message_id: a.message_id,
+            from: a.from,
+            agent: a.agent,
+            json: a.json,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 struct DoctorArgs {
     /// Workspace root to diagnose. Defaults: BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
@@ -2679,6 +2714,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Tasks(args)) => {
             let code = tasks::run(args.into());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Receipts(args)) => {
+            let code = receipts::run(args.into());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Peer(sub)) => {
