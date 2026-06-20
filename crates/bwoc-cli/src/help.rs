@@ -532,9 +532,10 @@ Interactive workflow (typical):
 (rendered as \"—\" for empty inboxes).
 
 Receipts (sammā-vācā honesty — know if a message landed and was read):
-  - Every envelope carries a `messageId`. `bwoc send` is idempotent:
-    re-sending the same id is suppressed and reported as a duplicate
-    (delivery receipt) instead of double-delivering.
+  - `bwoc send` stamps a `messageId` on each envelope and is
+    idempotent: re-sending the same id is suppressed and reported as a
+    duplicate (delivery receipt) instead of double-delivering. (Older
+    or external envelopes without an id are still delivered.)
   - `bwoc receipts` answers \"was my message consumed?\" A recipient's
     `bwoc triage` records a receipt (keyed by messageId) when it
     processes a message; `bwoc receipts --message-id <id>` (or

@@ -50,8 +50,10 @@ pub fn run(args: ReceiptsArgs) -> i32 {
     let registry = match AgentsRegistry::load(&workspace) {
         Ok(r) => r,
         Err(e) => {
+            // Operational failure (read/parse), not a user-input error → exit 1.
+            // Exit 2 is reserved for no-workspace / bad-flag, as above.
             eprintln!("bwoc receipts: cannot load agent registry: {e}");
-            return 2;
+            return 1;
         }
     };
 
@@ -60,6 +62,9 @@ pub fn run(args: ReceiptsArgs) -> i32 {
     let id_filter = args.message_id.as_deref();
 
     let mut rows: Vec<Receipt> = Vec::new();
+    // Count unparseable receipt lines so a corrupt/truncated log is reported
+    // rather than silently reading as "nothing consumed".
+    let mut malformed = 0usize;
     for entry in &registry.agents {
         let recipient = entry.id.clone();
         if let Some(ag) = &agent_filter {
@@ -80,7 +85,8 @@ pub fn run(args: ReceiptsArgs) -> i32 {
                 continue;
             }
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue; // a malformed receipt line — skip, don't abort the scan
+                malformed += 1; // skip, but count it (reported below)
+                continue;
             };
             let message_id = v.get("messageId").and_then(|x| x.as_str());
             if let Some(want) = id_filter {
@@ -115,6 +121,12 @@ pub fn run(args: ReceiptsArgs) -> i32 {
                     .to_string(),
             });
         }
+    }
+    if malformed > 0 {
+        eprintln!(
+            "bwoc receipts: warning — skipped {malformed} unparseable receipt line(s) \
+             (a triage log may be truncated/corrupt; results may be incomplete)."
+        );
     }
     // Stable order: recipient, then ts.
     rows.sort_by(|a, b| {
