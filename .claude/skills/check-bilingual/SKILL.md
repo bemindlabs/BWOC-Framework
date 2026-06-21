@@ -21,6 +21,7 @@ not only TH. Covers both the framework root `docs/` and
    for base in docs modules/agent-template/docs; do
      [ -d "$base/en" ] || continue
      for langdir in "$base"/*/; do
+       [ -d "$langdir" ] || continue   # no subdirs → skip the literal glob
        lang=$(basename "$langdir")
        [ "$lang" = en ] && continue
        for en in "$base"/en/*.en.md; do
