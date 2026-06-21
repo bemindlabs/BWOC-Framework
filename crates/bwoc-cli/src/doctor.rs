@@ -78,6 +78,17 @@ pub fn run(args: DoctorArgs) -> i32 {
                 for r in check_agent_symlinks(&root, args.auto) {
                     results.push(r);
                 }
+                // Manifest-vs-reality integrity (#323): manifest valid +
+                // substituted, key perms, and referenced models installed.
+                for r in check_agent_manifests(&root) {
+                    results.push(r);
+                }
+                for r in check_agent_keys(&root, args.auto) {
+                    results.push(r);
+                }
+                for r in check_models_installed(&root) {
+                    results.push(r);
+                }
                 // Stale `agent.pid` cleanup (foundation laid by
                 // `bwoc-agent --serve`).
                 for r in check_stale_pids(&root, args.auto) {
@@ -881,6 +892,303 @@ fn check_single_agent(root: &Path, a: &AgentEntry, auto: bool) -> CheckResult {
     }
 }
 
+/// Per-agent **manifest-vs-reality** integrity (#323): `config.manifest.json`
+/// must be present, valid JSON, and fully substituted (no `{{placeholder}}`
+/// tokens left from the template). Read-only — never auto-rewritten (the correct
+/// values are the operator's to choose).
+fn check_agent_manifests(root: &Path) -> Vec<CheckResult> {
+    let Ok(registry) = AgentsRegistry::load(root) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for a in &registry.agents {
+        let name = format!("manifest: {}", a.id);
+        let path = root.join(&a.path).join("config.manifest.json");
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                out.push(CheckResult {
+                    name,
+                    status: Status::Fail(format!("missing config.manifest.json in {}", a.path)),
+                });
+                continue;
+            }
+            Err(e) => {
+                // Present but unreadable (perms, transient I/O) — surface the
+                // real error rather than mislabeling it "missing".
+                out.push(CheckResult {
+                    name,
+                    status: Status::Fail(format!("cannot read {}: {e}", path.display())),
+                });
+                continue;
+            }
+        };
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(&raw) {
+            out.push(CheckResult {
+                name,
+                status: Status::Fail(format!("invalid JSON: {e}")),
+            });
+            continue;
+        }
+        let placeholders = unsubstituted_placeholders(&raw);
+        if !placeholders.is_empty() {
+            out.push(CheckResult {
+                name,
+                status: Status::Fail(format!(
+                    "unsubstituted template placeholder(s): {} — agent not fully incarnated",
+                    placeholders.join(", ")
+                )),
+            });
+            continue;
+        }
+        out.push(CheckResult {
+            name,
+            status: Status::Pass,
+        });
+    }
+    out
+}
+
+/// Collect distinct `{{placeholder}}` tokens from `raw` (template markers that
+/// should all be substituted at incarnation). Regex-free scan.
+fn unsubstituted_placeholders(raw: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            if let Some(end) = raw[i + 2..].find("}}") {
+                let token = format!("{{{{{}}}}}", &raw[i + 2..i + 2 + end]);
+                if !found.contains(&token) {
+                    found.push(token);
+                }
+                i = i + 2 + end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    found
+}
+
+/// Per-agent `.bwoc/agent.key` permissions (#323). A private signing key that is
+/// group/other-readable is a real exposure → FAIL (or `--auto` chmod 0600).
+/// **Absent is fine** (not every agent is trust/signing-enabled) — skipped.
+/// Windows has no Unix mode bits, so the perms check is Unix-only.
+fn check_agent_keys(root: &Path, auto: bool) -> Vec<CheckResult> {
+    let Ok(registry) = AgentsRegistry::load(root) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for a in &registry.agents {
+        let key_path = root.join(&a.path).join(".bwoc/agent.key");
+        if !key_path.is_file() {
+            continue; // no key → not trust-enabled; nothing to check
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let name = format!("agent key: {}", a.id);
+            let Ok(meta) = std::fs::metadata(&key_path) else {
+                continue;
+            };
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 == 0 {
+                out.push(CheckResult {
+                    name,
+                    status: Status::Pass,
+                });
+                continue;
+            }
+            if auto {
+                match std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)) {
+                    Ok(_) => out.push(CheckResult {
+                        name,
+                        status: Status::Fixed(format!("chmod 600 (was {mode:#o})")),
+                    }),
+                    Err(e) => out.push(CheckResult {
+                        name,
+                        status: Status::Fail(format!(
+                            "perms {mode:#o} too open; chmod failed: {e}"
+                        )),
+                    }),
+                }
+            } else {
+                out.push(CheckResult {
+                    name,
+                    status: Status::Fail(format!(
+                        "perms {mode:#o} grant group/other access — a private key must be \
+                         owner-only (e.g. 600 or 400); rerun with --auto to chmod 600"
+                    )),
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = auto; // no Unix mode bits to verify on Windows
+        }
+    }
+    out
+}
+
+/// Per-agent **referenced-model-installed** check (#323's headline). For each
+/// agent whose backend is `ollama`, verify `primaryModel`/`fallbackModel` are
+/// actually installed at **that agent's** Ollama endpoint (`baseUrl`, default
+/// `localhost:11434`), via `/api/tags`. Read-only — a model can't be safely
+/// auto-installed. An unreachable / un-checkable (https) endpoint is a per-agent
+/// WARN, not a FAIL; non-ollama backends are skipped (vendor model ids).
+fn check_models_installed(root: &Path) -> Vec<CheckResult> {
+    use std::collections::HashMap;
+    let Ok(registry) = AgentsRegistry::load(root) else {
+        return vec![];
+    };
+    // Cache `/api/tags` per resolved endpoint so N agents on the same Ollama are
+    // queried once. `None` = unreachable/unparseable at that endpoint.
+    let mut tags_cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
+    let mut out = Vec::new();
+    for a in &registry.agents {
+        let path = root.join(&a.path).join("config.manifest.json");
+        let Ok(m) = bwoc_core::manifest::Manifest::load_from_path(&path) else {
+            continue;
+        };
+        if m.backend.as_deref() != Some("ollama") {
+            continue;
+        }
+        let mut models = vec![m.primary_model.clone()];
+        if let Some(fb) = m.fallback_model.clone() {
+            models.push(fb);
+        }
+        let name = format!("models: {}", a.id);
+
+        let addr = match ollama_addr(m.base_url.as_deref()) {
+            Ok(a) => a,
+            Err(reason) => {
+                out.push(CheckResult {
+                    name,
+                    status: Status::Warn(format!("cannot verify models — {reason}")),
+                });
+                continue;
+            }
+        };
+        let installed = tags_cache
+            .entry(addr.clone())
+            .or_insert_with(|| ollama_models(&addr));
+        let Some(installed) = installed else {
+            out.push(CheckResult {
+                name,
+                status: Status::Warn(format!(
+                    "Ollama unreachable at {addr} — could not verify referenced models. \
+                     Start it (or check baseUrl) and re-run."
+                )),
+            });
+            continue;
+        };
+        let missing: Vec<String> = models
+            .into_iter()
+            .filter(|mdl| !model_present(mdl, installed))
+            .collect();
+        if missing.is_empty() {
+            out.push(CheckResult {
+                name,
+                status: Status::Pass,
+            });
+        } else {
+            out.push(CheckResult {
+                name,
+                status: Status::Fail(format!(
+                    "referenced model(s) not installed at {addr}: {} (installed: {})",
+                    missing.join(", "),
+                    if installed.is_empty() {
+                        "none".to_string()
+                    } else {
+                        installed.join(", ")
+                    }
+                )),
+            });
+        }
+    }
+    out
+}
+
+/// Resolve a manifest `baseUrl` to a `host:port` for the raw `/api/tags` probe.
+/// `None`/empty → the Ollama default `127.0.0.1:11434`. An `http://host[:port][/path]`
+/// yields `host:port` (default port 11434). An `https://…` endpoint can't be
+/// checked with a plaintext `TcpStream`, so it's an `Err` the caller turns into a
+/// per-agent WARN (verify manually) rather than a false "unreachable".
+fn ollama_addr(base_url: Option<&str>) -> Result<String, String> {
+    let url = base_url.unwrap_or("").trim();
+    if url.is_empty() {
+        return Ok("127.0.0.1:11434".to_string());
+    }
+    let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
+    if scheme.eq_ignore_ascii_case("https") {
+        return Err(format!(
+            "baseUrl {url} is https — raw-TCP /api/tags check unsupported; verify manually"
+        ));
+    }
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    if host_port.is_empty() {
+        Ok("127.0.0.1:11434".to_string())
+    } else if host_port.contains(':') {
+        Ok(host_port.to_string())
+    } else {
+        Ok(format!("{host_port}:11434"))
+    }
+}
+
+/// Is `want` present among `installed` Ollama model names?
+///
+/// If the manifest **pins a tag** (`gemma4:9b`), require an **exact** match — a
+/// pinned variant must not be satisfied by a different installed tag (masking
+/// real drift). A **tagless** `want` (`gemma4`) matches any installed tag of the
+/// same base (`gemma4:latest`, `gemma4:9b`, or a bare `gemma4`).
+fn model_present(want: &str, installed: &[String]) -> bool {
+    if want.contains(':') {
+        installed.iter().any(|have| have == want)
+    } else {
+        installed
+            .iter()
+            .any(|have| have.split(':').next() == Some(want))
+    }
+}
+
+/// Fetch installed Ollama model names via a minimal raw HTTP/1.1 GET to
+/// `/api/tags` (no HTTP crate — keeps bwoc-cli lean, like the rest of doctor).
+/// Returns `None` on any connect/read/parse failure (caller degrades to WARN).
+fn ollama_models(addr: &str) -> Option<Vec<String>> {
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    // Resolve via DNS so a `baseUrl` hostname (e.g. a tailnet name) works, not
+    // just a literal IP. Connect to the first address that resolves.
+    let sockaddr = addr.to_socket_addrs().ok()?.next()?;
+    let mut stream = TcpStream::connect_timeout(&sockaddr, Duration::from_millis(800)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .write_all(
+            format!("GET /api/tags HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .ok()?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    // Split headers from body at the first blank line.
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b)?;
+    // `/api/tags` returns Content-Length JSON (not chunked), so the body is the
+    // JSON object directly. Parse leniently from the first `{`.
+    let json_start = body.find('{')?;
+    let v: serde_json::Value = serde_json::from_str(body[json_start..].trim()).ok()?;
+    let models = v.get("models")?.as_array()?;
+    Some(
+        models
+            .iter()
+            .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(str::to_string))
+            .collect(),
+    )
+}
+
 // --- helpers ---------------------------------------------------------------
 
 /// `which`-equivalent: returns the first PATH entry that contains an
@@ -1035,6 +1343,84 @@ mod tests {
             }
             other => panic!("expected Warn for missing cargo, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unsubstituted_placeholders_are_detected_and_deduped() {
+        let raw = r#"{"agentId":"{{agentId}}","primaryModel":"gemma4","x":"{{agentId}}","y":"{{primaryModel}}"}"#;
+        let got = unsubstituted_placeholders(raw);
+        assert_eq!(
+            got,
+            vec!["{{agentId}}".to_string(), "{{primaryModel}}".to_string()]
+        );
+        // A fully-substituted manifest has none.
+        assert!(unsubstituted_placeholders(r#"{"agentId":"agent-pi"}"#).is_empty());
+    }
+
+    #[test]
+    fn model_present_tagless_matches_any_tag_but_pinned_is_exact() {
+        let installed = vec!["gemma4:latest".to_string(), "llama3:8b".to_string()];
+        assert!(model_present("gemma4", &installed)); // tagless ↔ :latest
+        assert!(model_present("gemma4:latest", &installed)); // exact pin
+        assert!(model_present("llama3", &installed)); // tagless ↔ :8b
+        // A pinned tag must match exactly — a different installed tag is NOT it.
+        assert!(!model_present("gemma4:9b", &installed));
+        assert!(!model_present("llama3:70b", &installed));
+        assert!(!model_present("mistral", &installed)); // absent
+    }
+
+    #[test]
+    fn ollama_addr_derives_endpoint_from_base_url() {
+        assert_eq!(ollama_addr(None).unwrap(), "127.0.0.1:11434");
+        assert_eq!(ollama_addr(Some("")).unwrap(), "127.0.0.1:11434");
+        assert_eq!(
+            ollama_addr(Some("http://host:11434/v1")).unwrap(),
+            "host:11434"
+        );
+        assert_eq!(ollama_addr(Some("http://box")).unwrap(), "box:11434");
+        assert_eq!(
+            ollama_addr(Some("http://10.0.0.5:1234")).unwrap(),
+            "10.0.0.5:1234"
+        );
+        // https can't be probed with a raw TcpStream → Err (caller WARNs).
+        assert!(ollama_addr(Some("https://remote:11434")).is_err());
+    }
+
+    #[test]
+    fn manifest_check_fails_on_placeholders_and_missing() {
+        let base = std::env::temp_dir().join(format!("bwoc-doctor-mani-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        // Workspace + registry with one agent dir.
+        fs::create_dir_all(base.join(".bwoc")).unwrap();
+        fs::write(
+            base.join(".bwoc/workspace.toml"),
+            "[workspace]\nname=\"x\"\nversion=\"0.1.0\"\ncreated=\"x\"\n",
+        )
+        .unwrap();
+        let agent_dir = base.join("agents/agent-pi");
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::write(
+            agent_dir.join("config.manifest.json"),
+            r#"{"name":"agent-pi","agentId":"{{agentId}}","agentRole":"r","primaryModel":"m","memoryPath":"memories/","lintCmd":"x","formatCmd":"x","testCmd":"x","buildCmd":"x","version":"1"}"#,
+        )
+        .unwrap();
+        let mut reg = AgentsRegistry::default();
+        reg.agents.push(AgentEntry {
+            id: "agent-pi".into(),
+            path: "agents/agent-pi".into(),
+            backend: "cli".into(),
+            incarnated: "x".into(),
+            status: "active".into(),
+        });
+        reg.save(&base).unwrap();
+
+        let results = check_agent_manifests(&base);
+        assert_eq!(results.len(), 1);
+        match &results[0].status {
+            Status::Fail(m) => assert!(m.contains("{{agentId}}"), "detail: {m}"),
+            other => panic!("expected Fail for placeholder, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
