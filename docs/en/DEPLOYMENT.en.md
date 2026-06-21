@@ -137,11 +137,25 @@ container's environment, not baked into the image).
 
 ---
 
-## Roadmap
+## Helper: `bwoc agent run --as-user`
 
-A `bwoc agent run --as-user <user>` helper to automate the privilege-drop +
-launch (so you don't hand-write the `su`/systemd glue) is planned as a
-follow-up. Until then, this documented pattern is the supported path.
+The privilege-drop + launch is automated by `bwoc agent run` — run it **as root**
+from inside the workspace:
+
+```bash
+# default command: bwoc-agent --serve
+bwoc agent run --as-user bwoc <agent>
+
+# or an explicit command after `--` (e.g. a remote-control session)
+bwoc agent run --as-user bwoc <agent> -- \
+  claude --remote-control <agent> --dangerously-skip-permissions
+```
+
+It validates the target user exists, drops to it via `runuser`, and launches in
+the agent's own directory (so the backend reads its manifest/persona). It does
+**not** create the user or `chown` the workspace — do those once (steps 1–2); it
+*warns* if the agent dir isn't owned by the target user. The systemd unit above
+remains the right choice for a supervised, reboot-surviving worker.
 
 ---
 

@@ -135,11 +135,25 @@ environment ของ container ไม่ใช่ฝังในอิมเม
 
 ---
 
-## Roadmap
+## Helper: `bwoc agent run --as-user`
 
-helper `bwoc agent run --as-user <user>` เพื่อทำขั้นตอนลดสิทธิ์ + launch ให้อัตโนมัติ
-(จะได้ไม่ต้องเขียน glue ของ `su`/systemd เอง) วางแผนไว้เป็น follow-up จนกว่าจะถึงตอนนั้น
-รูปแบบที่บันทึกไว้นี้คือเส้นทางที่รองรับ
+ขั้นตอนลดสิทธิ์ + launch ทำอัตโนมัติได้ด้วย `bwoc agent run` — รัน **ในฐานะ root**
+จากภายใน workspace:
+
+```bash
+# คำสั่งปริยาย: bwoc-agent --serve
+bwoc agent run --as-user bwoc <agent>
+
+# หรือระบุคำสั่งเองหลัง `--` (เช่น session remote-control)
+bwoc agent run --as-user bwoc <agent> -- \
+  claude --remote-control <agent> --dangerously-skip-permissions
+```
+
+มันจะตรวจว่า user มีอยู่จริง ลดสิทธิ์ลงเป็น user นั้นผ่าน `runuser` แล้ว launch ใน
+โฟลเดอร์ของ agent เอง (เพื่อให้ backend อ่าน manifest/persona ได้) มัน **ไม่** สร้าง
+user หรือ `chown` workspace ให้ — ทำสองอย่างนั้นครั้งเดียว (ขั้นตอน 1–2) และมันจะ
+*เตือน* ถ้าโฟลเดอร์ของ agent ไม่ได้เป็นของ user เป้าหมาย ส่วน systemd unit ข้างบนยังเป็น
+ตัวเลือกที่เหมาะกับ worker ที่มีตัวดูแลและอยู่รอด reboot
 
 ---
 
