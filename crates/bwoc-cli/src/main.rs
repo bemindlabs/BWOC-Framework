@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod a2a;
+mod agent_run;
 mod audit;
 mod banner;
 mod chat;
@@ -184,6 +185,10 @@ enum Commands {
     Chat(ChatArgs),
     /// Run a single task non-interactively and capture the result (headless mode).
     Run(RunCliArgs),
+    /// Agent host operations (e.g. launch a session as an unprivileged user on a
+    /// root-only VPS — `bwoc agent run --as-user <user> <agent>`).
+    #[command(subcommand)]
+    Agent(AgentCommand),
     /// Read messages from an agent's inbox (`.bwoc/inbox.jsonl`).
     Inbox(InboxArgs),
     /// Rule-based coordinator loop over an agent's gateway inbox: classify each
@@ -776,6 +781,41 @@ struct FleetHealthArgs {
     /// Days without activity before an agent is considered stale (condition 1).
     #[arg(long = "stale-days", default_value_t = 7)]
     stale_days: u64,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum AgentCommand {
+    /// Launch an agent session as an unprivileged user (root-only VPS pattern,
+    /// #322). Must be run as root; drops to `--as-user` via `runuser` and runs
+    /// in the agent's directory. Without a trailing `-- <cmd…>` it runs
+    /// `bwoc-agent --serve`; with one, it runs that (e.g. a remote-control CLI).
+    Run(AgentRunCliArgs),
+}
+
+#[derive(Args, Debug)]
+struct AgentRunCliArgs {
+    /// Agent id or bare name (e.g. `pi` or `agent-pi`).
+    agent: String,
+    /// The unprivileged user to drop to (must already exist).
+    #[arg(long = "as-user")]
+    as_user: String,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Command to run as the user (after `--`). Empty → `bwoc-agent --serve`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
+}
+
+impl From<AgentRunCliArgs> for agent_run::AgentRunArgs {
+    fn from(a: AgentRunCliArgs) -> Self {
+        Self {
+            agent: a.agent,
+            as_user: a.as_user,
+            workspace: a.workspace,
+            command: a.command,
+        }
+    }
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -2578,6 +2618,12 @@ fn main() -> ExitCode {
         }
         Some(Commands::Run(args)) => {
             let code = run::run(args.into());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Agent(sub)) => {
+            let code = match sub {
+                AgentCommand::Run(args) => agent_run::run(args.into()),
+            };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Inbox(args)) => {
