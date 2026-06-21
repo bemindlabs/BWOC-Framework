@@ -12,7 +12,7 @@ hand-write the `su`/systemd glue on a root-only VPS.
   directory** (so the backend reads `config.manifest.json` / `AGENTS.md` from
   CWD). No `-- <cmd>` → `bwoc-agent --serve`; with one → that command (e.g. a
   remote-control session).
-- Updated `docs/{en,th}/DEPLOYMENT.md` — the "Roadmap" placeholder became a real
+- Updated `docs/en/DEPLOYMENT.en.md` + `docs/th/DEPLOYMENT.th.md` — the "Roadmap" placeholder became a real
   "Helper" section with usage (the helper now exists).
 
 ## Decisions (conservative by design — it manages privilege)
@@ -40,9 +40,9 @@ root→user drop is a Linux-VPS path (not exercisable on the Mac dev host).
 ## Status / deferred
 
 - #322 complete (docs #325 + this helper). The `su`-fallback path was
-  deliberately skipped (require `runuser`) to avoid shell-quoting hazards.
+  deliberately skipped (requires `runuser`) to avoid shell-quoting hazards.
 
 ## Related
 
 - issue #322; `crates/bwoc-cli/src/agent_run.rs`, `crates/bwoc-cli/src/main.rs`;
-  `docs/{en,th}/DEPLOYMENT.md` (#325).
+  `docs/en/DEPLOYMENT.en.md` + `docs/th/DEPLOYMENT.th.md` (#325).

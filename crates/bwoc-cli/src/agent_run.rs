@@ -213,13 +213,19 @@ mod unix {
         String::from_utf8_lossy(&out.stdout).trim().parse().ok()
     }
 
-    /// First PATH entry containing an executable `cmd` (no `which` crate).
+    /// First PATH entry with an **executable** file named `cmd` (no `which`
+    /// crate). Unix-only module, so we verify the execute bit directly rather
+    /// than just `is_file()` — a non-executable `runuser` would otherwise pass
+    /// the preflight and fail later with a worse error.
     fn which(cmd: &str) -> Option<PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
         let path = std::env::var_os("PATH")?;
         for dir in std::env::split_paths(&path) {
             let cand = dir.join(cmd);
-            if cand.is_file() {
-                return Some(cand);
+            if let Ok(meta) = std::fs::metadata(&cand) {
+                if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                    return Some(cand);
+                }
             }
         }
         None
