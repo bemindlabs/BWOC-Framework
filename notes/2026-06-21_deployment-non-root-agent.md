@@ -8,7 +8,7 @@ now (this note), the `bwoc agent run --as-user` helper as a follow-up PR.
 
 ## What changed
 
-- New `docs/{en,th}/DEPLOYMENT.md` (nav_order 16) — "Deploying Agents to a
+- New `docs/en/DEPLOYMENT.en.md + docs/th/DEPLOYMENT.th.md` (nav_order 16) — "Deploying Agents to a
   Server", centered on the **non-root agent user** pattern: create an
   unprivileged service user, relocate + chown the workspace, migrate the agent
   key (owner-only) and backend auth (as the new user, not root), verify with
@@ -36,5 +36,5 @@ now (this note), the `bwoc agent run --as-user` helper as a follow-up PR.
 
 ## Related
 
-- issue #322; `docs/{en,th}/DEPLOYMENT.md`; `deploy/standalone-agent.Dockerfile`;
+- issue #322; `docs/en/DEPLOYMENT.en.md + docs/th/DEPLOYMENT.th.md`; `deploy/standalone-agent.Dockerfile`;
   `bwoc doctor` (#323).

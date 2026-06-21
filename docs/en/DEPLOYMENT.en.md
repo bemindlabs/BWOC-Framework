@@ -73,11 +73,13 @@ bwoc list              # the agent shows up, owned by bwoc
 **Ad-hoc** (a quick interactive/remote-control session):
 
 ```bash
-su - bwoc -c 'cd ~/my-workspace && claude --remote-control <agent> --dangerously-skip-permissions'
+su - bwoc -c 'cd ~/my-workspace/agents/<agent> && claude --remote-control <agent> --dangerously-skip-permissions'
 ```
 
-Because the command now runs as `bwoc` (not root), the bypass-permission mode is
-accepted.
+Run from the **agent's own directory** (`agents/<agent>/`) — that is where
+`AGENTS.md` + `config.manifest.json` live, so the backend loads the agent's
+persona/context. Because the command now runs as `bwoc` (not root), the
+bypass-permission mode is accepted.
 
 **Supervised** (survives logout/reboot — recommended for a steady worker). A
 systemd unit at `/etc/systemd/system/bwoc-agent@.service`:
@@ -87,10 +89,13 @@ systemd unit at `/etc/systemd/system/bwoc-agent@.service`:
 Description=BWOC agent %i
 After=network-online.target
 
+# `%i` is the agent's directory name under agents/ (after the @ when you enable
+# the unit) — `bwoc-agent --serve` reads config.manifest.json from its CWD, so
+# the working directory must be the agent dir, not the workspace root.
 [Service]
 User=bwoc
 Group=bwoc
-WorkingDirectory=/home/bwoc/my-workspace
+WorkingDirectory=/home/bwoc/my-workspace/agents/%i
 # API-key backends only — subscription CLIs use the bwoc user's stored login:
 # Environment=ANTHROPIC_API_KEY=...
 ExecStart=/usr/local/bin/bwoc-agent --serve

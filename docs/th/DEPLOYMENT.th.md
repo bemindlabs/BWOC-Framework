@@ -72,10 +72,12 @@ bwoc list              # agent โผล่มา เป็นของ bwoc
 **เฉพาะกิจ** (session interactive/remote-control สั้น ๆ):
 
 ```bash
-su - bwoc -c 'cd ~/my-workspace && claude --remote-control <agent> --dangerously-skip-permissions'
+su - bwoc -c 'cd ~/my-workspace/agents/<agent> && claude --remote-control <agent> --dangerously-skip-permissions'
 ```
 
-เพราะคำสั่งรันในฐานะ `bwoc` (ไม่ใช่ root) แล้ว โหมด bypass-permission จึงผ่าน
+รันจาก **โฟลเดอร์ของ agent เอง** (`agents/<agent>/`) — เพราะ `AGENTS.md` +
+`config.manifest.json` อยู่ตรงนั้น backend จึงโหลด persona/context ของ agent ได้
+และเพราะคำสั่งรันในฐานะ `bwoc` (ไม่ใช่ root) แล้ว โหมด bypass-permission จึงผ่าน
 
 **แบบมีตัวดูแล** (อยู่รอด logout/reboot — แนะนำสำหรับ worker ที่รันยาว) systemd
 unit ที่ `/etc/systemd/system/bwoc-agent@.service`:
@@ -85,10 +87,13 @@ unit ที่ `/etc/systemd/system/bwoc-agent@.service`:
 Description=BWOC agent %i
 After=network-online.target
 
+# `%i` คือชื่อโฟลเดอร์ของ agent ใต้ agents/ (ส่วนหลัง @ ตอน enable unit) —
+# `bwoc-agent --serve` อ่าน config.manifest.json จาก CWD ดังนั้น working directory
+# ต้องเป็นโฟลเดอร์ของ agent ไม่ใช่ root ของ workspace
 [Service]
 User=bwoc
 Group=bwoc
-WorkingDirectory=/home/bwoc/my-workspace
+WorkingDirectory=/home/bwoc/my-workspace/agents/%i
 # เฉพาะ backend แบบ API-key — CLI แบบ subscription ใช้ login ที่เก็บไว้ของ user bwoc:
 # Environment=ANTHROPIC_API_KEY=...
 ExecStart=/usr/local/bin/bwoc-agent --serve
