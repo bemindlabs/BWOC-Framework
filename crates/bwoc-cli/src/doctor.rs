@@ -906,10 +906,19 @@ fn check_agent_manifests(root: &Path) -> Vec<CheckResult> {
         let path = root.join(&a.path).join("config.manifest.json");
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 out.push(CheckResult {
                     name,
                     status: Status::Fail(format!("missing config.manifest.json in {}", a.path)),
+                });
+                continue;
+            }
+            Err(e) => {
+                // Present but unreadable (perms, transient I/O) — surface the
+                // real error rather than mislabeling it "missing".
+                out.push(CheckResult {
+                    name,
+                    status: Status::Fail(format!("cannot read {}: {e}", path.display())),
                 });
                 continue;
             }
@@ -1008,8 +1017,8 @@ fn check_agent_keys(root: &Path, auto: bool) -> Vec<CheckResult> {
                 out.push(CheckResult {
                     name,
                     status: Status::Fail(format!(
-                        "perms {mode:#o} are group/other-accessible — a private key must be 600 \
-                         (rerun with --auto to chmod)"
+                        "perms {mode:#o} grant group/other access — a private key must be \
+                         owner-only (e.g. 600 or 400); rerun with --auto to chmod 600"
                     )),
                 });
             }
@@ -1024,15 +1033,19 @@ fn check_agent_keys(root: &Path, auto: bool) -> Vec<CheckResult> {
 
 /// Per-agent **referenced-model-installed** check (#323's headline). For each
 /// agent whose backend is `ollama`, verify `primaryModel`/`fallbackModel` are
-/// actually installed (Ollama `/api/tags`). Read-only — a model can't be safely
-/// auto-installed. Skipped (one WARN) when Ollama is unreachable; non-ollama
-/// backends use vendor model ids we can't verify, so they're skipped.
+/// actually installed at **that agent's** Ollama endpoint (`baseUrl`, default
+/// `localhost:11434`), via `/api/tags`. Read-only — a model can't be safely
+/// auto-installed. An unreachable / un-checkable (https) endpoint is a per-agent
+/// WARN, not a FAIL; non-ollama backends are skipped (vendor model ids).
 fn check_models_installed(root: &Path) -> Vec<CheckResult> {
+    use std::collections::HashMap;
     let Ok(registry) = AgentsRegistry::load(root) else {
         return vec![];
     };
-    // Which agents declare the ollama backend + what models they reference.
-    let mut wanted: Vec<(String, Vec<String>)> = Vec::new();
+    // Cache `/api/tags` per resolved endpoint so N agents on the same Ollama are
+    // queried once. `None` = unreachable/unparseable at that endpoint.
+    let mut tags_cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
+    let mut out = Vec::new();
     for a in &registry.agents {
         let path = root.join(&a.path).join("config.manifest.json");
         let Ok(m) = bwoc_core::manifest::Manifest::load_from_path(&path) else {
@@ -1045,31 +1058,35 @@ fn check_models_installed(root: &Path) -> Vec<CheckResult> {
         if let Some(fb) = m.fallback_model.clone() {
             models.push(fb);
         }
-        wanted.push((a.id.clone(), models));
-    }
-    if wanted.is_empty() {
-        return vec![]; // no ollama-backed agents → nothing to verify
-    }
-    let installed = match ollama_models("127.0.0.1:11434") {
-        Some(list) => list,
-        None => {
-            return vec![CheckResult {
-                name: "models installed".into(),
-                status: Status::Warn(
-                    "Ollama unreachable (localhost:11434) — could not verify that agents' \
-                     referenced models are installed. Start `ollama serve` and re-run."
-                        .into(),
-                ),
-            }];
-        }
-    };
-    let mut out = Vec::new();
-    for (agent_id, models) in wanted {
+        let name = format!("models: {}", a.id);
+
+        let addr = match ollama_addr(m.base_url.as_deref()) {
+            Ok(a) => a,
+            Err(reason) => {
+                out.push(CheckResult {
+                    name,
+                    status: Status::Warn(format!("cannot verify models — {reason}")),
+                });
+                continue;
+            }
+        };
+        let installed = tags_cache
+            .entry(addr.clone())
+            .or_insert_with(|| ollama_models(&addr));
+        let Some(installed) = installed else {
+            out.push(CheckResult {
+                name,
+                status: Status::Warn(format!(
+                    "Ollama unreachable at {addr} — could not verify referenced models. \
+                     Start it (or check baseUrl) and re-run."
+                )),
+            });
+            continue;
+        };
         let missing: Vec<String> = models
             .into_iter()
-            .filter(|m| !model_present(m, &installed))
+            .filter(|mdl| !model_present(mdl, installed))
             .collect();
-        let name = format!("models: {agent_id}");
         if missing.is_empty() {
             out.push(CheckResult {
                 name,
@@ -1079,7 +1096,7 @@ fn check_models_installed(root: &Path) -> Vec<CheckResult> {
             out.push(CheckResult {
                 name,
                 status: Status::Fail(format!(
-                    "referenced model(s) not installed in Ollama: {} (installed: {})",
+                    "referenced model(s) not installed at {addr}: {} (installed: {})",
                     missing.join(", "),
                     if installed.is_empty() {
                         "none".to_string()
@@ -1093,15 +1110,46 @@ fn check_models_installed(root: &Path) -> Vec<CheckResult> {
     out
 }
 
-/// Is `want` present among `installed` Ollama model names? Lenient on the `:tag`
-/// suffix — a manifest `gemma4` matches an installed `gemma4:latest`, and an
-/// exact `gemma4:9b` matches itself.
+/// Resolve a manifest `baseUrl` to a `host:port` for the raw `/api/tags` probe.
+/// `None`/empty → the Ollama default `127.0.0.1:11434`. An `http://host[:port][/path]`
+/// yields `host:port` (default port 11434). An `https://…` endpoint can't be
+/// checked with a plaintext `TcpStream`, so it's an `Err` the caller turns into a
+/// per-agent WARN (verify manually) rather than a false "unreachable".
+fn ollama_addr(base_url: Option<&str>) -> Result<String, String> {
+    let url = base_url.unwrap_or("").trim();
+    if url.is_empty() {
+        return Ok("127.0.0.1:11434".to_string());
+    }
+    let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
+    if scheme.eq_ignore_ascii_case("https") {
+        return Err(format!(
+            "baseUrl {url} is https — raw-TCP /api/tags check unsupported; verify manually"
+        ));
+    }
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    if host_port.is_empty() {
+        Ok("127.0.0.1:11434".to_string())
+    } else if host_port.contains(':') {
+        Ok(host_port.to_string())
+    } else {
+        Ok(format!("{host_port}:11434"))
+    }
+}
+
+/// Is `want` present among `installed` Ollama model names?
+///
+/// If the manifest **pins a tag** (`gemma4:9b`), require an **exact** match — a
+/// pinned variant must not be satisfied by a different installed tag (masking
+/// real drift). A **tagless** `want` (`gemma4`) matches any installed tag of the
+/// same base (`gemma4:latest`, `gemma4:9b`, or a bare `gemma4`).
 fn model_present(want: &str, installed: &[String]) -> bool {
-    installed.iter().any(|have| {
-        have == want
-            || have.split(':').next() == Some(want)
-            || want.split(':').next() == have.split(':').next()
-    })
+    if want.contains(':') {
+        installed.iter().any(|have| have == want)
+    } else {
+        installed
+            .iter()
+            .any(|have| have.split(':').next() == Some(want))
+    }
 }
 
 /// Fetch installed Ollama model names via a minimal raw HTTP/1.1 GET to
@@ -1109,10 +1157,12 @@ fn model_present(want: &str, installed: &[String]) -> bool {
 /// Returns `None` on any connect/read/parse failure (caller degrades to WARN).
 fn ollama_models(addr: &str) -> Option<Vec<String>> {
     use std::io::{Read, Write};
-    use std::net::TcpStream;
+    use std::net::{TcpStream, ToSocketAddrs};
     use std::time::Duration;
 
-    let sockaddr = addr.parse().ok()?;
+    // Resolve via DNS so a `baseUrl` hostname (e.g. a tailnet name) works, not
+    // just a literal IP. Connect to the first address that resolves.
+    let sockaddr = addr.to_socket_addrs().ok()?.next()?;
     let mut stream = TcpStream::connect_timeout(&sockaddr, Duration::from_millis(800)).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream
@@ -1308,12 +1358,32 @@ mod tests {
     }
 
     #[test]
-    fn model_present_is_tag_lenient() {
+    fn model_present_tagless_matches_any_tag_but_pinned_is_exact() {
         let installed = vec!["gemma4:latest".to_string(), "llama3:8b".to_string()];
-        assert!(model_present("gemma4", &installed)); // bare ↔ :latest
-        assert!(model_present("gemma4:latest", &installed)); // exact
-        assert!(model_present("llama3", &installed)); // bare ↔ :8b
+        assert!(model_present("gemma4", &installed)); // tagless ↔ :latest
+        assert!(model_present("gemma4:latest", &installed)); // exact pin
+        assert!(model_present("llama3", &installed)); // tagless ↔ :8b
+        // A pinned tag must match exactly — a different installed tag is NOT it.
+        assert!(!model_present("gemma4:9b", &installed));
+        assert!(!model_present("llama3:70b", &installed));
         assert!(!model_present("mistral", &installed)); // absent
+    }
+
+    #[test]
+    fn ollama_addr_derives_endpoint_from_base_url() {
+        assert_eq!(ollama_addr(None).unwrap(), "127.0.0.1:11434");
+        assert_eq!(ollama_addr(Some("")).unwrap(), "127.0.0.1:11434");
+        assert_eq!(
+            ollama_addr(Some("http://host:11434/v1")).unwrap(),
+            "host:11434"
+        );
+        assert_eq!(ollama_addr(Some("http://box")).unwrap(), "box:11434");
+        assert_eq!(
+            ollama_addr(Some("http://10.0.0.5:1234")).unwrap(),
+            "10.0.0.5:1234"
+        );
+        // https can't be probed with a raw TcpStream → Err (caller WARNs).
+        assert!(ollama_addr(Some("https://remote:11434")).is_err());
     }
 
     #[test]
