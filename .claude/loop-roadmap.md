@@ -28,11 +28,21 @@ When an item touches docs, preserve multilingual parity. When it touches a refer
 
 ## Tier 2 — Generic-purpose, any-language architecture
 
-- [ ] **doc-naming convention** — write `modules/agent-template/conventions.md` addendum (or new `LANGUAGES.md`): file naming `<NAME>.<lang>.md`, dir layout `docs/<lang>/`, `<lang>` = BCP 47 / ISO 639-1. EN remains canonical; others are translations.
-- [ ] **manifest schema for languages** — extend `modules/agent-template/config.manifest.json` with a `languages` array (default `["en"]`). Document in `conventions.md`.
-- [ ] **bilingual-reminder.sh → multilingual-reminder.sh** — generalize the PostToolUse hook to scan ALL non-canonical `docs/<lang>/` directories and remind for each missing/stale translation. Rename in `.claude/settings.json`.
-- [ ] **/check-bilingual → /check-translations** — rename skill, generalize to N languages, accept `<lang>` argument list.
-- [ ] **incarnate.sh — `--languages` flag** — let new agents declare their language set at clone time.
+- [x] **doc-naming convention** — already documented in `docs/en/NAMING.en.md`
+  (rows 2–3, §`UPPERCASE.<lang>.md`): `<NAME>.<lang>.md` under `docs/<lang>/`,
+  `<lang>` = BCP 47 / ISO 639-1, EN canonical. No new doc needed.
+- [x] **bilingual-reminder hook — generalized in place** (2026-06-21) — handles
+  any `docs/<lang>/` and root `FILENAME.<lang>.md`, not just TH; reminds about
+  existing translations only (never nags an unknown language). **Kept the
+  filename** (renaming churns ~6 cross-doc refs in 2 languages for no behaviour
+  gain — Mattaññutā).
+- [x] **/check-bilingual skill — generalized in place** (2026-06-21) — existence
+  pass iterates every present `docs/<lang>/`. Name kept (operator muscle memory +
+  the same cross-doc-ref churn).
+- [ ] **manifest `languages` array** — *deferred, deliberately.* Nothing consumes
+  a declared language set (the tooling discovers languages from the filesystem);
+  adding it now is speculative scaffolding. Revisit when an agent ships a 3rd language.
+- [ ] **incarnate.sh `--languages` flag** — *deferred* for the same reason (no consumer).
 
 ## Tier 3 — Framework-level docs (root `docs/en/` and `docs/th/` currently empty)
 
