@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening) — **in progress.** t29 (macOS network-egress parity in the sandbox SBPL), t30 (`cli` ambient-backend trust tier — refuse untrusted autoprocess), and t31 (agent_loop decomposition + eval ambient-backend guard) shipped; t32 (deep-memory sqlite-vec / governance) parked as premature (see `reports/retro/t32-deep-memory-design.md`). Prior **Phase 5 — *turn-executor isolation*** (self-hosted harness hardening) — **FULLY signed off (t11 merged).** t1–t7a shipped (re-exec process isolation, `setrlimit`, Landlock FS jail + anti-ptrace); t8 the deferred-control fence (honesty gate); **t11 — network-egress containment (seccomp + the no-fd invariant, Linux, fail-closed)**. Only t9 (cgroup `pids.max` per-turn process cap — an availability residual) remains deferred, named, and fenced. Earlier phases: Phase 3 *vaya + interconnect* DoD met (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` since shipped); Phase 4 fleet-governance spec landed; Phase 1 v2.0 and Phase 2 DoDs met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Active phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening) — **in progress.** t29 (macOS network-egress parity in the sandbox SBPL), t30 (`cli` ambient-backend trust tier — refuse untrusted autoprocess), and t31 (agent_loop decomposition + eval ambient-backend guard) shipped; t32 (deep-memory sqlite-vec / governance) parked as premature (see `reports/retro/t32-deep-memory-design.md`). Prior **Phase 5 — *turn-executor isolation*** (self-hosted harness hardening) — **FULLY signed off (t11 merged).** t1–t7a shipped (re-exec process isolation, `setrlimit`, Landlock FS jail + anti-ptrace); t8 the deferred-control fence (honesty gate); **t11 — network-egress containment (seccomp + the no-fd invariant, Linux, fail-closed)**. t9 (cgroup `pids.max` per-turn process cap) has since landed too — best-effort, enforced where a delegated cgroup v2 subtree exists, degrading to the `RLIMIT_NPROC` floor otherwise; **no Phase 5 containment ticket remains deferred.** Earlier phases: Phase 3 *vaya + interconnect* DoD met (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` since shipped); Phase 4 fleet-governance spec landed; Phase 1 v2.0 and Phase 2 DoDs met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -177,20 +177,25 @@ named, scoped, and fenced so it cannot be forgotten.
 | t7a | Turn-executor process / FS jail (Landlock + anti-ptrace; C1, C4–C9) | ✓ |
 | t8 | **Deferred-control fence** — SSOT (`scripts/deferred-controls.txt`) + CI fence-guard keep the THREAT-MODEL fence table, the SSOT, and live source in lock-step; phantom-control guard blocks referencing a deferred control without a `// DEFERRED(tNN):` admission. **Honesty gate, not coverage.** | ✓ |
 | t11 | **Network-egress containment (= t7b)** — seccomp-bpf `KILL_PROCESS` deny set (seccompiler, pure-Rust) + the no-fd invariant (`close_range` + stdio audit) + a tight arch-guard (non-native + x32 renumber killed). Fail-closed on Linux. Proven by the A∧B∧D red-team arms. | ✓ |
+| t9 | **Per-turn process cap (cgroup v2 `pids.max`)** — the parent creates a per-turn cgroup v2 leaf, writes its `pids.max`, and the child joins it post-fork. Enforced where a delegated cgroup v2 subtree exists; degrades to the t6 `RLIMIT_NPROC` floor otherwise. | ✓ |
 
 **Phase 5 is FULLY signed off (t11 merged).**
 
-### Deferred (named + fenced by t8, not implemented)
+### Residual (t9 landed — honest caveat, not deferred)
 
-- **t9** — true per-turn process cap (cgroup v2 `pids.max`). Until it lands the
-  only fork guard is `RLIMIT_NPROC`, per-UID + RELATIVE best-effort → 🟠
-  availability residual (a harness DoS, not a sandbox escape).
+- **t9 — landed (best-effort).** The per-turn `pids.max` cap is enforced where a
+  delegated cgroup v2 subtree exists (systemd `Delegate=yes` / privileged
+  container). Where none does — dev / bare-SSH / non-delegated container, the
+  **default** — the fork guard degrades to the per-UID + RELATIVE `RLIMIT_NPROC`
+  floor → 🟠 availability residual (a harness DoS, not a sandbox escape). **No
+  Phase 5 containment ticket remains deferred.**
 
 **Ship-scope (updated at t11):** the earlier t8 restriction — ship only into
 egress-acceptable / network-isolated contexts — is **lifted on Linux**: the
 turn-executor's network egress is now contained (t11, fail-closed). Honest
-caveats: the per-turn fork guard is still best-effort until t9, and macOS stays
-dev-only (no Landlock/seccomp). Local same-uid covert channels are out of scope
+caveats: the per-turn fork guard degrades to a best-effort `RLIMIT_NPROC` floor
+where no delegated cgroup subtree exists (t9 landed), and macOS stays dev-only
+(no Landlock/seccomp). Local same-uid covert channels are out of scope
 (NEWNET). See [`THREAT-MODEL.en.md`](THREAT-MODEL.en.md#network-egress-containment-t11--t7b--enforced-linux).
 
 ---
