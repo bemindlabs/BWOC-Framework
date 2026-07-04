@@ -176,8 +176,8 @@ named, scoped, and fenced so it cannot be forgotten.
 | t6 | Per-turn `setrlimit` resource containment (memory cap Linux-only) | ✓ |
 | t7a | Turn-executor process / FS jail (Landlock + anti-ptrace; C1, C4–C9) | ✓ |
 | t8 | **Deferred-control fence** — SSOT (`scripts/deferred-controls.txt`) + CI fence-guard keep the THREAT-MODEL fence table, the SSOT, and live source in lock-step; phantom-control guard blocks referencing a deferred control without a `// DEFERRED(tNN):` admission. **Honesty gate, not coverage.** | ✓ |
-| t11 | **Network-egress containment (= t7b)** — seccomp-bpf `KILL_PROCESS` deny set (seccompiler, pure-Rust) + the no-fd invariant (`close_range` + stdio audit) + a tight arch-guard (non-native + x32 renumber killed). Fail-closed on Linux. Proven by the A∧B∧D red-team arms. | ✓ |
 | t9 | **Per-turn process cap (cgroup v2 `pids.max`)** — the parent creates a per-turn cgroup v2 leaf, writes its `pids.max`, and the child joins it post-fork. Enforced where a delegated cgroup v2 subtree exists; degrades to the t6 `RLIMIT_NPROC` floor otherwise. | ✓ |
+| t11 | **Network-egress containment (= t7b)** — seccomp-bpf `KILL_PROCESS` deny set (seccompiler, pure-Rust) + the no-fd invariant (`close_range` + stdio audit) + a tight arch-guard (non-native + x32 renumber killed). Fail-closed on Linux. Proven by the A∧B∧D red-team arms. | ✓ |
 
 **Phase 5 is FULLY signed off (t11 merged).**
 

@@ -176,8 +176,8 @@ harness ไม่ได้ และการกักกันทุกอย�
 | t6 | การกักกัน resource ต่อ turn ด้วย `setrlimit` (เพดาน memory เฉพาะ Linux) | ✓ |
 | t7a | process / FS jail ของ turn-executor (Landlock + กัน ptrace; C1, C4–C9) | ✓ |
 | t8 | **รั้วกั้นมาตรการที่เลื่อน** — SSOT (`scripts/deferred-controls.txt`) + CI fence-guard ตรึงตาราง fence ใน THREAT-MODEL, SSOT และ source จริงให้ตรงกัน phantom-control guard กันการอ้างถึงมาตรการที่เลื่อนโดยไม่มีคำกำกับ `// DEFERRED(tNN):` **เป็น gate ด้านความซื่อตรง ไม่ใช่ด้าน coverage** | ✓ |
-| t11 | **การกักกัน network egress (= t7b)** — seccomp-bpf deny set แบบ `KILL_PROCESS` (seccompiler, pure-Rust) + no-fd invariant (`close_range` + ตรวจ stdio) + arch-guard แน่น (kill ทั้ง non-native และ x32 renumber) fail-closed บน Linux พิสูจน์ด้วย arm A∧B∧D ของ red-team | ✓ |
 | t9 | **เพดาน process ต่อ turn (cgroup v2 `pids.max`)** — parent สร้าง cgroup v2 leaf ต่อ turn เขียน `pids.max` แล้ว child เข้าร่วม leaf นั้นหลัง fork บังคับใช้เมื่อมี delegated cgroup v2 subtree; degrade เป็น `RLIMIT_NPROC` floor ของ t6 เมื่อไม่มี | ✓ |
+| t11 | **การกักกัน network egress (= t7b)** — seccomp-bpf deny set แบบ `KILL_PROCESS` (seccompiler, pure-Rust) + no-fd invariant (`close_range` + ตรวจ stdio) + arch-guard แน่น (kill ทั้ง non-native และ x32 renumber) fail-closed บน Linux พิสูจน์ด้วย arm A∧B∧D ของ red-team | ✓ |
 
 **Phase 5 ลงนามครบถ้วนแล้ว (t11 merge แล้ว)**
 
