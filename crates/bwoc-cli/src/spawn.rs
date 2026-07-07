@@ -417,8 +417,11 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
                 // baseUrl is optional: the harness falls back to
                 // `LITELLM_API_BASE` (env) or the LiteLLM default port.
                 c.arg("--backend").arg("litellm");
-                if let Some(url) = base_url {
-                    c.arg("--endpoint").arg(&url);
+                // Skip a blank/whitespace baseUrl so we never forward an empty
+                // `--endpoint` (which would override the harness's env/default
+                // resolution with nothing).
+                if let Some(url) = base_url.filter(|u| !u.trim().is_empty()) {
+                    c.arg("--endpoint").arg(url.trim());
                 }
             }
             _ => unreachable!(

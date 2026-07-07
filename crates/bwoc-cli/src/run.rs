@@ -352,9 +352,11 @@ pub fn build_command(
             ];
             let manifest_path = agent_dir.join("config.manifest.json");
             if let Ok(m) = Manifest::load_from_path(&manifest_path) {
-                if let Some(url) = m.base_url {
+                // Skip a blank/whitespace baseUrl so we never forward an empty
+                // `--endpoint` that would defeat the harness's env/default base.
+                if let Some(url) = m.base_url.filter(|u| !u.trim().is_empty()) {
                     args.push("--endpoint".to_string());
-                    args.push(url);
+                    args.push(url.trim().to_string());
                 }
             }
             Ok((harness.to_string_lossy().into_owned(), args))

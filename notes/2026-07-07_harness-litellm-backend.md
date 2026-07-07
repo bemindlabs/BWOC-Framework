@@ -24,8 +24,7 @@ in two deliberate ways because LiteLLM is self-hosted, not a hosted service.
   `LITELLM_API_BASE` env, else the LiteLLM default port. Deliberately *not* a workspace-
   specific infra host — that would leak a private hostname into a public, backend-neutral
   framework and break portability. A deployment points `LITELLM_API_BASE` at its own proxy
-  (e.g. this workspace runs LiteLLM on bemind at `127.0.0.1:10400`, reached over a tunnel /
-  tailscale-serve — set in the shell, not the source).
+  (set in the shell / environment, never in the source).
 - **API key is optional** (unlike OpenRouter's required key). A local LiteLLM proxy is often
   keyless; bearer auth is attached only when `LITELLM_API_KEY` / `[litellm] api_key`
   resolves. So no `ensure_backend_credentials` fail-fast gate for `litellm`.
@@ -34,8 +33,8 @@ in two deliberate ways because LiteLLM is self-hosted, not a hosted service.
 
 ## Alternatives considered
 
-- Hardcode the bemind tailnet URL as the default (rejected: leaks infra + non-neutral +
-  non-portable; violates the framework's backend-neutrality HARD RULE).
+- Hardcode a workspace-specific infra URL as the default (rejected: leaks infra + non-neutral
+  + non-portable; violates the framework's backend-neutrality HARD RULE).
 - Require a key like OpenRouter (rejected: blocks the common keyless local-proxy setup).
 - Route via the generic `openai-compatible` backend only (works, but a named `litellm`
   backend gives the env convention + optional-key semantics a first-class home, matching how

@@ -141,7 +141,8 @@ pub const LITELLM_API_KEY_ENV: &str = "LITELLM_API_KEY";
 pub fn resolve_litellm_endpoint() -> String {
     std::env::var(LITELLM_API_BASE_ENV)
         .ok()
-        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| LITELLM_DEFAULT_ENDPOINT.to_string())
 }
 
