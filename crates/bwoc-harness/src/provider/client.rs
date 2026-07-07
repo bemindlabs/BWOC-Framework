@@ -120,6 +120,40 @@ pub fn openrouter_headers() -> Vec<(String, String)> {
     ]
 }
 
+/// Env var carrying the LiteLLM proxy base URL (LiteLLM's own documented
+/// `LITELLM_API_BASE` convention). LiteLLM is self-hosted and has no canonical
+/// URL, so the base is resolved from the environment rather than hardcoded —
+/// keeping the framework backend-neutral and portable (a deployment points this
+/// at its own proxy; no infra host ever enters the source).
+pub const LITELLM_API_BASE_ENV: &str = "LITELLM_API_BASE";
+
+/// Fallback LiteLLM proxy endpoint — the proxy's documented default port — used
+/// only when neither `--endpoint` nor `LITELLM_API_BASE` is set.
+pub const LITELLM_DEFAULT_ENDPOINT: &str = "http://localhost:4000/v1";
+
+/// Env var carrying the LiteLLM API key (a master or virtual key). Optional: a
+/// keyless local proxy needs none.
+pub const LITELLM_API_KEY_ENV: &str = "LITELLM_API_KEY";
+
+/// Resolve the LiteLLM proxy base URL for the `litellm` backend when the caller
+/// left `--endpoint` unset: `LITELLM_API_BASE` env wins, else
+/// [`LITELLM_DEFAULT_ENDPOINT`]. Never a hardcoded infra host.
+pub fn resolve_litellm_endpoint() -> String {
+    std::env::var(LITELLM_API_BASE_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| LITELLM_DEFAULT_ENDPOINT.to_string())
+}
+
+/// Resolve the LiteLLM API key: `LITELLM_API_KEY` env wins, else the per-user
+/// `~/.bwoc/secrets.toml` `[litellm] api_key` (chmod-600 guarded). Reuses the
+/// shared resolver so the security guard is identical to Anthropic's. Returns an
+/// empty string when unconfigured — the backend treats the key as **optional**
+/// (unlike OpenRouter's required key), so a keyless local proxy just works.
+pub fn resolve_litellm_api_key() -> String {
+    super::anthropic::resolve_provider_api_key(LITELLM_API_KEY_ENV, "litellm")
+}
+
 /// Per-request timeout applied to every HTTP call the client makes.
 ///
 /// Without it, `reqwest::Client::new()` has no request timeout, so a hung
@@ -661,6 +695,18 @@ mod tests {
             "Bearer sk-or-xyz"
         );
         assert_eq!(req.headers().get("X-Title").unwrap(), "bwoc");
+    }
+
+    #[test]
+    fn litellm_defaults_are_neutral() {
+        // The fallback is the LiteLLM proxy's documented default port — never a
+        // hardcoded infra host, so the framework stays portable + backend-neutral.
+        assert_eq!(LITELLM_DEFAULT_ENDPOINT, "http://localhost:4000/v1");
+        assert_eq!(LITELLM_API_BASE_ENV, "LITELLM_API_BASE");
+        assert_eq!(LITELLM_API_KEY_ENV, "LITELLM_API_KEY");
+        // Endpoint resolution always yields a usable base (env override or the
+        // default), never an empty string.
+        assert!(!resolve_litellm_endpoint().trim().is_empty());
     }
 
     #[test]

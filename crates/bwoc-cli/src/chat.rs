@@ -318,6 +318,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "ollama" => Some(Backend::Ollama),
         "openai-compatible" => Some(Backend::OpenAiCompatible),
         "openrouter" => Some(Backend::OpenRouter),
+        "litellm" => Some(Backend::LiteLlm),
         _ => None,
     }
 }

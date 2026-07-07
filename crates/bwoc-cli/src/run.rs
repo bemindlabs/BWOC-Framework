@@ -334,6 +334,31 @@ pub fn build_command(
             }
             Ok((harness.to_string_lossy().into_owned(), args))
         }
+        Backend::LiteLlm => {
+            let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
+            // `--backend litellm` is required so the harness resolves the LiteLLM
+            // base (`--endpoint` / `LITELLM_API_BASE`) and attaches the optional
+            // bearer key. baseUrl is optional (harness falls back to
+            // `LITELLM_API_BASE` env or the LiteLLM default port).
+            let mut args = vec![
+                "--workdir".to_string(),
+                agent_dir.to_string_lossy().into_owned(),
+                "--task".to_string(),
+                task.to_string(),
+                "--model".to_string(),
+                primary_model.to_string(),
+                "--backend".to_string(),
+                "litellm".to_string(),
+            ];
+            let manifest_path = agent_dir.join("config.manifest.json");
+            if let Ok(m) = Manifest::load_from_path(&manifest_path) {
+                if let Some(url) = m.base_url {
+                    args.push("--endpoint".to_string());
+                    args.push(url);
+                }
+            }
+            Ok((harness.to_string_lossy().into_owned(), args))
+        }
         Backend::Copilot => {
             // `copilot -p "<task>" --no-ask-user` — Copilot CLI's programmatic
             // mode. `--no-ask-user` is required headless (no TTY to answer
@@ -472,6 +497,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "ollama" => Some(Backend::Ollama),
         "openai-compatible" => Some(Backend::OpenAiCompatible),
         "openrouter" => Some(Backend::OpenRouter),
+        "litellm" => Some(Backend::LiteLlm),
         _ => None,
     }
 }

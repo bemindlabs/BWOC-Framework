@@ -233,6 +233,13 @@ OpenAI-compatible aggregator that routes one key to any vendor's models
 `OPENROUTER_API_KEY` or `~/.bwoc/secrets.toml` (`[openrouter] api_key`,
 chmod 600); `baseUrl` is optional (defaults to https://openrouter.ai/api/v1).
 
+The `litellm` backend drives the same harness against a self-hosted LiteLLM
+proxy (any OpenAI-compatible `/v1`). The base is resolved from `baseUrl` /
+`--endpoint`, else the `LITELLM_API_BASE` env, else the LiteLLM default port
+(`http://localhost:4000/v1`) — no infra host is hardcoded. The API key is
+**optional**: a `LITELLM_API_KEY` / `~/.bwoc/secrets.toml` (`[litellm] api_key`)
+key is attached as bearer auth only when present, so a keyless local proxy works.
+
 Three ways to set the backend:
   - At incarnation:   bwoc new my-agent --backend ollama
   - Manifest edit:    edit agents/<name>/config.manifest.json then update
