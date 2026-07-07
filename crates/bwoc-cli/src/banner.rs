@@ -93,7 +93,8 @@ const COMMANDS: &[(&str, &str)] = &[
 // The CLI backend aliases accepted by `--backend` (`chat::parse_backend`),
 // not the canonical vendor names in `check::BACKEND_NAMES` (which says
 // `antigravity`, not the `agy` alias shown here). Display-only.
-const BACKENDS: &str = "claude · agy · codex · kimi · ollama · openai-compatible · openrouter";
+const BACKENDS: &str =
+    "claude · agy · codex · kimi · ollama · openai-compatible · openrouter · litellm";
 const LOCALES: &str = "en · th";
 
 /// Print the banner to stdout. Honours TTY/non-TTY for color output.

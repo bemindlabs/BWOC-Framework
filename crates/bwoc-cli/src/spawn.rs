@@ -47,6 +47,7 @@ use crate::sessions::{SessionMarker, remove_marker, write_marker};
 /// - `"ollama"` → `Ollama`
 /// - `"openai-compatible"` → `OpenAiCompatible`
 /// - `"openrouter"` → `OpenRouter`
+/// - `"litellm"` → `LiteLlm`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Backend {
     Claude,
@@ -75,6 +76,13 @@ pub enum Backend {
     /// to `https://openrouter.ai/api/v1` when the manifest omits it.
     #[value(name = "openrouter")]
     OpenRouter,
+    /// LiteLLM — a self-hosted OpenAI-compatible proxy. Execs `bwoc-harness`
+    /// with `--backend litellm` so the harness resolves the base from
+    /// `--endpoint` / `LITELLM_API_BASE` (else the LiteLLM default port) and
+    /// attaches bearer auth only when an **optional** `LITELLM_API_KEY` /
+    /// `~/.bwoc/secrets.toml` key resolves. `baseUrl` is optional.
+    #[value(name = "litellm")]
+    LiteLlm,
 }
 
 /// Canonical backend entry filenames that mirror `AGENTS.md`. Single source of
@@ -106,7 +114,10 @@ impl Backend {
             Backend::Codex => Some("codex"),
             Backend::Kimi => Some("kimi"),
             Backend::Copilot => Some("copilot"),
-            Backend::Ollama | Backend::OpenAiCompatible | Backend::OpenRouter => None,
+            Backend::Ollama
+            | Backend::OpenAiCompatible
+            | Backend::OpenRouter
+            | Backend::LiteLlm => None,
         }
     }
 
@@ -121,6 +132,7 @@ impl Backend {
             Backend::Ollama => "ollama",
             Backend::OpenAiCompatible => "openai-compatible",
             Backend::OpenRouter => "openrouter",
+            Backend::LiteLlm => "litellm",
         }
     }
 
@@ -129,7 +141,7 @@ impl Backend {
     pub fn uses_harness(self) -> bool {
         matches!(
             self,
-            Backend::Ollama | Backend::OpenAiCompatible | Backend::OpenRouter
+            Backend::Ollama | Backend::OpenAiCompatible | Backend::OpenRouter | Backend::LiteLlm
         )
     }
 
@@ -158,7 +170,8 @@ impl Backend {
             | Backend::Copilot
             | Backend::Ollama
             | Backend::OpenAiCompatible
-            | Backend::OpenRouter => Vec::new(),
+            | Backend::OpenRouter
+            | Backend::LiteLlm => Vec::new(),
         }
     }
 
@@ -216,6 +229,9 @@ impl Backend {
                 "google/gemini-2.5-pro",
                 "meta-llama/llama-3.3-70b-instruct",
             ],
+            // LiteLLM model ids are whatever aliases the operator configures in
+            // their proxy's `model_list`. Examples only — free-text is accepted.
+            Backend::LiteLlm => &["gpt-5.5", "claude-opus-4-8", "gemini-2.5-pro"],
         }
     }
 
@@ -346,7 +362,7 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     let workspace_root = find_workspace_root(&path);
 
     // ── Spawn the backend ────────────────────────────────────────────────────
-    // Harness backends (Ollama, OpenAiCompatible, OpenRouter) → exec bwoc-harness.
+    // Harness backends (Ollama, OpenAiCompatible, OpenRouter, LiteLlm) → exec bwoc-harness.
     // Vendor backends (Claude, Antigravity, Codex, Kimi) → exec their CLI.
     // Load the manifest once (best-effort) — used for harness `--endpoint` /
     // `--model` forwarding and vendor `reasoningEffort` passthrough.
@@ -394,8 +410,22 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
                     c.arg("--endpoint").arg(&url);
                 }
             }
+            Backend::LiteLlm => {
+                // Like OpenRouter, LiteLLM MUST select its provider explicitly so
+                // the harness resolves the LiteLLM base (`--endpoint` /
+                // `LITELLM_API_BASE`) and attaches the optional bearer key.
+                // baseUrl is optional: the harness falls back to
+                // `LITELLM_API_BASE` (env) or the LiteLLM default port.
+                c.arg("--backend").arg("litellm");
+                // Skip a blank/whitespace baseUrl so we never forward an empty
+                // `--endpoint` (which would override the harness's env/default
+                // resolution with nothing).
+                if let Some(url) = base_url.filter(|u| !u.trim().is_empty()) {
+                    c.arg("--endpoint").arg(url.trim());
+                }
+            }
             _ => unreachable!(
-                "uses_harness() only true for Ollama, OpenAiCompatible, and OpenRouter"
+                "uses_harness() only true for Ollama, OpenAiCompatible, OpenRouter, and LiteLlm"
             ),
         }
 

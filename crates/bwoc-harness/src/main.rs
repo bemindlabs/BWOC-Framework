@@ -151,11 +151,13 @@ struct Args {
 
     /// Provider backend: `ollama` / `openai-compatible` (OpenAI-compatible HTTP),
     /// `openrouter` (OpenAI-compatible aggregator, key from `OPENROUTER_API_KEY`
-    /// / `~/.bwoc/secrets.toml`), `claude` / `anthropic` (Anthropic Messages
-    /// API, key from `ANTHROPIC_API_KEY`), or `cli` (local
-    /// subscription-authenticated vendor CLI via `--cli-cmd`; **no API key**,
-    /// chat-only). Selects which provider client renders the model; the
-    /// chat/agent loops are backend-neutral.
+    /// / `~/.bwoc/secrets.toml`), `litellm` (self-hosted OpenAI-compatible proxy;
+    /// base from `--endpoint` or `LITELLM_API_BASE` env, else the LiteLLM default
+    /// port; **optional** key from `LITELLM_API_KEY` / `~/.bwoc/secrets.toml`),
+    /// `claude` / `anthropic` (Anthropic Messages API, key from
+    /// `ANTHROPIC_API_KEY`), or `cli` (local subscription-authenticated vendor
+    /// CLI via `--cli-cmd`; **no API key**, chat-only). Selects which provider
+    /// client renders the model; the chat/agent loops are backend-neutral.
     #[arg(long, default_value = "ollama")]
     backend: String,
 
@@ -786,7 +788,10 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
 /// Build the provider client for `backend`. OpenAI-compatible backends
 /// (`ollama` / `openai-compatible`) hit `endpoint` directly; `openrouter` is the
 /// same client with bearer auth + attribution headers, substituting OpenRouter's
-/// base URL when `--endpoint` is unset; Anthropic backends (`claude` /
+/// base URL when `--endpoint` is unset; `litellm` is the same client pointed at
+/// a self-hosted proxy — base from `LITELLM_API_BASE` (env) or the LiteLLM
+/// default port when `--endpoint` is unset, with **optional** bearer auth
+/// (attached only when a `LITELLM_API_KEY` resolves); Anthropic backends (`claude` /
 /// `anthropic`) use the Messages API (key from `ANTHROPIC_API_KEY`),
 /// substituting the Anthropic default endpoint when the caller left the
 /// OpenAI/Ollama default in place — i.e. a `claude` agent with no manifest
@@ -967,6 +972,27 @@ fn build_provider(
                     .with_headers(oai::openrouter_headers())
                     .with_reasoning_effort(reasoning_effort),
             )
+        }
+        "litellm" => {
+            // LiteLLM is a self-hosted, OpenAI-compatible proxy, so it reuses
+            // OllamaClient. Unlike OpenRouter it has no canonical URL: when
+            // `--endpoint` is left at the default, resolve the base from
+            // `LITELLM_API_BASE` (env) or the LiteLLM default port — never a
+            // hardcoded infra host. The key is OPTIONAL (a local proxy may be
+            // keyless), so attach bearer auth only when one actually resolves.
+            let base = if endpoint == oai::DEFAULT_ENDPOINT {
+                oai::resolve_litellm_endpoint()
+            } else {
+                endpoint.to_string()
+            };
+            let key = oai::resolve_litellm_api_key();
+            let client = OllamaClient::new(&base).with_reasoning_effort(reasoning_effort);
+            let client = if key.trim().is_empty() {
+                client
+            } else {
+                client.with_api_key(Some(key))
+            };
+            Arc::new(client)
         }
         _ => Arc::new(OllamaClient::new(endpoint).with_reasoning_effort(reasoning_effort)),
     }
