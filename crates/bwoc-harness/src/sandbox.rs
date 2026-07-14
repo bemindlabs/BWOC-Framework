@@ -241,6 +241,15 @@ fn sbpl_allow_net() -> bool {
 ///   (control A: the child cannot acquire OR use a network socket). Fail-closed
 ///   and on-by-default, matching the Linux posture (which has no opt-out); the
 ///   only seam is the [`BWOC_SANDBOX_ALLOW_NET_ENV`] test/operator escape-hatch.
+/// - **Secret reads: selectively denied** (`(deny file-read* …)`) over a curated
+///   set of high-value secret paths ([`crate::jail::secret_read_deny_paths`],
+///   #329) — the *narrowed* macOS read-confinement residual. A trailing
+///   `(allow file-read* (subpath worktree))` re-permits the executor's own
+///   worktree reads (last-match-wins) so an overlapping secret dir can never
+///   block the confinement root. Shared with the turn-executor jail via
+///   [`crate::jail::sbpl_secret_read_block`] so the two macOS read surfaces
+///   cannot drift. On-by-default, fail-closed; the only seam is the
+///   [`crate::jail::BWOC_SANDBOX_ALLOW_SECRET_READ_ENV`] escape-hatch.
 /// - File writes: denied globally; allowed inside the `worktree_root` subtree.
 ///
 /// We use `file-write*` to cover the full write operation family.
@@ -252,15 +261,28 @@ fn sbpl_allow_net() -> bool {
 /// We resolve the path via `fs::canonicalize` before embedding it.
 #[cfg(target_os = "macos")]
 fn build_sbpl_profile(worktree_root: &Path) -> String {
+    build_sbpl_profile_with(
+        worktree_root,
+        &crate::jail::secret_read_deny_paths(),
+        sbpl_allow_net(),
+        crate::jail::sbpl_allow_secret_read(),
+    )
+}
+
+/// Pure core of [`build_sbpl_profile`]: renders the profile from explicit inputs
+/// (no env reads), so the rule structure is unit-testable without mutating
+/// process-global `HOME`/`BWOC_HOME`/escape-hatch env.
+#[cfg(target_os = "macos")]
+fn build_sbpl_profile_with(
+    worktree_root: &Path,
+    secret_paths: &[PathBuf],
+    allow_net: bool,
+    allow_secret_read: bool,
+) -> String {
     // Resolve symlinks so the embedded path matches the kernel's real path.
     let canonical =
         std::fs::canonicalize(worktree_root).unwrap_or_else(|_| worktree_root.to_path_buf());
-
-    // Escape characters that are special in SBPL string literals.
-    let path_str = canonical
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let path_str = crate::jail::sbpl_escape(&canonical);
 
     // Network-egress arm — the macOS parity for the Linux seccomp egress filter.
     // Default-deny the whole `network*` family. SBPL evaluates rules top-to-
@@ -268,22 +290,35 @@ fn build_sbpl_profile(worktree_root: &Path) -> String {
     // rules and below `(allow default)`; FS-jail semantics are unchanged. The
     // escape-hatch simply omits the deny line (network falls back to the
     // `(allow default)` above) — it never re-orders the file-write rules.
-    let net_rule = if sbpl_allow_net() {
+    let net_rule = if allow_net {
         // Escape-hatch engaged (BWOC_SANDBOX_ALLOW_NET=1): no network deny.
         // Mirrors "run the network tool in the parent" on Linux.
-        "; network egress allowed via BWOC_SANDBOX_ALLOW_NET escape-hatch"
+        "; network egress allowed via BWOC_SANDBOX_ALLOW_NET escape-hatch".to_string()
     } else {
-        "(deny network*)"
+        "(deny network*)".to_string()
     };
+
+    // Secret-read arm (#329) — selective deny-read over a curated set, layered
+    // above `(allow default)`. Shared with the turn-executor jail via
+    // `jail::sbpl_secret_read_block` so the two macOS read surfaces stay in
+    // lock-step. The trailing worktree re-allow keeps the confinement root
+    // readable even if a secret path lexically contains it (last-match-wins).
+    let secret_rule = crate::jail::sbpl_secret_read_block(
+        secret_paths,
+        allow_secret_read,
+        std::slice::from_ref(&canonical),
+    );
 
     format!(
         r#"(version 1)
 (allow default)
 {net_rule}
+{secret_rule}
 (deny file-write*)
 (allow file-write* (subpath "{path}"))
 "#,
         net_rule = net_rule,
+        secret_rule = secret_rule,
         path = path_str
     )
 }
@@ -1106,6 +1141,178 @@ mod tests {
             Some(v) => unsafe { std::env::set_var(BWOC_SANDBOX_ALLOW_NET_ENV, v) },
             None => unsafe { std::env::remove_var(BWOC_SANDBOX_ALLOW_NET_ENV) },
         }
+    }
+
+    // ── macOS secret read-deny (#329, Option D) ──────────────────────────────
+
+    /// By default (escape-hatch absent) a curated secret path renders a
+    /// `(deny file-read* (subpath …))` rule, plus a trailing worktree read
+    /// re-allow, and the secret arm sits ABOVE the file-write rules. Pure —
+    /// asserts the rendered STRING via `build_sbpl_profile_with`, so it mutates
+    /// no env and spawns no sandbox-exec.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_profile_denies_secret_read_by_default() {
+        let worktree = TempDir::new().unwrap();
+        let secret = TempDir::new().unwrap();
+        let secret_canon = std::fs::canonicalize(secret.path()).unwrap();
+        let wt_canon = std::fs::canonicalize(worktree.path()).unwrap();
+
+        let profile = build_sbpl_profile_with(
+            worktree.path(),
+            std::slice::from_ref(&secret_canon),
+            false,
+            false,
+        );
+
+        let deny_line = format!(
+            "(deny file-read* (subpath \"{}\"))",
+            secret_canon.to_string_lossy()
+        );
+        assert!(
+            profile.contains(&deny_line),
+            "profile must deny-read the secret path; got:\n{profile}"
+        );
+        // The confinement root stays readable (last-match-wins re-allow).
+        let reallow = format!(
+            "(allow file-read* (subpath \"{}\"))",
+            wt_canon.to_string_lossy()
+        );
+        assert!(
+            profile.contains(&reallow),
+            "profile must re-allow worktree reads below the secret denies; got:\n{profile}"
+        );
+        // The secret deny arm must precede the file-write rules.
+        let secret_at = profile.find("(deny file-read*").unwrap();
+        let fw_at = profile.find("(deny file-write*)").unwrap();
+        assert!(
+            secret_at < fw_at,
+            "secret read-deny must precede the file-write rules"
+        );
+    }
+
+    /// With the escape-hatch engaged (`allow_secret_read = true`) the profile
+    /// must contain NO `(deny file-read*` arm, while the FS-jail write rules stay
+    /// byte-for-byte present. Pure.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_profile_secret_read_escape_hatch_toggles() {
+        let worktree = TempDir::new().unwrap();
+        let secret = TempDir::new().unwrap();
+        let secret_canon = std::fs::canonicalize(secret.path()).unwrap();
+        let secrets = std::slice::from_ref(&secret_canon);
+
+        let allowed = build_sbpl_profile_with(worktree.path(), secrets, false, true);
+        let denied = build_sbpl_profile_with(worktree.path(), secrets, false, false);
+
+        assert!(
+            !allowed.contains("(deny file-read*"),
+            "escape-hatch must NOT deny secret reads; got:\n{allowed}"
+        );
+        assert!(
+            denied.contains("(deny file-read*"),
+            "escape-hatch absent must deny secret reads"
+        );
+        // FS-jail invariant: the write rules are identical regardless of the
+        // secret-read toggle.
+        for needle in ["(deny file-write*)", "allow file-write* (subpath "] {
+            assert!(allowed.contains(needle), "FS-jail rule `{needle}` missing");
+            assert!(denied.contains(needle), "FS-jail rule `{needle}` missing");
+        }
+    }
+
+    /// An empty secret set renders no deny-read arm (and no orphaned worktree
+    /// re-allow) — a host where none of the curated dirs exist is a valid state,
+    /// not a rule leak. Pure.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_profile_no_secret_paths_renders_no_read_deny() {
+        let worktree = TempDir::new().unwrap();
+        let profile = build_sbpl_profile_with(worktree.path(), &[], false, false);
+        assert!(
+            !profile.contains("(deny file-read*"),
+            "empty secret set must not emit a deny-read arm; got:\n{profile}"
+        );
+        assert!(
+            !profile.contains("(allow file-read*"),
+            "empty secret set must not emit an orphaned read re-allow; got:\n{profile}"
+        );
+    }
+
+    /// `secret_read_deny_paths_from` canonicalizes existing dirs, skips missing
+    /// ones, and dedupes an overlapping BWOC_HOME. Pure — drives the resolver
+    /// with explicit `home`/`bwoc_home` args, no env mutation.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn secret_read_deny_paths_canonicalize_skip_and_dedup() {
+        let home = TempDir::new().unwrap();
+        // Create only .ssh + .bwoc; leave .aws/.config/* absent.
+        std::fs::create_dir_all(home.path().join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.path().join(".bwoc")).unwrap();
+
+        let resolved = crate::jail::secret_read_deny_paths_from(
+            Some(home.path().to_path_buf()),
+            // BWOC_HOME points at the same .bwoc → must dedupe, not duplicate.
+            Some(home.path().join(".bwoc")),
+        );
+
+        let ssh = std::fs::canonicalize(home.path().join(".ssh")).unwrap();
+        let bwoc = std::fs::canonicalize(home.path().join(".bwoc")).unwrap();
+        assert!(resolved.contains(&ssh), "existing .ssh must resolve");
+        assert!(resolved.contains(&bwoc), "existing .bwoc must resolve");
+        // Missing dirs are skipped.
+        assert_eq!(
+            resolved.len(),
+            2,
+            "missing dirs skipped + BWOC_HOME deduped"
+        );
+    }
+
+    /// End-to-end (real `sandbox-exec`): a listed secret path is denied while a
+    /// normal worktree read AND a dynamically-linked exec both succeed — the
+    /// core #329 claim (selective read-deny closes the gap without breaking
+    /// dyld). Constructs the sandbox from an explicit profile, so it mutates no
+    /// env. `#[ignore]` — opt in with `--ignored` (it writes/reads real files
+    /// under a real sandbox-exec).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "spawns a real sandbox-exec; run with --ignored"]
+    async fn sandbox_exec_blocks_secret_read_allows_normal() {
+        let worktree = TempDir::new().unwrap();
+        let secret = TempDir::new().unwrap();
+
+        let normal = worktree.path().join("normal.txt");
+        std::fs::write(&normal, "ordinary\n").unwrap();
+        let secret_file = secret.path().join("secret.txt");
+        std::fs::write(&secret_file, "top-secret\n").unwrap();
+
+        let secret_canon = std::fs::canonicalize(secret.path()).unwrap();
+        let sandbox = SandboxExecSandbox {
+            profile: build_sbpl_profile_with(
+                worktree.path(),
+                std::slice::from_ref(&secret_canon),
+                false,
+                false,
+            ),
+            worktree_root: worktree.path().to_path_buf(),
+        };
+
+        // ── normal worktree read — must succeed (dyld + ordinary read intact) ──
+        let read_normal = format!("cat {}", normal.to_string_lossy());
+        let ok = run_sandboxed(&read_normal, worktree.path(), &sandbox).await;
+        assert!(
+            ok.is_ok() && ok.unwrap().exit_code == 0,
+            "normal worktree read must succeed under the secret-deny profile"
+        );
+
+        // ── secret read — must be blocked ─────────────────────────────────────
+        let read_secret = format!("cat {}", secret_file.to_string_lossy());
+        let denied = run_sandboxed(&read_secret, worktree.path(), &sandbox).await;
+        let blocked = match denied {
+            Err(_) => true,
+            Ok(out) => out.exit_code != 0,
+        };
+        assert!(blocked, "secret read must be blocked by sandbox-exec");
     }
 
     // ── Linux landlock ───────────────────────────────────────────────────────

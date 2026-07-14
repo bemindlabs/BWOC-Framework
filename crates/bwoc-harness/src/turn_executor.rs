@@ -727,7 +727,8 @@ pub struct ExecutorOutcome {
     pub cwd: PathBuf,
     /// C1 — whether the FS jail was actually enforced on this spawn. The
     /// redteam suite asserts this is `Enforced` on Linux (never silent-pass);
-    /// macOS reports `WriteConfineOnly` (reads not jailed — see `jail` docs).
+    /// macOS reports `WriteConfineOnly` (write-confine + a selective secret
+    /// read-denylist, #329; full read jail is Linux-only — see `jail` docs).
     pub jail_status: JailStatus,
 }
 
@@ -841,8 +842,9 @@ fn roundtrip(
 
     // Prepare the platform jail. Linux: a Landlock ruleset built in the PARENT
     // (only the restrict syscall runs post-fork — async-signal-safe). macOS: a
-    // write-confinement sandbox-exec wrapper (reads NOT jailed — see `jail`
-    // docs). Both degrade gracefully with a LOUD warning; never silent-pass.
+    // write-confinement sandbox-exec wrapper + a selective secret read-denylist
+    // (#329; full read jail is Linux-only — see `jail` docs). Both degrade
+    // gracefully with a LOUD warning; never silent-pass.
     #[cfg(target_os = "linux")]
     let (landlock_fd, jail_status) = match crate::jail::build_ruleset(&jail_spec) {
         Some(fd) => (Some(fd), JailStatus::Enforced),

@@ -47,7 +47,7 @@ child ไม่ได้ถืออะไรเลย
 
 | Control | ภัยที่ปิด | กลไก |
 |---|---|---|
-| **C1** — FS jail บน executor | executor อ่าน/แก้ไขไฟล์ของ harness (`~/.ssh`, source, checkpoint) | บน Linux ติดตั้ง Landlock domain ใน `pre_exec`: read+write+exec บน `{worktree, per-turn tempdir}`, read+exec บน binary + allowlist ระบบขั้นต่ำ, นอกนั้น (`$HOME`, checkpoint dir, `/proc/<other>`) ถูกปฏิเสธทั้งหมด พร้อมตั้ง `no_new_privs` ส่วน macOS เป็น `sandbox-exec` แบบ **write-confinement เท่านั้น** (ไม่ jail การอ่าน — เป็น Linux-only เลียนแบบ `RLIMIT_AS` ที่เป็น Linux-only ใน t6) มีการ probe และ **LOUD-skip** เมื่อใช้ไม่ได้ |
+| **C1** — FS jail บน executor | executor อ่าน/แก้ไขไฟล์ของ harness (`~/.ssh`, source, checkpoint) | บน Linux ติดตั้ง Landlock domain ใน `pre_exec`: read+write+exec บน `{worktree, per-turn tempdir}`, read+exec บน binary + allowlist ระบบขั้นต่ำ, นอกนั้น (`$HOME`, checkpoint dir, `/proc/<other>`) ถูกปฏิเสธทั้งหมด พร้อมตั้ง `no_new_privs` ส่วน macOS เป็น `sandbox-exec` แบบ **write-confinement + deny egress (t29) + secret read-denylist แบบเลือกจุด** (#329 — residual ที่ *แคบลง* ไม่ใช่ read-jail เต็มรูป ดู Residuals) ส่วน read-jail เต็มรูปยังเป็น Linux-only เลียนแบบ `RLIMIT_AS` ที่เป็น Linux-only ใน t6 มีการ probe และ **LOUD-skip** เมื่อใช้ไม่ได้ |
 | **C4** — กัน ptrace ที่ parent | **CRIT-1**: child uid เดียวกันอ่าน API keys ของ parent จาก RAM ผ่าน `ptrace`/`process_vm_readv` | parent เรียก `prctl(PR_SET_DUMPABLE, 0)` (process ที่ non-dumpable มีเพียง root ที่ตรวจสอบได้ child uid เดียวกันจะได้ `EPERM`) **และ** ตรวจสอบ `kernel.yama.ptrace_scope ≥ 1` โดย **fail-closed** ถ้าอ่านได้ `0` |
 | **C5** — ไม่ allowlist `/proc` ทั้งก้อน | proc-mem / ข้อมูลรั่วข้าม process | allowlist ของ jail ตัด `/proc` ออกทั้งหมด ให้เฉพาะ entry แบบ path-granular ที่ loader/runtime ต้องใช้จริง (ในทางปฏิบัติไม่มีอันใดอยู่ใต้ `/proc`) |
 | **C6** — ขยายการ scrub env | authority ที่ยังมีชีวิตรั่วเข้า child | ตัด `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `GNUPGHOME`, `DBUS_SESSION_BUS_ADDRESS` ออกจาก env ของ executor (allowlist-deny + pattern-deny) |
@@ -101,9 +101,18 @@ seccomp เป็นเครื่องมือผิดประเภทส
   ตั้ง `BWOC_REQUIRE_CGROUP_PIDS=1` ให้ harness ปฏิเสธการเริ่มถ้าไม่มี subtree ที่
   delegate ไว้ สำหรับ prod ที่ต้องการเพดานแบบ hard (ส่วน prereq ฝั่ง deployment —
   unit drop-in `Delegate=yes` — คือ **t14**)
-- **การ confine การอ่าน/egress บน macOS** — เป็น Linux-only; บน macOS jail ของ
-  executor เป็น write-confinement เท่านั้น และ seccomp ใช้ไม่ได้ (arm อ่าน/ptrace/
-  egress ของ red-team จะ LOUD-skip)
+- **การ confine การอ่านบน macOS (แคบลงแล้ว, #329)** — macOS เป็นแพลตฟอร์ม **dev-only**
+  สำหรับ turn-executor การ confine การเขียน (SBPL `(deny file-write*)`) และการ deny
+  network egress (SBPL `(deny network*)`, t29) บังคับใช้แล้ว ส่วนด้าน **การอ่าน** เป็น
+  residual ที่ *แคบลง* **ไม่ใช่** parity กับ Landlock โดย `sandbox.rs` วาง arm
+  `(deny file-read* …)` แบบเลือกจุด ทับ **denylist** ของ path ลับมูลค่าสูงที่รู้จัก
+  (`~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.config/gh`, และ BWOC home ที่เก็บ agent
+  keys + checkpoint ของ SessionTrust) เปิดโดยดีฟอลต์และ fail-closed
+  (`BWOC_SANDBOX_ALLOW_SECRET_READ=1` เป็น seam เดียวสำหรับ opt-out) จงใจเลี่ยง arm
+  แบบ deny-default ทั้งหมด — เพราะมันทำให้การอ่าน dyld shared-cache ที่ `sandbox-exec`
+  ต้องใช้เพื่อ launch binary แบบ dynamically-linked พัง **Residual:** path ลับที่
+  *ไม่อยู่ในลิสต์* ยังอ่านได้ และ arm อ่าน / ptrace ของ red-team ยังเป็น Linux-only
+  (จะ LOUD-skip บน macOS) ส่วนการ deny egress (t29) ชดเชยเส้นทาง exfil ตรงไว้แล้ว
 
 ## รั้วกั้นมาตรการที่เลื่อนออกไป (deferred-control fence — t8)
 

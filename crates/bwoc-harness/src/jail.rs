@@ -25,11 +25,16 @@
 //!
 //! On **macOS** (a dev box, never production) the strict deny-default read jail
 //! is too fragile to run a dynamically-linked binary (`sandbox-exec` denies the
-//! mach/sysctl machinery basic exec needs), so the macOS arm is **write
-//! confinement only** — exactly mirroring t6's honest "memory capping is
-//! Linux-only" degrade. macOS does NOT block reads of secrets; the read /
-//! ptrace / `/proc` guarantees are Linux-only. The factory degrades gracefully
-//! and the redteam suite LOUD-skips the arms it cannot prove on macOS.
+//! dyld shared-cache / mach / sysctl machinery basic exec needs), so the macOS
+//! arm is **write confinement** plus a *narrowed* read residual: a selective
+//! secret read-denylist (#329, Option D — [`sbpl_secret_read_block`]) blocks a
+//! curated set of high-value secrets (`~/.ssh`, `~/.aws`, `~/.config/{gcloud,gh}`,
+//! the BWOC home holding agent keys + checkpoints) while leaving ordinary reads
+//! (and the loader's) intact. This is **not** full read-confinement parity —
+//! an *unlisted* secret is still readable, and the ptrace / `/proc` guarantees
+//! stay Linux-only, mirroring t6's honest "memory capping is Linux-only"
+//! degrade. The factory degrades gracefully and the redteam suite LOUD-skips
+//! the arms it cannot prove on macOS.
 //!
 //! # Async-signal-safety (Linux)
 //!
@@ -59,7 +64,8 @@ pub struct JailSpec {
 pub enum JailStatus {
     /// Linux: a Landlock domain was installed (full read+write+exec jail).
     Enforced,
-    /// macOS: write-confinement only (reads NOT jailed — see module docs).
+    /// macOS: write-confinement + a selective secret read-denylist (#329); the
+    /// full read jail stays Linux-only (see module docs).
     WriteConfineOnly,
     /// The platform/kernel cannot enforce a jail; the process runs unjailed.
     /// A LOUD warning was emitted. Callers must treat this as "not proven".
@@ -203,24 +209,154 @@ mod linux_impl {
 pub use linux_impl::{build_ruleset, restrict_current_thread};
 
 // ===========================================================================
-// macOS — sandbox-exec write confinement (read jail NOT supported; see docs)
+// macOS — sandbox-exec write confinement + selective secret read-deny (#329);
+// full read jail is Linux-only (see module docs)
 // ===========================================================================
 
-/// Build a `sandbox-exec` SBPL profile that allows everything by default but
+/// Escape a path for embedding inside an SBPL double-quoted string literal.
+#[cfg(target_os = "macos")]
+pub(crate) fn sbpl_escape(p: &Path) -> String {
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+/// macOS secret-read escape-hatch env var — the read-confinement analogue of the
+/// network `BWOC_SANDBOX_ALLOW_NET` seam.
+///
+/// The selective secret read-deny arm (#329, Option D) is **on by default** and
+/// fail-closed: honored only when set to exactly `"1"`. It exists solely as a
+/// test/operator seam for the rare case a legitimate subprocess must read one of
+/// the denied dirs (mirroring the Linux posture of running such a tool in the
+/// parent). Default-absent ⇒ secret reads denied.
+///
+/// **Scope (honest).** A *narrowed residual*, not macOS read-confinement parity
+/// with Linux Landlock: a curated **denylist** of known high-value secret paths —
+/// an unlisted secret is still readable. A full deny-default read arm is
+/// deliberately avoided (it breaks the dyld shared-cache reads the loader needs);
+/// see THREAT-MODEL Residuals and issue #329.
+#[cfg(target_os = "macos")]
+pub const BWOC_SANDBOX_ALLOW_SECRET_READ_ENV: &str = "BWOC_SANDBOX_ALLOW_SECRET_READ";
+
+/// Whether the macOS secret-read escape-hatch is engaged. Fail-closed: any value
+/// other than exactly `"1"` keeps secret reads denied.
+#[cfg(target_os = "macos")]
+pub(crate) fn sbpl_allow_secret_read() -> bool {
+    std::env::var(BWOC_SANDBOX_ALLOW_SECRET_READ_ENV).as_deref() == Ok("1")
+}
+
+/// The curated set of high-value secret paths denied to the turn-executor on
+/// macOS (#329, Option D). Resolves `$HOME`-relative credential dirs plus the
+/// BWOC home that holds agent keys + SessionTrust checkpoints (`$BWOC_HOME` else
+/// `$HOME/.bwoc`, mirroring [`crate::checkpoint`]'s root resolution).
+#[cfg(target_os = "macos")]
+pub(crate) fn secret_read_deny_paths() -> Vec<PathBuf> {
+    secret_read_deny_paths_from(
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("BWOC_HOME").map(PathBuf::from),
+    )
+}
+
+/// Pure core of [`secret_read_deny_paths`]: builds the candidate set from the
+/// given `home`/`bwoc_home`, canonicalizes each, drops the ones that do not
+/// exist (denying a nonexistent path protects nothing, and canonicalization
+/// would fail), and dedupes. No env reads — unit-testable with temp dirs.
+#[cfg(target_os = "macos")]
+pub(crate) fn secret_read_deny_paths_from(
+    home: Option<PathBuf>,
+    bwoc_home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(home) = home {
+        candidates.push(home.join(".ssh"));
+        candidates.push(home.join(".aws"));
+        candidates.push(home.join(".config").join("gcloud"));
+        candidates.push(home.join(".config").join("gh"));
+        // Agent keys + SessionTrust checkpoints live under the BWOC home.
+        candidates.push(home.join(".bwoc"));
+    }
+    if let Some(bwoc_home) = bwoc_home {
+        candidates.push(bwoc_home);
+    }
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    for c in candidates {
+        if let Ok(canon) = std::fs::canonicalize(&c) {
+            if !out.contains(&canon) {
+                out.push(canon);
+            }
+        }
+    }
+    out
+}
+
+/// Render the SBPL secret-read-deny block shared by the turn-executor jail
+/// ([`macos_write_confine_profile`]) and the tool sandbox
+/// (`sandbox::build_sbpl_profile`) so the two macOS read surfaces cannot drift
+/// (#329).
+///
+/// Emits one `(deny file-read* (subpath …))` per canonical `secret_paths` entry,
+/// then a `(allow file-read* (subpath …))` per `reallow_paths` entry so the
+/// confinement roots stay readable even if a secret dir lexically contains one
+/// (SBPL is last-match-wins). Returns a comment line — no deny, no re-allow —
+/// when the escape-hatch is engaged or the secret set is empty. The block is a
+/// `file-read*` arm only; it never touches the caller's `file-write*` rules.
+#[cfg(target_os = "macos")]
+pub(crate) fn sbpl_secret_read_block(
+    secret_paths: &[PathBuf],
+    allow_secret_read: bool,
+    reallow_paths: &[PathBuf],
+) -> String {
+    if allow_secret_read {
+        return "; secret reads allowed via BWOC_SANDBOX_ALLOW_SECRET_READ escape-hatch"
+            .to_string();
+    }
+    if secret_paths.is_empty() {
+        return "; no secret paths resolved on this host".to_string();
+    }
+    let mut lines = String::new();
+    for p in secret_paths {
+        lines.push_str(&format!(
+            "(deny file-read* (subpath \"{}\"))\n",
+            sbpl_escape(p)
+        ));
+    }
+    for r in reallow_paths {
+        let canon = std::fs::canonicalize(r).unwrap_or_else(|_| r.clone());
+        lines.push_str(&format!(
+            "(allow file-read* (subpath \"{}\"))\n",
+            sbpl_escape(&canon)
+        ));
+    }
+    // Trim the trailing newline; the caller controls line joins.
+    lines.pop();
+    lines
+}
+
+/// Build a `sandbox-exec` SBPL profile that allows everything by default,
 /// **denies writes** outside the `rw` subtrees (canonicalized — macOS `/tmp`
-/// and `/var` are symlinks, so an un-canonicalized subpath would never match).
-/// Reads are NOT confined on macOS (see module docs).
+/// and `/var` are symlinks, so an un-canonicalized subpath would never match),
+/// and applies the selective secret read-deny arm (#329 — a *narrowed* residual,
+/// not a full read jail; see module docs + THREAT-MODEL Residuals).
 #[cfg(target_os = "macos")]
 pub fn macos_write_confine_profile(spec: &JailSpec) -> String {
-    let mut p = String::from("(version 1)\n(allow default)\n(deny file-write*)\n");
+    let mut p = String::from("(version 1)\n(allow default)\n");
+
+    // Secret read-deny arm (#329). Re-allow the executor's own rw subtrees below
+    // the denies so an overlapping secret dir can never block a confinement root.
+    let secret_block = sbpl_secret_read_block(
+        &secret_read_deny_paths(),
+        sbpl_allow_secret_read(),
+        &spec.rw,
+    );
+    p.push_str(&secret_block);
+    p.push('\n');
+
+    p.push_str("(deny file-write*)\n");
     let mut allow = String::from("(allow file-write*");
     for path in &spec.rw {
         let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        let s = canon
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
-        allow.push_str(&format!(" (subpath \"{s}\")"));
+        allow.push_str(&format!(" (subpath \"{}\")", sbpl_escape(&canon)));
     }
     for dev in DEV_RW {
         allow.push_str(&format!(" (literal \"{dev}\")"));
@@ -467,5 +603,102 @@ mod tests {
             profile.contains(canon.to_string_lossy().as_ref()),
             "profile must reference the canonical worktree path"
         );
+    }
+
+    // ── macOS secret read-deny (#329, Option D) — shared with sandbox.rs ───────
+
+    /// The shared block renders one deny-read per secret path plus a re-allow per
+    /// confinement root. Pure — explicit inputs, no env.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_secret_read_block_renders_denies_and_reallows() {
+        let secret = tempfile::tempdir().unwrap();
+        let rw = tempfile::tempdir().unwrap();
+        let secret_canon = std::fs::canonicalize(secret.path()).unwrap();
+        let rw_canon = std::fs::canonicalize(rw.path()).unwrap();
+
+        let block = sbpl_secret_read_block(
+            std::slice::from_ref(&secret_canon),
+            false,
+            std::slice::from_ref(&rw_canon),
+        );
+        assert!(
+            block.contains(&format!(
+                "(deny file-read* (subpath \"{}\"))",
+                secret_canon.to_string_lossy()
+            )),
+            "block must deny-read the secret path; got:\n{block}"
+        );
+        assert!(
+            block.contains(&format!(
+                "(allow file-read* (subpath \"{}\"))",
+                rw_canon.to_string_lossy()
+            )),
+            "block must re-allow the confinement root; got:\n{block}"
+        );
+    }
+
+    /// Escape-hatch engaged, or an empty secret set, both collapse to a bare
+    /// comment — no deny, no orphaned re-allow. Pure.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_secret_read_block_escape_hatch_and_empty_are_comments() {
+        let secret = tempfile::tempdir().unwrap();
+        let secret_canon = std::fs::canonicalize(secret.path()).unwrap();
+        let rw = vec![secret_canon.clone()];
+
+        let hatched = sbpl_secret_read_block(std::slice::from_ref(&secret_canon), true, &rw);
+        assert!(
+            !hatched.contains("(deny file-read*") && hatched.starts_with(';'),
+            "escape-hatch must render a comment only; got:\n{hatched}"
+        );
+        let empty = sbpl_secret_read_block(&[], false, &rw);
+        assert!(
+            !empty.contains("file-read*") && empty.starts_with(';'),
+            "empty secret set must render a comment only; got:\n{empty}"
+        );
+    }
+
+    /// `secret_read_deny_paths_from` canonicalizes existing dirs, skips missing
+    /// ones, and dedupes an overlapping BWOC_HOME. Pure — explicit args, no env.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn secret_read_deny_paths_from_canonicalize_skip_dedup() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.path().join(".bwoc")).unwrap();
+
+        let resolved = secret_read_deny_paths_from(
+            Some(home.path().to_path_buf()),
+            Some(home.path().join(".bwoc")), // dedupe vs $HOME/.bwoc
+        );
+        let ssh = std::fs::canonicalize(home.path().join(".ssh")).unwrap();
+        let bwoc = std::fs::canonicalize(home.path().join(".bwoc")).unwrap();
+        assert!(resolved.contains(&ssh));
+        assert!(resolved.contains(&bwoc));
+        assert_eq!(
+            resolved.len(),
+            2,
+            "missing dirs skipped + BWOC_HOME deduped"
+        );
+    }
+
+    /// Host-independent structural invariant: whenever the executor profile emits
+    /// a secret read-deny arm, it sits ABOVE the file-write rules (they are
+    /// distinct effect families, but the ordering documents intent and guards a
+    /// future regression that might merge the arms).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_executor_profile_secret_arm_precedes_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = JailSpec::executor(tmp.path(), tmp.path(), Path::new("/bin/echo"));
+        let profile = macos_write_confine_profile(&spec);
+        if let Some(read_at) = profile.find("(deny file-read*") {
+            let write_at = profile.find("(deny file-write*)").unwrap();
+            assert!(
+                read_at < write_at,
+                "secret read-deny must precede the file-write rules; got:\n{profile}"
+            );
+        }
     }
 }
