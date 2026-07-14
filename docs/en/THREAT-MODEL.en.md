@@ -47,7 +47,7 @@ harness and the `ptrace`/proc path to the parent's RAM.
 
 | Control | Threat closed | Mechanism |
 |---|---|---|
-| **C1** — FS jail on the executor | Executor reads/mutates harness files (`~/.ssh`, source, checkpoint) | Linux **Landlock** domain installed in `pre_exec`: read+write+exec on `{worktree, per-turn tempdir}`, read+exec on the binary + a minimal system allowlist, everything else (`$HOME`, checkpoint dir, `/proc/<other>`) denied, `no_new_privs` set. macOS = `sandbox-exec` **write-confinement only** (reads NOT jailed — Linux-only, mirroring t6's Linux-only `RLIMIT_AS`). Probes and **LOUD-skips** when unavailable. |
+| **C1** — FS jail on the executor | Executor reads/mutates harness files (`~/.ssh`, source, checkpoint) | Linux **Landlock** domain installed in `pre_exec`: read+write+exec on `{worktree, per-turn tempdir}`, read+exec on the binary + a minimal system allowlist, everything else (`$HOME`, checkpoint dir, `/proc/<other>`) denied, `no_new_privs` set. macOS = `sandbox-exec` **write-confinement + egress-deny (t29) + a selective secret read-denylist** (#329 — a *narrowed* residual, not a full read-jail; see Residuals); the full read-jail stays Linux-only, mirroring t6's Linux-only `RLIMIT_AS`. Probes and **LOUD-skips** when unavailable. |
 | **C4** — parent anti-ptrace | **CRIT-1**: a same-uid child reads the parent's API keys from RAM via `ptrace`/`process_vm_readv` | Parent calls `prctl(PR_SET_DUMPABLE, 0)` (a non-dumpable process can only be inspected by root, so a same-uid child gets `EPERM`) **and** verifies `kernel.yama.ptrace_scope ≥ 1`, **failing closed** if it reads `0`. |
 | **C5** — no wholesale `/proc` | proc-mem / cross-process info leak | The jail allowlist excludes `/proc` entirely; only path-granular entries the loader/runtime actually need are granted (none under `/proc` in practice). |
 | **C6** — env-scrub extension | Live-authority leak into the child | `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `GNUPGHOME`, `DBUS_SESSION_BUS_ADDRESS` are dropped from the executor env (allowlist-deny + pattern-deny). |
@@ -102,9 +102,22 @@ they are **out of scope** for t11 (tracked opportunistically as NEWNET).
   `BWOC_REQUIRE_CGROUP_PIDS=1` makes the harness refuse to start unless the
   delegated subtree is present, for prod that demands the hard cap (the file-tracked
   deployment prereq — a `Delegate=yes` unit drop-in — is **t14**).
-- **macOS read / egress confinement** — Linux-only; on macOS the executor jail is
-  write-confinement only and seccomp does not apply (the red-team read / ptrace /
-  egress arms LOUD-skip there).
+- **macOS read-confinement (narrowed, #329)** — macOS is a **dev-only** platform
+  for the turn-executor. Write-confinement (SBPL `(deny file-write*)`) and network
+  egress-deny (SBPL `(deny network*)`, t29) are enforced; the **read** side is a
+  *narrowed* residual, **not** Landlock parity. A selective `(deny file-read* …)`
+  arm is layered over a curated **denylist** of known high-value secrets — on
+  **both** macOS read surfaces via one shared renderer: the turn-executor jail
+  (`jail.rs::macos_write_confine_profile`) and the tool sandbox
+  (`sandbox.rs::build_sbpl_profile`). The set: `~/.ssh`, `~/.aws`,
+  `~/.config/gcloud`, `~/.config/gh`, and the BWOC home holding agent keys +
+  SessionTrust checkpoints. On-by-default and fail-closed
+  (`BWOC_SANDBOX_ALLOW_SECRET_READ=1` is the only opt-out seam). A
+  full deny-default read arm is deliberately avoided — it breaks the dyld
+  shared-cache reads `sandbox-exec` needs to launch a dynamically-linked binary.
+  **Residual:** an *unlisted* secret path is still readable, and the red-team
+  read / ptrace arms stay Linux-only (they LOUD-skip on macOS). The egress-deny
+  (t29) already compensates the direct-exfil path.
 
 ## The deferred-control fence (t8)
 
