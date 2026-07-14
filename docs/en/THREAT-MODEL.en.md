@@ -104,8 +104,11 @@ they are **out of scope** for t11 (tracked opportunistically as NEWNET).
   deployment prereq — a `Delegate=yes` unit drop-in — is **t14**).
 - **macOS read-confinement (narrowed, #329)** — macOS is a **dev-only** platform
   for the turn-executor. Write-confinement (SBPL `(deny file-write*)`) and network
-  egress-deny (SBPL `(deny network*)`, t29) are enforced; the **read** side is a
-  *narrowed* residual, **not** Landlock parity. A selective `(deny file-read* …)`
+  egress-deny (SBPL `(deny network*)`, t29) are enforced on **both** macOS SBPL
+  surfaces — the turn-executor jail AND the tool sandbox — so the primary jailed
+  path is egress-contained, not just the fallback (this closed t29's named
+  follow-up). The **read** side is a *narrowed* residual, **not** Landlock
+  parity. A selective `(deny file-read* …)`
   arm is layered over a curated **denylist** of known high-value secrets — on
   **both** macOS read surfaces via one shared renderer: the turn-executor jail
   (`jail.rs::macos_write_confine_profile`) and the tool sandbox

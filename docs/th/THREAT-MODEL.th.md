@@ -103,8 +103,11 @@ seccomp เป็นเครื่องมือผิดประเภทส
   unit drop-in `Delegate=yes` — คือ **t14**)
 - **การ confine การอ่านบน macOS (แคบลงแล้ว, #329)** — macOS เป็นแพลตฟอร์ม **dev-only**
   สำหรับ turn-executor การ confine การเขียน (SBPL `(deny file-write*)`) และการ deny
-  network egress (SBPL `(deny network*)`, t29) บังคับใช้แล้ว ส่วนด้าน **การอ่าน** เป็น
-  residual ที่ *แคบลง* **ไม่ใช่** parity กับ Landlock โดยวาง arm `(deny file-read* …)`
+  network egress (SBPL `(deny network*)`, t29) บังคับใช้บน macOS SBPL surface
+  **ทั้งสอง** — turn-executor jail และ tool sandbox — ทำให้ primary jailed path
+  ถูก contain egress ด้วย ไม่ใช่แค่ fallback (ปิด follow-up ที่ t29 ระบุไว้) ส่วนด้าน
+  **การอ่าน** เป็น residual ที่ *แคบลง* **ไม่ใช่** parity กับ Landlock โดยวาง arm
+  `(deny file-read* …)`
   แบบเลือกจุด ทับ **denylist** ของ path ลับมูลค่าสูงที่รู้จัก บน macOS read surface
   **ทั้งสอง** ผ่าน renderer ตัวเดียวกัน: turn-executor jail
   (`jail.rs::macos_write_confine_profile`) และ tool sandbox

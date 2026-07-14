@@ -26,15 +26,18 @@
 //! On **macOS** (a dev box, never production) the strict deny-default read jail
 //! is too fragile to run a dynamically-linked binary (`sandbox-exec` denies the
 //! dyld shared-cache / mach / sysctl machinery basic exec needs), so the macOS
-//! arm is **write confinement** plus a *narrowed* read residual: a selective
-//! secret read-denylist (#329, Option D — [`sbpl_secret_read_block`]) blocks a
-//! curated set of high-value secrets (`~/.ssh`, `~/.aws`, `~/.config/{gcloud,gh}`,
-//! the BWOC home holding agent keys + checkpoints) while leaving ordinary reads
-//! (and the loader's) intact. This is **not** full read-confinement parity —
-//! an *unlisted* secret is still readable, and the ptrace / `/proc` guarantees
-//! stay Linux-only, mirroring t6's honest "memory capping is Linux-only"
-//! degrade. The factory degrades gracefully and the redteam suite LOUD-skips
-//! the arms it cannot prove on macOS.
+//! arm is **write confinement** + **network egress-deny** (`(deny network*)` via
+//! [`sbpl_net_rule`] — the sole control-A on macOS, on-by-default/fail-closed,
+//! the parity of the Linux seccomp arm, applied to the executor's own profile so
+//! the primary jailed path is egress-contained) plus a *narrowed* read residual:
+//! a selective secret read-denylist (#329, Option D — [`sbpl_secret_read_block`])
+//! blocks a curated set of high-value secrets (`~/.ssh`, `~/.aws`,
+//! `~/.config/{gcloud,gh}`, the BWOC home holding agent keys + checkpoints) while
+//! leaving ordinary reads (and the loader's) intact. This is **not** full
+//! read-confinement parity — an *unlisted* secret is still readable, and the
+//! ptrace / `/proc` guarantees stay Linux-only, mirroring t6's honest "memory
+//! capping is Linux-only" degrade. The factory degrades gracefully and the
+//! redteam suite LOUD-skips the arms it cannot prove on macOS.
 //!
 //! # Async-signal-safety (Linux)
 //!
@@ -64,8 +67,9 @@ pub struct JailSpec {
 pub enum JailStatus {
     /// Linux: a Landlock domain was installed (full read+write+exec jail).
     Enforced,
-    /// macOS: write-confinement + a selective secret read-denylist (#329); the
-    /// full read jail stays Linux-only (see module docs).
+    /// macOS: write-confinement + network egress-deny + a selective secret
+    /// read-denylist (#329); the full read jail stays Linux-only (see module
+    /// docs).
     WriteConfineOnly,
     /// The platform/kernel cannot enforce a jail; the process runs unjailed.
     /// A LOUD warning was emitted. Callers must treat this as "not proven".
@@ -209,8 +213,8 @@ mod linux_impl {
 pub use linux_impl::{build_ruleset, restrict_current_thread};
 
 // ===========================================================================
-// macOS — sandbox-exec write confinement + selective secret read-deny (#329);
-// full read jail is Linux-only (see module docs)
+// macOS — sandbox-exec write confinement + network egress-deny + selective
+// secret read-deny (#329); full read jail is Linux-only (see module docs)
 // ===========================================================================
 
 /// Escape a path for embedding inside an SBPL double-quoted string literal.
@@ -219,6 +223,46 @@ pub(crate) fn sbpl_escape(p: &Path) -> String {
     p.to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
+}
+
+/// macOS network-egress escape-hatch env var — the platform-symmetric mirror of
+/// the Linux seccomp egress arm's posture.
+///
+/// Linux has **no** such toggle: `seccomp::install_in_child` is unconditional and
+/// strictly fail-closed (the t11 closure theorem — egress containment is
+/// *mandatory*). To keep the two platforms' *posture* symmetric (Samānattatā),
+/// the macOS `(deny network*)` arm is likewise **on by default** with no
+/// production opt-out. This var is a **test/operator escape-hatch seam** only,
+/// honored when set to exactly `"1"` — the role the Linux side fills by running a
+/// legitimately network-bound tool in the *parent*, never the sandboxed child.
+///
+/// It gates **both** macOS SBPL read/write surfaces — the turn-executor jail
+/// ([`macos_write_confine_profile`]) and the tool sandbox
+/// (`sandbox::build_sbpl_profile`) — through [`sbpl_net_rule`], so they cannot
+/// drift. On macOS this `(deny network*)` line is the **sole control-A** (nothing
+/// else stops the child calling `socket()`+`connect()`; there is no seccomp), so
+/// it is load-bearing in a way the Linux line is not.
+#[cfg(target_os = "macos")]
+pub const BWOC_SANDBOX_ALLOW_NET_ENV: &str = "BWOC_SANDBOX_ALLOW_NET";
+
+/// Whether the macOS network-egress escape-hatch is engaged. Fail-closed: any
+/// value other than exactly `"1"` keeps network denied.
+#[cfg(target_os = "macos")]
+pub(crate) fn sbpl_allow_net() -> bool {
+    std::env::var(BWOC_SANDBOX_ALLOW_NET_ENV).as_deref() == Ok("1")
+}
+
+/// Render the SBPL network-egress arm: `(deny network*)` by default, or a comment
+/// line when the escape-hatch is engaged. Shared by both macOS SBPL surfaces so
+/// they cannot drift. Placed above the file-write rules (last-match-wins) so a
+/// later rule cannot re-open network; the two effect families never cross.
+#[cfg(target_os = "macos")]
+pub(crate) fn sbpl_net_rule(allow_net: bool) -> &'static str {
+    if allow_net {
+        "; network egress allowed via BWOC_SANDBOX_ALLOW_NET escape-hatch"
+    } else {
+        "(deny network*)"
+    }
 }
 
 /// macOS secret-read escape-hatch env var — the read-confinement analogue of the
@@ -334,6 +378,8 @@ pub(crate) fn sbpl_secret_read_block(
 }
 
 /// Build a `sandbox-exec` SBPL profile that allows everything by default,
+/// **denies network egress** (`(deny network*)` — the sole control-A on macOS,
+/// on-by-default/fail-closed, symmetric with the Linux seccomp arm),
 /// **denies writes** outside the `rw` subtrees (canonicalized — macOS `/tmp`
 /// and `/var` are symlinks, so an un-canonicalized subpath would never match),
 /// and applies the selective secret read-deny arm (#329 — a *narrowed* residual,
@@ -341,6 +387,12 @@ pub(crate) fn sbpl_secret_read_block(
 #[cfg(target_os = "macos")]
 pub fn macos_write_confine_profile(spec: &JailSpec) -> String {
     let mut p = String::from("(version 1)\n(allow default)\n");
+
+    // Network-egress arm — the macOS parity for the Linux seccomp egress filter,
+    // extended to the turn-executor's own profile (not just the tool sandbox) so
+    // the primary jailed path is egress-contained. On-by-default, fail-closed.
+    p.push_str(sbpl_net_rule(sbpl_allow_net()));
+    p.push('\n');
 
     // Secret read-deny arm (#329). Re-allow the executor's own rw subtrees below
     // the denies so an overlapping secret dir can never block a confinement root.
@@ -700,5 +752,47 @@ mod tests {
                 "secret read-deny must precede the file-write rules; got:\n{profile}"
             );
         }
+    }
+
+    // ── macOS network-egress on the executor jail (parity with sandbox.rs) ─────
+
+    /// `sbpl_net_rule` denies by default and collapses to a comment under the
+    /// escape-hatch. Pure — no env.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_net_rule_denies_by_default_and_toggles() {
+        assert_eq!(sbpl_net_rule(false), "(deny network*)");
+        assert!(
+            sbpl_net_rule(true).starts_with(';') && !sbpl_net_rule(true).contains("deny"),
+            "escape-hatch must render a comment, not a deny"
+        );
+    }
+
+    /// The executor profile carries exactly one net arm — `(deny network*)` by
+    /// default (the sole control-A on macOS) or the escape-hatch comment — and
+    /// **whichever** arm is present sits ABOVE the file-write rules. The profile
+    /// is env-driven (the ambient `BWOC_SANDBOX_ALLOW_NET` decides which arm), so
+    /// the placement invariant is asserted for both cases, not just the deny.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_executor_profile_net_arm_above_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = JailSpec::executor(tmp.path(), tmp.path(), Path::new("/bin/echo"));
+        let profile = macos_write_confine_profile(&spec);
+
+        let deny_at = profile.find("(deny network*)");
+        let hatch_at = profile.find("network egress allowed via");
+        assert!(
+            deny_at.is_some() ^ hatch_at.is_some(),
+            "profile must carry exactly one net arm; got:\n{profile}"
+        );
+
+        // Placement is invariant for whichever arm is active.
+        let net_at = deny_at.or(hatch_at).unwrap();
+        let write_at = profile.find("(deny file-write*)").unwrap();
+        assert!(
+            net_at < write_at,
+            "the net arm must precede the file-write rules; got:\n{profile}"
+        );
     }
 }
