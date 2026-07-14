@@ -18,6 +18,10 @@ pub mod cli;
 pub mod client;
 pub mod types;
 
+/// Cross-implementation conformance tests (hermetic; test-only).
+#[cfg(test)]
+mod conformance;
+
 pub use anthropic::AnthropicClient;
 pub use cli::CliClient;
 pub use client::{OllamaClient, ProviderClient};
