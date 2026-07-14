@@ -170,6 +170,17 @@ impl AnthropicClient {
         Self::new(ANTHROPIC_DEFAULT_ENDPOINT)
     }
 
+    /// Override the API key explicitly instead of resolving it from the
+    /// environment / `secrets.toml`. Mirrors [`super::client::OllamaClient::with_api_key`]
+    /// for parity; lets a caller (or a hermetic test against a mock endpoint)
+    /// inject a key without mutating the process-global `ANTHROPIC_API_KEY` env.
+    /// An empty/whitespace key is kept as-is (so `require_key` still reports the
+    /// missing-key error path).
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = api_key.into();
+        self
+    }
+
     fn messages_url(&self) -> String {
         format!("{}/v1/messages", self.base_url)
     }
