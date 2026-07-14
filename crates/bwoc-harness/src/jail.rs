@@ -768,32 +768,31 @@ mod tests {
         );
     }
 
-    /// The turn-executor profile denies network egress (the sole control-A on
-    /// macOS), and that arm sits ABOVE the file-write rules. Uses the pure
-    /// renderer with the deny explicitly selected so it is host-independent (a
-    /// stray `BWOC_SANDBOX_ALLOW_NET` in the shell cannot false-pass it).
+    /// The executor profile carries exactly one net arm — `(deny network*)` by
+    /// default (the sole control-A on macOS) or the escape-hatch comment — and
+    /// **whichever** arm is present sits ABOVE the file-write rules. The profile
+    /// is env-driven (the ambient `BWOC_SANDBOX_ALLOW_NET` decides which arm), so
+    /// the placement invariant is asserted for both cases, not just the deny.
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_executor_profile_denies_network_above_writes() {
-        // Structural check on the shared renderer's placement inside the profile:
-        // reproduce the profile head the executor builds with net-deny forced on.
+    fn macos_executor_profile_net_arm_above_writes() {
         let tmp = tempfile::tempdir().unwrap();
         let spec = JailSpec::executor(tmp.path(), tmp.path(), Path::new("/bin/echo"));
         let profile = macos_write_confine_profile(&spec);
-        // Whatever the ambient env, the profile contains exactly one net arm.
-        let has_deny = profile.contains("(deny network*)");
-        let has_hatch = profile.contains("network egress allowed via");
+
+        let deny_at = profile.find("(deny network*)");
+        let hatch_at = profile.find("network egress allowed via");
         assert!(
-            has_deny ^ has_hatch,
+            deny_at.is_some() ^ hatch_at.is_some(),
             "profile must carry exactly one net arm; got:\n{profile}"
         );
-        if has_deny {
-            let net_at = profile.find("(deny network*)").unwrap();
-            let write_at = profile.find("(deny file-write*)").unwrap();
-            assert!(
-                net_at < write_at,
-                "network deny must precede the file-write rules; got:\n{profile}"
-            );
-        }
+
+        // Placement is invariant for whichever arm is active.
+        let net_at = deny_at.or(hatch_at).unwrap();
+        let write_at = profile.find("(deny file-write*)").unwrap();
+        assert!(
+            net_at < write_at,
+            "the net arm must precede the file-write rules; got:\n{profile}"
+        );
     }
 }
