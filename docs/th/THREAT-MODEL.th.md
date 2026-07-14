@@ -104,10 +104,13 @@ seccomp เป็นเครื่องมือผิดประเภทส
 - **การ confine การอ่านบน macOS (แคบลงแล้ว, #329)** — macOS เป็นแพลตฟอร์ม **dev-only**
   สำหรับ turn-executor การ confine การเขียน (SBPL `(deny file-write*)`) และการ deny
   network egress (SBPL `(deny network*)`, t29) บังคับใช้แล้ว ส่วนด้าน **การอ่าน** เป็น
-  residual ที่ *แคบลง* **ไม่ใช่** parity กับ Landlock โดย `sandbox.rs` วาง arm
-  `(deny file-read* …)` แบบเลือกจุด ทับ **denylist** ของ path ลับมูลค่าสูงที่รู้จัก
-  (`~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.config/gh`, และ BWOC home ที่เก็บ agent
-  keys + checkpoint ของ SessionTrust) เปิดโดยดีฟอลต์และ fail-closed
+  residual ที่ *แคบลง* **ไม่ใช่** parity กับ Landlock โดยวาง arm `(deny file-read* …)`
+  แบบเลือกจุด ทับ **denylist** ของ path ลับมูลค่าสูงที่รู้จัก บน macOS read surface
+  **ทั้งสอง** ผ่าน renderer ตัวเดียวกัน: turn-executor jail
+  (`jail.rs::macos_write_confine_profile`) และ tool sandbox
+  (`sandbox.rs::build_sbpl_profile`) เซ็ต: `~/.ssh`, `~/.aws`, `~/.config/gcloud`,
+  `~/.config/gh`, และ BWOC home ที่เก็บ agent keys + checkpoint ของ SessionTrust
+  เปิดโดยดีฟอลต์และ fail-closed
   (`BWOC_SANDBOX_ALLOW_SECRET_READ=1` เป็น seam เดียวสำหรับ opt-out) จงใจเลี่ยง arm
   แบบ deny-default ทั้งหมด — เพราะมันทำให้การอ่าน dyld shared-cache ที่ `sandbox-exec`
   ต้องใช้เพื่อ launch binary แบบ dynamically-linked พัง **Residual:** path ลับที่

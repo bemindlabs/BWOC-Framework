@@ -625,14 +625,14 @@ mod tests {
         assert!(
             block.contains(&format!(
                 "(deny file-read* (subpath \"{}\"))",
-                secret_canon.to_string_lossy()
+                sbpl_escape(&secret_canon)
             )),
             "block must deny-read the secret path; got:\n{block}"
         );
         assert!(
             block.contains(&format!(
                 "(allow file-read* (subpath \"{}\"))",
-                rw_canon.to_string_lossy()
+                sbpl_escape(&rw_canon)
             )),
             "block must re-allow the confinement root; got:\n{block}"
         );

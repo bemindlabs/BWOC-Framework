@@ -105,11 +105,14 @@ they are **out of scope** for t11 (tracked opportunistically as NEWNET).
 - **macOS read-confinement (narrowed, #329)** — macOS is a **dev-only** platform
   for the turn-executor. Write-confinement (SBPL `(deny file-write*)`) and network
   egress-deny (SBPL `(deny network*)`, t29) are enforced; the **read** side is a
-  *narrowed* residual, **not** Landlock parity. `sandbox.rs` layers a selective
-  `(deny file-read* …)` arm over a curated **denylist** of known high-value
-  secrets (`~/.ssh`, `~/.aws`, `~/.config/gcloud`, `~/.config/gh`, and the BWOC
-  home holding agent keys + SessionTrust checkpoints), on-by-default and
-  fail-closed (`BWOC_SANDBOX_ALLOW_SECRET_READ=1` is the only opt-out seam). A
+  *narrowed* residual, **not** Landlock parity. A selective `(deny file-read* …)`
+  arm is layered over a curated **denylist** of known high-value secrets — on
+  **both** macOS read surfaces via one shared renderer: the turn-executor jail
+  (`jail.rs::macos_write_confine_profile`) and the tool sandbox
+  (`sandbox.rs::build_sbpl_profile`). The set: `~/.ssh`, `~/.aws`,
+  `~/.config/gcloud`, `~/.config/gh`, and the BWOC home holding agent keys +
+  SessionTrust checkpoints. On-by-default and fail-closed
+  (`BWOC_SANDBOX_ALLOW_SECRET_READ=1` is the only opt-out seam). A
   full deny-default read arm is deliberately avoided — it breaks the dyld
   shared-cache reads `sandbox-exec` needs to launch a dynamically-linked binary.
   **Residual:** an *unlisted* secret path is still readable, and the red-team

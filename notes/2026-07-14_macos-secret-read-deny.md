@@ -24,7 +24,7 @@ Closed the macOS read-confinement residual by adding a selective `(deny file-rea
 
 - Verified on macOS 26.5.1 (this dev box): `cargo fmt`/`clippy` clean, 428 lib tests + 2 ignored pass, `check-deferred-fence.sh` green, bilingual parity 0 FAIL.
 - No Linux verification needed — SBPL is macOS-only; the Linux read jail (Landlock) is unchanged.
-- Branch `feat/harness-329-macos-secret-read-deny`; not yet pushed / PR'd.
+- Branch `feat/harness-329-macos-secret-read-deny` → **PR #331** (squash auto-merge armed).
 
 ## Related
 

@@ -1167,7 +1167,7 @@ mod tests {
 
         let deny_line = format!(
             "(deny file-read* (subpath \"{}\"))",
-            secret_canon.to_string_lossy()
+            crate::jail::sbpl_escape(&secret_canon)
         );
         assert!(
             profile.contains(&deny_line),
@@ -1176,7 +1176,7 @@ mod tests {
         // The confinement root stays readable (last-match-wins re-allow).
         let reallow = format!(
             "(allow file-read* (subpath \"{}\"))",
-            wt_canon.to_string_lossy()
+            crate::jail::sbpl_escape(&wt_canon)
         );
         assert!(
             profile.contains(&reallow),
