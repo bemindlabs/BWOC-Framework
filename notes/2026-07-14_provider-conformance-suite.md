@@ -4,7 +4,7 @@ Added the first **cross-implementation** conformance tests for the `ProviderClie
 
 ## What changed
 
-- **`provider/conformance.rs`** (new, `#[cfg(test)]`) — an `HttpSubject` trait implemented for `Ollama` (→ `OllamaClient`, which backs `ollama`/`openrouter`/`litellm`) and `Anthropic` (→ `AnthropicClient`). Each subject knows how to program its own mock backend (different URLs + request/response shapes); the shared `assert_http_contract::<S>()` runs 7 contract checks against each:
+- **`provider/conformance.rs`** (new, `#[cfg(test)]`) — an `HttpSubject` trait implemented for `Ollama` (→ `OllamaClient`, which backs `ollama`/`openrouter`/`litellm`) and `Anthropic` (→ `AnthropicClient`). Each subject knows how to program its own mock backend (different URLs + request/response shapes); the shared `assert_http_contract::<S>()` runs six contract checks (some with sub-cases) against each:
   1. `validate_model` — served model → `Ok`; absent → `ModelNotFound`.
   2. `complete` success → parsed assistant text.
   3. error mapping — `5xx` → `TransientProvider`; generic `4xx` (401) → fatal `Provider`.

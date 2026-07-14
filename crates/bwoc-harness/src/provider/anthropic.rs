@@ -174,10 +174,16 @@ impl AnthropicClient {
     /// environment / `secrets.toml`. Mirrors [`super::client::OllamaClient::with_api_key`]
     /// for parity; lets a caller (or a hermetic test against a mock endpoint)
     /// inject a key without mutating the process-global `ANTHROPIC_API_KEY` env.
-    /// An empty/whitespace key is kept as-is (so `require_key` still reports the
-    /// missing-key error path).
+    /// A whitespace-only (or empty) key normalizes to the empty string — matching
+    /// `OllamaClient::with_api_key`'s `trim().is_empty()` filter — so `require_key`
+    /// reports the missing-key error path rather than sending a blank `x-api-key`.
     pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = api_key.into();
+        let key = api_key.into();
+        self.api_key = if key.trim().is_empty() {
+            String::new()
+        } else {
+            key
+        };
         self
     }
 
@@ -675,6 +681,26 @@ fn translate_sse_event(
 mod tests {
     use super::*;
     use crate::provider::types::FunctionCall;
+
+    /// A whitespace-only key normalizes to empty (parity with
+    /// `OllamaClient::with_api_key`), so `require_key` fails fast — the request is
+    /// never sent, and the error is the missing-key `Provider` error, not a
+    /// `ModelNotFound` from a blank-`x-api-key` round-trip.
+    #[tokio::test]
+    async fn with_api_key_treats_whitespace_as_missing() {
+        // Unroutable base URL: if require_key did NOT fire first, the call would
+        // instead surface a transient connection error — so a Provider error here
+        // proves the guard ran before any HTTP.
+        let c = AnthropicClient::new("http://127.0.0.1:1").with_api_key("   ");
+        let err = c
+            .validate_model("m")
+            .await
+            .expect_err("blank key must error before any request");
+        assert!(
+            matches!(err, HarnessError::Provider(ref m) if m.contains("API key")),
+            "whitespace key must hit the missing-key guard, got {err:?}"
+        );
+    }
 
     /// Write `body` to `path` with `0600` perms so it passes the on-disk guard.
     fn write_secret(path: &std::path::Path, body: &str) {
