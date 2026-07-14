@@ -202,34 +202,6 @@ impl SandboxExecSandbox {
     }
 }
 
-/// macOS network-egress escape-hatch env var — the platform-symmetric mirror of
-/// the Linux seccomp egress arm's gating posture.
-///
-/// **Linux has NO such toggle:** `seccomp::install_in_child` is unconditional and
-/// strictly fail-closed (the t11 closure theorem — egress containment is
-/// *mandatory*; the executor never falls back to an unfiltered child). To keep
-/// the two platforms' *posture* symmetric (Samānattatā — treat both backends
-/// equally), the macOS `(deny network*)` arm is likewise **on by default** with
-/// no production opt-out.
-///
-/// This var exists ONLY as a **test/operator escape-hatch seam**, gated so it
-/// cannot silently weaken a real run: it is honored only when set to exactly
-/// `"1"`. It exists so a local operator debugging a legitimately
-/// network-dependent subprocess tool (e.g. an MCP-over-TCP server, or a
-/// `git`-over-HTTPS helper the model invokes via `run_command`) can opt that one
-/// process out — the same role the Linux side fills by running such tools in the
-/// *parent* (never the sandboxed child). Default-absent ⇒ network denied.
-#[cfg(target_os = "macos")]
-pub const BWOC_SANDBOX_ALLOW_NET_ENV: &str = "BWOC_SANDBOX_ALLOW_NET";
-
-/// Whether the macOS network-egress escape-hatch is engaged. Fail-closed: any
-/// value other than exactly `"1"` (incl. absent/empty/`"0"`/`"true"`) ⇒ network
-/// stays denied. Mirrors the Linux posture where there is no opt-out at all.
-#[cfg(target_os = "macos")]
-fn sbpl_allow_net() -> bool {
-    std::env::var(BWOC_SANDBOX_ALLOW_NET_ENV).as_deref() == Ok("1")
-}
-
 /// Build a minimal SBPL (Sandbox Profile Language) profile for `sandbox-exec`.
 ///
 /// Policy:
@@ -240,7 +212,9 @@ fn sbpl_allow_net() -> bool {
 ///   analogue of seccomp killing `socket`/`connect`/`bind`/`listen`/`accept*`
 ///   (control A: the child cannot acquire OR use a network socket). Fail-closed
 ///   and on-by-default, matching the Linux posture (which has no opt-out); the
-///   only seam is the [`BWOC_SANDBOX_ALLOW_NET_ENV`] test/operator escape-hatch.
+///   only seam is the [`crate::jail::BWOC_SANDBOX_ALLOW_NET_ENV`] escape-hatch.
+///   Shared with the turn-executor jail via [`crate::jail::sbpl_net_rule`] so the
+///   two macOS surfaces cannot drift.
 /// - **Secret reads: selectively denied** (`(deny file-read* …)`) over a curated
 ///   set of high-value secret paths ([`crate::jail::secret_read_deny_paths`],
 ///   #329) — the *narrowed* macOS read-confinement residual. A trailing
@@ -264,7 +238,7 @@ fn build_sbpl_profile(worktree_root: &Path) -> String {
     build_sbpl_profile_with(
         worktree_root,
         &crate::jail::secret_read_deny_paths(),
-        sbpl_allow_net(),
+        crate::jail::sbpl_allow_net(),
         crate::jail::sbpl_allow_secret_read(),
     )
 }
@@ -285,18 +259,10 @@ fn build_sbpl_profile_with(
     let path_str = crate::jail::sbpl_escape(&canonical);
 
     // Network-egress arm — the macOS parity for the Linux seccomp egress filter.
-    // Default-deny the whole `network*` family. SBPL evaluates rules top-to-
-    // bottom, last-match-wins, so this `(deny network*)` sits ABOVE the FS-jail
-    // rules and below `(allow default)`; FS-jail semantics are unchanged. The
-    // escape-hatch simply omits the deny line (network falls back to the
-    // `(allow default)` above) — it never re-orders the file-write rules.
-    let net_rule = if allow_net {
-        // Escape-hatch engaged (BWOC_SANDBOX_ALLOW_NET=1): no network deny.
-        // Mirrors "run the network tool in the parent" on Linux.
-        "; network egress allowed via BWOC_SANDBOX_ALLOW_NET escape-hatch".to_string()
-    } else {
-        "(deny network*)".to_string()
-    };
+    // Default-deny the whole `network*` family. Shared with the turn-executor
+    // jail via `jail::sbpl_net_rule` so the two macOS surfaces cannot drift; it
+    // sits ABOVE the file-write rules (last-match-wins) so nothing re-opens it.
+    let net_rule = crate::jail::sbpl_net_rule(allow_net);
 
     // Secret-read arm (#329) — selective deny-read over a curated set, layered
     // above `(allow default)`. Shared with the turn-executor jail via
@@ -745,6 +711,10 @@ fn normalize_path_lex(p: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    // The macOS net escape-hatch env const now lives in `jail` (shared by both
+    // SBPL surfaces); import it so the existing net tests keep their bare name.
+    #[cfg(target_os = "macos")]
+    use crate::jail::BWOC_SANDBOX_ALLOW_NET_ENV;
 
     // ── Path confinement ─────────────────────────────────────────────────────
 
