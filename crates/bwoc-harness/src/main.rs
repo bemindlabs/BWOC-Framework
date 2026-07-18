@@ -1050,8 +1050,43 @@ async fn run_chat_mode(
         reasoning_effort,
     );
 
+    // Resolve the `auto` model sentinel the same way the batch path does (see
+    // the `AUTO_SENTINEL` branch in `run()`), BEFORE validation and before the
+    // session is built. Without this, chat validates and then loops on the
+    // literal string "auto" — which no provider serves — so an agent configured
+    // `primaryModel: "auto"` cannot chat (#347). Chat is interactive, so there is
+    // no `--task` to classify: the resolver picks its default from the pool.
+    let resolved_model = if args.model == bwoc_harness::model_select::AUTO_SENTINEL {
+        // Progress goes to STDERR: in chat/headless mode stdout carries the
+        // `chat_proto` JSON-line protocol, so a stray human line there would
+        // corrupt the event stream the frontend parses.
+        let candidates = match bwoc_core::manifest::Manifest::load_from_path(
+            &workdir.join("config.manifest.json"),
+        ) {
+            Ok(m) => m.auto_models.unwrap_or_default(),
+            Err(bwoc_core::manifest::ManifestError::Json(e)) => {
+                eprintln!(
+                    "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
+                     no auto-model candidates"
+                );
+                Vec::new()
+            }
+            Err(_) => Vec::new(),
+        };
+        eprintln!(
+            "[bwoc-harness] resolving auto model from {} candidate(s)...",
+            candidates.len()
+        );
+        let sel =
+            bwoc_harness::model_select::resolve_auto(provider.as_ref(), &candidates, "").await?;
+        eprintln!("[bwoc-harness] auto model → {}", sel.chosen);
+        sel.chosen
+    } else {
+        args.model.clone()
+    };
+
     if !args.skip_model_check {
-        provider.validate_model(&args.model).await?;
+        provider.validate_model(&resolved_model).await?;
     }
 
     // System prompt (AGENTS.md / CLAUDE.md), same as run().
@@ -1105,7 +1140,7 @@ async fn run_chat_mode(
 
     let config = ChatConfig {
         agent,
-        model: args.model.clone(),
+        model: resolved_model.clone(),
         backend: args.backend.clone(),
         system_prompt,
         policy,
