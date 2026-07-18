@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.31.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.6.6`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.32.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.7.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
-**Latest release:** [`v2026.6.15-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.6.15-0) *(2026-06-15 — **2.31.0**; minor — **subscription-CLI backend + Phase 6 paññā**: `--backend cli` (Claude/Codex subscription, zero API key), macOS egress parity (t29), cli ambient-backend trust tier (t30), eval ambient-backend guard (t31b), deep-memory `mine` secret redaction, and an experimental computer-use scaffold (P0 model + headless-browser executor behind the `browser` feature). Prior: `v2026.6.9-2` 2.30.0 — standalone agent)*
+**Latest release:** [`v2026.7.18-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.18-0) *(2026-07-18 — **2.32.0**; minor — **operability + hardening**: `bwoc agent run --as-user` non-root launcher (#322), `bwoc doctor` manifest-vs-reality checks (#323), `bwoc receipts` read-receipts (#299), iMessage connector (#229), warm task execution + `--headless` served mode (#301); plus six harness/CLI fixes — MCP env-scrub + Windows-safe allowlist (#336), Anthropic `complete()` timeout (#338), `--workspace` validation (#339), sandbox-unavailable warning (#337), t6 bomb tests in CI (#335), flaky-test hardening (#334). Prior: `v2026.6.15-0` 2.31.0 — subscription-CLI backend + Phase 6 paññā)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-06-15T07:37:39Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-07-18T12:25:52Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 

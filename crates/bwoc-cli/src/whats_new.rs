@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — subscription-CLI backend + harness eval & cross-platform hardening"
+    " — operability & hardening: non-root launcher, doctor, receipts, iMessage, warm exec"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,11 +31,11 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "Warm task execution + `bwoc-harness --headless` served mode — no per-task backend cold-start (2.32.0, #301)",
+    "`bwoc agent run --as-user` non-root launcher · `bwoc doctor` manifest checks · `bwoc receipts` · iMessage connector (2.32.0, #322/#323/#299/#229)",
     "`bwoc-harness --backend cli` — run agents on a Claude/Codex subscription, zero API key (2.31.0, #277)",
     "`bwoc-harness --backend openrouter` — drive any vendor's model through one OpenRouter key (2.29.0, #268)",
-    "`RouteTarget::Gateway` — cross-NAT/internet peer delivery via a `bwoc-gateway` relay (2.28.0, #262)",
     "Standalone agent — gateway recv bridge + pinned-peer trust + replay defense + untrusted auto-process + container image (2.30.0, #269/#270/#271/#273)",
-    "Phase 5 saṃvara — trust-boundary & sandbox hardening, full DoD signed off (2.27.0)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
