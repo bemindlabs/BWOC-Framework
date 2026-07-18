@@ -133,6 +133,15 @@ pub(crate) fn api_key_from_secrets(path: &std::path::Path, section: &str) -> Opt
 /// stops at `end_turn` well before it for normal replies.
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
+/// Per-call deadline for the **non-streaming** `complete()` path. The shared
+/// client deliberately carries no reqwest `.timeout()` (it would cut a
+/// legitimately-minutes-long `stream()` body mid-flight), so `complete()` guards
+/// itself with an explicit deadline instead — mirroring the 120s bound the
+/// Ollama-compatible client applies. Without it, a server that completes the
+/// TCP/TLS handshake then stalls before the first byte hangs the turn forever,
+/// bypassing retry/backoff/budget. Matches `super::client::REQUEST_TIMEOUT`.
+const COMPLETE_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Real HTTP client speaking Anthropic's Messages API.
 #[derive(Debug, Clone)]
 pub struct AnthropicClient {
@@ -231,22 +240,35 @@ impl ProviderClient for AnthropicClient {
         if let Some(b) = beta {
             req = req.header("anthropic-beta", b);
         }
-        let resp =
-            req.json(&body).send().await.map_err(|e| {
+
+        // Bound the whole non-streaming call (connect → send → read body →
+        // parse) with a per-call deadline — see COMPLETE_TIMEOUT. A stall
+        // surfaces as TransientProvider so the existing retry/backoff path sees
+        // it instead of the turn hanging forever.
+        let call = async {
+            let resp = req.json(&body).send().await.map_err(|e| {
                 HarnessError::TransientProvider(format!("HTTP request failed: {e}"))
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(super::client::classify_http_error(status.as_u16(), &text));
-        }
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                return Err(super::client::classify_http_error(status.as_u16(), &text));
+            }
 
-        let data: Value = resp
-            .json()
-            .await
-            .map_err(|e| HarnessError::Provider(format!("Failed to parse response: {e}")))?;
-        Ok(parse_completion(&data))
+            let data: Value = resp
+                .json()
+                .await
+                .map_err(|e| HarnessError::Provider(format!("Failed to parse response: {e}")))?;
+            Ok(parse_completion(&data))
+        };
+        match tokio::time::timeout(COMPLETE_TIMEOUT, call).await {
+            Ok(res) => res,
+            Err(_) => Err(HarnessError::TransientProvider(format!(
+                "Anthropic completion timed out after {}s",
+                COMPLETE_TIMEOUT.as_secs()
+            ))),
+        }
     }
 
     async fn stream(
@@ -681,6 +703,14 @@ fn translate_sse_event(
 mod tests {
     use super::*;
     use crate::provider::types::FunctionCall;
+
+    #[test]
+    fn complete_timeout_is_120s() {
+        // complete() carries its own deadline because the shared client has no
+        // reqwest `.timeout()` (that would cut the stream() body mid-flight).
+        // 120s matches the Ollama-compatible client's REQUEST_TIMEOUT.
+        assert_eq!(COMPLETE_TIMEOUT, Duration::from_secs(120));
+    }
 
     /// A whitespace-only key normalizes to empty (parity with
     /// `OllamaClient::with_api_key`), so `require_key` fails fast — the request is
