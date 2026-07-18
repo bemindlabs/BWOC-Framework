@@ -394,6 +394,16 @@ pub fn make_os_sandbox(worktree_root: &Path) -> Box<dyn OsSandbox> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let sandbox: Box<dyn OsSandbox> = {
         let _ = worktree_root;
+        // This factory is called once per turn (agent_loop::execute), so warn
+        // ONCE per process — on an unsupported target the noop is permanent, and
+        // a per-turn message would be pure log spam.
+        static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+        WARN_ONCE.call_once(|| {
+            eprintln!(
+                "[bwoc-harness] WARNING: no OS-level sandbox on this platform; \
+                 relying on the worktree-allowlist (path confinement) only."
+            );
+        });
         Box::new(NoopOsSandbox)
     };
 
