@@ -371,8 +371,22 @@ mod tests {
             path.to_string_lossy().into_owned()
         }
 
+        /// Serialize the subprocess tests against each other. Each forks/execs a
+        /// real fake-CLI child; under a highly parallel test runner (cargo's
+        /// default on a many-core box) the concurrent fork/exec load makes spawns
+        /// flake with transient timeouts (issue #334). Taking this guard runs them
+        /// one at a time — removing the contention while still exercising the real
+        /// subprocess path. Async mutex so the guard is held across the `.await`s;
+        /// it protects no data, so poisoning is irrelevant.
+        static SPAWN_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+        async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+            SPAWN_SERIAL.lock().await
+        }
+
         #[tokio::test]
         async fn complete_parses_json_envelope() {
+            let _serial = serial().await;
             let dir = tempfile::tempdir().unwrap();
             let cli = fake_cli(
                 dir.path(),
@@ -396,6 +410,7 @@ mod tests {
 
         #[tokio::test]
         async fn complete_falls_back_to_raw_stdout() {
+            let _serial = serial().await;
             let dir = tempfile::tempdir().unwrap();
             let cli = fake_cli(dir.path(), r#"cat > /dev/null; printf 'plain text reply'"#);
             let client = CliClient::new(cli);
@@ -411,6 +426,7 @@ mod tests {
 
         #[tokio::test]
         async fn is_error_envelope_becomes_provider_error() {
+            let _serial = serial().await;
             let dir = tempfile::tempdir().unwrap();
             let cli = fake_cli(
                 dir.path(),
@@ -426,6 +442,7 @@ mod tests {
 
         #[tokio::test]
         async fn nonzero_exit_surfaces_stderr() {
+            let _serial = serial().await;
             let dir = tempfile::tempdir().unwrap();
             let cli = fake_cli(dir.path(), r#"cat > /dev/null; echo 'boom' >&2; exit 3"#);
             let client = CliClient::new(cli);
@@ -438,6 +455,7 @@ mod tests {
 
         #[tokio::test]
         async fn unknown_model_maps_to_model_not_found() {
+            let _serial = serial().await;
             let dir = tempfile::tempdir().unwrap();
             let cli = fake_cli(
                 dir.path(),
@@ -453,6 +471,7 @@ mod tests {
 
         #[tokio::test]
         async fn missing_binary_is_clear_error() {
+            let _serial = serial().await;
             let client = CliClient::new("/nonexistent/definitely-not-a-cli");
             let err = client
                 .complete(vec![msg(Role::User, "hi")], vec![], "m1")
@@ -464,6 +483,7 @@ mod tests {
         #[tokio::test]
         async fn stream_is_single_full_chunk() {
             use futures_util::StreamExt;
+            let _serial = serial().await;
             let dir = tempfile::tempdir().unwrap();
             let cli = fake_cli(
                 dir.path(),
@@ -481,6 +501,7 @@ mod tests {
 
         #[tokio::test]
         async fn validate_model_checks_binary() {
+            let _serial = serial().await;
             let dir = tempfile::tempdir().unwrap();
             let cli = fake_cli(dir.path(), "exit 0");
             assert!(CliClient::new(cli).validate_model("any").await.is_ok());

@@ -1353,30 +1353,45 @@ mod tests {
     fn nproc_usage_counts_threads_not_processes() {
         use std::sync::{Arc, Barrier};
         const N: usize = 24;
-        let before = current_uid_proc_count();
-        // `live` releases once all N threads are running; `done` holds them alive
-        // until main has measured.
-        let live = Arc::new(Barrier::new(N + 1));
-        let done = Arc::new(Barrier::new(N + 1));
-        let handles: Vec<_> = (0..N)
-            .map(|_| {
-                let (l, d) = (live.clone(), done.clone());
-                std::thread::spawn(move || {
-                    l.wait();
-                    d.wait();
+        const THRESHOLD: u64 = (N as u64) * 3 / 4;
+
+        // Under heavy ambient test-thread churn (a many-core box at default
+        // parallelism), a single before/during window can be perturbed by
+        // unrelated tasks spawning/exiting between the two reads (issue #334).
+        // The invariant — "spawning N threads raises the per-UID TASK count" —
+        // holds in at least one clean window, so take the best delta over a few
+        // attempts. Pre-fix (counting processes, not tasks) every attempt yields
+        // delta ~0, so this still fails deterministically on a real regression.
+        let mut best = 0u64;
+        for _ in 0..5 {
+            let before = current_uid_proc_count();
+            // `live` releases once all N threads are running; `done` holds them
+            // alive until main has measured.
+            let live = Arc::new(Barrier::new(N + 1));
+            let done = Arc::new(Barrier::new(N + 1));
+            let handles: Vec<_> = (0..N)
+                .map(|_| {
+                    let (l, d) = (live.clone(), done.clone());
+                    std::thread::spawn(move || {
+                        l.wait();
+                        d.wait();
+                    })
                 })
-            })
-            .collect();
-        live.wait(); // all N threads are now live
-        let during = current_uid_proc_count();
-        done.wait(); // let them exit
-        for h in handles {
-            h.join().unwrap();
+                .collect();
+            live.wait(); // all N threads are now live
+            let during = current_uid_proc_count();
+            done.wait(); // let them exit
+            for h in handles {
+                h.join().unwrap();
+            }
+            best = best.max(during.saturating_sub(before));
+            if best >= THRESHOLD {
+                return;
+            }
         }
-        assert!(
-            during >= before + (N as u64) * 3 / 4,
-            "task count must track the {N} live threads (before={before}, during={during}); \
-             counting processes alone would not move"
+        panic!(
+            "task count never tracked the {N} live threads across retries \
+             (best delta={best}, need {THRESHOLD}); counting processes alone would not move"
         );
     }
 
