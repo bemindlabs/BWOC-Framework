@@ -92,6 +92,17 @@ jobs:
       # (never silent-pass). cfg(unix) → it compiles to nothing on Windows.
       # Serial for the same t17 reason — the suite is roundtrip-based.
       - run: cargo test -p bwoc-harness --features test-redteam --test sandbox_escape -- --test-threads=1
+      # Phase 5 t6 — setrlimit bomb-containment PROOF. The bomb_* tests are
+      # default-OFF (destructive-by-intent) and skip unless BWOC_T6_RUN_BOMBS=1,
+      # so — exactly like the t9 cgroup bombs below — enable them explicitly here.
+      # Each bomb is bounded (fixed iteration/byte/process budget, cannot hang).
+      # Serial per t17. The RLIMIT_AS mem bomb is Linux-only (macOS rejects
+      # RLIMIT_AS with EINVAL) and cfg-gates itself; cfg(unix) → the whole binary
+      # compiles to nothing on Windows.
+      - name: t6 setrlimit bomb-containment (serial)
+        env:
+          BWOC_T6_RUN_BOMBS: "1"
+        run: cargo test -p bwoc-harness --test resource_limits -- --test-threads=1 --nocapture
 
   # Phase 5 t9 — cgroup v2 `pids.max` ENFORCEMENT proof. Two jobs ATTEMPT real
   # enforcement (binding condition 3), in the mandated order:
