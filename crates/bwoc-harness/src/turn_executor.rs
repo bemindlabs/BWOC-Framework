@@ -874,6 +874,16 @@ fn roundtrip(
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let jail_status = {
         let _ = &jail_spec;
+        // Other-unix targets only (this whole path is cfg(unix); Windows goes
+        // through the in-process fallback and is warned by `make_os_sandbox`).
+        // Warn once per process — the executor spawns per turn.
+        static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+        WARN_ONCE.call_once(|| {
+            eprintln!(
+                "[bwoc-harness:t7a] WARNING: no FS jail on this platform; turn-executor runs WITHOUT \
+                 OS-level read/write confinement (path-confinement only). [Phase 5 t7a/C1]"
+            );
+        });
         JailStatus::Unavailable
     };
 

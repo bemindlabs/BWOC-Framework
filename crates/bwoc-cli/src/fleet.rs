@@ -105,6 +105,10 @@ pub fn run(args: FleetHealthArgs) -> i32 {
         }
     };
 
+    if let Err(code) = crate::workspace::ensure_workspace(&workspace, "bwoc fleet health") {
+        return code;
+    }
+
     let registry = match AgentsRegistry::load(&workspace) {
         Ok(r) => r,
         Err(e) => {
@@ -747,6 +751,9 @@ pub fn status(args: FleetStatusArgs) -> i32 {
             return 2;
         }
     };
+    if let Err(code) = crate::workspace::ensure_workspace(&workspace, "bwoc fleet status") {
+        return code;
+    }
     let registry = match AgentsRegistry::load(&workspace) {
         Ok(r) => r,
         Err(e) => {

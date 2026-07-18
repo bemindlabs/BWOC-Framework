@@ -162,7 +162,12 @@ pub fn resolve_litellm_api_key() -> String {
 /// retry/backoff/budget logic entirely. Bounding the request lets the timeout
 /// surface as a `reqwest` error, which the `send().await` arms below map to
 /// [`HarnessError::TransientProvider`] so the existing retry path can see it.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+///
+/// `pub(crate)` so the Anthropic client — which cannot use reqwest's
+/// `.timeout()` (it would cut the SSE stream body) and instead wraps its
+/// non-streaming `complete()` in a `tokio::time::timeout` — shares this single
+/// source of truth rather than duplicating the value.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Real HTTP client speaking the OpenAI-compat API.
 ///
