@@ -31,6 +31,20 @@ pub const ENV_ALLOWLIST: &[&str] = &[
     "RUSTUP_HOME",
     "RUST_LOG",
     "RUST_BACKTRACE",
+    // Windows essentials. Without these an `env_clear`d child cannot find its
+    // own executable (`Path`), locate the system directory (`SystemRoot` /
+    // `windir`), or resolve the command interpreter (`COMSPEC`). Matched
+    // case-insensitively (see `is_allowlisted`), so `Path` == `PATH`; harmless
+    // on Unix where these vars are simply absent. None carry a credential.
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
     // Git identity (non-sensitive).
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
@@ -80,15 +94,22 @@ pub const ENV_SENSITIVE_PATTERNS: &[&str] = &[
 /// - Passes through only keys in [`ENV_ALLOWLIST`].
 /// - Additionally drops any key matching a sensitive pattern (case-insensitive).
 ///
+/// Case-insensitive [`ENV_ALLOWLIST`] membership. Windows env keys differ in
+/// case from the Unix canon (`Path` vs `PATH`, `SystemRoot` vs `SYSTEMROOT`
+/// depending on how they were set), so an exact match would drop them under
+/// `env_clear()` and break child startup on Windows.
+pub fn is_allowlisted(key: &str) -> bool {
+    ENV_ALLOWLIST.iter().any(|a| a.eq_ignore_ascii_case(key))
+}
+
 /// Intended to be applied as `Command::env_clear().envs(scrub_env())` so the
 /// child starts from a known-empty environment, not the inherited one.
 pub fn scrub_env() -> HashMap<String, String> {
     std::env::vars()
         .filter(|(k, _)| {
             let upper = k.to_uppercase();
-            let in_allowlist = ENV_ALLOWLIST.contains(&k.as_str());
             let is_sensitive = ENV_SENSITIVE_PATTERNS.iter().any(|p| upper.contains(*p));
-            in_allowlist && !is_sensitive
+            is_allowlisted(k) && !is_sensitive
         })
         .collect()
 }
@@ -103,7 +124,7 @@ mod tests {
     // rule `scrub_env` applies.
     fn keep(k: &str) -> bool {
         let upper = k.to_uppercase();
-        ENV_ALLOWLIST.contains(&k) && !ENV_SENSITIVE_PATTERNS.iter().any(|p| upper.contains(*p))
+        is_allowlisted(k) && !ENV_SENSITIVE_PATTERNS.iter().any(|p| upper.contains(*p))
     }
 
     #[test]
@@ -116,6 +137,19 @@ mod tests {
         assert!(!keep("MY_API_KEY"));
         // Not in the allowlist at all → dropped even though it's non-sensitive.
         assert!(!keep("GITHUB_ACTIONS"));
+    }
+
+    #[test]
+    fn keeps_windows_essentials_case_insensitively() {
+        // Windows presents these in mixed case; an exact-match allowlist would
+        // drop them under env_clear and break child startup on Windows.
+        assert!(keep("Path"), "Windows `Path` must match `PATH`");
+        assert!(keep("SystemRoot"));
+        assert!(keep("windir"));
+        assert!(keep("COMSPEC"));
+        assert!(keep("USERPROFILE"));
+        // Case-insensitivity must not open the allowlist to arbitrary vars.
+        assert!(!keep("SomeRandomVar"));
     }
 
     /// Phase 5 t7a / C6 — agent/session sockets must never reach the child:
@@ -149,7 +183,7 @@ mod tests {
         // contain allowlisted, non-sensitive keys.
         for (k, _) in scrub_env() {
             assert!(
-                ENV_ALLOWLIST.contains(&k.as_str()),
+                is_allowlisted(&k),
                 "scrub_env leaked non-allowlisted key: {k}"
             );
             let upper = k.to_uppercase();

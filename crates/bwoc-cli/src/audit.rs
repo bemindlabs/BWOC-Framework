@@ -1090,7 +1090,7 @@ mod tests {
                 continue;
             }
             assert!(
-                bwoc_core::env_scrub::ENV_ALLOWLIST.contains(&k.as_str()),
+                bwoc_core::env_scrub::is_allowlisted(k),
                 "audit plugin would inherit non-allowlisted var `{k}` — env scrub bypassed"
             );
         }
