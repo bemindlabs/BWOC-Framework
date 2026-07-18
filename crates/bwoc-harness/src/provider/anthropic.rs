@@ -136,11 +136,14 @@ const DEFAULT_MAX_TOKENS: u32 = 8192;
 /// Per-call deadline for the **non-streaming** `complete()` path. The shared
 /// client deliberately carries no reqwest `.timeout()` (it would cut a
 /// legitimately-minutes-long `stream()` body mid-flight), so `complete()` guards
-/// itself with an explicit deadline instead — mirroring the 120s bound the
-/// Ollama-compatible client applies. Without it, a server that completes the
-/// TCP/TLS handshake then stalls before the first byte hangs the turn forever,
-/// bypassing retry/backoff/budget. Matches `super::client::REQUEST_TIMEOUT`.
-const COMPLETE_TIMEOUT: Duration = Duration::from_secs(120);
+/// itself with an explicit deadline instead. Without it, a server that completes
+/// the TCP/TLS handshake then stalls before the first byte hangs the turn
+/// forever, bypassing retry/backoff/budget.
+///
+/// Defined as the Ollama-compatible client's `REQUEST_TIMEOUT` so there is one
+/// source of truth — the compiler keeps the two in lock-step (no doc-only
+/// "matches …" claim that can silently drift).
+const COMPLETE_TIMEOUT: Duration = super::client::REQUEST_TIMEOUT;
 
 /// Real HTTP client speaking Anthropic's Messages API.
 #[derive(Debug, Clone)]
@@ -705,10 +708,13 @@ mod tests {
     use crate::provider::types::FunctionCall;
 
     #[test]
-    fn complete_timeout_is_120s() {
+    fn complete_timeout_matches_shared_request_timeout() {
         // complete() carries its own deadline because the shared client has no
-        // reqwest `.timeout()` (that would cut the stream() body mid-flight).
-        // 120s matches the Ollama-compatible client's REQUEST_TIMEOUT.
+        // reqwest `.timeout()` (that would cut the stream() body mid-flight). It
+        // reuses REQUEST_TIMEOUT as the single source of truth (compiler-enforced,
+        // not a doc claim); assert the concrete value too so an unintended change
+        // to the shared const is visible here.
+        assert_eq!(COMPLETE_TIMEOUT, super::super::client::REQUEST_TIMEOUT);
         assert_eq!(COMPLETE_TIMEOUT, Duration::from_secs(120));
     }
 
