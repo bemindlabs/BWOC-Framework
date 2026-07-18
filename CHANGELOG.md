@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.18-0] — 2026-07-18 — 2.32.0
+
 ### Added
 
 - **`bwoc agent run --as-user <user> <agent>`** (issue #322): launch an agent session as an unprivileged user on a root-only VPS, where `--dangerously-skip-permissions` refuses to run as root. From root it validates the target user, drops privilege via `runuser`, and launches in the agent's own directory (default `bwoc-agent --serve`, or an explicit `-- <cmd>` like a remote-control session). Conservative by design — Unix-only, root-required, and it does **not** create the user or `chown` the workspace (it warns if the agent dir isn't owned by the user); those one-time steps stay in the new [`DEPLOYMENT`](docs/en/DEPLOYMENT.en.md) guide (also added this cycle).
@@ -18,6 +20,15 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 - **Warm task execution in `bwoc-agent --serve`** (issue #301, PR B of 3, opt-in `BWOC_WARM=1`, default off): when auto-claim wins a Saṅgha task, it runs in a **resident `bwoc-harness --headless`** (lazy-spawned, idle-reaped after 600s, respawned on demand) instead of cold-starting / tmux-waking — eliminating per-task backend cold-start. Trusted task path only (`Principal::LocalOperator`); untrusted gateway input keeps its existing read-only `--chat` + auto-deny path. Confined backends only (ambient `cli` refused); `requires_plan` tasks are skipped to preserve the Pavāraṇā lead-approval gate. Completion is recorded via `bwoc task complete`.
 - **`bwoc-harness --headless`** — a served/warm session mode (issue #301, PR A of 3): the same multi-turn `chat_proto` loop as `--chat`, but driven by a machine frontend instead of a human. `ask`-mode tools auto-approve so a turn never blocks on a permission prompt, while guardrails, policy `deny` rules, and the worktree sandbox still confine it. Conflicts with `--unrestricted` (which would lift that sandbox). This is the standalone warm loop; daemon supervision (resident process, lazy spawn + idle-exit, inbox routing) follows in PR B.
+
+### Fixed
+
+- **Env scrub before spawning MCP servers, made Windows-safe** (issue #336): `StdioTransport::spawn` now `env_clear`s and re-injects only the `scrub_env` allowlist, so a third-party MCP server no longer inherits `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/every `*TOKEN*/*SECRET*/*KEY*`. The allowlist is now matched case-insensitively and carries the Windows essentials (`Path`, `SystemRoot`, `COMSPEC`, …) so `env_clear`'d children still start on Windows — fixing `run_command`/audit there too.
+- **Bounded Anthropic `complete()`** (issue #338): the non-streaming path now has a per-call `tokio::time::timeout` (shared `REQUEST_TIMEOUT`, 120s), so a server that stalls before the first byte surfaces as `TransientProvider` and retries instead of hanging the turn forever. `stream()` is untouched.
+- **`bwoc list` / `fleet health|status` error on an invalid `--workspace`** (issue #339) instead of silently reporting an empty, healthy-looking fleet with exit 0 — a bogus path now fails loud with exit 2.
+- **Warn when the OS sandbox/jail is unavailable** on unsupported targets (issue #337): the `NoopOsSandbox` / `JailStatus::Unavailable` fallbacks now emit a one-time warning (Windows relies on path-confinement only) instead of degrading silently.
+- **t6 `setrlimit` bomb-containment tests now run in CI** (issue #335): `BWOC_T6_RUN_BOMBS=1` is exported for a dedicated serial step, so containment is proven by an actual fork/mem/cpu/fsize bomb, not just a value snapshot.
+- **Hardened the parallelism-flaky harness tests** (issue #334): the CLI subprocess tests are serialized behind an async mutex and the `nproc` task-count test takes the best of a few attempts, so they pass at default parallelism, not only under `--test-threads=1`.
 
 ## [v2026.6.15-0] — 2026-06-15 — 2.31.0
 
