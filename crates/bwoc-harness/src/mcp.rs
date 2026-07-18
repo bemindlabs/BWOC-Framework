@@ -415,6 +415,33 @@ mod tests {
         assert_eq!(envs, crate::sandbox::scrub_env());
     }
 
+    // Behavioral proof that `env_clear()` actually keeps inherited secrets out of
+    // the child (the get_envs test above inspects only the explicitly-set vars,
+    // so it alone would still pass if `.env_clear()` were removed). Unix-only:
+    // spawns a real `/bin/sh -c env` and reads the child's actual environment.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_child_does_not_inherit_ambient_secrets() {
+        // SAFETY: set/removed around a single spawn; the bwoc-harness suite runs
+        // serially (--test-threads=1) in CI. The value is a marker, not a real
+        // secret. The name is neither allowlisted nor sensitive-pattern-matched,
+        // so only `env_clear` can keep it out of the child — exactly what we test.
+        unsafe { std::env::set_var("BWOC_MCP_LEAK_CANARY", "must-not-reach-child") };
+        let out = StdioTransport::scrubbed_command("/bin/sh", &["-c".into(), "env".into()])
+            .output()
+            .await
+            .expect("spawn env dump");
+        unsafe { std::env::remove_var("BWOC_MCP_LEAK_CANARY") };
+
+        let env = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !env.contains("BWOC_MCP_LEAK_CANARY"),
+            "ambient var leaked into the MCP child despite env_clear:\n{env}"
+        );
+        // PATH must still reach the child so the server can find its executable.
+        assert!(env.contains("PATH="), "PATH should pass through:\n{env}");
+    }
+
     #[tokio::test]
     async fn register_tools_into_registry_with_prefixed_name() {
         let client = McpClient::new(Arc::new(MockTransport::new()));
