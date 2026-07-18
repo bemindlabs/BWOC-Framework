@@ -61,13 +61,34 @@ pub struct StdioTransport {
 }
 
 impl StdioTransport {
-    /// Spawn `program args…` as an MCP server and connect to its stdio.
-    pub fn spawn(program: &str, args: &[String]) -> Result<Self, HarnessError> {
-        let mut child = tokio::process::Command::new(program)
-            .args(args)
+    /// Build the child `Command` with a **scrubbed** environment and piped
+    /// stdio. Factored out of [`Self::spawn`] so the env hygiene is unit-testable
+    /// without actually spawning a process.
+    fn scrubbed_command(program: &str, args: &[String]) -> tokio::process::Command {
+        let safe_env = crate::sandbox::scrub_env();
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
+            .env_clear()
+            .envs(&safe_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        cmd
+    }
+
+    /// Spawn `program args…` as an MCP server and connect to its stdio.
+    ///
+    /// The child's environment is **scrubbed** (`env_clear` + `scrub_env`
+    /// allowlist) before spawn, exactly like `run_sandboxed` and the
+    /// turn-executor grandchild. Without this a third-party MCP server binary
+    /// would inherit the harness's full environment — including
+    /// `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and every other
+    /// `*TOKEN*/*SECRET*/*KEY*` var — which it never needs and could exfiltrate.
+    /// A server that legitimately needs a service credential should receive it
+    /// via explicit per-server config (a future slice), never by ambient
+    /// inheritance.
+    pub fn spawn(program: &str, args: &[String]) -> Result<Self, HarnessError> {
+        let mut child = Self::scrubbed_command(program, args)
             .spawn()
             .map_err(|e| HarnessError::Other(format!("MCP spawn `{program}` failed: {e}")))?;
         let stdin = child
@@ -363,6 +384,35 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
         assert_eq!(tools[0].description, "echoes input");
+    }
+
+    #[test]
+    fn spawn_command_scrubs_environment() {
+        // The command an MCP server is spawned with must carry ONLY the
+        // scrub_env allowlist — never the harness's ambient credentials
+        // (issue #336). Inspect the built command's env without spawning.
+        let cmd = StdioTransport::scrubbed_command("true", &[]);
+        let envs: std::collections::HashMap<String, String> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| {
+                v.map(|v| (k.to_string_lossy().into(), v.to_string_lossy().into()))
+            })
+            .collect();
+
+        // No credential-shaped var may be present.
+        for k in envs.keys() {
+            let up = k.to_uppercase();
+            assert!(
+                !(up.contains("KEY")
+                    || up.contains("SECRET")
+                    || up.contains("TOKEN")
+                    || up.contains("PASSWORD")),
+                "sensitive-looking var `{k}` reached the MCP server command"
+            );
+        }
+        // And the env is exactly the scrub_env allowlist (env_clear applied).
+        assert_eq!(envs, crate::sandbox::scrub_env());
     }
 
     #[tokio::test]
