@@ -203,3 +203,6 @@ agents/
 projects/
 .bwoc/
 .scrum/
+
+# local session kickoff notes
+.kickoff.md
