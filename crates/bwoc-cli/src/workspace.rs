@@ -189,6 +189,42 @@ pub fn run_validate(args: ValidateArgs) -> i32 {
     if report.violations.is_empty() { 0 } else { 2 }
 }
 
+/// Validate that a resolved workspace root is a real BWOC workspace before use.
+///
+/// `find_workspace_root` / `resolve_workspace` return an **explicit** `--workspace`
+/// (or `BWOC_WORKSPACE`) value verbatim, without checking it exists — only the
+/// ancestor-walk fallback validates `.bwoc/workspace.toml`. A bogus explicit path
+/// then loads an empty registry (`AgentsRegistry::load` treats a missing
+/// `agents.toml` as empty) and the command reports a false "empty, healthy"
+/// result with exit 0 (issue #339). This makes that case fail loud instead.
+///
+/// On failure prints a clear error under `cmd` and returns the exit code to
+/// propagate (2 — a usage/argument error).
+pub(crate) fn ensure_workspace(root: &Path, cmd: &str) -> Result<(), i32> {
+    if !root.exists() {
+        eprintln!("{cmd}: workspace path not found: {}", root.display());
+        return Err(2);
+    }
+    if !root.is_dir() {
+        eprintln!(
+            "{cmd}: workspace path is not a directory: {}",
+            root.display()
+        );
+        return Err(2);
+    }
+    // `.is_file()` (not `.exists()`) so a *directory* named `workspace.toml`
+    // doesn't slip through as a valid workspace.
+    if !root.join(".bwoc/workspace.toml").is_file() {
+        eprintln!(
+            "{cmd}: not a BWOC workspace (no .bwoc/workspace.toml): {}. \
+             Pass a valid --workspace path or run `bwoc init` first.",
+            root.display()
+        );
+        return Err(2);
+    }
+    Ok(())
+}
+
 pub fn run_list(args: ListArgs) -> i32 {
     let bundle = i18n::bundle_for(&args.lang);
 
@@ -200,6 +236,10 @@ pub fn run_list(args: ListArgs) -> i32 {
         );
         return 2;
     };
+
+    if let Err(code) = ensure_workspace(&root, "bwoc list") {
+        return code;
+    }
 
     let registry = match AgentsRegistry::load(&root) {
         Ok(r) => r,
@@ -1034,6 +1074,43 @@ agents_dir = "agents"
         assert_eq!(explicit, Some(root.join("explicit")));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_workspace_rejects_missing_and_non_workspace_paths() {
+        // A path that does not exist → Err(2).
+        let missing_base = fresh_dir("ensure-missing");
+        assert_eq!(
+            ensure_workspace(&missing_base.join("gone"), "bwoc list"),
+            Err(2)
+        );
+
+        // A path that exists but is a file (not a dir) → Err(2).
+        let file_base = fresh_dir("ensure-file");
+        let as_file = file_base.join("afile");
+        fs::write(&as_file, "x").unwrap();
+        assert_eq!(ensure_workspace(&as_file, "bwoc list"), Err(2));
+
+        // A real dir with no .bwoc/workspace.toml → Err(2) (the #339 case: a
+        // bogus explicit --workspace must not masquerade as an empty workspace).
+        let bare = fresh_dir("ensure-bare");
+        assert_eq!(ensure_workspace(&bare, "bwoc list"), Err(2));
+
+        // A real workspace → Ok.
+        let ws = fresh_dir("ensure-ok");
+        let dot = ws.join(".bwoc");
+        fs::create_dir_all(&dot).unwrap();
+        fs::write(
+            dot.join("workspace.toml"),
+            "[workspace]\nname=\"x\"\nversion=\"0.1.0\"\ncreated=\"x\"\n",
+        )
+        .unwrap();
+        assert_eq!(ensure_workspace(&ws, "bwoc list"), Ok(()));
+
+        let _ = fs::remove_dir_all(&missing_base);
+        let _ = fs::remove_dir_all(&file_base);
+        let _ = fs::remove_dir_all(&bare);
+        let _ = fs::remove_dir_all(&ws);
     }
 
     #[test]
