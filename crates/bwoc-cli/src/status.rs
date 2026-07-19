@@ -203,6 +203,9 @@ fn emit_json(root: &Path, registry: &AgentsRegistry, name: Option<&str>) -> i32 
                 "out_of_scope": out_of_scope,
                 "running": running,
                 "uptime_seconds": uptime_seconds,
+                // Same resolver `bwoc list --json` uses, so detail views (and
+                // bwocd's /agents/:id/status consumers) match the list count.
+                "inbox_count": crate::livecheck::inbox_count(root, a),
                 "health": health_str,
                 "health_detail": health_detail,
                 "resources": {
