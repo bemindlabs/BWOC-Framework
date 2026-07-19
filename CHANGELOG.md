@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.19-0] — 2026-07-19 — 2.32.1
+
+### Fixed
+
+- **`--chat` / `--headless` now resolve the `primaryModel: "auto"` sentinel** (issue #347, PR #348): the batch `run()` path resolved `auto` via `model_select::resolve_auto` before validating and running, but the chat path validated and looped on the raw `"auto"` string, so an `auto`-model agent couldn't chat (validation errored, or with `--skip-model-check` the provider rejected the literal `"auto"`). `run_chat_mode` now resolves the sentinel the same way, before `validate_model` and before building the session. Surfaced by the bwoc-vscode-extension chat feature.
+
 ## [v2026.7.18-0] — 2026-07-18 — 2.32.0
 
 ### Added
