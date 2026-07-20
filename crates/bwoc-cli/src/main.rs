@@ -1473,6 +1473,12 @@ struct RunCliArgs {
     /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
     workspace: Option<PathBuf>,
+    /// Directory to run the agent in. Default: the agent's own directory (jailed).
+    /// Pass a path (relative resolves against the workspace root; `.` = workspace
+    /// root) to let the task touch shared files like `projects/` or `wiki/`. The
+    /// resolved path must be an existing directory inside the workspace.
+    #[arg(long = "workdir")]
+    workdir: Option<PathBuf>,
 }
 
 impl From<RunCliArgs> for run::RunArgs {
@@ -1483,6 +1489,7 @@ impl From<RunCliArgs> for run::RunArgs {
             json: a.json,
             timeout_secs: a.timeout,
             workspace: a.workspace,
+            workdir: a.workdir,
         }
     }
 }

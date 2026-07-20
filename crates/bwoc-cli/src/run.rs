@@ -47,6 +47,12 @@ pub struct RunArgs {
     pub timeout_secs: Option<u64>,
     /// Workspace override — resolution follows the standard chain when `None`.
     pub workspace: Option<PathBuf>,
+    /// Working directory for the run. `None` (default) jails the agent to its own
+    /// directory — the safe, blast-radius-minimal default. `Some(p)` runs from
+    /// `p` (relative resolved against the workspace root) so a task can touch
+    /// shared workspace files (`projects/`, `wiki/`); the resolved path must be an
+    /// existing directory **inside** the workspace root — escaping is refused.
+    pub workdir: Option<PathBuf>,
 }
 
 // ── Result types ─────────────────────────────────────────────────────────────
@@ -116,6 +122,11 @@ pub enum RunError {
     Io(#[from] io::Error),
     #[error("task timed out after {secs}s")]
     Timeout { secs: u64 },
+    #[error(
+        "--workdir {0} is not a directory inside the workspace \
+         (relative paths resolve against the workspace root; escaping it is refused)"
+    )]
+    BadWorkdir(PathBuf),
 }
 
 // ── CommandRunner seam ────────────────────────────────────────────────────────
@@ -246,9 +257,14 @@ fn kill_child(pid: u32) {
 /// Returns `Err(RunError::HeadlessUnsupported)` for backends with no confirmed
 /// non-interactive flag.  Returns `Err(RunError::HarnessNotFound)` when the
 /// Ollama harness cannot be located.
+/// `config_dir` is always the agent's own directory — the manifest
+/// (`config.manifest.json`) is the agent's identity and never moves. `work_dir`
+/// is where the agent *runs* (its process cwd + the harness `--workdir` FS-jail
+/// root); it equals `config_dir` unless the caller widened it via `--workdir`.
 pub fn build_command(
     backend: Backend,
-    agent_dir: &Path,
+    config_dir: &Path,
+    work_dir: &Path,
     task: &str,
     primary_model: &str,
 ) -> Result<(String, Vec<String>), RunError> {
@@ -259,7 +275,7 @@ pub fn build_command(
             // Pass through the manifest's reasoningEffort as `--effort <level>`
             // (Claude Opus 4.8 effort control: low|medium|high|xhigh|max).
             // Absent manifest / field leaves Claude on its default effort.
-            let manifest_path = agent_dir.join("config.manifest.json");
+            let manifest_path = config_dir.join("config.manifest.json");
             if let Ok(m) = Manifest::load_from_path(&manifest_path) {
                 if let Some(effort) = m.reasoning_effort {
                     args.push("--effort".to_string());
@@ -273,14 +289,14 @@ pub fn build_command(
             let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
             let mut args = vec![
                 "--workdir".to_string(),
-                agent_dir.to_string_lossy().into_owned(),
+                work_dir.to_string_lossy().into_owned(),
                 "--task".to_string(),
                 task.to_string(),
                 "--model".to_string(),
                 primary_model.to_string(),
             ];
             // Honour baseUrl from config.manifest.json when present.
-            let manifest_path = agent_dir.join("config.manifest.json");
+            let manifest_path = config_dir.join("config.manifest.json");
             if let Ok(m) = Manifest::load_from_path(&manifest_path) {
                 if let Some(url) = m.base_url {
                     args.push("--endpoint".to_string());
@@ -292,14 +308,14 @@ pub fn build_command(
         Backend::OpenAiCompatible => {
             let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
             // baseUrl is required for openai-compatible.
-            let manifest_path = agent_dir.join("config.manifest.json");
+            let manifest_path = config_dir.join("config.manifest.json");
             let base_url = Manifest::load_from_path(&manifest_path)
                 .ok()
                 .and_then(|m| m.base_url)
                 .ok_or(RunError::MissingBaseUrl(manifest_path))?;
             let args = vec![
                 "--workdir".to_string(),
-                agent_dir.to_string_lossy().into_owned(),
+                work_dir.to_string_lossy().into_owned(),
                 "--task".to_string(),
                 task.to_string(),
                 "--model".to_string(),
@@ -317,7 +333,7 @@ pub fn build_command(
             // https://openrouter.ai/api/v1).
             let mut args = vec![
                 "--workdir".to_string(),
-                agent_dir.to_string_lossy().into_owned(),
+                work_dir.to_string_lossy().into_owned(),
                 "--task".to_string(),
                 task.to_string(),
                 "--model".to_string(),
@@ -325,7 +341,7 @@ pub fn build_command(
                 "--backend".to_string(),
                 "openrouter".to_string(),
             ];
-            let manifest_path = agent_dir.join("config.manifest.json");
+            let manifest_path = config_dir.join("config.manifest.json");
             if let Ok(m) = Manifest::load_from_path(&manifest_path) {
                 if let Some(url) = m.base_url {
                     args.push("--endpoint".to_string());
@@ -342,7 +358,7 @@ pub fn build_command(
             // `LITELLM_API_BASE` env or the LiteLLM default port).
             let mut args = vec![
                 "--workdir".to_string(),
-                agent_dir.to_string_lossy().into_owned(),
+                work_dir.to_string_lossy().into_owned(),
                 "--task".to_string(),
                 task.to_string(),
                 "--model".to_string(),
@@ -350,7 +366,7 @@ pub fn build_command(
                 "--backend".to_string(),
                 "litellm".to_string(),
             ];
-            let manifest_path = agent_dir.join("config.manifest.json");
+            let manifest_path = config_dir.join("config.manifest.json");
             if let Ok(m) = Manifest::load_from_path(&manifest_path) {
                 // Skip a blank/whitespace baseUrl so we never forward an empty
                 // `--endpoint` that would defeat the harness's env/default base.
@@ -454,18 +470,28 @@ pub fn execute(args: RunArgs, runner: &dyn CommandRunner) -> Result<(RunResult, 
 
     let agent_dir = workspace.join(&entry.path);
 
-    // Load manifest for primaryModel (needed by ollama dispatch).
+    // The run cwd: agent_dir by default (jailed), or the caller's --workdir
+    // (resolved + validated to stay inside the workspace root).
+    let work_dir = resolve_workdir(&workspace, args.workdir.as_deref(), &agent_dir)?;
+
+    // Load manifest for primaryModel (needed by ollama dispatch). The manifest is
+    // the agent's identity — always read from agent_dir, never from work_dir.
     let manifest_path = agent_dir.join("config.manifest.json");
     let manifest = Manifest::load_from_path(&manifest_path)
         .map_err(|e| RunError::ManifestMissing(manifest_path.clone(), e.to_string()))?;
 
-    let (program, cmd_args) =
-        build_command(backend, &agent_dir, &args.task, &manifest.primary_model)?;
+    let (program, cmd_args) = build_command(
+        backend,
+        &agent_dir,
+        &work_dir,
+        &args.task,
+        &manifest.primary_model,
+    )?;
 
     let arg_refs: Vec<&str> = cmd_args.iter().map(|s| s.as_str()).collect();
 
     let start = Instant::now();
-    let outcome = runner.run(&program, &arg_refs, &agent_dir, args.timeout_secs)?;
+    let outcome = runner.run(&program, &arg_refs, &work_dir, args.timeout_secs)?;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     let result = RunResult {
@@ -524,6 +550,38 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
     }
 }
 
+/// Resolve the `--workdir` override to the run cwd, or fall back to the agent's
+/// own directory (the jailed default). A relative override resolves against the
+/// workspace root; the result must be an existing directory that stays **inside**
+/// the workspace root — both sides are canonicalized so a `..` traversal can't
+/// escape the workspace (Sīla — the blast radius stays bounded to the workspace).
+fn resolve_workdir(
+    workspace: &Path,
+    workdir: Option<&Path>,
+    agent_dir: &Path,
+) -> Result<PathBuf, RunError> {
+    let Some(w) = workdir else {
+        return Ok(agent_dir.to_path_buf());
+    };
+    let candidate = if w.is_absolute() {
+        w.to_path_buf()
+    } else {
+        workspace.join(w)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .ok()
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| RunError::BadWorkdir(w.to_path_buf()))?;
+    let ws_canonical = workspace
+        .canonicalize()
+        .map_err(|_| RunError::BadWorkdir(w.to_path_buf()))?;
+    if !canonical.starts_with(&ws_canonical) {
+        return Err(RunError::BadWorkdir(w.to_path_buf()));
+    }
+    Ok(canonical)
+}
+
 /// Minimal JSON string escaping for the hand-rolled serializer.
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -559,6 +617,7 @@ mod tests {
         // Captured on first call.
         pub captured_program: std::cell::RefCell<Option<String>>,
         pub captured_args: std::cell::RefCell<Option<Vec<String>>>,
+        pub captured_cwd: std::cell::RefCell<Option<PathBuf>>,
     }
 
     impl MockCommandRunner {
@@ -568,6 +627,7 @@ mod tests {
                 output: output.to_string(),
                 captured_program: std::cell::RefCell::new(None),
                 captured_args: std::cell::RefCell::new(None),
+                captured_cwd: std::cell::RefCell::new(None),
             }
         }
         fn fail(code: i32) -> Self {
@@ -576,6 +636,7 @@ mod tests {
                 output: String::new(),
                 captured_program: std::cell::RefCell::new(None),
                 captured_args: std::cell::RefCell::new(None),
+                captured_cwd: std::cell::RefCell::new(None),
             }
         }
     }
@@ -585,11 +646,12 @@ mod tests {
             &self,
             program: &str,
             args: &[&str],
-            _cwd: &Path,
+            cwd: &Path,
             _timeout_secs: Option<u64>,
         ) -> Result<CommandOutcome, RunError> {
             *self.captured_program.borrow_mut() = Some(program.to_string());
             *self.captured_args.borrow_mut() = Some(args.iter().map(|s| s.to_string()).collect());
+            *self.captured_cwd.borrow_mut() = Some(cwd.to_path_buf());
             Ok(CommandOutcome {
                 exit_code: self.exit_code,
                 output: self.output.clone(),
@@ -653,6 +715,7 @@ mod tests {
         let (program, args) = build_command(
             Backend::Claude,
             tmp.path(),
+            tmp.path(),
             "hello world",
             "claude-opus-4-7",
         )
@@ -674,8 +737,14 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let (program, args) =
-            build_command(Backend::Claude, tmp.path(), "do it", "claude-opus-4-8").unwrap();
+        let (program, args) = build_command(
+            Backend::Claude,
+            tmp.path(),
+            tmp.path(),
+            "do it",
+            "claude-opus-4-8",
+        )
+        .unwrap();
         assert_eq!(program, "claude");
         // Effort flag sits between -p and the positional task.
         assert_eq!(args, ["-p", "--effort", "max", "do it"]);
@@ -684,7 +753,8 @@ mod tests {
     #[test]
     fn codex_returns_headless_unsupported() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let err = build_command(Backend::Codex, tmp.path(), "task", "gpt-5").unwrap_err();
+        let err =
+            build_command(Backend::Codex, tmp.path(), tmp.path(), "task", "gpt-5").unwrap_err();
         assert!(matches!(err, RunError::HeadlessUnsupported { ref backend } if backend == "codex"));
     }
 
@@ -693,6 +763,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let err = build_command(
             Backend::Antigravity,
+            tmp.path(),
             tmp.path(),
             "task",
             "gemini-3.5-flash-medium",
@@ -704,7 +775,8 @@ mod tests {
     #[test]
     fn kimi_returns_headless_unsupported() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let err = build_command(Backend::Kimi, tmp.path(), "task", "kimi-k2").unwrap_err();
+        let err =
+            build_command(Backend::Kimi, tmp.path(), tmp.path(), "task", "kimi-k2").unwrap_err();
         assert!(matches!(err, RunError::HeadlessUnsupported { ref backend } if backend == "kimi"));
     }
 
@@ -722,6 +794,7 @@ mod tests {
             json: false,
             timeout_secs: None,
             workspace: Some(root),
+            workdir: None,
         };
         let (result, _json) = execute(args, &runner).unwrap();
 
@@ -736,6 +809,110 @@ mod tests {
     }
 
     #[test]
+    fn default_workdir_jails_to_agent_dir() {
+        let (dir, root, agent_dir) = make_workspace("claude", "claude-opus-4-8");
+        let _keep = dir;
+        let runner = MockCommandRunner::ok("out");
+        let args = RunArgs {
+            agent: "test".to_string(),
+            task: "t".to_string(),
+            json: false,
+            timeout_secs: None,
+            workspace: Some(root),
+            workdir: None,
+        };
+        execute(args, &runner).unwrap();
+        let cwd = runner.captured_cwd.borrow().clone().unwrap();
+        assert_eq!(
+            cwd.canonicalize().unwrap(),
+            agent_dir.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn workdir_dot_widens_to_workspace_root() {
+        let (dir, root, _agent_dir) = make_workspace("claude", "claude-opus-4-8");
+        let _keep = dir;
+        let runner = MockCommandRunner::ok("out");
+        let args = RunArgs {
+            agent: "test".to_string(),
+            task: "t".to_string(),
+            json: false,
+            timeout_secs: None,
+            workspace: Some(root.clone()),
+            workdir: Some(PathBuf::from(".")),
+        };
+        execute(args, &runner).unwrap();
+        let cwd = runner.captured_cwd.borrow().clone().unwrap();
+        // `.` resolves against the workspace root, so the run cwd IS the root.
+        assert_eq!(cwd.canonicalize().unwrap(), root.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn harness_workdir_arg_follows_the_run_cwd() {
+        // For harness backends the `--workdir` arg is the FS-jail root — it must
+        // track the widened cwd, not stay pinned to agent_dir.
+        let (dir, root, _agent_dir) = make_workspace("ollama", "qwen2.5-coder");
+        let _keep = dir;
+        // The harness binary may be absent in CI; only assert when dispatch built.
+        let runner = MockCommandRunner::ok("out");
+        let args = RunArgs {
+            agent: "test".to_string(),
+            task: "t".to_string(),
+            json: false,
+            timeout_secs: None,
+            workspace: Some(root.clone()),
+            workdir: Some(PathBuf::from(".")),
+        };
+        match execute(args, &runner) {
+            Ok(_) => {
+                let cargs = runner.captured_args.borrow().clone().unwrap();
+                let i = cargs.iter().position(|a| a == "--workdir").unwrap();
+                assert_eq!(
+                    PathBuf::from(&cargs[i + 1]).canonicalize().unwrap(),
+                    root.canonicalize().unwrap()
+                );
+            }
+            Err(RunError::HarnessNotFound) => {} // harness not installed in this env
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn workdir_escaping_workspace_is_refused() {
+        let (dir, root, _agent_dir) = make_workspace("claude", "claude-opus-4-8");
+        let _keep = dir;
+        let runner = MockCommandRunner::ok("out");
+        let args = RunArgs {
+            agent: "test".to_string(),
+            task: "t".to_string(),
+            json: false,
+            timeout_secs: None,
+            workspace: Some(root),
+            workdir: Some(PathBuf::from("..")), // parent of the workspace root
+        };
+        let err = execute(args, &runner).unwrap_err();
+        assert!(matches!(err, RunError::BadWorkdir(_)));
+    }
+
+    #[test]
+    fn workdir_nonexistent_is_refused() {
+        let (dir, root, _agent_dir) = make_workspace("claude", "claude-opus-4-8");
+        let _keep = dir;
+        let runner = MockCommandRunner::ok("out");
+        let args = RunArgs {
+            agent: "test".to_string(),
+            task: "t".to_string(),
+            json: false,
+            timeout_secs: None,
+            workspace: Some(root),
+            workdir: Some(PathBuf::from("no/such/dir")),
+        };
+        let err = execute(args, &runner).unwrap_err();
+        assert!(matches!(err, RunError::BadWorkdir(_)));
+    }
+
+    #[test]
     fn non_zero_exit_code_preserved() {
         let (dir, root, _) = make_workspace("claude", "claude-sonnet-4-6");
         let _keep = dir;
@@ -747,6 +924,7 @@ mod tests {
             json: false,
             timeout_secs: None,
             workspace: Some(root),
+            workdir: None,
         };
         let (result, _) = execute(args, &runner).unwrap();
         assert_eq!(result.exit_code, 42);
@@ -764,6 +942,7 @@ mod tests {
             json: false,
             timeout_secs: None,
             workspace: Some(root),
+            workdir: None,
         };
         let err = execute(args, &runner).unwrap_err();
         assert!(matches!(err, RunError::AgentNotFound(_)));
@@ -781,6 +960,7 @@ mod tests {
             json: false,
             timeout_secs: None,
             workspace: Some(root),
+            workdir: None,
         };
         let err = execute(args, &runner).unwrap_err();
         assert!(matches!(err, RunError::HeadlessUnsupported { .. }));
@@ -844,6 +1024,7 @@ mod tests {
             json: false,
             timeout_secs: None,
             workspace: Some(root),
+            workdir: None,
         };
         let err = execute(args, &runner).unwrap_err();
         assert!(matches!(err, RunError::NoWorkspace));
