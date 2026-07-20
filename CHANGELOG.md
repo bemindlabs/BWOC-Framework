@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.20-0] — 2026-07-20 — 2.33.0
+
 ### Added
 
 - **`bwoc run --workdir <dir>`** — opt-in un-jail for cross-project headless tasks. By default `bwoc run` still spawns the agent in its own directory (the safe, blast-radius-minimal jail), so a headless agent can't touch shared workspace files (`projects/`, `wiki/`). Passing `--workdir` runs from another directory — relative paths resolve against the workspace root (`--workdir .` = the workspace root) — so a task that legitimately needs cross-project scope can edit those files. The resolved path must be an existing directory **inside** the workspace root (canonicalized; `..` escapes are refused). The widened dir applies to every backend: it becomes the process cwd for ambient backends (`claude -p`) and the harness `--workdir` FS-jail root for harness backends (the agent's `config.manifest.json` is always still read from its own directory).
