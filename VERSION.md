@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.32.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.7.1`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.33.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.8.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
-**Latest release:** [`v2026.7.19-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.19-0) *(2026-07-19 — **2.32.1**; patch — **harness chat auto-model fix**: `--chat`/`--headless` now resolve the `primaryModel: "auto"` sentinel like the batch path (#348), so auto-model agents can chat. Prior: `v2026.7.18-0` 2.32.0 — operability & hardening)*
+**Latest release:** [`v2026.7.20-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.20-0) *(2026-07-20 — **2.33.0**; minor — **`bwoc run --workdir`**: opt-in un-jail so a headless agent can run at the workspace root (or a project dir) and edit shared files (`projects/`, `wiki/`) — bounded inside the workspace, default still jailed to the agent dir (#352). Prior: `v2026.7.19-0` 2.32.1 — harness chat auto-model fix)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-07-19T05:37:45Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-07-20T14:41:24Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
