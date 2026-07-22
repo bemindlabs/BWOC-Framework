@@ -109,11 +109,15 @@ do_get() {
     --data-urlencode "fields=presentationId,title,slides(objectId)"
   gws_classify_status "get" "Presentation '${id}'"
 
+  # presentation_id + title are required-non-empty in the schema and are
+  # guaranteed on a 200 (gws_classify_status already exited on non-2xx). Project
+  # them RAW — no `// ""` fallback — so a contract violation surfaces as an
+  # explicit null the schema validator flags, rather than a fabricated "".
   printf '%s' "$HTTP_BODY" | jq '
     { ok: true, plugin: "gws-slides", operation: "get",
       presentation: {
         presentation_id: .presentationId,
-        title: (.title // ""),
+        title: .title,
         slide_count: ((.slides // []) | length),
         web_view_link: ("https://docs.google.com/presentation/d/" + (.presentationId // "") + "/edit")
       },
