@@ -1417,9 +1417,10 @@ fn resolve_docs_requests(
     verb: &str,
     json: bool,
 ) -> Result<serde_json::Value, i32> {
-    let raw = if let Some(path) = file {
+    // Name the actual source in every diagnostic — the JSON came from one of them.
+    let (raw, source) = if let Some(path) = file {
         match std::fs::read_to_string(path) {
-            Ok(s) => s,
+            Ok(s) => (s, "--requests-file"),
             Err(e) => {
                 return Err(usage_bad_field(
                     verb,
@@ -1430,7 +1431,7 @@ fn resolve_docs_requests(
             }
         }
     } else if let Some(s) = inline {
-        s.to_string()
+        (s.to_string(), "--requests")
     } else {
         return Err(usage_bad_field(
             verb,
@@ -1445,7 +1446,7 @@ fn resolve_docs_requests(
             return Err(usage_bad_field(
                 verb,
                 "requests_parse",
-                &format!("--requests is not valid JSON: {e}"),
+                &format!("{source} is not valid JSON: {e}"),
                 json,
             ));
         }
@@ -1455,13 +1456,13 @@ fn resolve_docs_requests(
         Some(_) => Err(usage_bad_field(
             verb,
             "requests_empty",
-            "--requests is an empty array — nothing to apply",
+            &format!("{source} is an empty array — nothing to apply"),
             json,
         )),
         None => Err(usage_bad_field(
             verb,
             "requests_not_array",
-            "--requests must be a JSON array of Docs API request objects",
+            &format!("{source} must be a JSON array of Docs API request objects"),
             json,
         )),
     }

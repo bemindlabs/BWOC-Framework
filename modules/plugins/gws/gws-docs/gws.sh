@@ -99,8 +99,11 @@ _require_document_id() {
     printf '%s\n' "$PLUGIN $OPERATION: .document_id is required (pass {\"document_id\":\"<id>\"})" >&2
     exit 2
   fi
-  if [[ ! "$id" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    printf '%s\n' "$PLUGIN $OPERATION: invalid document_id '$id' (expected [A-Za-z0-9_-])" >&2
+  # Match the CLI pre-check (is_valid_resource_id): 1..=512 chars of
+  # [A-Za-z0-9_-], no LEADING hyphen (so a crafted id can never inject a curl
+  # option or a path/query segment into the request URL).
+  if (( ${#id} > 512 )) || [[ ! "$id" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]*$ ]]; then
+    printf '%s\n' "$PLUGIN $OPERATION: invalid document_id '$id' (expected 1..=512 chars of [A-Za-z0-9_-], no leading hyphen)" >&2
     exit 2
   fi
 }
@@ -159,7 +162,9 @@ _post_batch_update() {
   printf '%s' "$HTTP_BODY" | jq --arg op "$op" --arg id "$document_id" --argjson n "$(printf '%s' "$requests" | jq 'length')" '
     { ok: true, plugin: "gws-docs", operation: $op,
       document_id: $id,
-      revision_id: (.writeControl.requiredRevisionId // .documentId // ""),
+      # batchUpdate only returns a revision under writeControl (when the request
+      # asked for it); absent → empty string. documentId is NOT a revision id.
+      revision_id: (.writeControl.requiredRevisionId // ""),
       requests_applied: $n,
       occurrences_changed: ([ (.replies // [])[] | .replaceAllText.occurrencesChanged // empty ] | add // 0),
       replies: (.replies // []) }'

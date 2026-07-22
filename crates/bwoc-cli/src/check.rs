@@ -3430,9 +3430,10 @@ impl GwsService {
             Self::Drive => "files",
             Self::Gmail => "threads",
             Self::Calendar => "events",
-            // gws-docs has no list verb; a captured `get` file is a bare Doc
-            // entry (or nests under `document`) — this key just needs to be
-            // distinct and is unused for envelope-array unwrapping.
+            // gws-docs has no list verb, so this key never matches a real
+            // envelope: a captured resource file is a bare Doc entry (validated
+            // via the `vec![&value]` fallback in audit_gws_resources). The key
+            // only needs to be distinct from the other services'.
             Self::Docs => "documents",
         }
     }
