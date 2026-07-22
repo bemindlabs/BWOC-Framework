@@ -59,7 +59,7 @@ The `council` kind was added in `BWOC-EPIC-5` as the framework's first **coordin
 
 The `figma` kind was added in `BWOC-EPIC-7` as a **read-mostly** integration with Figma's REST API. Like `jira` (and unlike `gcloud`, which reused `workflow`), it earns its own kind because it carries a normative [Figma Asset Mapping Schema](#figma-asset-mapping-schema) — a durable BWOC-owned relationship tying a Figma node to an exported artifact + design tokens; the rule is **own-kind when BWOC defines a normative schema over the integration, `workflow`-reuse when it is a passthrough with no BWOC-owned shape**. Unlike `jira`, `figma` never writes back to the external system: every verb either reads Figma (`fetch` / `tokens` / `status`) or writes **locally** (`export` drops a content-addressable image under `figma/exports/`), so it carries jira's schema discipline but none of its bidirectional-sync machinery — no ledger, no conflict policy, no operator-confirm gates. Auth is an operator personal access token (`BWOC_FIGMA_TOKEN` env / `.bwoc/secrets.toml`, shape-only in `auth.toml`, never committed). For the auth model, file-vs-team-library scope, REST rate-limit handling, and the export-caching strategy, see the [BWOC-61 design note](../../notes/2026-05-28_figma-plugin-architecture.md) — this spec declares the kind and the asset schema and does not duplicate that rationale.
 
-The `gws` kind was added in `BWOC-EPIC-13` as a **read-mostly** integration with Google Workspace REST APIs (Drive / Gmail / Calendar). Like `figma`, it earns its own kind because it carries normative [Workspace resource schemas](#workspace-resource-schema) (a Drive file, a Gmail thread, a Calendar event) + an OAuth scope model. It is **not** part of `gcloud`: gcloud reaches GCP *infrastructure* through the local `gcloud` CLI with ADC/service-account; `gws` reaches productivity *apps* through the Workspace REST APIs with **OAuth2 user-consent scopes** (`drive.readonly` / `gmail.readonly` / `calendar.readonly`) — a different auth family and surface entirely. It ships a credential-foundation plugin (`gws-auth`) that the per-service plugins (`gws-drive` / `gws-gmail` / `gws-calendar`) source, the gcloud-* family shape. Read-mostly: write verbs (send mail, create event, upload file) are deferred to future slices, each inheriting the [write-verb operator-confirm gate](#write-verbs--the-operator-confirm-gate-normative). OAuth token via `BWOC_GWS_TOKEN` env / `.bwoc/secrets/gws-token.json` (shape-only in `auth.toml`, never committed). For the OAuth model, per-service scopes, pagination, and rate-limit handling, see the [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) — this spec declares the kind and the resource schemas and does not duplicate that rationale.
+The `gws` kind was added in `BWOC-EPIC-13` as a **read-mostly** integration with Google Workspace REST APIs (Drive / Gmail / Calendar). Like `figma`, it earns its own kind because it carries normative [Workspace resource schemas](#workspace-resource-schema) (a Drive file, a Gmail thread, a Calendar event) + an OAuth scope model. It is **not** part of `gcloud`: gcloud reaches GCP *infrastructure* through the local `gcloud` CLI with ADC/service-account; `gws` reaches productivity *apps* through the Workspace REST APIs with **OAuth2 user-consent scopes** (`drive.readonly` / `gmail.readonly` / `calendar.readonly`) — a different auth family and surface entirely. It ships a credential-foundation plugin (`gws-auth`) that the per-service plugins (`gws-drive` / `gws-gmail` / `gws-calendar` / `gws-docs`) source, the gcloud-* family shape. Read-mostly for Drive / Gmail / Calendar (send mail, create event, upload file still deferred); `gws-docs` (`BWOC-354`) adds the first write path (`documents.batchUpdate`), carrying the [write-verb operator-confirm gate](#write-verbs--the-operator-confirm-gate-normative). OAuth token via `BWOC_GWS_TOKEN` env / `.bwoc/secrets/gws-token.json` (shape-only in `auth.toml`, never committed). For the OAuth model, per-service scopes, pagination, and rate-limit handling, see the [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) — this spec declares the kind and the resource schemas and does not duplicate that rationale.
 
 ### Write verbs — the operator-confirm gate (normative)
 
@@ -397,7 +397,7 @@ Optional fields are **omitted from the entry** when absent — a never-exported 
 
 ## Workspace Resource Schema
 
-A `gws` plugin surfaces Google Workspace resources read-mostly. Each service emits a **resource entry** in its own normative shape — the `gws` kind's contract, validated by `bwoc check` (per `BWOC-77`) and emitted by the `bwoc gws` verbs (per `BWOC-74`). The OAuth model, per-service scopes, pagination, and rate-limit handling live in the [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) and are not duplicated here. All three shapes follow the framework conventions: a stable id key, mutable projections refreshed each read, optional fields omitted (not `null`).
+A `gws` plugin surfaces Google Workspace resources. Most services are read-mostly; `gws-docs` (`BWOC-354`) adds the first **write path** (`documents.batchUpdate`), gated by the [write-verb operator-confirm gate](#write-verbs--the-operator-confirm-gate-normative). Each service emits a **resource entry** in its own normative shape — the `gws` kind's contract, validated by `bwoc check` (per `BWOC-77`) and emitted by the `bwoc gws` verbs (per `BWOC-74`). The OAuth model, per-service scopes, pagination, and rate-limit handling live in the [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) and are not duplicated here. Every shape follows the framework conventions: a stable id key, mutable projections refreshed each read, optional fields omitted (not `null`).
 
 ### Drive file
 
@@ -431,6 +431,17 @@ A `gws` plugin surfaces Google Workspace resources read-mostly. Each service emi
 | `start` | string (ISO 8601) | yes | Start time (or date for all-day). |
 | `end` | string (ISO 8601) | yes | End time. |
 | `attendees_count` | number | no | Number of attendees. Omitted when none. |
+
+### Google Doc
+
+Emitted by `gws-docs get` (read). The write verbs (`batch-update` / `replace-all-text`) return a write **receipt** — `document_id`, `revision_id`, `requests_applied`, `occurrences_changed` — not a resource entry (a receipt reports what changed, never the new body).
+
+| Field | Type | Required | Semantics |
+|---|---|---|---|
+| `document_id` | string | yes | **Stable key** — the Google Doc id. |
+| `title` | string | yes | Document title (mutable projection). |
+| `revision_id` | string | yes | Revision id at read time; write-conflict / cache signal. |
+| `web_view_link` | string | no | Browser URL for the document. Omitted when absent. |
 
 ### Example (Drive file)
 

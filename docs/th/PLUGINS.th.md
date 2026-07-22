@@ -59,7 +59,7 @@ Skill กับ plugin ใช้ substrate ร่วมกัน (TOML manifest,
 
 ประเภท `figma` เพิ่มเข้ามาใน `BWOC-EPIC-7` เป็น integration แบบ **อ่านเป็นหลัก (read-mostly)** กับ Figma REST API เช่นเดียวกับ `jira` (และต่างจาก `gcloud` ที่ reuse `workflow`) มันได้ kind ของตัวเองเพราะพก [สคีมา Figma Asset Mapping](#สคีมา-figma-asset-mapping) ที่เป็น normative — ความสัมพันธ์ที่ BWOC เป็นเจ้าของ ผูก Figma node กับ artifact ที่ export + design token; กฎคือ **ได้ kind ของตัวเองเมื่อ BWOC นิยาม normative schema เหนือ integration, reuse `workflow` เมื่อเป็น passthrough ที่ไม่มี shape ที่ BWOC เป็นเจ้าของ** ต่างจาก `jira`, `figma` ไม่เคยเขียนกลับไประบบภายนอก: ทุก verb อ่าน Figma (`fetch` / `tokens` / `status`) หรือเขียน **ในเครื่อง** (`export` วางรูป content-addressable ใต้ `figma/exports/`) จึงพกวินัย schema ของ jira แต่ไม่มี bidirectional-sync machinery — ไม่มี ledger, conflict policy, operator-confirm gate Auth เป็น personal access token ของ operator (`BWOC_FIGMA_TOKEN` env / `.bwoc/secrets.toml`, shape-only ใน `auth.toml`, ไม่เคย commit) auth model, ขอบเขต file-vs-team-library, การจัดการ REST rate-limit, และกลยุทธ์ export caching ดู [BWOC-61 design note](../../notes/2026-05-28_figma-plugin-architecture.md) — spec นี้ประกาศ kind และ asset schema เท่านั้น ไม่ทำซ้ำ rationale นั้น
 
-ประเภท `gws` เพิ่มเข้ามาใน `BWOC-EPIC-13` เป็น integration แบบ **อ่านเป็นหลัก (read-mostly)** กับ Google Workspace REST API (Drive / Gmail / Calendar) เช่นเดียวกับ `figma` มันได้ kind ของตัวเองเพราะพก [สคีมา Workspace Resource](#สคีมา-workspace-resource) ที่เป็น normative (Drive file, Gmail thread, Calendar event) + OAuth scope model มัน**ไม่ใช่**ส่วนหนึ่งของ `gcloud`: gcloud เอื้อมถึง GCP *infrastructure* ผ่าน `gcloud` CLI ในเครื่องด้วย ADC/service-account; `gws` เอื้อมถึง *apps* แบบ productivity ผ่าน Workspace REST API ด้วย **OAuth2 user-consent scope** (`drive.readonly` / `gmail.readonly` / `calendar.readonly`) — auth family และ surface คนละแบบ มันมี plugin credential-foundation (`gws-auth`) ที่ per-service plugin (`gws-drive` / `gws-gmail` / `gws-calendar`) source — รูปแบบ family เดียวกับ gcloud-* อ่านเป็นหลัก: write verb (ส่งเมล, สร้าง event, upload ไฟล์) ถูก defer ไป slice ถัดไป แต่ละตัวสืบทอด [write-verb operator-confirm gate](#write-verb-operator-confirm-gate-normative) OAuth token ผ่าน `BWOC_GWS_TOKEN` env / `.bwoc/secrets/gws-token.json` (shape-only ใน `auth.toml`, ไม่เคย commit) OAuth model, per-service scope, pagination, และการจัดการ rate-limit ดู [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) — spec นี้ประกาศ kind และ resource schema เท่านั้น ไม่ทำซ้ำ rationale นั้น
+ประเภท `gws` เพิ่มเข้ามาใน `BWOC-EPIC-13` เป็น integration แบบ **อ่านเป็นหลัก (read-mostly)** กับ Google Workspace REST API (Drive / Gmail / Calendar) เช่นเดียวกับ `figma` มันได้ kind ของตัวเองเพราะพก [สคีมา Workspace Resource](#สคีมา-workspace-resource) ที่เป็น normative (Drive file, Gmail thread, Calendar event) + OAuth scope model มัน**ไม่ใช่**ส่วนหนึ่งของ `gcloud`: gcloud เอื้อมถึง GCP *infrastructure* ผ่าน `gcloud` CLI ในเครื่องด้วย ADC/service-account; `gws` เอื้อมถึง *apps* แบบ productivity ผ่าน Workspace REST API ด้วย **OAuth2 user-consent scope** (`drive.readonly` / `gmail.readonly` / `calendar.readonly`) — auth family และ surface คนละแบบ มันมี plugin credential-foundation (`gws-auth`) ที่ per-service plugin (`gws-drive` / `gws-gmail` / `gws-calendar` / `gws-docs`) source — รูปแบบ family เดียวกับ gcloud-* อ่านเป็นหลักสำหรับ Drive / Gmail / Calendar (ส่งเมล, สร้าง event, upload ไฟล์ ยัง defer); `gws-docs` (`BWOC-354`) เพิ่ม write path ตัวแรก (`documents.batchUpdate`) พร้อม [write-verb operator-confirm gate](#write-verb-operator-confirm-gate-normative) OAuth token ผ่าน `BWOC_GWS_TOKEN` env / `.bwoc/secrets/gws-token.json` (shape-only ใน `auth.toml`, ไม่เคย commit) OAuth model, per-service scope, pagination, และการจัดการ rate-limit ดู [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) — spec นี้ประกาศ kind และ resource schema เท่านั้น ไม่ทำซ้ำ rationale นั้น
 
 ### Write verb — operator-confirm gate (normative)
 
@@ -397,7 +397,7 @@ auth model, ขอบเขต file-vs-team-library, การจัดการ
 
 ## สคีมา Workspace Resource
 
-ปลั๊กอิน `gws` surface ทรัพยากร Google Workspace แบบอ่านเป็นหลัก แต่ละ service emit **resource entry** ในรูปแบบ normative ของตัวเอง — สัญญาของ kind `gws`, validate โดย `bwoc check` (ตาม `BWOC-77`) และ emit โดย verb ของ `bwoc gws` (ตาม `BWOC-74`) OAuth model, per-service scope, pagination, และการจัดการ rate-limit อยู่ใน [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) ไม่ทำซ้ำที่นี่ ทั้งสามรูปตาม convention ของเฟรมเวิร์ก: key id ที่เสถียร, projection ที่เปลี่ยนได้รีเฟรชทุกการอ่าน, ฟิลด์ไม่บังคับตัดออก (ไม่ใช่ `null`)
+ปลั๊กอิน `gws` surface ทรัพยากร Google Workspace ส่วนใหญ่อ่านเป็นหลัก; `gws-docs` (`BWOC-354`) เพิ่ม **write path** ตัวแรก (`documents.batchUpdate`) มี [write-verb operator-confirm gate](#write-verb-operator-confirm-gate-normative) แต่ละ service emit **resource entry** ในรูปแบบ normative ของตัวเอง — สัญญาของ kind `gws`, validate โดย `bwoc check` (ตาม `BWOC-77`) และ emit โดย verb ของ `bwoc gws` (ตาม `BWOC-74`) OAuth model, per-service scope, pagination, และการจัดการ rate-limit อยู่ใน [BWOC-72 design note](../../notes/2026-05-28_google-workspace-plugin-architecture.md) ไม่ทำซ้ำที่นี่ ทุกรูปตาม convention ของเฟรมเวิร์ก: key id ที่เสถียร, projection ที่เปลี่ยนได้รีเฟรชทุกการอ่าน, ฟิลด์ไม่บังคับตัดออก (ไม่ใช่ `null`)
 
 ### Drive file
 
@@ -431,6 +431,17 @@ auth model, ขอบเขต file-vs-team-library, การจัดการ
 | `start` | string (ISO 8601) | ใช่ | เวลาเริ่ม (หรือวันที่สำหรับ all-day) |
 | `end` | string (ISO 8601) | ใช่ | เวลาจบ |
 | `attendees_count` | number | ไม่ | จำนวนผู้เข้าร่วม ตัดออกเมื่อไม่มี |
+
+### Google Doc
+
+emit โดย `gws-docs get` (อ่าน) verb เขียน (`batch-update` / `replace-all-text`) คืน **ใบเสร็จ** การเขียน — `document_id`, `revision_id`, `requests_applied`, `occurrences_changed` — ไม่ใช่ resource entry (ใบเสร็จรายงานว่าอะไรเปลี่ยน ไม่ใช่ body ใหม่)
+
+| ฟิลด์ | ชนิด | บังคับ | ความหมาย |
+|---|---|---|---|
+| `document_id` | string | ใช่ | **key เสถียร** — Google Doc id |
+| `title` | string | ใช่ | ชื่อเอกสาร (projection ที่เปลี่ยนได้) |
+| `revision_id` | string | ใช่ | revision id ตอนอ่าน; สัญญาณ write-conflict / cache |
+| `web_view_link` | string | ไม่ | URL เปิดในเบราว์เซอร์ ตัดออกเมื่อไม่มี |
 
 ### ตัวอย่าง (Drive file)
 

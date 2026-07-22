@@ -16,7 +16,7 @@
 //! a plugin is absent the live verbs **stub-error gracefully** (exit `4`) rather
 //! than panicking.
 //!
-//! ## Verb table — read-mostly
+//! ## Verb table
 //!
 //! | Verb                                  | Needs token | Plugin         | `operation` | Notes                                          |
 //! |---|---|---|---|---|
@@ -28,6 +28,9 @@
 //! | `gmail labels`                        | yes         | `gws-gmail`    | `labels`    | Label list.                                    |
 //! | `calendar list`                       | yes         | `gws-calendar` | `calendars` | Calendars the token can see.                   |
 //! | `calendar events [--calendar] [--max]`| yes         | `gws-calendar` | `events`    | Events in the Calendar-event schema.           |
+//! | `docs get --document <id>`            | yes         | `gws-docs`     | `get`       | Doc metadata + bounded body text.              |
+//! | `docs batch-update --document <id> …` | yes         | `gws-docs`     | `batch-update` | **WRITE** (gated) — documents.batchUpdate.  |
+//! | `docs replace-all-text --document <id> …` | yes     | `gws-docs`     | `replace-all-text` | **WRITE** (gated) — one replaceAllText.  |
 //!
 //! Every verb has a `--json` twin. The request payload is handed to the plugin
 //! over **stdin as JSON** (the gcloud/jira dispatch precedent), carrying the
@@ -52,12 +55,15 @@
 //! of `status`). Mirrors the Adinnādāna invariant the `jira` / `gcloud` / `figma`
 //! lanes established.
 //!
-//! ## Read-mostly — writes deferred
+//! ## Writes — the `docs` verbs, gated
 //!
-//! Every EPIC-13 verb reads. The obvious writes (Gmail send, Calendar insert,
-//! Drive upload) are deferred to future slices, each inheriting the write-verb
-//! operator-confirm gate (PLUGINS §Write verbs). There is therefore no remote
-//! write to gate here.
+//! Drive / Gmail / Calendar stay read-only (send / insert / upload deferred).
+//! `gws-docs` (BWOC-354) adds the first `gws` **write path** — `docs batch-update`
+//! (documents.batchUpdate, the general write verb) and `docs replace-all-text`.
+//! Both carry the **operator-confirm gate** (PLUGINS §Write verbs): default No,
+//! interactive `y/N`, `--yes` for headless agents, `--json` requires `--yes`, and
+//! a refused write reports "no change" — the gate lives here at the CLI boundary,
+//! not in the plugin. See `run_write_verb`.
 //!
 //! ## Pagination — `--max` caps an otherwise unbounded list
 //!
@@ -102,6 +108,7 @@ const PLUGIN_AUTH: &str = "gws-auth";
 const PLUGIN_DRIVE: &str = "gws-drive";
 const PLUGIN_GMAIL: &str = "gws-gmail";
 const PLUGIN_CALENDAR: &str = "gws-calendar";
+const PLUGIN_DOCS: &str = "gws-docs";
 const PLUGIN_KIND: &str = "gws";
 
 const ENV_TOKEN: &str = "BWOC_GWS_TOKEN";
@@ -131,6 +138,9 @@ pub enum GwsCommand {
     /// Calendar + event operations (gws-calendar plugin).
     #[command(subcommand)]
     Calendar(CalendarCommand),
+    /// Google Docs operations (gws-docs plugin) — read + in-place write.
+    #[command(subcommand)]
+    Docs(DocsCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -163,6 +173,16 @@ pub enum CalendarCommand {
     List(CalendarListArgs),
     /// List events (Calendar-event schema).
     Events(CalendarEventsArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DocsCommand {
+    /// Read a Google Doc's metadata + a bounded plain-text extract (documents.get).
+    Get(DocsGetArgs),
+    /// Edit a Doc in place via documents.batchUpdate — the general write path (gated).
+    BatchUpdate(DocsBatchUpdateArgs),
+    /// Replace every occurrence of a string in a Doc (gated write over replaceAllText).
+    ReplaceAllText(DocsReplaceAllTextArgs),
 }
 
 #[derive(Args, Debug)]
@@ -269,6 +289,67 @@ pub struct CalendarEventsArgs {
     json: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct DocsGetArgs {
+    /// Google Doc document id. Required.
+    #[arg(long = "document")]
+    document: String,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+#[command(group(clap::ArgGroup::new("docs_requests").required(true).args(["requests", "requests_file"])))]
+pub struct DocsBatchUpdateArgs {
+    /// Google Doc document id. Required.
+    #[arg(long = "document")]
+    document: String,
+    /// The Docs API `requests` array as an inline JSON string (write).
+    #[arg(long = "requests")]
+    requests: Option<String>,
+    /// Path to a file holding the Docs API `requests` array as JSON (write).
+    #[arg(long = "requests-file")]
+    requests_file: Option<PathBuf>,
+    /// Confirm the write without an interactive prompt (headless agents).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DocsReplaceAllTextArgs {
+    /// Google Doc document id. Required.
+    #[arg(long = "document")]
+    document: String,
+    /// The text to match. Required.
+    #[arg(long)]
+    find: String,
+    /// The replacement text (default: empty — deletes the matched text).
+    #[arg(long, default_value = "")]
+    replace: String,
+    /// Match case when searching (default: case-insensitive).
+    #[arg(long = "match-case")]
+    match_case: bool,
+    /// Confirm the write without an interactive prompt (headless agents).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
 /// Dispatch a parsed `GwsCommand`. Returns the process exit code.
 pub fn run(cmd: GwsCommand) -> i32 {
     match cmd {
@@ -280,6 +361,9 @@ pub fn run(cmd: GwsCommand) -> i32 {
         GwsCommand::Gmail(GmailCommand::Labels(a)) => run_gmail_labels(a),
         GwsCommand::Calendar(CalendarCommand::List(a)) => run_calendar_list(a),
         GwsCommand::Calendar(CalendarCommand::Events(a)) => run_calendar_events(a),
+        GwsCommand::Docs(DocsCommand::Get(a)) => run_docs_get(a),
+        GwsCommand::Docs(DocsCommand::BatchUpdate(a)) => run_docs_batch_update(a),
+        GwsCommand::Docs(DocsCommand::ReplaceAllText(a)) => run_docs_replace_all_text(a),
     }
 }
 
@@ -702,6 +786,49 @@ fn calendar_events_request(
     })
 }
 
+fn docs_get_request(workspace: &Path, plugin_dir: &Path, document_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "get",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "document_id": document_id,
+    })
+}
+
+fn docs_batch_update_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    document_id: &str,
+    requests: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "batch-update",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "document_id": document_id,
+        "requests": requests,
+    })
+}
+
+fn docs_replace_all_text_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    document_id: &str,
+    find: &str,
+    replace: &str,
+    match_case: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "replace-all-text",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "document_id": document_id,
+        "find": find,
+        "replace": replace,
+        "match_case": match_case,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers.
 // ---------------------------------------------------------------------------
@@ -811,6 +938,92 @@ fn run_read_verb(
     let shape = probe_auth_shape(&root, &real_getenv);
     if let Err(code) = require_token(&shape, verb, json) {
         return code;
+    }
+    let plugin = match require_plugin(&root, plugin_name, verb, json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = build_request(&root, &plugin.dir);
+    match invoke_plugin(&plugin, &root, &request) {
+        Ok(value) => {
+            if json {
+                if print_json(&value) {
+                    EXIT_OK
+                } else {
+                    EXIT_LOCAL_ERROR
+                }
+            } else {
+                render(&value);
+                EXIT_OK
+            }
+        }
+        Err(e) => {
+            if json {
+                emit_error_json(verb, "plugin_error", &e);
+            } else {
+                eprintln!("bwoc gws {verb}: {e}");
+            }
+            EXIT_PLUGIN_ERROR
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Write-verb operator-confirm gate (PLUGINS §Write verbs). The gate lives at the
+// operator boundary — this CLI — not the plugin. Default is No; a headless agent
+// passes `--yes`; `--json` requires `--yes` (a non-interactive context cannot
+// prompt). A refused write reports "no change", never a bare failure.
+// ---------------------------------------------------------------------------
+
+/// A gated write requested in `--json` mode cannot prompt — it requires `--yes`.
+fn json_write_blocked(json: bool, yes: bool) -> bool {
+    json && !yes
+}
+
+/// Interactive y/N confirmation on stderr. EOF / anything but yes → false.
+fn confirm(prompt: &str) -> bool {
+    eprint!("{prompt} [y/N]: ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Run a write verb: token gate → operator-confirm gate → enabled plugin →
+/// relay the plugin's JSON write receipt. `prompt` is shown for the interactive
+/// confirmation; `--yes` skips it. A refused write returns `EXIT_USAGE` after
+/// reporting "no change".
+#[allow(clippy::too_many_arguments)]
+fn run_write_verb(
+    verb: &str,
+    plugin_name: &str,
+    workspace: Option<PathBuf>,
+    json: bool,
+    yes: bool,
+    prompt: String,
+    build_request: impl FnOnce(&Path, &Path) -> serde_json::Value,
+    render: impl FnOnce(&serde_json::Value),
+) -> i32 {
+    let root = match workspace_or_usage(workspace, verb) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let shape = probe_auth_shape(&root, &real_getenv);
+    if let Err(code) = require_token(&shape, verb, json) {
+        return code;
+    }
+    // The gate — one confirmation point per write.
+    if !yes {
+        if json_write_blocked(json, yes) {
+            eprintln!("bwoc gws {verb}: --json requires --yes (a write needs explicit ack)");
+            return EXIT_USAGE;
+        }
+        if !confirm(&prompt) {
+            eprintln!("bwoc gws {verb}: aborted — no change performed.");
+            return EXIT_USAGE;
+        }
     }
     let plugin = match require_plugin(&root, plugin_name, verb, json) {
         Ok(p) => p,
@@ -1160,6 +1373,181 @@ fn usage_bad_field(verb: &str, code: &str, message: &str, json: bool) -> i32 {
     EXIT_USAGE
 }
 
+const BAD_DOCUMENT_ID: &str =
+    "document id must be 1..=512 chars of [A-Za-z0-9_-], no leading hyphen";
+
+fn run_docs_get(args: DocsGetArgs) -> i32 {
+    let verb = "docs get";
+    if !is_valid_resource_id(&args.document) {
+        return usage_bad_field(verb, "bad_document_id", BAD_DOCUMENT_ID, args.json);
+    }
+    let document = args.document.clone();
+    run_read_verb(
+        verb,
+        PLUGIN_DOCS,
+        args.workspace,
+        args.json,
+        move |ws, dir| docs_get_request(ws, dir, &document),
+        |value| {
+            let d = value.get("document").unwrap_or(value);
+            println!("bwoc gws docs get: {}", field(d, "title"));
+            println!("  document_id: {}", field(d, "document_id"));
+            println!("  revision_id: {}", field(d, "revision_id"));
+            if let Some(link) = d.get("web_view_link").and_then(|v| v.as_str()) {
+                println!("  {link}");
+            }
+            if let Some(t) = value.get("text").and_then(|v| v.as_str()) {
+                let more = value
+                    .get("text_truncated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    || t.chars().count() > 280;
+                let preview: String = t.chars().take(280).collect();
+                println!("  ── body ──\n{preview}{}", if more { " …" } else { "" });
+            }
+        },
+    )
+}
+
+/// Resolve the `requests` JSON array from `--requests` (inline) or
+/// `--requests-file` (path). Validates it is a non-empty JSON array.
+fn resolve_docs_requests(
+    inline: Option<&str>,
+    file: Option<&Path>,
+    verb: &str,
+    json: bool,
+) -> Result<serde_json::Value, i32> {
+    // Name the actual source in every diagnostic — the JSON came from one of them.
+    let (raw, source) = if let Some(path) = file {
+        match std::fs::read_to_string(path) {
+            Ok(s) => (s, "--requests-file"),
+            Err(e) => {
+                return Err(usage_bad_field(
+                    verb,
+                    "requests_file_read",
+                    &format!("read {}: {e}", path.display()),
+                    json,
+                ));
+            }
+        }
+    } else if let Some(s) = inline {
+        (s.to_string(), "--requests")
+    } else {
+        return Err(usage_bad_field(
+            verb,
+            "no_requests",
+            "one of --requests or --requests-file is required",
+            json,
+        ));
+    };
+    let value: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(usage_bad_field(
+                verb,
+                "requests_parse",
+                &format!("{source} is not valid JSON: {e}"),
+                json,
+            ));
+        }
+    };
+    match value.as_array() {
+        Some(a) if !a.is_empty() => Ok(value),
+        Some(_) => Err(usage_bad_field(
+            verb,
+            "requests_empty",
+            &format!("{source} is an empty array — nothing to apply"),
+            json,
+        )),
+        None => Err(usage_bad_field(
+            verb,
+            "requests_not_array",
+            &format!("{source} must be a JSON array of Docs API request objects"),
+            json,
+        )),
+    }
+}
+
+fn run_docs_batch_update(args: DocsBatchUpdateArgs) -> i32 {
+    let verb = "docs batch-update";
+    if !is_valid_resource_id(&args.document) {
+        return usage_bad_field(verb, "bad_document_id", BAD_DOCUMENT_ID, args.json);
+    }
+    let requests = match resolve_docs_requests(
+        args.requests.as_deref(),
+        args.requests_file.as_deref(),
+        verb,
+        args.json,
+    ) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let n = requests.as_array().map(|a| a.len()).unwrap_or(0);
+    let document = args.document.clone();
+    let prompt = format!(
+        "Apply {n} batchUpdate request(s) to Google Doc {document}? This edits the live document."
+    );
+    run_write_verb(
+        verb,
+        PLUGIN_DOCS,
+        args.workspace,
+        args.json,
+        args.yes,
+        prompt,
+        move |ws, dir| docs_batch_update_request(ws, dir, &document, &requests),
+        render_docs_write,
+    )
+}
+
+fn run_docs_replace_all_text(args: DocsReplaceAllTextArgs) -> i32 {
+    let verb = "docs replace-all-text";
+    if !is_valid_resource_id(&args.document) {
+        return usage_bad_field(verb, "bad_document_id", BAD_DOCUMENT_ID, args.json);
+    }
+    if !(1..=1024).contains(&args.find.len()) {
+        return usage_bad_field(verb, "bad_find", "--find must be 1..=1024 bytes", args.json);
+    }
+    let document = args.document.clone();
+    let find = args.find.clone();
+    let replace = args.replace.clone();
+    let match_case = args.match_case;
+    let prompt = format!(
+        "Replace all '{find}' → '{replace}' in Google Doc {document}? This edits the live document."
+    );
+    run_write_verb(
+        verb,
+        PLUGIN_DOCS,
+        args.workspace,
+        args.json,
+        args.yes,
+        prompt,
+        move |ws, dir| {
+            docs_replace_all_text_request(ws, dir, &document, &find, &replace, match_case)
+        },
+        render_docs_write,
+    )
+}
+
+/// Human-readable write receipt for `batch-update` / `replace-all-text`.
+fn render_docs_write(value: &serde_json::Value) {
+    println!(
+        "bwoc gws {}: applied to Google Doc {}",
+        field(value, "operation"),
+        field(value, "document_id"),
+    );
+    if let Some(n) = value.get("requests_applied").and_then(|v| v.as_i64()) {
+        println!("  requests applied: {n}");
+    }
+    if let Some(occ) = value.get("occurrences_changed").and_then(|v| v.as_i64()) {
+        println!("  occurrences changed: {occ}");
+    }
+    if let Some(rev) = value.get("revision_id").and_then(|v| v.as_str()) {
+        if !rev.is_empty() {
+            println!("  revision: {rev}");
+        }
+    }
+}
+
 // ===========================================================================
 // Tests — arg parsing, JSON shapes, id/query validation, pagination clamp,
 // auth-shape probe, no-plugin stub path, never-leak guardrails.
@@ -1261,6 +1649,140 @@ mod tests {
             }
             other => panic!("expected Calendar::Events, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_docs_get_requires_document() {
+        match parse(&["docs", "get", "--document", "1AbC_dEf-123"]).unwrap() {
+            GwsCommand::Docs(DocsCommand::Get(a)) => assert_eq!(a.document, "1AbC_dEf-123"),
+            other => panic!("expected Docs::Get, got {other:?}"),
+        }
+        assert!(parse(&["docs", "get"]).is_err());
+    }
+
+    #[test]
+    fn parses_docs_batch_update_needs_requests_source() {
+        // Exactly one of --requests / --requests-file is required (ArgGroup).
+        assert!(parse(&["docs", "batch-update", "--document", "abc"]).is_err());
+        match parse(&[
+            "docs",
+            "batch-update",
+            "--document",
+            "abc",
+            "--requests",
+            "[{\"insertText\":{}}]",
+            "--yes",
+        ])
+        .unwrap()
+        {
+            GwsCommand::Docs(DocsCommand::BatchUpdate(a)) => {
+                assert_eq!(a.document, "abc");
+                assert!(a.yes);
+                assert!(a.requests.is_some());
+                assert!(a.requests_file.is_none());
+            }
+            other => panic!("expected Docs::BatchUpdate, got {other:?}"),
+        }
+        // Both sources at once is rejected by the group.
+        assert!(
+            parse(&[
+                "docs",
+                "batch-update",
+                "--document",
+                "abc",
+                "--requests",
+                "[]",
+                "--requests-file",
+                "r.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_docs_replace_all_text() {
+        match parse(&[
+            "docs",
+            "replace-all-text",
+            "--document",
+            "abc",
+            "--find",
+            "March 31",
+            "--replace",
+            "In stock",
+            "--match-case",
+            "--yes",
+        ])
+        .unwrap()
+        {
+            GwsCommand::Docs(DocsCommand::ReplaceAllText(a)) => {
+                assert_eq!(a.find, "March 31");
+                assert_eq!(a.replace, "In stock");
+                assert!(a.match_case);
+                assert!(a.yes);
+            }
+            other => panic!("expected Docs::ReplaceAllText, got {other:?}"),
+        }
+        // --replace defaults to empty (a delete); --find is required.
+        match parse(&[
+            "docs",
+            "replace-all-text",
+            "--document",
+            "abc",
+            "--find",
+            "x",
+        ])
+        .unwrap()
+        {
+            GwsCommand::Docs(DocsCommand::ReplaceAllText(a)) => assert_eq!(a.replace, ""),
+            other => panic!("expected Docs::ReplaceAllText, got {other:?}"),
+        }
+        assert!(parse(&["docs", "replace-all-text", "--document", "abc"]).is_err());
+    }
+
+    #[test]
+    fn docs_request_builders_carry_operation_and_fields() {
+        let ws = Path::new("/ws");
+        let dir = Path::new("/ws/modules/plugins/gws/gws-docs");
+        let g = docs_get_request(ws, dir, "doc1");
+        assert_eq!(g["operation"], "get");
+        assert_eq!(g["document_id"], "doc1");
+
+        let reqs =
+            serde_json::json!([{ "insertText": { "location": { "index": 1 }, "text": "hi" } }]);
+        let b = docs_batch_update_request(ws, dir, "doc1", &reqs);
+        assert_eq!(b["operation"], "batch-update");
+        assert_eq!(b["requests"], reqs);
+
+        let r = docs_replace_all_text_request(ws, dir, "doc1", "a", "b", true);
+        assert_eq!(r["operation"], "replace-all-text");
+        assert_eq!(r["find"], "a");
+        assert_eq!(r["replace"], "b");
+        assert_eq!(r["match_case"], true);
+    }
+
+    #[test]
+    fn resolve_docs_requests_validates_array() {
+        // Valid non-empty array (inline).
+        let v =
+            resolve_docs_requests(Some("[{\"x\":1}]"), None, "docs batch-update", true).unwrap();
+        assert!(v.as_array().is_some_and(|a| a.len() == 1));
+        // Empty array is refused.
+        assert!(resolve_docs_requests(Some("[]"), None, "docs batch-update", true).is_err());
+        // Non-array is refused.
+        assert!(resolve_docs_requests(Some("{}"), None, "docs batch-update", true).is_err());
+        // Invalid JSON is refused.
+        assert!(resolve_docs_requests(Some("nope"), None, "docs batch-update", true).is_err());
+        // Neither source is refused.
+        assert!(resolve_docs_requests(None, None, "docs batch-update", true).is_err());
+    }
+
+    #[test]
+    fn docs_write_json_requires_yes() {
+        // The write gate: --json without --yes cannot prompt → EXIT_USAGE.
+        assert!(json_write_blocked(true, false));
+        assert!(!json_write_blocked(true, true));
+        assert!(!json_write_blocked(false, false));
     }
 
     #[test]
