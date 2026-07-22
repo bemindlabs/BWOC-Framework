@@ -1,0 +1,12 @@
+[skill]
+name        = "second-brain"
+version     = "0.1.0"
+description = "Consult the fleet's harvested knowledge graph (the Second Brain) before/while working — query prior cross-project memories, notes, commits, issues and reuse them instead of re-deriving."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["query_brain", "refresh_brain"]
+
+[gates]
+verify      = "bwoc skill verify second-brain"

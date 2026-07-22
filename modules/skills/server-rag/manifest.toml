@@ -1,0 +1,12 @@
+[skill]
+name        = "server-rag"
+version     = "0.1.0"
+description = "Ask the fleet's self-hosted RAG (semantic Q&A over server/ops docs) before re-deriving operational facts — a local, embeddings-backed knowledge endpoint, sibling to the second-brain graph."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["ask_rag", "refresh_rag"]
+
+[gates]
+verify      = "bwoc skill verify server-rag"
