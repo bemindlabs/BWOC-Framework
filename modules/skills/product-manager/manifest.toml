@@ -1,0 +1,12 @@
+[skill]
+name        = "product-manager"
+version     = "0.1.0"
+description = "Decide what to build and why — discover the real user problem, prioritise by value, and define requirements + success metrics before anyone writes code."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["discover", "define"]
+
+[gates]
+verify      = "bwoc skill verify product-manager"

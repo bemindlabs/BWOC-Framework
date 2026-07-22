@@ -1,0 +1,12 @@
+[skill]
+name        = "systems-engineer"
+version     = "0.1.0"
+description = "Design across components — the whole system, its interfaces, constraints, and failure modes — and assure it stays reliable under load, faults, and change."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["architect_system", "assure_reliability"]
+
+[gates]
+verify      = "bwoc skill verify systems-engineer"
