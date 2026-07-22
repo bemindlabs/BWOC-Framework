@@ -1,0 +1,12 @@
+[skill]
+name        = "physics"
+version     = "0.1.0"
+description = "Model a physical system — identify the regime, apply the governing laws, and sanity-check with dimensional analysis + order-of-magnitude before trusting the number."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["model", "estimate"]
+
+[gates]
+verify      = "bwoc skill verify physics"

@@ -1,0 +1,12 @@
+[skill]
+name        = "auditor"
+version     = "0.1.0"
+description = "Check work or claims against a standard, surface issues, and adversarially verify each finding before reporting — no false positives, evidence for every claim."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["audit", "verify_finding"]
+
+[gates]
+verify      = "bwoc skill verify auditor"

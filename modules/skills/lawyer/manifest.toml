@@ -1,0 +1,12 @@
+[skill]
+name        = "lawyer"
+version     = "0.1.0"
+description = "Reason about rules — contracts, licenses, policies, compliance — precisely and conservatively: read the actual text, flag risk, and route decisions with legal weight to a qualified human."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["review", "flag_risk"]
+
+[gates]
+verify      = "bwoc skill verify lawyer"

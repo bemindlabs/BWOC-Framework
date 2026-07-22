@@ -1,0 +1,12 @@
+[skill]
+name        = "illustrator"
+version     = "0.1.0"
+description = "Turn an intent into a visual — compose an image prompt, then generate/iterate through the workspace's configured image backend; the visual counterpart to the writer skill."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["compose_prompt", "generate"]
+
+[gates]
+verify      = "bwoc skill verify illustrator"

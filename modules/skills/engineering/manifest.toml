@@ -1,0 +1,12 @@
+[skill]
+name        = "engineering"
+version     = "0.1.0"
+description = "Build software the disciplined way — minimal blast radius, tests + gates before done, verify against reality — then harden what shipped."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["implement", "harden"]
+
+[gates]
+verify      = "bwoc skill verify engineering"
