@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — Skill library: 18 new framework skills (knowledge · craft · roles · the ai-dlc lifecycle) to enable per agent"
+    " — Skill library: 19 framework skills (knowledge · craft · roles · ai-dlc + ai-loop-engineer lifecycle) to enable per agent"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,7 +31,7 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Skill library — 18 new framework skills under `modules/skills/`: knowledge (`second-brain`, `server-rag`), craft (`writer`…`lawyer`), roles (`software-engineer`, `data-scientist`, …), + the `ai-dlc` lifecycle meta-skill; enable per agent with `bwoc skill enable` (2.35.0, #359–#362)",
+    "Skill library — 19 framework skills under `modules/skills/`: knowledge (`second-brain`, `server-rag`), craft (`writer`…`lawyer`), roles (`software-engineer`, `data-scientist`, …), + the `ai-dlc` and `ai-loop-engineer` lifecycle skills; enable per agent with `bwoc skill enable` (2.36.0, #359–#364)",
     "Google Workspace write path — `bwoc gws docs/sheets/slides` edit live Docs / Sheets / Slides (batchUpdate / values), behind a per-write operator-confirm gate (2.34.0, #354–#357)",
     "`bwoc run --workdir` — opt-in un-jail so a headless agent can edit shared workspace files (`projects/`, `wiki/`), bounded inside the workspace (2.33.0, #352)",
     "Warm task execution + `bwoc-harness --headless` served mode — no per-task backend cold-start (2.32.0, #301)",
