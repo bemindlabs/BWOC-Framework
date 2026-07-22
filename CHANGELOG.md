@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Fixed
 
-- **Skill SPEC wikilink depths** — the docs cross-links in the skill SPECs pointed at non-existent paths (`PHILOSOPHY.en` lives under `modules/agent-template/docs/en/`, not repo-root `docs/en/`; `SKILLS.en` is three levels up from `modules/skills/<name>/`; the agent-template `AGENTS` link had a doubled `modules/` segment). Corrected across all 19 skill SPECs (the reference `worktree-discipline` shared the same off-by-one). Cosmetic — Obsidian resolves by note name — but the paths now match the repo layout.
+- **Skill SPEC wikilink depths** — the docs cross-links in the skill SPECs pointed at non-existent paths (`PHILOSOPHY.en` lives under `modules/agent-template/docs/en/`, not repo-root `docs/en/`; `SKILLS.en` is three levels up from `modules/skills/<name>/`; the agent-template `AGENTS` link had a doubled `modules/` segment). Corrected across the affected skill SPECs (the reference `worktree-discipline` shared the same off-by-one). Cosmetic — Obsidian resolves by note name — but the paths now match the repo layout.
 
 ## [v2026.7.22-1] — 2026-07-22 — 2.35.0
 
