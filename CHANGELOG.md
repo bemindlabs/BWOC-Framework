@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`second-brain` + `server-rag` framework skills** (`modules/skills/`): two sibling `domain/knowledge` skills encoding "consult the fleet's existing knowledge before re-deriving" (Remember-first, fleet-wide). `second-brain` queries the fleet's harvested knowledge **graph** (`query_brain` — by term across every workspace/repo/commit/PR/issue/memory/note; `refresh_brain` re-harvests); `server-rag` asks the self-hosted **semantic RAG** (`ask_rag` — natural-language question → answer + sources; `refresh_rag` re-ingests). Both are read-first (no operator-confirm gate on the local-only refresh) and environment-neutral (operator-configured `<secondBrainRoot>` / `<ragQueryUrl>`). Enable per agent with `bwoc skill enable`.
+
 ## [v2026.7.22-0] — 2026-07-22 — 2.34.0
 
 ### Added
