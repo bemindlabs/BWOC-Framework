@@ -1801,16 +1801,19 @@ fn resolve_sheet_values(
             ));
         }
     };
+    // Must be a NON-EMPTY array of arrays. `iter().all(..)` is vacuously true on
+    // an empty outer array, so guard `!is_empty()` explicitly — an empty value
+    // set is a no-op write, never what the operator meant.
     let is_2d = value
         .as_array()
-        .is_some_and(|rows| rows.iter().all(|r| r.is_array()));
+        .is_some_and(|rows| !rows.is_empty() && rows.iter().all(|r| r.is_array()));
     if is_2d {
         Ok(value)
     } else {
         Err(usage_bad_field(
             verb,
             "values_not_2d",
-            &format!("{source} must be a 2-D JSON array (array of row arrays)"),
+            &format!("{source} must be a non-empty 2-D JSON array (array of row arrays)"),
             json,
         ))
     }
@@ -2204,6 +2207,8 @@ mod tests {
         let v = resolve_sheet_values(Some("[[\"a\",\"b\"]]"), None, "sheets values-update", true)
             .unwrap();
         assert!(v.as_array().is_some_and(|r| r.len() == 1));
+        // An empty outer array is refused (a no-op write).
+        assert!(resolve_sheet_values(Some("[]"), None, "sheets values-update", true).is_err());
         // A flat array (not 2-D) is refused.
         assert!(resolve_sheet_values(Some("[\"a\"]"), None, "sheets values-update", true).is_err());
         // A non-array is refused.

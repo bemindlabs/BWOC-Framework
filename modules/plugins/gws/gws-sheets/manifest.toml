@@ -2,7 +2,7 @@
 name        = "gws-sheets"
 kind        = "gws"
 version     = "0.1.0"
-description = "gws plugin — Google Sheets adapter with a WRITE path: reads spreadsheet metadata (spreadsheets.get) and cell ranges (spreadsheets.values.get), and edits values via spreadsheets.values.update / values.append. Reads project into the normative Google Spreadsheet shape. Its write verbs (values-update, values-append) carry the operator-confirm gate at the `bwoc gws sheets` boundary. Sources the OAuth credential helpers from the sibling gws-auth foundation; requires the spreadsheets scope."
+description = "gws plugin — Google Sheets adapter with a WRITE path: reads spreadsheet metadata (spreadsheets.get) and cell ranges (spreadsheets.values.get), and edits values via spreadsheets.values.update / spreadsheets.values.append. Reads project into the normative Google Spreadsheet shape. Its write verbs (values-update, values-append) carry the operator-confirm gate at the `bwoc gws sheets` boundary. Sources the OAuth credential helpers from the sibling gws-auth foundation; requires the spreadsheets scope."
 compat      = ">=2.33.0"
 entry       = "gws.sh"
 

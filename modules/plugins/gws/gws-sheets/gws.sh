@@ -4,7 +4,7 @@
 #
 # A per-service plugin of the `gws` kind with a WRITE path. Reads spreadsheet
 # metadata (spreadsheets.get) and cell ranges (spreadsheets.values.get), and
-# edits values via spreadsheets.values.update / values.append. Reads project
+# edits values via spreadsheets.values.update / spreadsheets.values.append. Reads project
 # into the normative Google Spreadsheet shape (docs/en/PLUGINS.en.md §"Workspace
 # Resource Schema"). Requires the `spreadsheets` OAuth scope (read + write).
 #
@@ -121,8 +121,8 @@ _require_values() {
     printf '%s\n' "$PLUGIN $OPERATION: .values is required (a 2-D JSON array, e.g. [[\"a\",\"b\"]])" >&2
     exit 2
   fi
-  if [[ "$(printf '%s' "$v" | jq -r 'if type=="array" and (all(.[]; type=="array")) then "ok" else "no" end' 2>/dev/null)" != "ok" ]]; then
-    printf '%s\n' "$PLUGIN $OPERATION: .values must be a 2-D JSON array (array of row arrays)" >&2
+  if [[ "$(printf '%s' "$v" | jq -r 'if type=="array" and length>0 and (all(.[]; type=="array")) then "ok" else "no" end' 2>/dev/null)" != "ok" ]]; then
+    printf '%s\n' "$PLUGIN $OPERATION: .values must be a non-empty 2-D JSON array (array of row arrays)" >&2
     exit 2
   fi
 }
