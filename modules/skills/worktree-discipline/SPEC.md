@@ -60,7 +60,7 @@ Manifest values name no backend, model, or vendor CLI. The skill's verify comman
 
 ## See Also
 
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
-- [[../../modules/agent-template/AGENTS|agent-template AGENTS.md §4]] — the worktree discipline contract this skill encapsulates.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Anattā framing in full.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
+- [[../../agent-template/AGENTS|agent-template AGENTS.md §4]] — the worktree discipline contract this skill encapsulates.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Anattā framing in full.
 - [[../../docs/en/GLOSSARY.en|GLOSSARY.en.md]] — Anattā, Samānattatā, Kāyānupassanā term lookup.

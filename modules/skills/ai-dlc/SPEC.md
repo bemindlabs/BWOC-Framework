@@ -88,5 +88,5 @@ Names no backend/model/vendor; the gates are the repo's own and the checkpoints 
 
 - [[../engineering/SPEC|engineering]] · [[../auditor/SPEC|auditor]] · [[../documenter/SPEC|documenter]] · [[../manager/SPEC|manager]] — the craft skills AI-DLC sequences.
 - [[../worktree-discipline/SPEC|worktree-discipline]] — the Anattā isolation each increment builds in.
-- [[../../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — uppāda/ṭhiti/vaya, Sīla, deferred-control framing.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — uppāda/ṭhiti/vaya, Sīla, deferred-control framing.
 - [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

@@ -60,4 +60,4 @@ Names no backend/model/vendor; language-agnostic. Satisfies **Samānattatā**.
 ## See Also
 
 - [[../mathematics/SPEC|mathematics]] — the rigor `estimate` leans on.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sammā-diṭṭhi, Yoniso Manasikāra.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sammā-diṭṭhi, Yoniso Manasikāra.

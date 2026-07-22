@@ -59,5 +59,5 @@ Names no backend/model/vendor; coordinates through the framework's own team/task
 ## See Also
 
 - [[../auditor/SPEC|auditor]] — verifies that delegated work actually met its bar.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Saṅgha, Mattaññutā, Sīlasāmaññatā.
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Saṅgha, Mattaññutā, Sīlasāmaññatā.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

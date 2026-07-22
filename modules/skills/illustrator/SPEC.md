@@ -67,4 +67,4 @@ Declared **L1**. Bumps to L2 once two agents have shipped an image through `comp
 ## See Also
 
 - [[../writer/SPEC|writer]] — the word counterpart to the same brief.
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

@@ -61,4 +61,4 @@ Names no backend/model/vendor; the gates are the repo's own (build/lint/test/for
 
 - [[../auditor/SPEC|auditor]] — independently verifies what this skill builds.
 - [[../documenter/SPEC|documenter]] — records how the built thing works.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sīla, Appamāda, Anattā.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sīla, Appamāda, Anattā.

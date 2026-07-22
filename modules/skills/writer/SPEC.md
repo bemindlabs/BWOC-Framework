@@ -64,5 +64,5 @@ Names no backend, model, or vendor. The craft is language-agnostic and reader-fi
 ## See Also
 
 - [[../illustrator/SPEC|illustrator]] — the visual counterpart (words ↔ images for the same brief).
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sammā-vācā, Mattaññutā framing.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sammā-vācā, Mattaññutā framing.
