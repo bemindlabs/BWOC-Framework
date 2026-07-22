@@ -3406,6 +3406,7 @@ enum GwsService {
     Gmail,
     Calendar,
     Docs,
+    Sheets,
 }
 
 impl GwsService {
@@ -3419,6 +3420,7 @@ impl GwsService {
             "gws-gmail" => Some(Self::Gmail),
             "gws-calendar" => Some(Self::Calendar),
             "gws-docs" => Some(Self::Docs),
+            "gws-sheets" => Some(Self::Sheets),
             _ => None,
         }
     }
@@ -3430,11 +3432,12 @@ impl GwsService {
             Self::Drive => "files",
             Self::Gmail => "threads",
             Self::Calendar => "events",
-            // gws-docs has no list verb, so this key never matches a real
-            // envelope: a captured resource file is a bare Doc entry (validated
+            // gws-docs / gws-sheets have no list verb, so these keys never match
+            // a real envelope: a captured resource file is a bare entry (validated
             // via the `vec![&value]` fallback in audit_gws_resources). The key
             // only needs to be distinct from the other services'.
             Self::Docs => "documents",
+            Self::Sheets => "spreadsheets",
         }
     }
 }
@@ -3583,6 +3586,12 @@ fn validate_gws_resource(
             &["web_view_link"],
             &[],
             &[],
+        ),
+        GwsService::Sheets => (
+            &["spreadsheet_id", "title"],
+            &["web_view_link"],
+            &[],
+            &["sheet_count"],
         ),
     };
 
