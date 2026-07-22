@@ -1,0 +1,12 @@
+[skill]
+name        = "software-engineer"
+version     = "0.1.0"
+description = "The professional software role — design a component (API, data model, trade-offs) and review a change for correctness, clarity, and risk; the design+review bracket around the engineering craft."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["design_component", "review_code"]
+
+[gates]
+verify      = "bwoc skill verify software-engineer"

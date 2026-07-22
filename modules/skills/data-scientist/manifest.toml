@@ -1,0 +1,12 @@
+[skill]
+name        = "data-scientist"
+version     = "0.1.0"
+description = "Learn from data honestly — explore + reason statistically, then build/evaluate models without leakage, reporting uncertainty rather than a single confident number."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["analyze", "build_model"]
+
+[gates]
+verify      = "bwoc skill verify data-scientist"

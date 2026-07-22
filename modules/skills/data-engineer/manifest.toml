@@ -1,0 +1,12 @@
+[skill]
+name        = "data-engineer"
+version     = "0.1.0"
+description = "Move data reliably — build idempotent, observable ingest → transform → store pipelines, and guarantee the data's quality (schema, validation, lineage, freshness) at the other end."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["build_pipeline", "ensure_data_quality"]
+
+[gates]
+verify      = "bwoc skill verify data-engineer"
