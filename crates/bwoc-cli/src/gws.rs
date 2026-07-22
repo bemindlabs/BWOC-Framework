@@ -35,6 +35,9 @@
 //! | `sheets values-get --spreadsheet <id> --range <a1>` | yes | `gws-sheets` | `values-get` | A value grid.                             |
 //! | `sheets values-update --spreadsheet <id> --range <a1> …` | yes | `gws-sheets` | `values-update` | **WRITE** (gated) — overwrite a range. |
 //! | `sheets values-append --spreadsheet <id> --range <a1> …` | yes | `gws-sheets` | `values-append` | **WRITE** (gated) — append rows.       |
+//! | `slides get --presentation <id>`      | yes         | `gws-slides`   | `get`       | Presentation title + slide ids.                |
+//! | `slides batch-update --presentation <id> …` | yes   | `gws-slides`   | `batch-update` | **WRITE** (gated) — presentations.batchUpdate. |
+//! | `slides replace-all-text --presentation <id> …` | yes | `gws-slides` | `replace-all-text` | **WRITE** (gated) — one replaceAllText. |
 //!
 //! Every verb has a `--json` twin. The request payload is handed to the plugin
 //! over **stdin as JSON** (the gcloud/jira dispatch precedent), carrying the
@@ -64,7 +67,8 @@
 //! Drive / Gmail / Calendar stay read-only (send / insert / upload deferred).
 //! `gws-docs` (BWOC-354) adds the first `gws` **write path** — `docs batch-update`
 //! (documents.batchUpdate, the general write verb) and `docs replace-all-text`;
-//! `gws-sheets` adds `sheets values-update` / `values-append`.
+//! `gws-sheets` adds `sheets values-update` / `values-append`; `gws-slides` adds
+//! `slides batch-update` / `replace-all-text`.
 //! All carry the **operator-confirm gate** (PLUGINS §Write verbs): default No,
 //! interactive `y/N`, `--yes` for headless agents, `--json` requires `--yes`, and
 //! a refused write reports "no change" — the gate lives here at the CLI boundary,
@@ -115,6 +119,7 @@ const PLUGIN_GMAIL: &str = "gws-gmail";
 const PLUGIN_CALENDAR: &str = "gws-calendar";
 const PLUGIN_DOCS: &str = "gws-docs";
 const PLUGIN_SHEETS: &str = "gws-sheets";
+const PLUGIN_SLIDES: &str = "gws-slides";
 const PLUGIN_KIND: &str = "gws";
 
 const ENV_TOKEN: &str = "BWOC_GWS_TOKEN";
@@ -150,6 +155,9 @@ pub enum GwsCommand {
     /// Google Sheets operations (gws-sheets plugin) — read + values write.
     #[command(subcommand)]
     Sheets(SheetsCommand),
+    /// Google Slides operations (gws-slides plugin) — read + in-place write.
+    #[command(subcommand)]
+    Slides(SlidesCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -204,6 +212,16 @@ pub enum SheetsCommand {
     ValuesUpdate(SheetsValuesWriteArgs),
     /// Append rows after a range (gated write — spreadsheets.values.append).
     ValuesAppend(SheetsValuesWriteArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SlidesCommand {
+    /// Read a presentation's metadata + slide ids (presentations.get).
+    Get(SlidesGetArgs),
+    /// Edit a presentation via presentations.batchUpdate — the general write path (gated).
+    BatchUpdate(SlidesBatchUpdateArgs),
+    /// Replace every occurrence of a string in a presentation (gated write).
+    ReplaceAllText(SlidesReplaceAllTextArgs),
 }
 
 #[derive(Args, Debug)]
@@ -426,6 +444,67 @@ pub struct SheetsValuesWriteArgs {
     json: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct SlidesGetArgs {
+    /// Presentation id. Required.
+    #[arg(long = "presentation")]
+    presentation: String,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+#[command(group(clap::ArgGroup::new("slides_requests").required(true).args(["requests", "requests_file"])))]
+pub struct SlidesBatchUpdateArgs {
+    /// Presentation id. Required.
+    #[arg(long = "presentation")]
+    presentation: String,
+    /// The Slides API `requests` array as an inline JSON string (write).
+    #[arg(long = "requests")]
+    requests: Option<String>,
+    /// Path to a file holding the Slides API `requests` array as JSON (write).
+    #[arg(long = "requests-file")]
+    requests_file: Option<PathBuf>,
+    /// Confirm the write without an interactive prompt (headless agents).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SlidesReplaceAllTextArgs {
+    /// Presentation id. Required.
+    #[arg(long = "presentation")]
+    presentation: String,
+    /// The text to match. Required.
+    #[arg(long)]
+    find: String,
+    /// The replacement text (default: empty — deletes the matched text).
+    #[arg(long, default_value = "")]
+    replace: String,
+    /// Match case when searching (default: case-insensitive).
+    #[arg(long = "match-case")]
+    match_case: bool,
+    /// Confirm the write without an interactive prompt (headless agents).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
 /// Dispatch a parsed `GwsCommand`. Returns the process exit code.
 pub fn run(cmd: GwsCommand) -> i32 {
     match cmd {
@@ -444,6 +523,9 @@ pub fn run(cmd: GwsCommand) -> i32 {
         GwsCommand::Sheets(SheetsCommand::ValuesGet(a)) => run_sheets_values_get(a),
         GwsCommand::Sheets(SheetsCommand::ValuesUpdate(a)) => run_sheets_values_write(a, "update"),
         GwsCommand::Sheets(SheetsCommand::ValuesAppend(a)) => run_sheets_values_write(a, "append"),
+        GwsCommand::Slides(SlidesCommand::Get(a)) => run_slides_get(a),
+        GwsCommand::Slides(SlidesCommand::BatchUpdate(a)) => run_slides_batch_update(a),
+        GwsCommand::Slides(SlidesCommand::ReplaceAllText(a)) => run_slides_replace_all_text(a),
     }
 }
 
@@ -964,6 +1046,53 @@ fn sheets_values_write_request(
         "spreadsheet_id": spreadsheet_id,
         "range": range,
         "values": values,
+    })
+}
+
+fn slides_get_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    presentation_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "get",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "presentation_id": presentation_id,
+    })
+}
+
+fn slides_batch_update_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    presentation_id: &str,
+    requests: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "batch-update",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "presentation_id": presentation_id,
+        "requests": requests,
+    })
+}
+
+fn slides_replace_all_text_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    presentation_id: &str,
+    find: &str,
+    replace: &str,
+    match_case: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "replace-all-text",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "presentation_id": presentation_id,
+        "find": find,
+        "replace": replace,
+        "match_case": match_case,
     })
 }
 
@@ -1882,6 +2011,108 @@ fn render_sheets_write(value: &serde_json::Value) {
     }
 }
 
+const BAD_PRESENTATION_ID: &str =
+    "presentation id must be 1..=512 chars of [A-Za-z0-9_-], no leading hyphen";
+
+fn run_slides_get(args: SlidesGetArgs) -> i32 {
+    let verb = "slides get";
+    if !is_valid_resource_id(&args.presentation) {
+        return usage_bad_field(verb, "bad_presentation_id", BAD_PRESENTATION_ID, args.json);
+    }
+    let id = args.presentation.clone();
+    run_read_verb(
+        verb,
+        PLUGIN_SLIDES,
+        args.workspace,
+        args.json,
+        move |ws, dir| slides_get_request(ws, dir, &id),
+        |value| {
+            let p = value.get("presentation").unwrap_or(value);
+            println!("bwoc gws slides get: {}", field(p, "title"));
+            println!("  presentation_id: {}", field(p, "presentation_id"));
+            if let Some(n) = p.get("slide_count").and_then(|v| v.as_i64()) {
+                println!("  slides: {n}");
+            }
+            if let Some(link) = p.get("web_view_link").and_then(|v| v.as_str()) {
+                println!("  {link}");
+            }
+        },
+    )
+}
+
+fn run_slides_batch_update(args: SlidesBatchUpdateArgs) -> i32 {
+    let verb = "slides batch-update";
+    if !is_valid_resource_id(&args.presentation) {
+        return usage_bad_field(verb, "bad_presentation_id", BAD_PRESENTATION_ID, args.json);
+    }
+    let requests = match resolve_docs_requests(
+        args.requests.as_deref(),
+        args.requests_file.as_deref(),
+        verb,
+        args.json,
+    ) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let n = requests.as_array().map(|a| a.len()).unwrap_or(0);
+    let id = args.presentation.clone();
+    let prompt = format!(
+        "Apply {n} batchUpdate request(s) to Presentation {id}? This edits the live presentation."
+    );
+    run_write_verb(
+        verb,
+        PLUGIN_SLIDES,
+        args.workspace,
+        args.json,
+        args.yes,
+        prompt,
+        move |ws, dir| slides_batch_update_request(ws, dir, &id, &requests),
+        render_slides_write,
+    )
+}
+
+fn run_slides_replace_all_text(args: SlidesReplaceAllTextArgs) -> i32 {
+    let verb = "slides replace-all-text";
+    if !is_valid_resource_id(&args.presentation) {
+        return usage_bad_field(verb, "bad_presentation_id", BAD_PRESENTATION_ID, args.json);
+    }
+    if !(1..=1024).contains(&args.find.len()) {
+        return usage_bad_field(verb, "bad_find", "--find must be 1..=1024 bytes", args.json);
+    }
+    let id = args.presentation.clone();
+    let find = args.find.clone();
+    let replace = args.replace.clone();
+    let match_case = args.match_case;
+    let prompt = format!(
+        "Replace all '{find}' → '{replace}' in Presentation {id}? This edits the live presentation."
+    );
+    run_write_verb(
+        verb,
+        PLUGIN_SLIDES,
+        args.workspace,
+        args.json,
+        args.yes,
+        prompt,
+        move |ws, dir| slides_replace_all_text_request(ws, dir, &id, &find, &replace, match_case),
+        render_slides_write,
+    )
+}
+
+/// Human-readable write receipt for `slides batch-update` / `replace-all-text`.
+fn render_slides_write(value: &serde_json::Value) {
+    println!(
+        "bwoc gws {}: applied to Presentation {}",
+        field(value, "operation"),
+        field(value, "presentation_id"),
+    );
+    if let Some(n) = value.get("requests_applied").and_then(|v| v.as_i64()) {
+        println!("  requests applied: {n}");
+    }
+    if let Some(occ) = value.get("occurrences_changed").and_then(|v| v.as_i64()) {
+        println!("  occurrences changed: {occ}");
+    }
+}
+
 // ===========================================================================
 // Tests — arg parsing, JSON shapes, id/query validation, pagination clamp,
 // auth-shape probe, no-plugin stub path, never-leak guardrails.
@@ -2233,6 +2464,66 @@ mod tests {
         assert_eq!(u["values"], vals);
         let ap = sheets_values_write_request(ws, dir, "append", "S1", "A1", &vals);
         assert_eq!(ap["operation"], "values-append");
+    }
+
+    #[test]
+    fn parses_slides_verbs() {
+        match parse(&["slides", "get", "--presentation", "P1"]).unwrap() {
+            GwsCommand::Slides(SlidesCommand::Get(a)) => assert_eq!(a.presentation, "P1"),
+            other => panic!("expected Slides::Get, got {other:?}"),
+        }
+        // batch-update needs a requests source (ArgGroup).
+        assert!(parse(&["slides", "batch-update", "--presentation", "P1"]).is_err());
+        match parse(&[
+            "slides",
+            "batch-update",
+            "--presentation",
+            "P1",
+            "--requests",
+            "[{\"createSlide\":{}}]",
+            "--yes",
+        ])
+        .unwrap()
+        {
+            GwsCommand::Slides(SlidesCommand::BatchUpdate(a)) => {
+                assert!(a.yes);
+                assert!(a.requests.is_some());
+            }
+            other => panic!("expected Slides::BatchUpdate, got {other:?}"),
+        }
+        match parse(&[
+            "slides",
+            "replace-all-text",
+            "--presentation",
+            "P1",
+            "--find",
+            "{{title}}",
+            "--replace",
+            "Q3",
+        ])
+        .unwrap()
+        {
+            GwsCommand::Slides(SlidesCommand::ReplaceAllText(a)) => {
+                assert_eq!(a.find, "{{title}}");
+                assert_eq!(a.replace, "Q3");
+            }
+            other => panic!("expected Slides::ReplaceAllText, got {other:?}"),
+        }
+        assert!(parse(&["slides", "replace-all-text", "--presentation", "P1"]).is_err());
+    }
+
+    #[test]
+    fn slides_request_builders_carry_operation() {
+        let ws = Path::new("/ws");
+        let dir = Path::new("/ws/modules/plugins/gws/gws-slides");
+        assert_eq!(slides_get_request(ws, dir, "P1")["operation"], "get");
+        let reqs = serde_json::json!([{ "createSlide": {} }]);
+        let b = slides_batch_update_request(ws, dir, "P1", &reqs);
+        assert_eq!(b["operation"], "batch-update");
+        assert_eq!(b["requests"], reqs);
+        let r = slides_replace_all_text_request(ws, dir, "P1", "a", "b", false);
+        assert_eq!(r["operation"], "replace-all-text");
+        assert_eq!(r["presentation_id"], "P1");
     }
 
     #[test]
