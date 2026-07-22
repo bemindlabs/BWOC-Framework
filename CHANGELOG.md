@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.22-1] — 2026-07-22 — 2.35.0
+
 ### Added
 
 - **Role skill set — five framework skills** (`modules/skills/`): profession/role skills extending the craft library — **product-manager** (discover/define), **systems-engineer** (architect_system/assure_reliability), **software-engineer** (design_component/review_code), **data-engineer** (build_pipeline/ensure_data_quality), **data-scientist** (analyze/build_model). Each names its distinction from the adjacent craft (e.g. software-engineer's design+review brackets engineering's implement+harden; product-manager's what/why vs manager's how), maps to a framework principle, and is environment-neutral, L1.

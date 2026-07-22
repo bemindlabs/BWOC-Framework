@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.34.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.9.0`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.35.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.10.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
-**Latest release:** [`v2026.7.22-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.22-0) *(2026-07-22 — **2.34.0**; minor — **Google Workspace write path**: the `gws` kind gains its first write-capable services — `gws-docs` (documents.batchUpdate + replace-all-text, #354), `gws-sheets` (values.update/append), `gws-slides` (presentations.batchUpdate) — all behind one operator-confirm gate at the CLI boundary. Prior: `v2026.7.20-0` 2.33.0 — `bwoc run --workdir`)*
+**Latest release:** [`v2026.7.22-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.22-1) *(2026-07-22 — **2.35.0**; minor — **skill library**: 18 new framework skills under `modules/skills/` — knowledge (`second-brain`, `server-rag`), a craft set (`writer`…`lawyer`, 10), the `ai-dlc` lifecycle meta-skill, and a role set (`product-manager`/`systems-engineer`/`software-engineer`/`data-engineer`/`data-scientist`); each two-operation, environment-neutral, principle-grounded, L1. Prior: `v2026.7.22-0` 2.34.0 — Google Workspace write path)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-07-22T05:59:56Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-07-22T16:41:42Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
