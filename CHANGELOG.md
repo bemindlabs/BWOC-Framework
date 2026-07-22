@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`gws-docs` — Google Docs read + in-place write** (issue #354): a new `gws` per-service plugin and `bwoc gws docs` verbs — `get` (`documents.get` — metadata + bounded body text), `batch-update` (`documents.batchUpdate` — the general write path), and `replace-all-text` (convenience). This is the **first write-capable `gws` service**, so it introduces the kind's use of the **operator-confirm gate**: the write verbs default to No, prompt `y/N` interactively, require `--yes` for headless agents (and with `--json`), and report "no change" on refusal — the gate lives at the `bwoc gws` CLI boundary, not the plugin. Requires the `documents` OAuth scope (read+write); sources credentials from the sibling `gws-auth`. Google Docs `gws-sheets` / `gws-slides` follow as separate slices.
+
 ## [v2026.7.20-0] — 2026-07-20 — 2.33.0
 
 ### Added

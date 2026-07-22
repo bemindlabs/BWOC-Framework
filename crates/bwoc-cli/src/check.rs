@@ -3405,6 +3405,7 @@ enum GwsService {
     Drive,
     Gmail,
     Calendar,
+    Docs,
 }
 
 impl GwsService {
@@ -3417,6 +3418,7 @@ impl GwsService {
             "gws-drive" => Some(Self::Drive),
             "gws-gmail" => Some(Self::Gmail),
             "gws-calendar" => Some(Self::Calendar),
+            "gws-docs" => Some(Self::Docs),
             _ => None,
         }
     }
@@ -3428,6 +3430,10 @@ impl GwsService {
             Self::Drive => "files",
             Self::Gmail => "threads",
             Self::Calendar => "events",
+            // gws-docs has no list verb; a captured `get` file is a bare Doc
+            // entry (or nests under `document`) — this key just needs to be
+            // distinct and is unused for envelope-array unwrapping.
+            Self::Docs => "documents",
         }
     }
 }
@@ -3570,6 +3576,12 @@ fn validate_gws_resource(
             &[],
             &[],
             &["attendees_count"],
+        ),
+        GwsService::Docs => (
+            &["document_id", "title", "revision_id"],
+            &["web_view_link"],
+            &[],
+            &[],
         ),
     };
 
