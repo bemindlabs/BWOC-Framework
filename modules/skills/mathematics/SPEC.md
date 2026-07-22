@@ -61,4 +61,4 @@ Names no backend/model/vendor; language-agnostic reasoning. Satisfies **Samānat
 
 - [[../physics/SPEC|physics]] — applies this rigor to physical systems (models + estimates).
 - [[../auditor/SPEC|auditor]] — the same "verify before trust" stance for artifacts.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sacca.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sacca.

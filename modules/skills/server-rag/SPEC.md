@@ -76,5 +76,5 @@ Manifest names no backend, model, or vendor CLI; `<ragQueryUrl>` / `<ragRoot>` a
 ## See Also
 
 - [[../second-brain/SPEC|second-brain]] — the fleet's structured-graph memory (this skill's sibling).
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra framing.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra framing.

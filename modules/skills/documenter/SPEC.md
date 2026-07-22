@@ -61,4 +61,4 @@ Names no backend/model/vendor; conventions are the repo's own. Satisfies **Samā
 
 - [[../writer/SPEC|writer]] — reader-facing prose craft (the sibling; accuracy ↔ experience).
 - [[../engineering/SPEC|engineering]] — the work this skill records.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sīlasāmaññatā, Sacca.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sīlasāmaññatā, Sacca.

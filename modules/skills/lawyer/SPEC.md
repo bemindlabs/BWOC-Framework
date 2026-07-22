@@ -61,4 +61,4 @@ Names no backend/model/vendor; the governing text is supplied per review. Satisf
 
 - [[../auditor/SPEC|auditor]] — the same evidence-cited, conservative stance for technical standards.
 - [[../counselor/SPEC|counselor]] — shares the "know your limits, route to a professional" clause.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sīla, Sacca.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sīla, Sacca.

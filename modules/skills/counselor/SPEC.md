@@ -60,5 +60,5 @@ Names no backend/model/vendor; a language-agnostic interpersonal craft. Satisfie
 ## See Also
 
 - [[../writer/SPEC|writer]] — Sammā-vācā (right speech) shares the "true + kind + timely" test.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — the Brahmavihāra framing.
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — the Brahmavihāra framing.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

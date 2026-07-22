@@ -61,4 +61,4 @@ Names no backend/model/vendor; the standard is supplied per audit. Satisfies **S
 
 - [[../engineering/SPEC|engineering]] — builds the work this skill checks (gates ↔ audit).
 - [[../manager/SPEC|manager]] — audits confirm delegated work met its bar.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sacca.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sacca.

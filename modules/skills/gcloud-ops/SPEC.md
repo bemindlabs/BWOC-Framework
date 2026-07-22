@@ -70,15 +70,15 @@ requires         = []                  # framework SKILL names (the existing fie
 requires_plugins = ["workflow"]        # plugin KINDS this skill needs enabled
 ```
 
-- **`requires_plugins` names plugin _kinds_, not plugin _names_** ([[../../docs/en/SKILLS.en#Skill-on-plugin dependency|SKILLS.en.md §Skill-on-plugin dependency]]). `"workflow"` is the kind enum value from [[../../docs/en/PLUGINS.en#Plugin Kinds|PLUGINS.en.md]]. The skill depends on the `workflow` *kind* being present; the **specific** plugins it composes (`gcloud-auth` + `gcloud-project`) are enumerated in this SPEC's [Operations Contract](#operations-contract), not in the manifest.
-- **Why kind-level, not name-level.** The framework's dependency resolver is kind-based by design — it keeps skills neutral and adapters swappable ([[../../docs/en/SKILLS.en#Skill-on-multiple-plugins|SKILLS.en.md §Skill-on-multiple-plugins]]). A skill that composes several plugins of one kind lists that kind once; the SPEC names the instances. **Name-level enforcement** (asserting *both* `gcloud-auth` and `gcloud-project` specifically are enabled, not just *some* `workflow` plugin) is a documented future extension — at L1 the skill fails gracefully at invoke time if a composed plugin is absent, surfacing which `bwoc gcloud` verb could not dispatch.
+- **`requires_plugins` names plugin _kinds_, not plugin _names_** ([[../../../docs/en/SKILLS.en#Skill-on-plugin dependency|SKILLS.en.md §Skill-on-plugin dependency]]). `"workflow"` is the kind enum value from [[../../docs/en/PLUGINS.en#Plugin Kinds|PLUGINS.en.md]]. The skill depends on the `workflow` *kind* being present; the **specific** plugins it composes (`gcloud-auth` + `gcloud-project`) are enumerated in this SPEC's [Operations Contract](#operations-contract), not in the manifest.
+- **Why kind-level, not name-level.** The framework's dependency resolver is kind-based by design — it keeps skills neutral and adapters swappable ([[../../../docs/en/SKILLS.en#Skill-on-multiple-plugins|SKILLS.en.md §Skill-on-multiple-plugins]]). A skill that composes several plugins of one kind lists that kind once; the SPEC names the instances. **Name-level enforcement** (asserting *both* `gcloud-auth` and `gcloud-project` specifically are enabled, not just *some* `workflow` plugin) is a documented future extension — at L1 the skill fails gracefully at invoke time if a composed plugin is absent, surfacing which `bwoc gcloud` verb could not dispatch.
 - **Resolved at agent spawn** — if `gcloud-ops` is enabled but no `workflow`-kind plugin is enabled in the workspace, spawn fails fast with a diagnostic naming the missing kind. Caught earlier by `bwoc skill verify gcloud-ops`.
 
-The full dependency model is specified in [[../../docs/en/SKILLS.en#Skill-on-plugin dependency|SKILLS.en.md §Skill-on-plugin dependency]]; the multiple-plugins refinement in [[../../docs/en/SKILLS.en#Skill-on-multiple-plugins|§Skill-on-multiple-plugins]].
+The full dependency model is specified in [[../../../docs/en/SKILLS.en#Skill-on-plugin dependency|SKILLS.en.md §Skill-on-plugin dependency]]; the multiple-plugins refinement in [[../../../docs/en/SKILLS.en#Skill-on-multiple-plugins|§Skill-on-multiple-plugins]].
 
 ## Lifecycle Mapping
 
-Per [[../../docs/en/SKILLS.en#Lifecycle|SKILLS.en.md §Lifecycle]]:
+Per [[../../../docs/en/SKILLS.en#Lifecycle|SKILLS.en.md §Lifecycle]]:
 
 ```
 init       → resolve the workflow-kind plugin dependency; cache the bwoc gcloud dispatch handle.
@@ -102,7 +102,7 @@ Manifest values name no LLM backend, model, or vendor CLI. `requires_plugins = [
 
 ## See Also
 
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to; the skill-on-plugin + skill-on-multiple-plugins dependency models.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to; the skill-on-plugin + skill-on-multiple-plugins dependency models.
 - [[../../modules/plugins/workflow/gcloud-auth/SPEC|gcloud-auth SPEC.md]] — the credential-state plugin this skill drives (`status` verb).
 - [[../../modules/plugins/workflow/gcloud-project/SPEC|gcloud-project SPEC.md]] — the project-context plugin this skill drives (`show`, `set-default` verbs).
 - [[../../docs/en/PLUGINS.en|PLUGINS.en.md]] — the `workflow` kind row + Skill vs Plugin axis.

@@ -70,6 +70,6 @@ Manifest values name no backend, model, or vendor CLI; `<secondBrainRoot>` is an
 ## See Also
 
 - [[../server-rag/SPEC|server-rag]] — the fleet's *semantic* memory (ask a question, get prose + sources); this skill's sibling. Graph vs RAG: query structure here, ask "explain X" there.
-- [[../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
-- [[../../modules/agent-template/AGENTS|agent-template AGENTS.md]] — Remember-first / Yoniso Manasikāra in the base profile.
-- [[../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sīlasāmaññatā framing.
+- [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
+- [[../../agent-template/AGENTS|agent-template AGENTS.md]] — Remember-first / Yoniso Manasikāra in the base profile.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sīlasāmaññatā framing.
