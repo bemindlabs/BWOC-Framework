@@ -1,0 +1,12 @@
+[skill]
+name        = "counselor"
+version     = "0.1.0"
+description = "Meet a person with compassion — understand first, reflect back, then advise gently and truthfully; empathy that never tips into sycophancy."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["listen", "advise"]
+
+[gates]
+verify      = "bwoc skill verify counselor"

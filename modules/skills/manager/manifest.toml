@@ -1,0 +1,12 @@
+[skill]
+name        = "manager"
+version     = "0.1.0"
+description = "Decompose work into right-sized pieces, form/assign them to Saṅgha teams + shared task lists, and track to done — coordination without micromanagement."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["plan", "delegate"]
+
+[gates]
+verify      = "bwoc skill verify manager"

@@ -1,0 +1,12 @@
+[skill]
+name        = "mathematics"
+version     = "0.1.0"
+description = "Reason rigorously with symbols and quantities — state assumptions, derive step by step, and check the result (units, edge cases, a second method) before trusting it."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["derive", "check_result"]
+
+[gates]
+verify      = "bwoc skill verify mathematics"

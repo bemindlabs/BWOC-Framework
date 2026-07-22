@@ -1,0 +1,12 @@
+[skill]
+name        = "writer"
+version     = "0.1.0"
+description = "Craft written content — articles, docs, posts, scripts, copy — in the reader's language and the fleet's terse, truthful voice; draft then revise."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["draft", "revise"]
+
+[gates]
+verify      = "bwoc skill verify writer"

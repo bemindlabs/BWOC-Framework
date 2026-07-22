@@ -1,0 +1,12 @@
+[skill]
+name        = "documenter"
+version     = "0.1.0"
+description = "Capture how a system actually works so the next reader/agent doesn't re-derive it — accurate to current reality, conventions honored (bilingual parity where required), and kept in sync as the system changes."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["document", "sync"]
+
+[gates]
+verify      = "bwoc skill verify documenter"
