@@ -31,7 +31,7 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Google Workspace write path — `bwoc gws docs/sheets/slides` edit live Docs / Sheets / Slides (batchUpdate / values), behind a per-write operator-confirm gate (2.34.0, #354)",
+    "Google Workspace write path — `bwoc gws docs/sheets/slides` edit live Docs / Sheets / Slides (batchUpdate / values), behind a per-write operator-confirm gate (2.34.0, #354–#357)",
     "`bwoc run --workdir` — opt-in un-jail so a headless agent can edit shared workspace files (`projects/`, `wiki/`), bounded inside the workspace (2.33.0, #352)",
     "Warm task execution + `bwoc-harness --headless` served mode — no per-task backend cold-start (2.32.0, #301)",
     "`bwoc agent run --as-user` non-root launcher · `bwoc doctor` manifest checks · `bwoc receipts` · iMessage connector (2.32.0, #322/#323/#299/#229)",
