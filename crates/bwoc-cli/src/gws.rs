@@ -31,6 +31,10 @@
 //! | `docs get --document <id>`            | yes         | `gws-docs`     | `get`       | Doc metadata + bounded body text.              |
 //! | `docs batch-update --document <id> …` | yes         | `gws-docs`     | `batch-update` | **WRITE** (gated) — documents.batchUpdate.  |
 //! | `docs replace-all-text --document <id> …` | yes     | `gws-docs`     | `replace-all-text` | **WRITE** (gated) — one replaceAllText.  |
+//! | `sheets get --spreadsheet <id>`       | yes         | `gws-sheets`   | `get`       | Spreadsheet title + tab list.                  |
+//! | `sheets values-get --spreadsheet <id> --range <a1>` | yes | `gws-sheets` | `values-get` | A value grid.                             |
+//! | `sheets values-update --spreadsheet <id> --range <a1> …` | yes | `gws-sheets` | `values-update` | **WRITE** (gated) — overwrite a range. |
+//! | `sheets values-append --spreadsheet <id> --range <a1> …` | yes | `gws-sheets` | `values-append` | **WRITE** (gated) — append rows.       |
 //!
 //! Every verb has a `--json` twin. The request payload is handed to the plugin
 //! over **stdin as JSON** (the gcloud/jira dispatch precedent), carrying the
@@ -59,8 +63,9 @@
 //!
 //! Drive / Gmail / Calendar stay read-only (send / insert / upload deferred).
 //! `gws-docs` (BWOC-354) adds the first `gws` **write path** — `docs batch-update`
-//! (documents.batchUpdate, the general write verb) and `docs replace-all-text`.
-//! Both carry the **operator-confirm gate** (PLUGINS §Write verbs): default No,
+//! (documents.batchUpdate, the general write verb) and `docs replace-all-text`;
+//! `gws-sheets` adds `sheets values-update` / `values-append`.
+//! All carry the **operator-confirm gate** (PLUGINS §Write verbs): default No,
 //! interactive `y/N`, `--yes` for headless agents, `--json` requires `--yes`, and
 //! a refused write reports "no change" — the gate lives here at the CLI boundary,
 //! not in the plugin. See `run_write_verb`.
@@ -109,6 +114,7 @@ const PLUGIN_DRIVE: &str = "gws-drive";
 const PLUGIN_GMAIL: &str = "gws-gmail";
 const PLUGIN_CALENDAR: &str = "gws-calendar";
 const PLUGIN_DOCS: &str = "gws-docs";
+const PLUGIN_SHEETS: &str = "gws-sheets";
 const PLUGIN_KIND: &str = "gws";
 
 const ENV_TOKEN: &str = "BWOC_GWS_TOKEN";
@@ -141,6 +147,9 @@ pub enum GwsCommand {
     /// Google Docs operations (gws-docs plugin) — read + in-place write.
     #[command(subcommand)]
     Docs(DocsCommand),
+    /// Google Sheets operations (gws-sheets plugin) — read + values write.
+    #[command(subcommand)]
+    Sheets(SheetsCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -183,6 +192,18 @@ pub enum DocsCommand {
     BatchUpdate(DocsBatchUpdateArgs),
     /// Replace every occurrence of a string in a Doc (gated write over replaceAllText).
     ReplaceAllText(DocsReplaceAllTextArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SheetsCommand {
+    /// Read a spreadsheet's metadata + tab list (spreadsheets.get).
+    Get(SheetsGetArgs),
+    /// Read a cell range (spreadsheets.values.get).
+    ValuesGet(SheetsValuesGetArgs),
+    /// Overwrite a range's values (gated write — spreadsheets.values.update).
+    ValuesUpdate(SheetsValuesWriteArgs),
+    /// Append rows after a range (gated write — spreadsheets.values.append).
+    ValuesAppend(SheetsValuesWriteArgs),
 }
 
 #[derive(Args, Debug)]
@@ -350,6 +371,61 @@ pub struct DocsReplaceAllTextArgs {
     json: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct SheetsGetArgs {
+    /// Spreadsheet id. Required.
+    #[arg(long = "spreadsheet")]
+    spreadsheet: String,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SheetsValuesGetArgs {
+    /// Spreadsheet id. Required.
+    #[arg(long = "spreadsheet")]
+    spreadsheet: String,
+    /// A1-notation range (e.g. `Sheet1!A1:B2`). Required.
+    #[arg(long)]
+    range: String,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+#[command(group(clap::ArgGroup::new("sheet_values").required(true).args(["values", "values_file"])))]
+pub struct SheetsValuesWriteArgs {
+    /// Spreadsheet id. Required.
+    #[arg(long = "spreadsheet")]
+    spreadsheet: String,
+    /// A1-notation range (e.g. `Sheet1!A1`). Required.
+    #[arg(long)]
+    range: String,
+    /// The values as an inline 2-D JSON array string (e.g. `[["a","b"],["c","d"]]`).
+    #[arg(long = "values")]
+    values: Option<String>,
+    /// Path to a file holding the values as a 2-D JSON array.
+    #[arg(long = "values-file")]
+    values_file: Option<PathBuf>,
+    /// Confirm the write without an interactive prompt (headless agents).
+    #[arg(long)]
+    yes: bool,
+    /// Workspace root.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Emit the structured envelope instead of the human-readable summary.
+    #[arg(long)]
+    json: bool,
+}
+
 /// Dispatch a parsed `GwsCommand`. Returns the process exit code.
 pub fn run(cmd: GwsCommand) -> i32 {
     match cmd {
@@ -364,6 +440,10 @@ pub fn run(cmd: GwsCommand) -> i32 {
         GwsCommand::Docs(DocsCommand::Get(a)) => run_docs_get(a),
         GwsCommand::Docs(DocsCommand::BatchUpdate(a)) => run_docs_batch_update(a),
         GwsCommand::Docs(DocsCommand::ReplaceAllText(a)) => run_docs_replace_all_text(a),
+        GwsCommand::Sheets(SheetsCommand::Get(a)) => run_sheets_get(a),
+        GwsCommand::Sheets(SheetsCommand::ValuesGet(a)) => run_sheets_values_get(a),
+        GwsCommand::Sheets(SheetsCommand::ValuesUpdate(a)) => run_sheets_values_write(a, "update"),
+        GwsCommand::Sheets(SheetsCommand::ValuesAppend(a)) => run_sheets_values_write(a, "append"),
     }
 }
 
@@ -515,6 +595,18 @@ fn is_valid_calendar_id(id: &str) -> bool {
     }
     b.iter()
         .all(|&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' || c == b'@')
+}
+
+/// A1-notation range (Sheets): letters, digits, `_`, `!`, `:`, `$`, `'`, `.`,
+/// space. 1..=512 chars, no `/` and no control bytes — enough for `Sheet1!A1:B2`
+/// / `'My Sheet'!A:A` without opening a path segment in the request URL.
+fn is_valid_range(r: &str) -> bool {
+    if !(1..=512).contains(&r.len()) {
+        return false;
+    }
+    r.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '!' | ':' | '$' | '\'' | '.' | ' ' | '-')
+    })
 }
 
 /// Free-text query (Drive `q`, Gmail search). 1..=1024 chars, no control bytes
@@ -826,6 +918,52 @@ fn docs_replace_all_text_request(
         "find": find,
         "replace": replace,
         "match_case": match_case,
+    })
+}
+
+fn sheets_get_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    spreadsheet_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "get",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "spreadsheet_id": spreadsheet_id,
+    })
+}
+
+fn sheets_values_get_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    spreadsheet_id: &str,
+    range: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": "values-get",
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "spreadsheet_id": spreadsheet_id,
+        "range": range,
+    })
+}
+
+fn sheets_values_write_request(
+    workspace: &Path,
+    plugin_dir: &Path,
+    mode: &str,
+    spreadsheet_id: &str,
+    range: &str,
+    values: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "operation": format!("values-{mode}"),
+        "workspace": workspace.display().to_string(),
+        "plugin_dir": plugin_dir.display().to_string(),
+        "spreadsheet_id": spreadsheet_id,
+        "range": range,
+        "values": values,
     })
 }
 
@@ -1548,6 +1686,202 @@ fn render_docs_write(value: &serde_json::Value) {
     }
 }
 
+const BAD_SPREADSHEET_ID: &str =
+    "spreadsheet id must be 1..=512 chars of [A-Za-z0-9_-], no leading hyphen";
+const BAD_RANGE: &str = "range must be A1 notation (e.g. Sheet1!A1:B2), 1..=512 chars, no '/'";
+
+fn run_sheets_get(args: SheetsGetArgs) -> i32 {
+    let verb = "sheets get";
+    if !is_valid_resource_id(&args.spreadsheet) {
+        return usage_bad_field(verb, "bad_spreadsheet_id", BAD_SPREADSHEET_ID, args.json);
+    }
+    let id = args.spreadsheet.clone();
+    run_read_verb(
+        verb,
+        PLUGIN_SHEETS,
+        args.workspace,
+        args.json,
+        move |ws, dir| sheets_get_request(ws, dir, &id),
+        |value| {
+            let s = value.get("spreadsheet").unwrap_or(value);
+            println!("bwoc gws sheets get: {}", field(s, "title"));
+            println!("  spreadsheet_id: {}", field(s, "spreadsheet_id"));
+            if let Some(link) = s.get("web_view_link").and_then(|v| v.as_str()) {
+                println!("  {link}");
+            }
+            if let Some(arr) = value.get("sheets").and_then(|v| v.as_array()) {
+                println!("  tabs: {}", arr.len());
+                for t in arr {
+                    println!("    [{}] {}", field(t, "index"), field(t, "title"));
+                }
+            }
+        },
+    )
+}
+
+fn run_sheets_values_get(args: SheetsValuesGetArgs) -> i32 {
+    let verb = "sheets values-get";
+    if !is_valid_resource_id(&args.spreadsheet) {
+        return usage_bad_field(verb, "bad_spreadsheet_id", BAD_SPREADSHEET_ID, args.json);
+    }
+    if !is_valid_range(&args.range) {
+        return usage_bad_field(verb, "bad_range", BAD_RANGE, args.json);
+    }
+    let id = args.spreadsheet.clone();
+    let range = args.range.clone();
+    run_read_verb(
+        verb,
+        PLUGIN_SHEETS,
+        args.workspace,
+        args.json,
+        move |ws, dir| sheets_values_get_request(ws, dir, &id, &range),
+        |value| {
+            println!("bwoc gws sheets values-get: {} ", field(value, "range"));
+            if let Some(rows) = value.get("values").and_then(|v| v.as_array()) {
+                println!("  {} row(s)", rows.len());
+                for row in rows.iter().take(20) {
+                    if let Some(cells) = row.as_array() {
+                        let joined: Vec<String> = cells
+                            .iter()
+                            .map(|c| {
+                                c.as_str()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| c.to_string())
+                            })
+                            .collect();
+                        println!("    {}", joined.join(" | "));
+                    }
+                }
+                if rows.len() > 20 {
+                    println!("    … ({} more rows)", rows.len() - 20);
+                }
+            }
+        },
+    )
+}
+
+/// Resolve `values` from `--values` (inline) or `--values-file` (path).
+/// Validates it is a 2-D JSON array (array of row arrays).
+fn resolve_sheet_values(
+    inline: Option<&str>,
+    file: Option<&Path>,
+    verb: &str,
+    json: bool,
+) -> Result<serde_json::Value, i32> {
+    let (raw, source) = if let Some(path) = file {
+        match std::fs::read_to_string(path) {
+            Ok(s) => (s, "--values-file"),
+            Err(e) => {
+                return Err(usage_bad_field(
+                    verb,
+                    "values_file_read",
+                    &format!("read {}: {e}", path.display()),
+                    json,
+                ));
+            }
+        }
+    } else if let Some(s) = inline {
+        (s.to_string(), "--values")
+    } else {
+        return Err(usage_bad_field(
+            verb,
+            "no_values",
+            "one of --values or --values-file is required",
+            json,
+        ));
+    };
+    let value: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(usage_bad_field(
+                verb,
+                "values_parse",
+                &format!("{source} is not valid JSON: {e}"),
+                json,
+            ));
+        }
+    };
+    // Must be a NON-EMPTY array of arrays. `iter().all(..)` is vacuously true on
+    // an empty outer array, so guard `!is_empty()` explicitly — an empty value
+    // set is a no-op write, never what the operator meant.
+    let is_2d = value
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty() && rows.iter().all(|r| r.is_array()));
+    if is_2d {
+        Ok(value)
+    } else {
+        Err(usage_bad_field(
+            verb,
+            "values_not_2d",
+            &format!("{source} must be a non-empty 2-D JSON array (array of row arrays)"),
+            json,
+        ))
+    }
+}
+
+fn run_sheets_values_write(args: SheetsValuesWriteArgs, mode: &str) -> i32 {
+    let verb = if mode == "append" {
+        "sheets values-append"
+    } else {
+        "sheets values-update"
+    };
+    if !is_valid_resource_id(&args.spreadsheet) {
+        return usage_bad_field(verb, "bad_spreadsheet_id", BAD_SPREADSHEET_ID, args.json);
+    }
+    if !is_valid_range(&args.range) {
+        return usage_bad_field(verb, "bad_range", BAD_RANGE, args.json);
+    }
+    let values = match resolve_sheet_values(
+        args.values.as_deref(),
+        args.values_file.as_deref(),
+        verb,
+        args.json,
+    ) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let rows = values.as_array().map(|a| a.len()).unwrap_or(0);
+    let id = args.spreadsheet.clone();
+    let range = args.range.clone();
+    let mode_owned = mode.to_string();
+    let action = if mode == "append" {
+        "Append"
+    } else {
+        "Overwrite"
+    };
+    let prompt = format!(
+        "{action} {rows} row(s) at {range} in Spreadsheet {id}? This edits the live spreadsheet."
+    );
+    run_write_verb(
+        verb,
+        PLUGIN_SHEETS,
+        args.workspace,
+        args.json,
+        args.yes,
+        prompt,
+        move |ws, dir| sheets_values_write_request(ws, dir, &mode_owned, &id, &range, &values),
+        render_sheets_write,
+    )
+}
+
+/// Human-readable write receipt for `values-update` / `values-append`.
+fn render_sheets_write(value: &serde_json::Value) {
+    println!(
+        "bwoc gws {}: {} updated",
+        field(value, "operation"),
+        field(value, "updated_range"),
+    );
+    for (label, key) in [
+        ("rows", "updated_rows"),
+        ("columns", "updated_columns"),
+        ("cells", "updated_cells"),
+    ] {
+        if let Some(n) = value.get(key).and_then(|v| v.as_i64()) {
+            println!("  {label}: {n}");
+        }
+    }
+}
+
 // ===========================================================================
 // Tests — arg parsing, JSON shapes, id/query validation, pagination clamp,
 // auth-shape probe, no-plugin stub path, never-leak guardrails.
@@ -1783,6 +2117,122 @@ mod tests {
         assert!(json_write_blocked(true, false));
         assert!(!json_write_blocked(true, true));
         assert!(!json_write_blocked(false, false));
+    }
+
+    #[test]
+    fn parses_sheets_read_verbs() {
+        match parse(&["sheets", "get", "--spreadsheet", "S1"]).unwrap() {
+            GwsCommand::Sheets(SheetsCommand::Get(a)) => assert_eq!(a.spreadsheet, "S1"),
+            other => panic!("expected Sheets::Get, got {other:?}"),
+        }
+        match parse(&[
+            "sheets",
+            "values-get",
+            "--spreadsheet",
+            "S1",
+            "--range",
+            "Sheet1!A1:B2",
+        ])
+        .unwrap()
+        {
+            GwsCommand::Sheets(SheetsCommand::ValuesGet(a)) => {
+                assert_eq!(a.range, "Sheet1!A1:B2");
+            }
+            other => panic!("expected Sheets::ValuesGet, got {other:?}"),
+        }
+        assert!(parse(&["sheets", "values-get", "--spreadsheet", "S1"]).is_err());
+    }
+
+    #[test]
+    fn parses_sheets_write_verbs_need_values_source() {
+        // ArgGroup: exactly one of --values / --values-file.
+        assert!(
+            parse(&[
+                "sheets",
+                "values-update",
+                "--spreadsheet",
+                "S1",
+                "--range",
+                "A1"
+            ])
+            .is_err()
+        );
+        match parse(&[
+            "sheets",
+            "values-append",
+            "--spreadsheet",
+            "S1",
+            "--range",
+            "A1",
+            "--values",
+            "[[\"x\"]]",
+            "--yes",
+        ])
+        .unwrap()
+        {
+            GwsCommand::Sheets(SheetsCommand::ValuesAppend(a)) => {
+                assert!(a.yes);
+                assert!(a.values.is_some());
+            }
+            other => panic!("expected Sheets::ValuesAppend, got {other:?}"),
+        }
+        assert!(
+            parse(&[
+                "sheets",
+                "values-update",
+                "--spreadsheet",
+                "S1",
+                "--range",
+                "A1",
+                "--values",
+                "[[1]]",
+                "--values-file",
+                "v.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn range_validation() {
+        assert!(is_valid_range("Sheet1!A1:B2"));
+        assert!(is_valid_range("'My Sheet'!A:A"));
+        assert!(!is_valid_range("a/b")); // path segment
+        assert!(!is_valid_range("")); // empty
+        assert!(!is_valid_range(&"A".repeat(513))); // too long
+    }
+
+    #[test]
+    fn resolve_sheet_values_validates_2d_array() {
+        let v = resolve_sheet_values(Some("[[\"a\",\"b\"]]"), None, "sheets values-update", true)
+            .unwrap();
+        assert!(v.as_array().is_some_and(|r| r.len() == 1));
+        // An empty outer array is refused (a no-op write).
+        assert!(resolve_sheet_values(Some("[]"), None, "sheets values-update", true).is_err());
+        // A flat array (not 2-D) is refused.
+        assert!(resolve_sheet_values(Some("[\"a\"]"), None, "sheets values-update", true).is_err());
+        // A non-array is refused.
+        assert!(resolve_sheet_values(Some("{}"), None, "sheets values-update", true).is_err());
+        // Invalid JSON is refused.
+        assert!(resolve_sheet_values(Some("nope"), None, "sheets values-update", true).is_err());
+        // Neither source is refused.
+        assert!(resolve_sheet_values(None, None, "sheets values-update", true).is_err());
+    }
+
+    #[test]
+    fn sheets_request_builders_carry_operation() {
+        let ws = Path::new("/ws");
+        let dir = Path::new("/ws/modules/plugins/gws/gws-sheets");
+        assert_eq!(sheets_get_request(ws, dir, "S1")["operation"], "get");
+        let vg = sheets_values_get_request(ws, dir, "S1", "A1:B2");
+        assert_eq!(vg["operation"], "values-get");
+        assert_eq!(vg["range"], "A1:B2");
+        let vals = serde_json::json!([["a", "b"]]);
+        let u = sheets_values_write_request(ws, dir, "update", "S1", "A1", &vals);
+        assert_eq!(u["operation"], "values-update");
+        assert_eq!(u["values"], vals);
+        let ap = sheets_values_write_request(ws, dir, "append", "S1", "A1", &vals);
+        assert_eq!(ap["operation"], "values-append");
     }
 
     #[test]
