@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.22-0] — 2026-07-22 — 2.34.0
+
 ### Added
 
 - **`gws-slides` — Google Slides read + in-place write**: a new `gws` per-service plugin and `bwoc gws slides` verbs — `get` (presentation title + slide ids), `batch-update` (`presentations.batchUpdate` — the general write path), and `replace-all-text` (convenience). Reuses the operator-confirm gate; requires the `presentations` OAuth scope. **Completes the Docs/Sheets/Slides series** — the `gws` kind now has three write-capable Google Workspace editor services.
