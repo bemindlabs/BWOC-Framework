@@ -1,0 +1,12 @@
+[skill]
+name        = "ai-dlc"
+version     = "0.1.0"
+description = "Run the AI-Driven Development Life Cycle — elaborate a human intent into an agreed plan, then drive build → verify → document → operate as agents, with human-confirm checkpoints at bounded, irreversible steps."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["plan_increment", "execute_increment"]
+
+[gates]
+verify      = "bwoc skill verify ai-dlc"
