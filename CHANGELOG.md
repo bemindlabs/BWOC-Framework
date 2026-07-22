@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`ai-loop-engineer` framework skill** (`modules/skills/ai-loop-engineer/`, `domain/autonomy`): engineer autonomous agent loops (`perceive → act → observe`) that converge, stay bounded, and escalate — `design_loop` (iteration unit · stop condition = done-when + max-iterations + budget ceiling · guardrails · escalation gate) + `tune_loop` (fix non-convergence / runaway cost / oscillation / silent failure on a live loop). Distinct from `ai-dlc` (human-steered development lifecycle); this builds the *agent's own* iteration engine. Maps to Appamāda (heedful), Mattaññutā (bounded), Anattā (stop/pivot), + deferred-control at the irreversible gate. L1.
+
 ## [v2026.7.22-1] — 2026-07-22 — 2.35.0
 
 ### Added
