@@ -61,5 +61,5 @@ Names no backend/model/vendor; a platform-agnostic systems craft. Satisfies **Sa
 
 - [[../software-engineer/SPEC|software-engineer]] — designs the components this skill composes.
 - [[../data-engineer/SPEC|data-engineer]] — the data-plane counterpart (pipelines as systems).
-- [[../../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Paṭicca-samuppāda, Sammā-diṭṭhi.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Paṭicca-samuppāda, Sammā-diṭṭhi.
 - [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

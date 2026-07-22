@@ -61,5 +61,5 @@ Names no backend/model/vendor; a domain-agnostic product craft. Satisfies **Sam�
 
 - [[../ai-dlc/SPEC|ai-dlc]] — receives the `define` output as the intent it drives.
 - [[../manager/SPEC|manager]] — coordinates the *how* once the *what* is set.
-- [[../../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Mattaññutā.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Mattaññutā.
 - [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

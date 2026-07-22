@@ -61,5 +61,5 @@ Names no backend/model/vendor; a store-agnostic data craft. Satisfies **Samānat
 
 - [[../data-scientist/SPEC|data-scientist]] — the consumer of the trustworthy data this skill produces.
 - [[../systems-engineer/SPEC|systems-engineer]] — pipelines are systems; the reliability stance is shared.
-- [[../../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sacca, Sīla.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sacca, Sīla.
 - [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

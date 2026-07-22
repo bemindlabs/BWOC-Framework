@@ -62,4 +62,4 @@ Names no backend/model/vendor; a tool-agnostic analytical craft. Satisfies **Sam
 - [[../data-engineer/SPEC|data-engineer]] — supplies the trustworthy data this skill learns from.
 - [[../mathematics/SPEC|mathematics]] — the statistical rigor `analyze` leans on.
 - [[../auditor/SPEC|auditor]] — the same verify-before-trust stance for claims.
-- [[../../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sacca.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sacca.

@@ -62,4 +62,4 @@ Names no backend/model/vendor; a language-agnostic software craft. Satisfies **S
 - [[../engineering/SPEC|engineering]] — implements + hardens the designs (the build craft between design and review).
 - [[../auditor/SPEC|auditor]] — the adversarial-verification stance `review_code` draws on.
 - [[../systems-engineer/SPEC|systems-engineer]] — composes these components into systems.
-- [[../../../docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sammā-diṭṭhi, Sīla, Yoniso Manasikāra.
+- [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sammā-diṭṭhi, Sīla, Yoniso Manasikāra.
