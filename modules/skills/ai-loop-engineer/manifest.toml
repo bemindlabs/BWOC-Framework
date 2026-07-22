@@ -1,0 +1,12 @@
+[skill]
+name        = "ai-loop-engineer"
+version     = "0.1.0"
+description = "Engineer autonomous agent loops — the perceive → act → observe cycle — with a stop condition, guardrails, a budget ceiling, and a human-escalation gate; then tune a running loop that won't converge, runs away, or fails silently."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["design_loop", "tune_loop"]
+
+[gates]
+verify      = "bwoc skill verify ai-loop-engineer"
