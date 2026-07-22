@@ -1,0 +1,14 @@
+[plugin]
+name        = "gws-slides"
+kind        = "gws"
+version     = "0.1.0"
+description = "gws plugin — Google Slides adapter with a WRITE path: reads a presentation (presentations.get) and edits it via presentations.batchUpdate — the general write verb — plus the convenience replace-all-text. Projects reads into the normative Google Presentation shape. Its write verbs (batch-update, replace-all-text) carry the operator-confirm gate at the `bwoc gws slides` boundary. Sources the OAuth credential helpers from the sibling gws-auth foundation; requires the presentations scope."
+compat      = ">=2.33.0"
+entry       = "gws.sh"
+
+# [config.schema] intentionally omitted — no plugin-local config. Credentials
+# resolve at runtime through the sibling gws-auth foundation (BWOC_GWS_TOKEN env
+# / .bwoc/secrets/gws-token.json), never from workspace config. The write verbs
+# (batch-update, replace-all-text) are gated at the `bwoc gws slides` CLI boundary
+# (operator-confirm gate, PLUGINS §Write verbs) — the plugin never re-implements
+# nor bypasses that gate.

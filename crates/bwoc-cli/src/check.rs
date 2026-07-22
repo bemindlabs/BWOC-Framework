@@ -3407,6 +3407,7 @@ enum GwsService {
     Calendar,
     Docs,
     Sheets,
+    Slides,
 }
 
 impl GwsService {
@@ -3421,6 +3422,7 @@ impl GwsService {
             "gws-calendar" => Some(Self::Calendar),
             "gws-docs" => Some(Self::Docs),
             "gws-sheets" => Some(Self::Sheets),
+            "gws-slides" => Some(Self::Slides),
             _ => None,
         }
     }
@@ -3438,6 +3440,7 @@ impl GwsService {
             // only needs to be distinct from the other services'.
             Self::Docs => "documents",
             Self::Sheets => "spreadsheets",
+            Self::Slides => "presentations",
         }
     }
 }
@@ -3592,6 +3595,12 @@ fn validate_gws_resource(
             &["web_view_link"],
             &[],
             &["sheet_count"],
+        ),
+        GwsService::Slides => (
+            &["presentation_id", "title"],
+            &["web_view_link"],
+            &[],
+            &["slide_count"],
         ),
     };
 
