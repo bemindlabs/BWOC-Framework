@@ -1,0 +1,38 @@
+# auth.toml — Bemind Accounting Open API authentication CONTRACT. SHAPE only.
+#
+# ============================================================================
+#  NEVER COMMIT REAL CREDENTIAL VALUES TO THIS FILE.
+#
+#  This plugin reads the API key ONLY to set the outbound `Authorization:
+#  Bearer` header; it never logs, prints, hashes, or serialises the value.
+#  A malformed auth.toml cannot leak the key (Sīla — Adinnādāna).
+#
+#  The key is a personal API key BOUND TO ONE SELLER. It resolves from one of
+#  two sources, in PRECEDENCE ORDER (first non-empty wins):
+#
+#    1. Environment variable — preferred for CI / headless / transient use:
+#         BWOC_ACCOUNTING_KEY
+#
+#    2. Secrets file — preferred for a persistent workspace credential:
+#         <workspace>/.bwoc/secrets/accounting-key   (chmod 600, gitignored)
+#       Holds only the key on its first line. `.bwoc/secrets/` is gitignored at
+#       the workspace level (BWOC-53). Never commit this file.
+#
+#  A `User-Agent` header is REQUIRED by the edge (Cloudflare error 1010 without
+#  one); the plugin always sends its own UA.
+#
+#  Rotating the key is config-only: replace the env value or the secrets file.
+# ============================================================================
+
+[auth]
+scheme    = "bearer"          # Authorization: Bearer <key>
+env_var   = "BWOC_ACCOUNTING_KEY"
+key_file  = ".bwoc/secrets/accounting-key"
+
+# Per-domain scopes the key may carry (`domain:write` covers `:read`, `*` = all).
+# This plugin's verbs need, at most:
+[auth.scopes]
+report          = "reports:read"
+bill-create     = "purchases:write"
+bill-update     = "purchases:write"
+expense-create  = "expenses:write"
