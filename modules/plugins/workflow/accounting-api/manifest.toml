@@ -1,0 +1,21 @@
+[plugin]
+name        = "accounting-api"
+kind        = "workflow"
+version     = "0.1.0"
+description = "Bemind Accounting Open API adapter — read financial reports (reports:read) and record purchases/expenses: create+update a purchase document (the 2-step /purchase-docs POST→PATCH bill flow, purchases:write) and post an expense (/expenses, expenses:write). Every write auto-posts a double-entry GL entry server-side. Bearer-key auth (operator-supplied, never committed) + a required User-Agent. Write gating lives at the `bwoc accounting` CLI (a follow-up slice), never in this plugin."
+compat      = ">=2.36.0"
+entry       = "accounting.sh"
+
+# [config.schema] intentionally omitted.
+#
+# This plugin holds no config of its own. The API key resolves at runtime from
+# BWOC_ACCOUNTING_KEY (env) or <workspace>/.bwoc/secrets/accounting-key (file,
+# gitignored) — never from workspace config, never committed. See auth.toml for
+# the credential shape (no values). The API key is bound to one seller; the
+# plugin never reads or prints the key value.
+#
+# Read verbs (`report`) are free. Write verbs (`bill-create`, `bill-update`,
+# `expense-create`) produce durable, GL-posting side-effects on an external
+# system of record; their operator-confirm gate belongs at the `bwoc accounting`
+# CLI (PLUGINS §Write verbs), a follow-up slice — the plugin executes when
+# invoked and never re-implements nor bypasses that gate.
