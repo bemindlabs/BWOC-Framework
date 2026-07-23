@@ -17,4 +17,4 @@ Adds a framework skill (`modules/skills/soul/`, `domain/identity`) for an agent 
 
 ## Related (links)
 
-- `modules/skills/soul/`; siblings `counselor`, `writer`; `docs/th…/PHILOSOPHY` (Anattā/Sīla/Adhiṭṭhāna).
+- `modules/skills/soul/`; siblings `counselor`, `writer`; `modules/agent-template/docs/en/PHILOSOPHY.en.md` (+ `.th`) — Anattā / Sīla / Adhiṭṭhāna.
