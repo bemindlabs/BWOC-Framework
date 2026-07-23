@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`soul` framework skill** (`modules/skills/soul/`, `domain/identity`): hold an agent's enduring core — values, voice, principles, boundaries — consistently across every task so it is recognizably *itself*. `embody` (act from the core, expressed not announced) + `reflect` (catch drift + realign, correcting ego-free). The BWOC paradox: a consistent stream of character (Sīla, Adhiṭṭhāna) held *without* clinging to a fixed ego (Anattā) — and the one skill whose teardown is deliberately not a release (the core persists across tasks). L1.
+
 ## [v2026.7.23-0] — 2026-07-23 — 2.36.0
 
 ### Added

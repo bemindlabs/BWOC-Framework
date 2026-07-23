@@ -1,0 +1,12 @@
+[skill]
+name        = "soul"
+version     = "0.1.0"
+description = "Hold an agent's enduring core — its values, voice, and principles — consistently across every task, so it is recognizably itself; a consistent stream of character (Sīla) held without clinging to a fixed ego (Anattā)."
+maturity    = "L1"
+
+[contract]
+requires    = []
+exposes     = ["embody", "reflect"]
+
+[gates]
+verify      = "bwoc skill verify soul"
