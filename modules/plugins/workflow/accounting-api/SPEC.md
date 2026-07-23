@@ -13,14 +13,14 @@ maturity: L1
 
 # accounting-api — Bemind Accounting Open API
 
-> [!abstract] A `workflow`-kind plugin adapting the **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`). Reads financial **reports** and records **purchases + expenses**: create then fill a purchase document (the 2-step `/purchase-docs` `POST → PATCH` bill flow) and post an expense. Every write **auto-posts a double-entry GL entry** server-side. Bearer-key auth (operator-supplied, never committed) + a **required** User-Agent header. This is the first slice; the `bwoc accounting` CLI (which carries the write-verb operator-confirm gate) is a follow-up.
+> [!abstract] A `workflow`-kind plugin adapting the **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`). Reads financial **reports** and records **purchases + expenses**: create then fill a purchase document (the 2-step `/purchase-docs` `POST → PATCH` bill flow) and post an expense. Writes **post a double-entry GL entry** server-side — a purchase doc on finalize (`bill-update`), an expense on create. Bearer-key auth (operator-supplied, never committed) + a **required** User-Agent header. This is the first slice; the `bwoc accounting` CLI (which carries the write-verb operator-confirm gate) is a follow-up.
 
 ## Verbs
 
 | Operation | Direction | Endpoint | Scope | Side effect |
 |---|---|---|---|---|
 | `report` | read | `GET /reports/<name>` | `reports:read` | None — returns the report JSON. |
-| `bill-create` | **write** | `POST /purchase-docs` | `purchases:write` | Creates a draft purchase doc → `{id, number}`. GL-posting on finalize. |
+| `bill-create` | **write** | `POST /purchase-docs` | `purchases:write` | Creates a draft purchase doc → `{document_id, number}`. GL posts on finalize (`bill-update`). |
 | `bill-update` | **write** | `PATCH /purchase-docs/{id}` | `purchases:write` | Fills/finalizes the doc (date, supplier, items, vat). |
 | `expense-create` | **write** | `POST /expenses` | `expenses:write` | Records an expense. Auto-posts GL. |
 
@@ -55,10 +55,12 @@ A **`User-Agent` header is required** — the edge (Cloudflare) returns error 10
 
 ## Output shapes
 
+Every response carries the envelope `{ ok, plugin:"accounting-api", operation, … }`:
+
 - `report` → `{ ok, plugin, operation:"report", report:<name>, data:<report JSON> }`.
-- `bill-create` → `{ ok, operation:"bill-create", document_id, number, type }`.
-- `bill-update` → `{ ok, operation:"bill-update", document_id, number, status }` (a write receipt — never the full doc).
-- `expense-create` → `{ ok, operation:"expense-create", expense_id, number }`.
+- `bill-create` → `{ ok, plugin, operation:"bill-create", document_id, number, type }`.
+- `bill-update` → `{ ok, plugin, operation:"bill-update", document_id, number, status }` (a write receipt — never the full doc).
+- `expense-create` → `{ ok, plugin, operation:"expense-create", expense_id, number }`.
 
 ## Error classes
 

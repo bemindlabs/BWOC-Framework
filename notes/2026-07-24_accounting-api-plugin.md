@@ -13,8 +13,8 @@ Adds a `workflow`-kind plugin (`modules/plugins/workflow/accounting-api/`) adapt
 - **Grounded in the live OpenAPI, not memory.** Pulled the app's `openapi.json` from the server (Accounting Open API v2.3.2, 77 paths) and confirmed the real endpoints — the fleet memory's `/purchase-docs` 2-step flow was correct, and I verified the report-name set (`pnl`/`balance-sheet`/`cashflow`/`trial-balance`/`vat`/`wht`/`ap-aging`/`ar-aging`/`expenses`/`sales-by-channel`/`mrr`/`product-margin`/`asset-register`) against it. (Yoniso Manasikāra.)
 - **workflow-kind, not a new kind.** External-system integration → the `workflow` kind (like the `gcloud-*` family). A dedicated `bwoc accounting` CLI + the write-verb operator-confirm gate is the **next slice** (mirrors how `gws`/`gcloud` ship the plugin + the gated CLI separately). Until then the plugin executes writes when invoked; the SPEC flags this.
 - **Report-name allowlist + id charset guard** — a crafted `report`/`document_id` can never inject a path segment (validated against the OpenAPI's report set / `[A-Za-z0-9_-]`).
-- **Write receipt, not the full doc** — writes return `{id, number, status}`, never echo the record back.
-- **No key to test end-to-end** (none in the fleet secrets), so verified the shell offline: header/URL construction, report-name validation (bash word-split), the 2-step payload building, and envelope (`{ok, data}`) projection with mocked responses. The operator supplies the key at runtime (same as `gws` needs `BWOC_GWS_TOKEN`).
+- **Write receipt, not the full doc** — writes return a receipt `{ ok, plugin, operation, document_id, number, status }` (no `id` — `document_id`), never the full record.
+- **No key to test end-to-end** (none in the fleet secrets), so verified the shell offline: header/URL construction, report-name validation (bash word-split), the 2-step payload building, and the `{ ok, plugin, operation, … }` envelope + `{ok,data}`-body projection with mocked responses. The operator supplies the key at runtime (same as `gws` needs `BWOC_GWS_TOKEN`).
 
 ## Status / deferred
 

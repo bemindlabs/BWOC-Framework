@@ -13,14 +13,14 @@ maturity: L1
 
 # accounting-api — Bemind Accounting Open API
 
-> [!abstract] plugin kind `workflow` เชื่อม **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`) อ่าน **รายงาน** การเงิน และบันทึก **ซื้อ + ค่าใช้จ่าย**: สร้างแล้วเติมเอกสารซื้อ (flow 2 ขั้น `/purchase-docs` `POST → PATCH`) และลงค่าใช้จ่าย ทุกการเขียน **auto-post GL double-entry** ฝั่ง server. auth ด้วย Bearer key (operator ใส่เอง ไม่ commit) + **ต้องมี** User-Agent header. นี่คือ slice แรก; `bwoc accounting` CLI (ที่ถือ operator-confirm gate ของ verb เขียน) เป็น follow-up.
+> [!abstract] plugin kind `workflow` เชื่อม **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`) อ่าน **รายงาน** การเงิน และบันทึก **ซื้อ + ค่าใช้จ่าย**: สร้างแล้วเติมเอกสารซื้อ (flow 2 ขั้น `/purchase-docs` `POST → PATCH`) และลงค่าใช้จ่าย การเขียน **post GL double-entry** ฝั่ง server — purchase doc ตอน finalize (`bill-update`), expense ตอน create. auth ด้วย Bearer key (operator ใส่เอง ไม่ commit) + **ต้องมี** User-Agent header. นี่คือ slice แรก; `bwoc accounting` CLI (ที่ถือ operator-confirm gate ของ verb เขียน) เป็น follow-up.
 
 ## Verbs
 
 | Operation | ทิศทาง | Endpoint | Scope | ผลข้างเคียง |
 |---|---|---|---|---|
 | `report` | read | `GET /reports/<name>` | `reports:read` | ไม่มี — คืน JSON รายงาน |
-| `bill-create` | **write** | `POST /purchase-docs` | `purchases:write` | สร้าง draft → `{id, number}` |
+| `bill-create` | **write** | `POST /purchase-docs` | `purchases:write` | สร้าง draft → `{document_id, number}` (GL post ตอน finalize) |
 | `bill-update` | **write** | `PATCH /purchase-docs/{id}` | `purchases:write` | เติม/ปิดเอกสาร (date, supplier, items, vat) |
 | `expense-create` | **write** | `POST /expenses` | `expenses:write` | ลงค่าใช้จ่าย auto-post GL |
 
@@ -47,7 +47,9 @@ key = personal API key ผูก **1 seller** resolve จาก **`BWOC_ACCOUNTI
 
 ## รูปผลลัพธ์
 
-`report` → `{ ok, report:<name>, data:<รายงาน> }` · `bill-create` → `{ document_id, number, type }` · `bill-update` → `{ document_id, number, status }` (ใบเสร็จ ไม่คืนเอกสารเต็ม) · `expense-create` → `{ expense_id, number }`
+ทุก response มี envelope `{ ok, plugin:"accounting-api", operation, … }`:
+
+`report` → `{ ok, plugin, operation, report:<name>, data:<รายงาน> }` · `bill-create` → `{ ok, plugin, operation, document_id, number, type }` · `bill-update` → `{ ok, plugin, operation, document_id, number, status }` (ใบเสร็จ ไม่คืนเอกสารเต็ม) · `expense-create` → `{ ok, plugin, operation, expense_id, number }`
 
 ## Error classes
 
