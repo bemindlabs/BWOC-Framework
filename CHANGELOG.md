@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`accounting-api` workflow plugin** (`modules/plugins/workflow/accounting-api/`): a `workflow`-kind adapter over the Bemind Accounting Open API (v2.3.2) — `report` (read `/reports/<name>` — pnl / balance-sheet / cashflow / trial-balance / vat / …), `bill-create` + `bill-update` (the 2-step `/purchase-docs` `POST → PATCH` bill flow, `purchases:write`), and `expense-create` (`/expenses`, `expenses:write`). Every write auto-posts a double-entry GL entry server-side. Operator API key (bound to one seller) resolves from `BWOC_ACCOUNTING_KEY` / `.bwoc/secrets/accounting-key` (never committed); a User-Agent header is required. First slice — the `bwoc accounting` CLI carrying the write-verb operator-confirm gate is a follow-up. Grounded in the app's live OpenAPI.
+
 ## [v2026.7.23-0] — 2026-07-23 — 2.36.0
 
 ### Added

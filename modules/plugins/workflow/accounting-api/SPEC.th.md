@@ -1,0 +1,73 @@
+---
+title: accounting-api — Bemind Accounting Open API
+aliases:
+  - accounting-api
+tags:
+  - group/framework-plugins
+  - type/plugin
+  - kind/workflow
+  - domain/integration
+  - integration/accounting
+maturity: L1
+---
+
+# accounting-api — Bemind Accounting Open API
+
+> [!abstract] plugin kind `workflow` เชื่อม **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`) อ่าน **รายงาน** การเงิน และบันทึก **ซื้อ + ค่าใช้จ่าย**: สร้างแล้วเติมเอกสารซื้อ (flow 2 ขั้น `/purchase-docs` `POST → PATCH`) และลงค่าใช้จ่าย ทุกการเขียน **auto-post GL double-entry** ฝั่ง server. auth ด้วย Bearer key (operator ใส่เอง ไม่ commit) + **ต้องมี** User-Agent header. นี่คือ slice แรก; `bwoc accounting` CLI (ที่ถือ operator-confirm gate ของ verb เขียน) เป็น follow-up.
+
+## Verbs
+
+| Operation | ทิศทาง | Endpoint | Scope | ผลข้างเคียง |
+|---|---|---|---|---|
+| `report` | read | `GET /reports/<name>` | `reports:read` | ไม่มี — คืน JSON รายงาน |
+| `bill-create` | **write** | `POST /purchase-docs` | `purchases:write` | สร้าง draft → `{id, number}` |
+| `bill-update` | **write** | `PATCH /purchase-docs/{id}` | `purchases:write` | เติม/ปิดเอกสาร (date, supplier, items, vat) |
+| `expense-create` | **write** | `POST /expenses` | `expenses:write` | ลงค่าใช้จ่าย auto-post GL |
+
+ชื่อรายงาน: `pnl` · `balance-sheet` · `cashflow` · `trial-balance` · `vat` · `wht` · `ap-aging` · `ar-aging` · `expenses` · `sales-by-channel` · `mrr` · `product-margin` · `asset-register`
+
+> [!warning] verb เขียนแก้ **system of record** ภายนอก + auto-post GL — ถาวร ย้อนยาก. operator-confirm gate อยู่ที่ `bwoc accounting` CLI (follow-up) ไม่ใช่ที่ plugin. จนกว่า CLI จะมา เรียก verb เขียนอย่างระวัง
+
+## วิธีทำงาน
+
+framework เรียก `accounting.sh` ด้วย JSON บรรทัดเดียวทาง stdin. API key resolve ตอน runtime (env / secrets file) ไม่เคยพิมพ์ออก
+
+```jsonc
+{"operation":"report","report":"pnl","params":{"from":"2026-01-01","to":"2026-03-31"}}
+{"operation":"bill-create","type":"bill"}
+{"operation":"bill-update","document_id":"PI-123","payload":{"date":"2026-07-24","supplier":{"name":"ACME"},"items":[{"description":"widget","quantity":2,"unit":"ea","unitPrice":100}],"vat":7}}
+{"operation":"expense-create","payload":{"date":"2026-07-24","description":"taxi","amount":150}}
+```
+
+flow บิลปกติ = 2 call: `bill-create` (ได้ `document_id`) → `bill-update` (เติม)
+
+## Authentication & scope
+
+key = personal API key ผูก **1 seller** resolve จาก **`BWOC_ACCOUNTING_KEY`** (env, ก่อน) หรือ **`<workspace>/.bwoc/secrets/accounting-key`** (file, gitignored, `chmod 600`). shape-only ใน `auth.toml`; **ไม่ commit ไม่พิมพ์**. scope ต่อ domain (`domain:write` ครอบ `:read`): `reports:read`, `purchases:write`, `expenses:write`. 403 บอก scope ที่ขาด. **ต้องมี User-Agent** (ไม่งั้น Cloudflare 1010) — plugin ส่ง UA ของตัวเองเสมอ
+
+## รูปผลลัพธ์
+
+`report` → `{ ok, report:<name>, data:<รายงาน> }` · `bill-create` → `{ document_id, number, type }` · `bill-update` → `{ document_id, number, status }` (ใบเสร็จ ไม่คืนเอกสารเต็ม) · `expense-create` → `{ expense_id, number }`
+
+## Error classes
+
+`0` สำเร็จ · `1` ไม่มี jq/curl · `2` usage/no-key · `3` auth/scope (401/403) · `4` 429 · `5` 404 · `6` transport
+
+## Configuration
+
+```toml
+[plugins.accounting-api]
+enabled = true
+```
+
+## Idempotency
+
+`report` idempotent. `bill-create`/`expense-create` **ไม่** (สร้าง record ใหม่ทุกครั้ง); `bill-update` idempotent สำหรับ payload คงที่. gate (ที่ CLI ในอนาคต) มีเพราะเป็นการเขียนถาวร post-GL
+
+## Maturity
+
+L1 — slice แรก: reports + purchase-doc bill flow + expense. sales/cashbook/stock + `bwoc accounting` CLI (write-confirm gate) เป็น follow-up. อิงจาก OpenAPI จริง (v2.3.2)
+
+## Neutrality
+
+เป็นกลางต่อ backend: ไม่มี LLM/model/vendor นอกจาก accounting API — REST adapter บาง ๆ ตรวจสอบได้
