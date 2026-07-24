@@ -31,7 +31,7 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Standards, identity & accounting — the `audit` kind now spans **ISO / IEC / IEEE** (new `audit-iso-iec-ieee-29148` Requirements-Engineering lane), the `soul` skill holds an agent's core (Sīla without ego-clinging), and `accounting-api` reads reports + records purchases/expenses over the Bemind Accounting Open API (2.37.0, #367–#369)",
+    "Standards, identity & accounting — the `audit` kind now spans ISO / IEC / IEEE (new `audit-iso-iec-ieee-29148` Requirements-Engineering lane), the `soul` skill holds an agent's core (Sīla without ego-clinging), and `accounting-api` reads reports + records purchases/expenses over the Bemind Accounting Open API (2.37.0, #367–#369)",
     "Skill library — 19 new framework skills under `modules/skills/` (22 total): knowledge (`second-brain`, `server-rag`), craft (`writer`…`lawyer`), roles (`software-engineer`, `data-scientist`, …), + the `ai-dlc` and `ai-loop-engineer` lifecycle skills; enable per agent with `bwoc skill enable` (2.36.0, #359–#364)",
     "Google Workspace write path — `bwoc gws docs/sheets/slides` edit live Docs / Sheets / Slides (batchUpdate / values), behind a per-write operator-confirm gate (2.34.0, #354–#357)",
     "`bwoc run --workdir` — opt-in un-jail so a headless agent can edit shared workspace files (`projects/`, `wiki/`), bounded inside the workspace (2.33.0, #352)",
