@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.24-0] — 2026-07-24 — 2.37.0
+
 ### Added
 
 - **`audit` kind now spans ISO / IEC / IEEE** — added `audit-iso-iec-ieee-29148`, a Requirements-Engineering audit against **ISO/IEC/IEEE 29148:2018** (the first jointly ISO + IEC + IEEE standard in the set; supersedes IEEE 830/1233/1362), reusing the shared attestation runtime. Its 7 criteria cover StRS / SyRS-SRS, individual + set requirement characteristics, verifiability, bidirectional traceability, and requirements management. The `audit` kind's framing + designations were generalised to the three standards bodies (ISO 9001 · ISO/IEC 20000-1/27001/29110 · ISO/IEC/IEEE 29148) in `docs/{en,th}/PLUGINS`.
