@@ -1,0 +1,15 @@
+[plugin]
+name        = "audit-iso-iec-ieee-29148"
+kind        = "audit"
+version     = "0.1.0"
+description = "ISO/IEC/IEEE 29148 Requirements Engineering audit — attestation runtime. A jointly ISO + IEC + IEEE published standard (supersedes IEEE 830/1233/1362), so this lane extends the audit kind beyond pure-ISO to the ISO/IEC/IEEE family."
+compat      = ">=2.36.0"
+entry       = "audit.sh"
+
+# [config.schema] intentionally omitted. Adopts the per-criterion attestation
+# block on the workspace's [[plugins.audit-iso-iec-ieee-29148.attestations]]
+# array (criterion_id + statement + signer + signed_at + optional
+# valid_through) — the same shape as the ISO 9001 / ISO/IEC 27001 lanes,
+# documented in SPEC.md §Configuration, not as a manifest schema. The universal
+# `enabled` key on `[plugins.audit-iso-iec-ieee-29148]` is the only
+# manifest-declared surface.
