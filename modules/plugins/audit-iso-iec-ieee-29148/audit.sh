@@ -75,7 +75,7 @@ parse_criteria() {
 # Emit one TSV row per attestation:
 #   <criterion_id>\t<signer>\t<signed_at>\t<valid_through>\t<statement>
 #
-# Strings are TOML basic strings (double-quoted, single-line). v0.2.0 does
+# Strings are TOML basic strings (double-quoted, single-line). The runtime does
 # not support multi-line statements — escape literal `\n` inside the quoted
 # string if needed. `valid_through` is optional → empty string if absent.
 #
