@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.25-1] — 2026-07-25 — 2.39.0
+
+### Added
+
+- **Resource Protocol — fleet compute & memory sharing (`bwoc resource`, slice A).** A new protocol (`docs/{en,th}/RESOURCE-PROTOCOL`) for a light host to borrow compute (GPU/CPU), working memory (RAM, shared KV/context), or read-only federated knowledge from a heavy host across the fleet, brokered through the `bwoc-gateway` relay under a **refuse-by-default provider sharing gate** — the operationalisation of [Fleet Governance §6](docs/en/FLEET-GOVERNANCE.en.md) (*honor shared resources*). The model is a signed, time-bounded **lease** over a typed resource (`compute` / `kv` / `knowledge`): advertise → discover → claim (gate) → lease → use → release. **Slice A** ships the two local, no-network verbs plus the shared types the broker + offload slices build on: `bwoc resource snapshot` (GPU via `nvidia-smi`, CPU cores, RAM/load via `/proc`) and `bwoc resource gate-check` (dry-run the sharing gate — "would a claim of kind K from agent A for N MB VRAM be allowed by my `[resource]` caps against a live snapshot?", with typed denials `not_sharing` / `kind_not_offered` / `not_allowed` / `over_cap` / `insufficient_free`). The `advertise`/`discover`/`claim`/`release`/`kv` verbs and the gateway `/v1/resource/*` broker registry are specified and deferred to slices B (gateway) + C (offload). 13 unit tests (nvidia-smi/meminfo/loadavg parsers + the five-step gate).
+
 ## [v2026.7.25-0] — 2026-07-25 — 2.38.0
 
 ### Added

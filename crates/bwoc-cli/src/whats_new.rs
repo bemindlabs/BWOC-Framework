@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — Gated financial writes: `bwoc accounting` fronts the books with a writes_enabled opt-in + per-write confirm"
+    " — Resource Protocol: borrow compute & memory across the fleet (`bwoc resource`), under a provider-side sharing gate"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Gated financial writes — `bwoc accounting` fronts the `accounting-api` plugin: `report` reads are free, while `bill create/update` and `expense create` (each posts a document + an auto GL entry on the live books) are refused unless `[plugins.accounting-api] writes_enabled = true` AND a per-write confirm (or `--yes`, required in `--json`). The plugin holds no gate — the CLI is the single choke point (2.38.0, #373)",
+    "Resource Protocol — borrow compute & memory across the fleet: a light host leases GPU/CPU (`compute`), shared KV/context (`kv`), or federated knowledge from a heavy host through the `bwoc-gateway` broker, under a refuse-by-default provider sharing gate. Slice A ships `bwoc resource snapshot` (GPU/CPU/RAM probe) + `gate-check` (dry-run your sharing caps); the broker + offload land next (2.39.0, docs/en/RESOURCE-PROTOCOL)",
+    "Gated financial writes — `bwoc accounting` fronts the `accounting-api` plugin: `report` reads are free, while `bill create/update` and `expense create` (each posts a document + an auto GL entry on the live books) need `[plugins.accounting-api] writes_enabled = true` AND a per-write confirm (2.38.0, #373)",
     "Standards, identity & accounting — the `audit` kind now spans ISO / IEC / IEEE (new `audit-iso-iec-ieee-29148` lane), the `soul` skill holds an agent's core, and the `accounting-api` plugin adapts the Bemind Accounting Open API (2.37.0, #367–#369)",
     "Skill library — 19 new framework skills under `modules/skills/` (22 total): knowledge, craft (`writer`…`lawyer`), roles (`software-engineer`, `data-scientist`, …), + the `ai-dlc` and `ai-loop-engineer` lifecycle skills (2.36.0, #359–#364)",
     "Google Workspace write path — `bwoc gws docs/sheets/slides` edit live Docs / Sheets / Slides (batchUpdate / values), behind a per-write operator-confirm gate (2.34.0, #354–#357)",
-    "`bwoc run --workdir` — opt-in un-jail so a headless agent can edit shared workspace files (`projects/`, `wiki/`), bounded inside the workspace (2.33.0, #352)",
-    "Warm task execution + `bwoc-harness --headless` served mode — no per-task backend cold-start (2.32.0, #301)",
+    "`bwoc run --workdir` — opt-in un-jail so a headless agent can edit shared workspace files, bounded inside the workspace (2.33.0, #352)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

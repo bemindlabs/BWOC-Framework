@@ -47,6 +47,7 @@ mod plugin;
 mod receipts;
 mod remote;
 mod report;
+mod resource;
 mod retire;
 mod run;
 mod sangha;
@@ -354,6 +355,14 @@ enum Commands {
     /// choke point. See `docs/en/PLUGINS.en.md` §Write verbs.
     #[command(name = "accounting", subcommand)]
     Accounting(accounting::AccountingCommand),
+
+    /// Fleet compute & memory sharing (Resource Protocol). Borrow GPU/CPU/RAM,
+    /// shared KV, or federated knowledge from another fleet host through the
+    /// `bwoc-gateway` broker, under a provider-side sharing gate. Slice A ships
+    /// the local `snapshot` + `gate-check` verbs; advertise/discover/claim land
+    /// with the broker. See `docs/en/RESOURCE-PROTOCOL.en.md`.
+    #[command(name = "resource", subcommand)]
+    Resource(resource::ResourceCommand),
 
     /// Expose a local agent over the A2A (Agent2Agent) protocol — print its
     /// Agent Card or run the JSON-RPC HTTP listener (loopback-only by default;
@@ -3063,6 +3072,10 @@ fn main() -> ExitCode {
             // accounting mirrors gcloud/gws — own arg structs in accounting.rs;
             // same exit-code convention (0/1/2/4/255).
             let code = accounting::run(sub);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Resource(sub)) => {
+            let code = resource::run(sub);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::A2a(sub)) => {
