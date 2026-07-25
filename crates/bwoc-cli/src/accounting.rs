@@ -86,6 +86,119 @@ pub enum AccountingCommand {
     /// Expense operations. WRITE — financial, GL-posting.
     #[command(subcommand)]
     Expense(ExpenseCommand),
+    /// Sales — quick-sales + open invoices. Reads free; writes GL-posting.
+    #[command(subcommand)]
+    Sales(SalesCommand),
+    /// Stock — balances, movements, receipts, adjustments. Reads free; writes GL-posting.
+    #[command(subcommand)]
+    Stock(StockCommand),
+    /// Cashbook — the GL journal (cash/bank movements). Reads free; a manual journal is GL-posting.
+    #[command(subcommand)]
+    Cashbook(CashbookCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SalesCommand {
+    /// List unpaid invoices — GET /sales/open-invoices. READ.
+    OpenInvoices(ReadArgs),
+    /// Quick-sale (POS) operations.
+    #[command(subcommand)]
+    Quick(QuickCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum QuickCommand {
+    /// List quick-sales — GET /quick-sales. READ.
+    List(ReadArgs),
+    /// Show one quick-sale — GET /quick-sales/{id}. READ.
+    Show(IdReadArgs),
+    /// Record a quick-sale — POST /quick-sales {payload}. WRITE.
+    Create(PayloadWriteArgs),
+    /// Convert a quick-sale to an invoice — POST /quick-sales/{id}/convert-to-invoice. WRITE.
+    Convert(IdWriteArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum StockCommand {
+    /// Stock balance for a product — GET /stock/balance/{productId}. READ.
+    Balance(IdReadArgs),
+    /// Products at/below their low-stock threshold — GET /stock/low. READ.
+    Low(ReadArgs),
+    /// Stock movement history — GET /stock/movements. READ.
+    Movements(ReadArgs),
+    /// Record a stock receipt (goods in) — POST /stock/receipts {payload}. WRITE.
+    Receipt(PayloadWriteArgs),
+    /// Record a stock adjustment — POST /stock/adjustments {payload}. WRITE.
+    Adjust(PayloadWriteArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CashbookCommand {
+    /// List GL journal entries — GET /gl/journals. READ.
+    Journals(ReadArgs),
+    /// GL journal operations.
+    #[command(subcommand)]
+    Journal(JournalCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum JournalCommand {
+    /// Show one GL journal entry — GET /gl/journals/{id}. READ.
+    Show(IdReadArgs),
+    /// Post a manual GL journal entry — POST /gl/journals {payload}. WRITE.
+    Create(PayloadWriteArgs),
+}
+
+/// A read verb with optional `--params` query. READ, free.
+#[derive(Args, Debug)]
+pub struct ReadArgs {
+    /// Optional query params as a single JSON object.
+    #[arg(long)]
+    pub params: Option<String>,
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// A read verb keyed by a path id (document/product id). READ, free.
+#[derive(Args, Debug)]
+pub struct IdReadArgs {
+    /// The id in the path (quick-sale id, product id, journal id).
+    pub id: String,
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// A write verb carrying a required JSON `--payload`. WRITE — financial.
+#[derive(Args, Debug)]
+pub struct PayloadWriteArgs {
+    /// The body as a JSON object.
+    #[arg(long)]
+    pub payload: String,
+    /// Acknowledge the write up front (required in `--json` mode).
+    #[arg(long)]
+    pub yes: bool,
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// A write verb that acts on a path id with no body (e.g. convert). WRITE — financial.
+#[derive(Args, Debug)]
+pub struct IdWriteArgs {
+    /// The id in the path to act on.
+    pub id: String,
+    /// Acknowledge the write up front (required in `--json` mode).
+    #[arg(long)]
+    pub yes: bool,
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -168,7 +281,233 @@ pub fn run(cmd: AccountingCommand) -> i32 {
         AccountingCommand::Bill(BillCommand::Create(a)) => run_bill_create(a),
         AccountingCommand::Bill(BillCommand::Update(a)) => run_bill_update(a),
         AccountingCommand::Expense(ExpenseCommand::Create(a)) => run_expense_create(a),
+
+        // Sales
+        AccountingCommand::Sales(SalesCommand::OpenInvoices(a)) => {
+            run_read("sales-open-invoices", "sales open-invoices", a)
+        }
+        AccountingCommand::Sales(SalesCommand::Quick(QuickCommand::List(a))) => {
+            run_read("quick-sales-list", "sales quick list", a)
+        }
+        AccountingCommand::Sales(SalesCommand::Quick(QuickCommand::Show(a))) => {
+            run_id_read("quick-sales-show", "sales quick show", a)
+        }
+        AccountingCommand::Sales(SalesCommand::Quick(QuickCommand::Create(a))) => {
+            run_payload_write(
+                "quick-sales-create",
+                "sales quick create",
+                "record a quick-sale",
+                a,
+            )
+        }
+        AccountingCommand::Sales(SalesCommand::Quick(QuickCommand::Convert(a))) => run_id_write(
+            "quick-sales-convert",
+            "sales quick convert",
+            "convert quick-sale to an invoice",
+            a,
+        ),
+
+        // Stock
+        AccountingCommand::Stock(StockCommand::Balance(a)) => {
+            run_id_read("stock-balance", "stock balance", a)
+        }
+        AccountingCommand::Stock(StockCommand::Low(a)) => run_read("stock-low", "stock low", a),
+        AccountingCommand::Stock(StockCommand::Movements(a)) => {
+            run_read("stock-movements", "stock movements", a)
+        }
+        AccountingCommand::Stock(StockCommand::Receipt(a)) => run_payload_write(
+            "stock-receipt",
+            "stock receipt",
+            "record a stock receipt",
+            a,
+        ),
+        AccountingCommand::Stock(StockCommand::Adjust(a)) => run_payload_write(
+            "stock-adjust",
+            "stock adjust",
+            "record a stock adjustment",
+            a,
+        ),
+
+        // Cashbook (GL journals)
+        AccountingCommand::Cashbook(CashbookCommand::Journals(a)) => {
+            run_read("gl-journals-list", "cashbook journals", a)
+        }
+        AccountingCommand::Cashbook(CashbookCommand::Journal(JournalCommand::Show(a))) => {
+            run_id_read("gl-journal-show", "cashbook journal show", a)
+        }
+        AccountingCommand::Cashbook(CashbookCommand::Journal(JournalCommand::Create(a))) => {
+            run_payload_write(
+                "gl-journal-create",
+                "cashbook journal create",
+                "post a GL journal entry",
+                a,
+            )
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Generic runners for the sales / stock / cashbook domains. Reads are free;
+// writes go through the same financial_write_gate as bill/expense.
+// ---------------------------------------------------------------------------
+
+/// A read with optional `--params` query. No gate.
+fn run_read(operation: &str, label: &str, args: ReadArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc accounting {label}: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let params = match args.params.as_deref() {
+        None => serde_json::json!({}),
+        Some(raw) => match parse_json_object(raw, "params") {
+            Ok(v) => v,
+            Err(e) => {
+                if args.json {
+                    emit_error_json(label, "bad_params", &e);
+                } else {
+                    eprintln!("bwoc accounting {label}: {e}");
+                }
+                return EXIT_USAGE;
+            }
+        },
+    };
+    let plugin = match require_plugin(&root, label, args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = serde_json::json!({ "operation": operation, "params": params });
+    dispatch(&plugin, &root, &request, label, args.json, |_| {
+        println!("bwoc accounting {label}: ✓ (data in --json)");
+    })
+}
+
+/// A read keyed by a path id. No gate.
+fn run_id_read(operation: &str, label: &str, args: IdReadArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc accounting {label}: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if !is_valid_path_id(&args.id) {
+        let msg = format!(
+            "invalid id '{}' (1..=128 chars of [A-Za-z0-9_-], no leading hyphen)",
+            args.id
+        );
+        if args.json {
+            emit_error_json(label, "bad_id", &msg);
+        } else {
+            eprintln!("bwoc accounting {label}: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    let plugin = match require_plugin(&root, label, args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    // Both `.document_id` and `.product_id` are read from the request by the
+    // plugin depending on the op; send both to keep one runner generic.
+    let request = serde_json::json!({
+        "operation": operation,
+        "document_id": args.id,
+        "product_id": args.id,
+    });
+    dispatch(&plugin, &root, &request, label, args.json, |_| {
+        println!("bwoc accounting {label}: ✓ (data in --json)");
+    })
+}
+
+/// A financial write carrying a JSON `--payload`. Gated.
+fn run_payload_write(operation: &str, label: &str, target: &str, args: PayloadWriteArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc accounting {label}: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let payload = match parse_json_object(&args.payload, "payload") {
+        Ok(v) => v,
+        Err(e) => {
+            if args.json {
+                emit_error_json(label, "bad_payload", &e);
+            } else {
+                eprintln!("bwoc accounting {label}: {e}");
+            }
+            return EXIT_USAGE;
+        }
+    };
+    if let Err(code) = financial_write_gate(&root, label, args.json, args.yes, target) {
+        return code;
+    }
+    let plugin = match require_plugin(&root, label, args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = serde_json::json!({ "operation": operation, "payload": payload });
+    dispatch(&plugin, &root, &request, label, args.json, |value| {
+        let id = value.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let number = value.get("number").and_then(|v| v.as_str()).unwrap_or("");
+        println!(
+            "{}",
+            format!("bwoc accounting {label}: recorded {id} {number}").trim_end()
+        );
+    })
+}
+
+/// A financial write that acts on a path id with no body (e.g. convert). Gated.
+fn run_id_write(operation: &str, label: &str, target: &str, args: IdWriteArgs) -> i32 {
+    let root = match resolve_workspace(args.workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("bwoc accounting {label}: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    if !is_valid_path_id(&args.id) {
+        let msg = format!(
+            "invalid id '{}' (1..=128 chars of [A-Za-z0-9_-], no leading hyphen)",
+            args.id
+        );
+        if args.json {
+            emit_error_json(label, "bad_id", &msg);
+        } else {
+            eprintln!("bwoc accounting {label}: {msg}");
+        }
+        return EXIT_USAGE;
+    }
+    let target = format!("{target} '{}'", args.id);
+    if let Err(code) = financial_write_gate(&root, label, args.json, args.yes, &target) {
+        return code;
+    }
+    let plugin = match require_plugin(&root, label, args.json) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let request = serde_json::json!({ "operation": operation, "document_id": args.id });
+    dispatch(&plugin, &root, &request, label, args.json, |value| {
+        let id = value.get("id").and_then(|v| v.as_str()).unwrap_or(&args.id);
+        let number = value.get("number").and_then(|v| v.as_str()).unwrap_or("");
+        println!(
+            "{}",
+            format!("bwoc accounting {label}: {id} {number}").trim_end()
+        );
+    })
+}
+
+/// Path-id validator mirroring the plugin's `_valid_path_id` (1..=128 chars of
+/// `[A-Za-z0-9_-]`, no leading hyphen) — a local pre-check before spawn.
+fn is_valid_path_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 // ---------------------------------------------------------------------------

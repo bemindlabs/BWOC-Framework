@@ -43,6 +43,12 @@ case "$op" in
   bill-create)    printf '%s\n' '{"ok":true,"plugin":"accounting-api","operation":"bill-create","document_id":"PI-999","number":"PI-999","type":"bill"}' ;;
   bill-update)    printf '%s\n' '{"ok":true,"plugin":"accounting-api","operation":"bill-update","document_id":"PI-999","number":"PI-999","status":"finalized"}' ;;
   expense-create) printf '%s\n' '{"ok":true,"plugin":"accounting-api","operation":"expense-create","expense_id":"EX-1","number":"EX-1"}' ;;
+  sales-open-invoices|quick-sales-list|stock-low|stock-movements|gl-journals-list) \
+                  printf '%s\n' "{\"ok\":true,\"plugin\":\"accounting-api\",\"operation\":\"$op\",\"data\":[]}" ;;
+  quick-sales-show|stock-balance|gl-journal-show) \
+                  printf '%s\n' "{\"ok\":true,\"plugin\":\"accounting-api\",\"operation\":\"$op\",\"data\":{}}" ;;
+  quick-sales-create|quick-sales-convert|stock-receipt|stock-adjust|gl-journal-create) \
+                  printf '%s\n' "{\"ok\":true,\"plugin\":\"accounting-api\",\"operation\":\"$op\",\"id\":\"NEW-1\",\"number\":\"NEW-1\"}" ;;
   *)              printf '%s\n' "stub: unknown op '$op' (req=$req)" >&2; exit 2 ;;
 esac
 "#;
@@ -226,4 +232,144 @@ fn write_proceeds_with_opt_in_and_yes() {
     let env: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json envelope");
     assert_eq!(env["ok"], true);
     assert_eq!(env["document_id"], "PI-999");
+}
+
+// --- Sales / stock / cashbook domains --------------------------------------
+
+#[test]
+fn stock_low_read_is_free() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_workspace(ws, ENABLED_READONLY); // reads need no writes_enabled
+    install_stub_plugin(ws);
+
+    let out = Command::new(bin())
+        .args(["accounting", "stock", "low", "--json"])
+        .args(["--workspace"])
+        .arg(ws)
+        .output()
+        .expect("spawn");
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let env: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json envelope");
+    assert_eq!(env["ok"], true);
+    assert_eq!(env["operation"], "stock-low");
+}
+
+#[test]
+fn stock_receipt_refused_without_opt_in() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_workspace(ws, ENABLED_READONLY); // enabled, but writes_enabled absent
+    install_stub_plugin(ws);
+
+    let out = Command::new(bin())
+        .args([
+            "accounting",
+            "stock",
+            "receipt",
+            "--payload",
+            "{\"qty\":10}",
+            "--json",
+        ])
+        .args(["--workspace"])
+        .arg(ws)
+        .output()
+        .expect("spawn");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a stock write is financial — must refuse without writes_enabled"
+    );
+    let env: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json envelope");
+    assert_eq!(env["error"], "writes_disabled");
+}
+
+#[test]
+fn stock_receipt_proceeds_with_opt_in_and_yes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_workspace(ws, ENABLED_WRITES);
+    install_stub_plugin(ws);
+
+    let out = Command::new(bin())
+        .args([
+            "accounting",
+            "stock",
+            "receipt",
+            "--payload",
+            "{\"qty\":10}",
+            "--yes",
+            "--json",
+        ])
+        .args(["--workspace"])
+        .arg(ws)
+        .output()
+        .expect("spawn");
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let env: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json envelope");
+    assert_eq!(env["ok"], true);
+    assert_eq!(env["id"], "NEW-1");
+}
+
+#[test]
+fn quick_convert_is_gated_and_validates_id() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_workspace(ws, ENABLED_WRITES);
+    install_stub_plugin(ws);
+
+    // A bad id is rejected locally, before any spawn/gate.
+    let bad = Command::new(bin())
+        .args([
+            "accounting",
+            "sales",
+            "quick",
+            "convert",
+            "-bad",
+            "--yes",
+            "--json",
+        ])
+        .args(["--workspace"])
+        .arg(ws)
+        .output()
+        .expect("spawn");
+    // clap treats a leading-hyphen positional as a flag; either way it's a usage error (2).
+    assert_eq!(bad.status.code(), Some(2));
+
+    // A good id + opt-in + --yes proceeds through the gate to the stub.
+    let ok = Command::new(bin())
+        .args([
+            "accounting",
+            "sales",
+            "quick",
+            "convert",
+            "QS-1",
+            "--yes",
+            "--json",
+        ])
+        .args(["--workspace"])
+        .arg(ws)
+        .output()
+        .expect("spawn");
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let env: serde_json::Value = serde_json::from_slice(&ok.stdout).expect("json envelope");
+    assert_eq!(env["operation"], "quick-sales-convert");
 }
