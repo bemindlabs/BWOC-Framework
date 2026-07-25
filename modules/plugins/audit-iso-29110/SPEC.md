@@ -61,11 +61,11 @@ The script:
 
 1. Reads `criteria.toml` from `BWOC_PLUGIN_DIR` (a constrained TOML shape — single-line scalars and arrays — parsed with `awk`).
 2. For each criterion in declaration order, probes the `candidates` list against `BWOC_WORKSPACE`.
-3. Emits one finding per criterion to stdout, in a JSON array, conforming to [PLUGINS.en.md §Audit Findings Schema](../../docs/en/PLUGINS.en.md#audit-findings-schema):
+3. Emits one finding per criterion to stdout, in a JSON array, conforming to [PLUGINS.en.md §Audit Findings Schema](../../../docs/en/PLUGINS.en.md#audit-findings-schema):
    - First existing candidate → `status = "pass"`, `evidence = { kind: "file", value: <found path> }`, no `remedy`.
    - None exist → `status = "fail"`, `evidence = { kind: "file", value: <primary path> }`, `remedy = "Create <primary> … (or one of: <alts>)"`.
 
-The script exits `0` on success. **Non-pass findings are findings, not errors.** A non-zero exit signals a framework-side problem (missing env var, unreadable `criteria.toml`) which the BWOC-12 dispatcher then treats as a plugin bug — see [PLUGINS.en.md line 59](../../docs/en/PLUGINS.en.md#audit-findings-schema).
+The script exits `0` on success. **Non-pass findings are findings, not errors.** A non-zero exit signals a framework-side problem (missing env var, unreadable `criteria.toml`) which the BWOC-12 dispatcher then treats as a plugin bug — see [PLUGINS.en.md §Audit Findings Schema](../../../docs/en/PLUGINS.en.md#audit-findings-schema).
 
 ## Sample Output
 
@@ -95,7 +95,7 @@ For a workspace that has `docs/en/SRS.en.md` and `docs/en/ARCHITECTURE.en.md` bu
 ]
 ```
 
-`bwoc audit run` wraps this into its canonical envelope `{ workspace, runs: [{ plugin, version, started_at, finished_at, findings: [...] }, ...], summary }` — the dispatcher's responsibility, not the plugin's. Findings serialise in **criterion-declaration order**, which is `criteria.toml`'s row order (PLUGINS.en.md line 84).
+`bwoc audit run` wraps this into its canonical envelope `{ workspace, runs: [{ plugin, version, started_at, finished_at, findings: [...] }, ...], summary }` — the dispatcher's responsibility, not the plugin's. Findings serialise in **criterion-declaration order**, which is `criteria.toml`'s row order (PLUGINS.en.md §Audit Findings Schema).
 
 ## Configuration
 
@@ -109,7 +109,7 @@ The plugin declares no `[config.schema]` in its manifest — the only workspace-
 
 ## Lifecycle Mapping
 
-Per [PLUGINS.en.md §Lifecycle](../../docs/en/PLUGINS.en.md#lifecycle), the `audit` kind's owner is the `bwoc audit` CLI; `init` and `teardown` happen per-invocation around `invoke`. This plugin holds **no external state** — every phase is trivially idempotent:
+Per [PLUGINS.en.md §Lifecycle](../../../docs/en/PLUGINS.en.md#lifecycle), the `audit` kind's owner is the `bwoc audit` CLI; `init` and `teardown` happen per-invocation around `invoke`. This plugin holds **no external state** — every phase is trivially idempotent:
 
 | Phase | What this plugin does |
 |---|---|

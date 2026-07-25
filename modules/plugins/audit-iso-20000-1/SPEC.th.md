@@ -14,7 +14,7 @@ maturity: L1
 
 # การตรวจสอบ ISO/IEC 20000-1 ระบบบริหารบริการ IT
 
-> [!abstract] **Attestation + sample runtime (v0.2.0)** runtime ตัวแรกที่ผสม evidence สองชนิด แต่ละ criterion ประกาศ `expected_evidence_kind` ใน [[criteria]]; runtime อ่าน evidence ที่ operator ให้จาก `.bwoc/workspace.toml` แล้วส่ง `evidence.kind = "attestation"` สำหรับ clause ที่เป็นเอกสาร (scope, policy, catalogue) และ `evidence.kind = "sample"` สำหรับ clause เชิงอัตรา (SLA, change, incident, problem, improvement) ตาม [schema ของ BWOC-27](../../docs/en/PLUGINS.en.md#evidence-kinds) Criterion ที่ไม่มี evidence จาก operator จะส่ง `status = "fail"` ชี้ไปที่ `workspace.toml` แทนที่ stub v0.1.0 จาก EPIC-2
+> [!abstract] **Attestation + sample runtime (v0.2.0)** runtime ตัวแรกที่ผสม evidence สองชนิด แต่ละ criterion ประกาศ `expected_evidence_kind` ใน [[criteria]]; runtime อ่าน evidence ที่ operator ให้จาก `.bwoc/workspace.toml` แล้วส่ง `evidence.kind = "attestation"` สำหรับ clause ที่เป็นเอกสาร (scope, policy, catalogue) และ `evidence.kind = "sample"` สำหรับ clause เชิงอัตรา (SLA, change, incident, problem, improvement) ตาม [schema ของ BWOC-27](../../../docs/en/PLUGINS.en.md#evidence-kinds) Criterion ที่ไม่มี evidence จาก operator จะส่ง `status = "fail"` ชี้ไปที่ `workspace.toml` แทนที่ stub v0.1.0 จาก EPIC-2
 
 ## สถานะและ Roadmap
 
@@ -27,14 +27,14 @@ maturity: L1
 
 [[../../notes/2026-05-26_iso-compliance-plugins|บันทึกกรอบความคิด EPIC-2]] อธิบายว่าทำไม 20000-1 ส่งเป็น stub ก่อน — evidence ของมันคือแนวปฏิบัติบริหารบริการ (incident, change, SLA, policy) ที่อยู่ในเครื่องมือ ITSM ไม่ใช่ไฟล์ workspace และ schema v1 แสดงมันไม่ได้ EPIC-3 ปิดช่องว่างนั้น:
 
-- [บันทึก design BWOC-26](../../notes/2026-05-27_iso-runtime-evidence-model.md) ตรึง evidence model ใหม่ (`attestation`, `sample`, time-bounded fields)
-- [BWOC-27](../../docs/en/PLUGINS.en.md#evidence-kinds) ขยาย schema ด้วย `attestation` (ต้องการ `signer` + `signed_at`) และ `sample` (ต้องการ `sampled_count` + `sampled_of`, optional `window`)
+- [บันทึก design BWOC-26](../../../notes/2026-05-27_iso-runtime-evidence-model.md) ตรึง evidence model ใหม่ (`attestation`, `sample`, time-bounded fields)
+- [BWOC-27](../../../docs/en/PLUGINS.en.md#evidence-kinds) ขยาย schema ด้วย `attestation` (ต้องการ `signer` + `signed_at`) และ `sample` (ต้องการ `sampled_count` + `sampled_of`, optional `window`)
 - BWOC-28 สร้าง attestation runtime ของ 9001 และขยาย dispatcher ให้ validate ทั้งสองชนิดใหม่
-- BWOC-33 (การเปลี่ยนแปลงนี้) สร้าง runtime ของ 20000-1 — ตัวแรกที่ผสมทั้งสองชนิด การอนุมาน "องค์กรนี้จัดการ incident ภายใน SLA" จาก "repo นี้มีไฟล์ `INCIDENTS.md`" จะยังทำให้ audit เป็นเท็จ (Musāvāda — [PHILOSOPHY.en.md](../../docs/en/PHILOSOPHY.en.md) §Sila 5) Attestation รักษาความซื่อสัตย์ของ clause เชิงเอกสาร (operator วาง sign-off พร้อมวันที่และ provenance); sample รักษาความซื่อสัตย์ของ clause เชิงปฏิบัติการ (operator บันทึกอัตราที่วัดได้จากเครื่องมือ ITSM)
+- BWOC-33 (การเปลี่ยนแปลงนี้) สร้าง runtime ของ 20000-1 — ตัวแรกที่ผสมทั้งสองชนิด การอนุมาน "องค์กรนี้จัดการ incident ภายใน SLA" จาก "repo นี้มีไฟล์ `INCIDENTS.md`" จะยังทำให้ audit เป็นเท็จ (Musāvāda — [PHILOSOPHY.en.md](../../agent-template/docs/en/PHILOSOPHY.en.md) §Sila 5) Attestation รักษาความซื่อสัตย์ของ clause เชิงเอกสาร (operator วาง sign-off พร้อมวันที่และ provenance); sample รักษาความซื่อสัตย์ของ clause เชิงปฏิบัติการ (operator บันทึกอัตราที่วัดได้จากเครื่องมือ ITSM)
 
 ## Criteria (v0.2.0)
 
-ITSM criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO/IEC 20000-1:2018[^iso-20000-1-2018] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md line 84) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump คอลัมน์ **Kind** คือ `expected_evidence_kind` ของแต่ละ criterion — ดู [[../../notes/2026-05-27_20000-1-sample-source]] สำหรับเหตุผลการแบ่ง documented-artifact กับ operational-rate
+ITSM criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO/IEC 20000-1:2018[^iso-20000-1-2018] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md §Audit Findings Schema) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump คอลัมน์ **Kind** คือ `expected_evidence_kind` ของแต่ละ criterion — ดู [[../../notes/2026-05-27_20000-1-sample-source]] สำหรับเหตุผลการแบ่ง documented-artifact กับ operational-rate
 
 | `criterion_id` | Clause | หัวเรื่อง | Severity | Kind |
 |---|---|---|---|---|

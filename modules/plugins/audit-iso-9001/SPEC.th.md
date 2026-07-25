@@ -14,7 +14,7 @@ maturity: L1
 
 # การตรวจสอบ ISO 9001 ระบบบริหารคุณภาพ
 
-> [!abstract] **Attestation runtime (v0.2.0)** อ่าน attestation ที่ operator เซ็นจาก `.bwoc/workspace.toml` ใต้ `[[plugins.audit-iso-9001.attestations]]` และส่ง finding ที่ `evidence.kind = "attestation"` (`signer` + `signed_at` + `valid_through` แบบ optional) ตาม [การขยาย schema ของ BWOC-27](../../docs/en/PLUGINS.en.md#evidence-kinds) Criterion ที่ไม่มี attestation จากผู้ดำเนินการจะส่ง `status = "fail"` ชี้ไปที่ block ใน `workspace.toml` แทนที่ stub v0.1.0 จาก EPIC-2
+> [!abstract] **Attestation runtime (v0.2.0)** อ่าน attestation ที่ operator เซ็นจาก `.bwoc/workspace.toml` ใต้ `[[plugins.audit-iso-9001.attestations]]` และส่ง finding ที่ `evidence.kind = "attestation"` (`signer` + `signed_at` + `valid_through` แบบ optional) ตาม [การขยาย schema ของ BWOC-27](../../../docs/en/PLUGINS.en.md#evidence-kinds) Criterion ที่ไม่มี attestation จากผู้ดำเนินการจะส่ง `status = "fail"` ชี้ไปที่ block ใน `workspace.toml` แทนที่ stub v0.1.0 จาก EPIC-2
 
 ## สถานะและ Roadmap
 
@@ -27,13 +27,13 @@ maturity: L1
 
 [[../../notes/2026-05-26_iso-compliance-plugins|บันทึกกรอบความคิด EPIC-2]] อธิบายว่าทำไม 9001 ส่งเป็น stub ก่อน — evidence ของ 9001 เป็นเชิงองค์กร ไม่ใช่รูปแบบการมีอยู่ของไฟล์ และ schema v1 ไม่สามารถแสดง attestation ได้ EPIC-3 ปิดช่องว่างนั้น:
 
-- [บันทึก design BWOC-26](../../notes/2026-05-27_iso-runtime-evidence-model.md) ตรึง evidence model ใหม่ (`attestation`, `sample`, time-bounded fields)
-- [BWOC-27](../../docs/en/PLUGINS.en.md#evidence-kinds) ขยาย schema ด้วย `attestation` (ต้องการ `signer` + `signed_at`) และ `valid_through` ที่เป็น optional แบบ orthogonal
-- BWOC-28 (การเปลี่ยนแปลงนี้) implement runtime ของ 9001 ตาม schema ใหม่ Operator ให้ attestation ใน `workspace.toml`; plugin ส่ง finding หนึ่งตัวต่อ criterion ซื่อสัตย์ว่า criterion ใดมี coverage และ criterion ใดไม่มี การอนุมาน "องค์กรนี้มีนโยบายคุณภาพที่เป็นเอกสาร" จาก "repo นี้มีไฟล์ `POLICY.md`" จะยังคงทำให้ audit เป็นเท็จ (Musāvāda — [PHILOSOPHY.en.md](../../docs/en/PHILOSOPHY.en.md) §Sila 5) Attestation evidence รักษาความซื่อสัตย์ของ audit โดยกำหนดให้ operator วาง attestation พร้อมวันที่และ provenance
+- [บันทึก design BWOC-26](../../../notes/2026-05-27_iso-runtime-evidence-model.md) ตรึง evidence model ใหม่ (`attestation`, `sample`, time-bounded fields)
+- [BWOC-27](../../../docs/en/PLUGINS.en.md#evidence-kinds) ขยาย schema ด้วย `attestation` (ต้องการ `signer` + `signed_at`) และ `valid_through` ที่เป็น optional แบบ orthogonal
+- BWOC-28 (การเปลี่ยนแปลงนี้) implement runtime ของ 9001 ตาม schema ใหม่ Operator ให้ attestation ใน `workspace.toml`; plugin ส่ง finding หนึ่งตัวต่อ criterion ซื่อสัตย์ว่า criterion ใดมี coverage และ criterion ใดไม่มี การอนุมาน "องค์กรนี้มีนโยบายคุณภาพที่เป็นเอกสาร" จาก "repo นี้มีไฟล์ `POLICY.md`" จะยังคงทำให้ audit เป็นเท็จ (Musāvāda — [PHILOSOPHY.en.md](../../agent-template/docs/en/PHILOSOPHY.en.md) §Sila 5) Attestation evidence รักษาความซื่อสัตย์ของ audit โดยกำหนดให้ operator วาง attestation พร้อมวันที่และ provenance
 
 ## Criteria (v0.2.0)
 
-QMS criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO 9001:2015[^iso-9001-2015] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md line 84) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump
+QMS criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO 9001:2015[^iso-9001-2015] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md §Audit Findings Schema) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump
 
 | `criterion_id` | Clause | หัวเรื่อง | Severity |
 |---|---|---|---|

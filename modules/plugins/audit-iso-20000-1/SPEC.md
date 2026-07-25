@@ -14,7 +14,7 @@ maturity: L1
 
 # ISO/IEC 20000-1 IT Service Management System Audit
 
-> [!abstract] **Attestation + sample runtime (v0.2.0).** The first runtime that mixes two evidence kinds. Each criterion declares its `expected_evidence_kind` in [[criteria]]; the runtime reads operator-provided evidence from `.bwoc/workspace.toml` and emits `evidence.kind = "attestation"` for documented-artifact clauses (scope, policy, catalogue) and `evidence.kind = "sample"` for operational-rate clauses (SLAs, changes, incidents, problems, improvement), per the [BWOC-27 schema](../../docs/en/PLUGINS.en.md#evidence-kinds). Criteria without operator evidence emit `status = "fail"` pointing at `workspace.toml`. Replaces the v0.1.0 stub from EPIC-2.
+> [!abstract] **Attestation + sample runtime (v0.2.0).** The first runtime that mixes two evidence kinds. Each criterion declares its `expected_evidence_kind` in [[criteria]]; the runtime reads operator-provided evidence from `.bwoc/workspace.toml` and emits `evidence.kind = "attestation"` for documented-artifact clauses (scope, policy, catalogue) and `evidence.kind = "sample"` for operational-rate clauses (SLAs, changes, incidents, problems, improvement), per the [BWOC-27 schema](../../../docs/en/PLUGINS.en.md#evidence-kinds). Criteria without operator evidence emit `status = "fail"` pointing at `workspace.toml`. Replaces the v0.1.0 stub from EPIC-2.
 
 ## Status & Roadmap
 
@@ -27,14 +27,14 @@ maturity: L1
 
 [[../../notes/2026-05-26_iso-compliance-plugins|The EPIC-2 framing note]] explained why 20000-1 shipped as a stub first — its evidence is service-management practice (incidents, changes, SLAs, policy) that lives in ITSM tooling, not workspace files, and the v1 schema could not express it. EPIC-3 closed that gap:
 
-- The [BWOC-26 design note](../../notes/2026-05-27_iso-runtime-evidence-model.md) pinned the new evidence model (`attestation`, `sample`, time-bounded fields).
-- [BWOC-27](../../docs/en/PLUGINS.en.md#evidence-kinds) extended the schema with `attestation` (required `signer` + `signed_at`) and `sample` (required `sampled_count` + `sampled_of`, optional `window`).
+- The [BWOC-26 design note](../../../notes/2026-05-27_iso-runtime-evidence-model.md) pinned the new evidence model (`attestation`, `sample`, time-bounded fields).
+- [BWOC-27](../../../docs/en/PLUGINS.en.md#evidence-kinds) extended the schema with `attestation` (required `signer` + `signed_at`) and `sample` (required `sampled_count` + `sampled_of`, optional `window`).
 - BWOC-28 built the 9001 attestation runtime and extended the dispatcher to validate both new kinds.
-- BWOC-33 (this change) builds the 20000-1 runtime — the first to mix both kinds. Inferring "this organization runs incident management within SLA" from "this repo contains `INCIDENTS.md`" would still falsify the audit (Musāvāda — [PHILOSOPHY.en.md](../../docs/en/PHILOSOPHY.en.md) §Sila 5). Attestation evidence keeps documented-artifact clauses honest (an operator vouches, dated, with provenance); sample evidence keeps operational clauses honest (the operator records the measured rate from their ITSM tool).
+- BWOC-33 (this change) builds the 20000-1 runtime — the first to mix both kinds. Inferring "this organization runs incident management within SLA" from "this repo contains `INCIDENTS.md`" would still falsify the audit (Musāvāda — [PHILOSOPHY.en.md](../../agent-template/docs/en/PHILOSOPHY.en.md) §Sila 5). Attestation evidence keeps documented-artifact clauses honest (an operator vouches, dated, with provenance); sample evidence keeps operational clauses honest (the operator records the measured rate from their ITSM tool).
 
 ## Criteria (v0.2.0)
 
-Eight headline ITSM criteria, drawn from the main clauses of ISO/IEC 20000-1:2018[^iso-20000-1-2018]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md line 84). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump. The **Kind** column is each criterion's `expected_evidence_kind` — see [[../../notes/2026-05-27_20000-1-sample-source]] for the documented-artifact-vs-operational-rate split rationale.
+Eight headline ITSM criteria, drawn from the main clauses of ISO/IEC 20000-1:2018[^iso-20000-1-2018]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md §Audit Findings Schema). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump. The **Kind** column is each criterion's `expected_evidence_kind` — see [[../../notes/2026-05-27_20000-1-sample-source]] for the documented-artifact-vs-operational-rate split rationale.
 
 | `criterion_id` | Clause | Title | Severity | Kind |
 |---|---|---|---|---|

@@ -13,7 +13,7 @@ maturity: stub
 
 ## Why this exists
 
-The framework ships six first-class backends (`claude`, `antigravity`, `codex`, `kimi`, `ollama`, `openai-compatible`). OpenClaw is **not** one of them, so reaching it goes through the `llm-backend` plugin surface (see [`PLUGINS.en.md`](../../../docs/en/PLUGINS.en.md) §Plugin Kinds).
+The framework ships six first-class backends (`claude`, `antigravity`, `codex`, `kimi`, `ollama`, `openai-compatible`). OpenClaw is **not** one of them, so reaching it goes through the `llm-backend` plugin surface (see [`PLUGINS.en.md`](../../../../docs/en/PLUGINS.en.md) §Plugin Kinds).
 
 This is one direction of a **two-way bridge**:
 
@@ -32,5 +32,5 @@ A future slice will provide the `bwoc-llm-openclaw` dispatch entry that translat
 
 ## See also
 
-- [`PLUGINS.en.md`](../../../docs/en/PLUGINS.en.md) — the plugin spec (`llm-backend` kind, lifecycle, loading).
+- [`PLUGINS.en.md`](../../../../docs/en/PLUGINS.en.md) — the plugin spec (`llm-backend` kind, lifecycle, loading).
 - `modules/plugins/llm-backend/hermes/` — the sibling inbound stub for Hermes.
