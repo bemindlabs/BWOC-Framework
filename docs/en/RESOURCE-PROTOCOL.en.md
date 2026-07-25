@@ -8,7 +8,7 @@ tags:
   - group/protocol
   - type/design
   - meta/framework
-status: draft (v2026.7.25 — spec + slice-A: snapshot + wire types + sharing gate; broker + offload deferred to slices B/C)
+status: draft (v2026.7.25 — spec + slice-A: snapshot + gate-check + sharing-gate types; broker + lease/envelope wire + offload deferred to slices B/C)
 canonical-source: DN 16 (Mahāparinibbāna Sutta) §1.4 — Aparihāniya-dhamma 7, condition 6 (honor shared resources)
 parent: English
 nav_order: 11
@@ -97,8 +97,8 @@ The unit a provider advertises. Built locally, no network:
 ```
 
 - **GPU** fields come from `nvidia-smi --query-gpu=index,name,memory.total,memory.free,utilization.gpu --format=csv,noheader,nounits`; absent `nvidia-smi` ⇒ `gpus: []` (a CPU-only host still advertises `compute`).
-- **CPU / RAM** come from the platform (`/proc`, `sysctl`, or the `sysinfo` crate). `cpu_load1` is the 1-minute load average; `ram_free_mb` is available (reclaimable) memory, not merely unused.
-- **services** is an operator-declared allow-list of named capabilities the host exposes (e.g. an `ollama` endpoint) — advisory, for discovery filters.
+- **CPU / RAM** — `cpu_cores` from `std::thread::available_parallelism`; `ram_total_mb` / `ram_free_mb` + `cpu_load1` (1-minute load average) from Linux `/proc` (`/proc/meminfo` `MemAvailable`, `/proc/loadavg`) in slice A. `ram_free_mb` is *available* (reclaimable) memory, not merely unused. A non-Linux host reports `0` / "unavailable" until a platform backend (`sysctl` / `sysinfo`) lands.
+- **`agent_id` and `services` are advertise-time fields**, not part of the local probe. Slice A's `bwoc resource snapshot` emits the host-probe subset — `host`, `gpus`, `cpu_cores`, `cpu_load1`, `ram_total_mb`, `ram_free_mb`, `sampled_at`. `agent_id` (workspace-derived) and `services` (an operator-declared allow-list of named capabilities, e.g. an `ollama` endpoint — advisory, for discovery filters) are attached when the snapshot is *advertised* (slice B).
 - The snapshot is **descriptive, not a promise.** The binding promise is the lease the provider mints at claim time, evaluated against live state — a stale snapshot can never over-grant.
 
 ## The sharing gate
@@ -185,7 +185,7 @@ Reads (`snapshot`, `discover`, `status`) are free. `advertise` mutates the broke
 
 ## Slices
 
-- **A (this revision, framework):** this spec + `bwoc resource snapshot` (GPU/CPU/RAM detection) + the wire types (`ResourceSnapshot`, `Lease`, envelope `type`s) + the `[resource]` sharing-gate config parse + gate evaluation. All local + unit-tested; nothing yet talks to the broker.
+- **A (this revision, framework):** this spec + `bwoc resource snapshot` (GPU/CPU/RAM detection) + `bwoc resource gate-check` (dry-run the sharing gate) + the shared types shipped so far (`ResourceSnapshot`, `Gpu`, `SharingConfig`/`Caps`, `ClaimSpec`, `DenyReason`, `ResourceKind`) + the `[resource]` sharing-gate config parse + `evaluate_gate`. All local + unit-tested; nothing yet talks to the broker. The `Lease` struct and `RES.*` envelope types are specified above but land with the transport in slices B/C.
 - **B (bwoc-gateway):** the broker — `/v1/resource/*` routes, the TTL-evicted offer registry, discover matching, claim forwarding.
 - **C (framework):** `advertise` heartbeat, `discover`/`claim`/`release` clients against the broker, `compute` offload execution (claim → run the job on the provider via A2A → return result → release), then `kv` and `knowledge`.
 

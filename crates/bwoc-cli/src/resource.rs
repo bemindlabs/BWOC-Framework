@@ -365,22 +365,12 @@ pub fn load_sharing_config(root: &Path) -> Result<SharingConfig, String> {
         .get("caps")
         .and_then(|v| v.as_table())
         .map(|c| Caps {
-            max_vram_mb: c
-                .get("max_vram_mb")
-                .and_then(toml::Value::as_integer)
-                .map(|i| i as u64),
-            max_ram_mb: c
-                .get("max_ram_mb")
-                .and_then(toml::Value::as_integer)
-                .map(|i| i as u64),
-            max_cpu_cores: c
-                .get("max_cpu_cores")
-                .and_then(toml::Value::as_integer)
-                .map(|i| i as u32),
-            max_leases: c
-                .get("max_leases")
-                .and_then(toml::Value::as_integer)
-                .map(|i| i as u32),
+            // Checked conversions: a negative cap (`-1`) must become `None`, not
+            // wrap to a huge value that silently allows everything.
+            max_vram_mb: cap_u64(c.get("max_vram_mb")),
+            max_ram_mb: cap_u64(c.get("max_ram_mb")),
+            max_cpu_cores: cap_u32(c.get("max_cpu_cores")),
+            max_leases: cap_u32(c.get("max_leases")),
             allow: string_array(c.get("allow")),
             kinds: string_array(c.get("kinds")),
         })
@@ -390,6 +380,19 @@ pub fn load_sharing_config(root: &Path) -> Result<SharingConfig, String> {
         gateway,
         caps,
     })
+}
+
+/// A cap must be a non-negative integer. A negative (or non-integer) value is
+/// treated as "unset" (`None`) rather than wrapping — a `-1` cap must never
+/// become an unbounded allow.
+fn cap_u64(v: Option<&toml::Value>) -> Option<u64> {
+    v.and_then(toml::Value::as_integer)
+        .and_then(|i| u64::try_from(i).ok())
+}
+
+fn cap_u32(v: Option<&toml::Value>) -> Option<u32> {
+    v.and_then(toml::Value::as_integer)
+        .and_then(|i| u32::try_from(i).ok())
 }
 
 fn string_array(v: Option<&toml::Value>) -> Vec<String> {
@@ -525,7 +528,7 @@ fn run_gate_check(args: GateCheckArgs) -> i32 {
             args.kind
         );
         if args.json {
-            print_gate_json(false, Some("bad_kind"), &msg);
+            emit_gate_error_json("bad_kind", &msg);
         } else {
             eprintln!("bwoc resource gate-check: {msg}");
         }
@@ -534,7 +537,7 @@ fn run_gate_check(args: GateCheckArgs) -> i32 {
     let Some(root) = find_workspace_root(args.workspace) else {
         let msg = "no workspace found (no .bwoc/workspace.toml in cwd or ancestors)".to_string();
         if args.json {
-            print_gate_json(false, Some("no_workspace"), &msg);
+            emit_gate_error_json("no_workspace", &msg);
         } else {
             eprintln!("bwoc resource gate-check: {msg}");
         }
@@ -544,7 +547,7 @@ fn run_gate_check(args: GateCheckArgs) -> i32 {
         Ok(c) => c,
         Err(e) => {
             if args.json {
-                print_gate_json(false, Some("config_error"), &e);
+                emit_gate_error_json("config_error", &e);
             } else {
                 eprintln!("bwoc resource gate-check: {e}");
             }
@@ -588,11 +591,27 @@ fn run_gate_check(args: GateCheckArgs) -> i32 {
     }
 }
 
+/// A valid gate answer (`ok: true`). `allow` is the verdict; `reason` names the
+/// deny reason on a deny, `null` on a grant. A *deny is a valid answer*, so it is
+/// still `ok: true` — distinct from an invalid invocation below.
 fn print_gate_json(allow: bool, reason: Option<&str>, message: &str) {
     let value = serde_json::json!({
         "ok": true,
         "allow": allow,
         "reason": reason,
+        "message": message,
+    });
+    if let Ok(s) = serde_json::to_string_pretty(&value) {
+        println!("{s}");
+    }
+}
+
+/// An invalid invocation (`ok: false`) — bad args, no workspace, unreadable
+/// config. Distinct shape so a script never mistakes a usage error for a deny.
+fn emit_gate_error_json(error: &str, message: &str) {
+    let value = serde_json::json!({
+        "ok": false,
+        "error": error,
         "message": message,
     });
     if let Ok(s) = serde_json::to_string_pretty(&value) {
@@ -798,6 +817,31 @@ mod tests {
         let cfg = load_sharing_config(tmp.path()).unwrap();
         assert!(!cfg.share);
         assert!(cfg.caps.kinds.is_empty());
+    }
+
+    #[test]
+    fn cap_conversion_rejects_negatives() {
+        assert_eq!(cap_u64(Some(&toml::Value::Integer(40000))), Some(40000));
+        assert_eq!(cap_u64(Some(&toml::Value::Integer(-1))), None);
+        assert_eq!(cap_u32(Some(&toml::Value::Integer(-5))), None);
+        assert_eq!(cap_u64(Some(&toml::Value::String("x".into()))), None);
+        assert_eq!(cap_u64(None), None);
+    }
+
+    #[test]
+    fn negative_cap_does_not_wrap_to_allow() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".bwoc")).unwrap();
+        std::fs::write(
+            tmp.path().join(".bwoc/workspace.toml"),
+            "[workspace]\nname=\"x\"\nversion=\"0.1.0\"\n\n\
+             [resource]\nshare = true\n\n\
+             [resource.caps]\nmax_vram_mb = -1\nkinds = [\"compute\"]\n",
+        )
+        .unwrap();
+        let cfg = load_sharing_config(tmp.path()).unwrap();
+        // -1 must be None (unset), never a huge cap.
+        assert_eq!(cfg.caps.max_vram_mb, None);
     }
 
     #[test]

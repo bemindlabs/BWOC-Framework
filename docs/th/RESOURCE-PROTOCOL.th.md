@@ -8,7 +8,7 @@ tags:
   - group/protocol
   - type/design
   - meta/framework
-status: draft (v2026.7.25 — spec + slice-A: snapshot + wire types + sharing gate; broker + offload เลื่อนไป slice B/C)
+status: draft (v2026.7.25 — spec + slice-A: snapshot + gate-check + sharing-gate types; broker + lease/envelope wire + offload เลื่อนไป slice B/C)
 canonical-source: DN 16 (Mahāparinibbāna Sutta) §1.4 — Aparihāniya-dhamma 7 ข้อ 6 (เคารพทรัพยากรส่วนรวม)
 parent: ไทย
 nav_order: 11
@@ -97,8 +97,8 @@ framework มีชิ้นส่วนสำหรับ *dispatch* งาน�
 ```
 
 - ฟิลด์ **GPU** มาจาก `nvidia-smi --query-gpu=index,name,memory.total,memory.free,utilization.gpu --format=csv,noheader,nounits`; ไม่มี `nvidia-smi` ⇒ `gpus: []` (host CPU-only ก็ยังโฆษณา `compute` ได้)
-- **CPU / RAM** มาจาก platform (`/proc`, `sysctl`, หรือ crate `sysinfo`). `cpu_load1` คือ load average 1 นาที; `ram_free_mb` คือ memory ที่ available (reclaim ได้) ไม่ใช่แค่ที่ยังไม่ใช้
-- **services** คือ allow-list ที่ operator ประกาศ ของ capability ที่ตั้งชื่อซึ่ง host เปิด (เช่น endpoint `ollama`) — advisory สำหรับ filter ตอน discover
+- **CPU / RAM** — `cpu_cores` จาก `std::thread::available_parallelism`; `ram_total_mb` / `ram_free_mb` + `cpu_load1` (load average 1 นาที) จาก Linux `/proc` (`/proc/meminfo` `MemAvailable`, `/proc/loadavg`) ใน slice A. `ram_free_mb` คือ memory ที่ available (reclaim ได้) ไม่ใช่แค่ที่ยังไม่ใช้. host ที่ไม่ใช่ Linux รายงาน `0` / "unavailable" จนกว่า backend platform (`sysctl` / `sysinfo`) จะมา
+- **`agent_id` และ `services` เป็นฟิลด์ตอน advertise** ไม่ใช่ส่วนของ local probe. `bwoc resource snapshot` ใน slice A ปล่อยเฉพาะ subset ที่ probe จาก host — `host`, `gpus`, `cpu_cores`, `cpu_load1`, `ram_total_mb`, `ram_free_mb`, `sampled_at`. `agent_id` (มาจาก workspace) และ `services` (allow-list ที่ operator ประกาศ ของ capability ที่ตั้งชื่อซึ่ง host เปิด เช่น endpoint `ollama` — advisory สำหรับ filter ตอน discover) ถูกแนบเมื่อ snapshot ถูก *advertise* (slice B)
 - snapshot เป็น **คำบรรยาย ไม่ใช่คำสัญญา.** คำสัญญาที่ผูกมัดคือ lease ที่ provider mint ตอน claim ซึ่งประเมินต่อ state สด — snapshot เก่าไม่มีทางให้เกินจริงได้
 
 ## Sharing gate
@@ -185,7 +185,7 @@ read (`snapshot`, `discover`, `status`) ฟรี. `advertise` mutate มุม�
 
 ## Slices
 
-- **A (revision นี้, framework):** spec นี้ + `bwoc resource snapshot` (ตรวจ GPU/CPU/RAM) + wire types (`ResourceSnapshot`, `Lease`, envelope `type`) + parse config `[resource]` sharing-gate + การประเมิน gate. ทั้งหมด local + unit-test; ยังไม่มีอะไรคุยกับ broker
+- **A (revision นี้, framework):** spec นี้ + `bwoc resource snapshot` (ตรวจ GPU/CPU/RAM) + `bwoc resource gate-check` (dry-run sharing gate) + types ที่ ship แล้ว (`ResourceSnapshot`, `Gpu`, `SharingConfig`/`Caps`, `ClaimSpec`, `DenyReason`, `ResourceKind`) + parse config `[resource]` sharing-gate + `evaluate_gate`. ทั้งหมด local + unit-test; ยังไม่มีอะไรคุยกับ broker. struct `Lease` และชนิดข้อความ `RES.*` ระบุไว้ด้านบนแต่จะมาพร้อม transport ใน slice B/C
 - **B (bwoc-gateway):** broker — route `/v1/resource/*`, offer registry ที่ evict ตาม TTL, discover matching, claim forwarding
 - **C (framework):** heartbeat `advertise`, client `discover`/`claim`/`release` ต่อ broker, การรัน offload `compute` (claim → รันงานบน provider ผ่าน A2A → คืนผล → release), แล้ว `kv` และ `knowledge`
 
