@@ -65,7 +65,7 @@ The script:
    - First existing candidate → `status = "pass"`, `evidence = { kind: "file", value: <found path> }`, no `remedy`.
    - None exist → `status = "fail"`, `evidence = { kind: "file", value: <primary path> }`, `remedy = "Create <primary> … (or one of: <alts>)"`.
 
-The script exits `0` on success. **Non-pass findings are findings, not errors.** A non-zero exit signals a framework-side problem (missing env var, unreadable `criteria.toml`) which the BWOC-12 dispatcher then treats as a plugin bug — see [PLUGINS.en.md line 59](../../../docs/en/PLUGINS.en.md#audit-findings-schema).
+The script exits `0` on success. **Non-pass findings are findings, not errors.** A non-zero exit signals a framework-side problem (missing env var, unreadable `criteria.toml`) which the BWOC-12 dispatcher then treats as a plugin bug — see [PLUGINS.en.md §Audit Findings Schema](../../../docs/en/PLUGINS.en.md#audit-findings-schema).
 
 ## Sample Output
 
@@ -95,7 +95,7 @@ For a workspace that has `docs/en/SRS.en.md` and `docs/en/ARCHITECTURE.en.md` bu
 ]
 ```
 
-`bwoc audit run` wraps this into its canonical envelope `{ workspace, runs: [{ plugin, version, started_at, finished_at, findings: [...] }, ...], summary }` — the dispatcher's responsibility, not the plugin's. Findings serialise in **criterion-declaration order**, which is `criteria.toml`'s row order (PLUGINS.en.md line 84).
+`bwoc audit run` wraps this into its canonical envelope `{ workspace, runs: [{ plugin, version, started_at, finished_at, findings: [...] }, ...], summary }` — the dispatcher's responsibility, not the plugin's. Findings serialise in **criterion-declaration order**, which is `criteria.toml`'s row order (PLUGINS.en.md §Audit Findings Schema).
 
 ## Configuration
 

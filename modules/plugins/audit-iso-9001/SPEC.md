@@ -33,7 +33,7 @@ maturity: L1
 
 ## Criteria (v0.2.0)
 
-Eight headline QMS criteria, drawn from the main clauses of ISO 9001:2015[^iso-9001-2015]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md line 84). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump.
+Eight headline QMS criteria, drawn from the main clauses of ISO 9001:2015[^iso-9001-2015]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md §Audit Findings Schema). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump.
 
 | `criterion_id` | Clause | Title | Severity |
 |---|---|---|---|

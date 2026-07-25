@@ -34,7 +34,7 @@ maturity: L1
 
 ## Criteria (v0.2.0)
 
-Eight headline ITSM criteria, drawn from the main clauses of ISO/IEC 20000-1:2018[^iso-20000-1-2018]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md line 84). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump. The **Kind** column is each criterion's `expected_evidence_kind` — see [[../../notes/2026-05-27_20000-1-sample-source]] for the documented-artifact-vs-operational-rate split rationale.
+Eight headline ITSM criteria, drawn from the main clauses of ISO/IEC 20000-1:2018[^iso-20000-1-2018]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md §Audit Findings Schema). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump. The **Kind** column is each criterion's `expected_evidence_kind` — see [[../../notes/2026-05-27_20000-1-sample-source]] for the documented-artifact-vs-operational-rate split rationale.
 
 | `criterion_id` | Clause | Title | Severity | Kind |
 |---|---|---|---|---|

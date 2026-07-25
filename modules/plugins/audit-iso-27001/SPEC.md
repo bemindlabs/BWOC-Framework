@@ -34,7 +34,7 @@ maturity: L1
 
 ## Criteria (v0.2.0)
 
-Eight headline ISMS criteria, drawn from the main clauses and the Annex A controls of ISO/IEC 27001:2022[^iso-27001-2022]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md line 84). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump. The **Kind** column is each criterion's `expected_evidence_kind` — see [[../../notes/2026-05-27_27001-soa-sampling]] for the main-body-vs-Annex-A split rationale.
+Eight headline ISMS criteria, drawn from the main clauses and the Annex A controls of ISO/IEC 27001:2022[^iso-27001-2022]. Declaration order in [[criteria]] is the report order (PLUGINS.en.md §Audit Findings Schema). `criterion_id` values are stable across releases (PLUGINS.en.md §Stability); renames are a major version bump. The **Kind** column is each criterion's `expected_evidence_kind` — see [[../../notes/2026-05-27_27001-soa-sampling]] for the main-body-vs-Annex-A split rationale.
 
 | `criterion_id` | Reference | Title | Severity | Kind |
 |---|---|---|---|---|

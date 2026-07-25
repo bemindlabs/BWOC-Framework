@@ -34,7 +34,7 @@ maturity: L1
 
 ## Criteria (v0.2.0)
 
-ISMS criteria หลัก 8 รายการ ดึงจาก clauses หลักและ Annex A controls ของ ISO/IEC 27001:2022[^iso-27001-2022] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md line 84) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump คอลัมน์ **Kind** คือ `expected_evidence_kind` ของแต่ละ criterion — ดูเหตุผลการแบ่ง main-body กับ Annex A ที่ [[../../notes/2026-05-27_27001-soa-sampling]]
+ISMS criteria หลัก 8 รายการ ดึงจาก clauses หลักและ Annex A controls ของ ISO/IEC 27001:2022[^iso-27001-2022] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md §Audit Findings Schema) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump คอลัมน์ **Kind** คือ `expected_evidence_kind` ของแต่ละ criterion — ดูเหตุผลการแบ่ง main-body กับ Annex A ที่ [[../../notes/2026-05-27_27001-soa-sampling]]
 
 | `criterion_id` | อ้างอิง | หัวเรื่อง | Severity | Kind |
 |---|---|---|---|---|

@@ -34,7 +34,7 @@ maturity: L1
 
 ## Criteria (v0.2.0)
 
-ITSM criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO/IEC 20000-1:2018[^iso-20000-1-2018] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md line 84) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump คอลัมน์ **Kind** คือ `expected_evidence_kind` ของแต่ละ criterion — ดู [[../../notes/2026-05-27_20000-1-sample-source]] สำหรับเหตุผลการแบ่ง documented-artifact กับ operational-rate
+ITSM criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO/IEC 20000-1:2018[^iso-20000-1-2018] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md §Audit Findings Schema) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump คอลัมน์ **Kind** คือ `expected_evidence_kind` ของแต่ละ criterion — ดู [[../../notes/2026-05-27_20000-1-sample-source]] สำหรับเหตุผลการแบ่ง documented-artifact กับ operational-rate
 
 | `criterion_id` | Clause | หัวเรื่อง | Severity | Kind |
 |---|---|---|---|---|

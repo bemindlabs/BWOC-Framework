@@ -33,7 +33,7 @@ maturity: L1
 
 ## Criteria (v0.2.0)
 
-QMS criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO 9001:2015[^iso-9001-2015] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md line 84) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump
+QMS criteria หลัก 8 รายการ ดึงจาก clauses หลักของ ISO 9001:2015[^iso-9001-2015] ลำดับการประกาศใน [[criteria]] คือลำดับรายงาน (PLUGINS.en.md §Audit Findings Schema) ค่า `criterion_id` คงที่ข้ามรุ่น (PLUGINS.en.md §Stability); การเปลี่ยนชื่อเป็น major-version bump
 
 | `criterion_id` | Clause | หัวเรื่อง | Severity |
 |---|---|---|---|

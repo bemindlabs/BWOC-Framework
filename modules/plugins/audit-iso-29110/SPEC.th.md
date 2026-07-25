@@ -65,7 +65,7 @@ bwoc audit run --plugin audit-iso-29110 --json
    - Candidate แรกที่มีอยู่ → `status = "pass"`, `evidence = { kind: "file", value: <found path> }`, ไม่มี `remedy`
    - ไม่มีเลย → `status = "fail"`, `evidence = { kind: "file", value: <primary path> }`, `remedy = "Create <primary> … (or one of: <alts>)"`
 
-สคริปต์ออกด้วยรหัส `0` เมื่อสำเร็จ **finding ที่ไม่ใช่ pass เป็น finding ไม่ใช่ error** การออกด้วยรหัสไม่ใช่ศูนย์บ่งบอกถึงปัญหาฝั่ง framework (env var หาย, อ่าน `criteria.toml` ไม่ได้) ซึ่ง dispatcher ของ BWOC-12 จะถือว่าเป็น bug ของปลั๊กอิน — ดู [PLUGINS.en.md line 59](../../../docs/en/PLUGINS.en.md#audit-findings-schema)
+สคริปต์ออกด้วยรหัส `0` เมื่อสำเร็จ **finding ที่ไม่ใช่ pass เป็น finding ไม่ใช่ error** การออกด้วยรหัสไม่ใช่ศูนย์บ่งบอกถึงปัญหาฝั่ง framework (env var หาย, อ่าน `criteria.toml` ไม่ได้) ซึ่ง dispatcher ของ BWOC-12 จะถือว่าเป็น bug ของปลั๊กอิน — ดู [PLUGINS.en.md §Audit Findings Schema](../../../docs/en/PLUGINS.en.md#audit-findings-schema)
 
 ## ตัวอย่าง Output
 
@@ -95,7 +95,7 @@ bwoc audit run --plugin audit-iso-29110 --json
 ]
 ```
 
-`bwoc audit run` ห่อ output นี้ไว้ใน envelope หลัก `{ workspace, runs: [{ plugin, version, started_at, finished_at, findings: [...] }, ...], summary }` — เป็นความรับผิดชอบของ dispatcher ไม่ใช่ของปลั๊กอิน Findings serialise ตาม **ลำดับการประกาศของ criterion** ซึ่งคือลำดับแถวของ `criteria.toml` (PLUGINS.en.md line 84)
+`bwoc audit run` ห่อ output นี้ไว้ใน envelope หลัก `{ workspace, runs: [{ plugin, version, started_at, finished_at, findings: [...] }, ...], summary }` — เป็นความรับผิดชอบของ dispatcher ไม่ใช่ของปลั๊กอิน Findings serialise ตาม **ลำดับการประกาศของ criterion** ซึ่งคือลำดับแถวของ `criteria.toml` (PLUGINS.en.md §Audit Findings Schema)
 
 ## การตั้งค่า
 
