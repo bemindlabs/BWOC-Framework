@@ -2,7 +2,7 @@
 name        = "accounting-api"
 kind        = "workflow"
 version     = "0.1.0"
-description = "Bemind Accounting Open API adapter — read financial reports (reports:read) and record purchases/expenses: create+update a purchase document (the 2-step /purchase-docs POST→PATCH bill flow, purchases:write) and post an expense (/expenses, expenses:write). Every write auto-posts a double-entry GL entry server-side. Bearer-key auth (operator-supplied, never committed) + a required User-Agent. Write gating lives at the `bwoc accounting` CLI (a follow-up slice), never in this plugin."
+description = "Bemind Accounting Open API adapter — read financial reports (reports:read) and record purchases/expenses: create+update a purchase document (the 2-step /purchase-docs POST→PATCH bill flow, purchases:write) and post an expense (/expenses, expenses:write). Every write auto-posts a double-entry GL entry server-side. Bearer-key auth (operator-supplied, never committed) + a required User-Agent. Write gating lives at the `bwoc accounting` CLI (writes_enabled opt-in + per-write confirm), never in this plugin."
 compat      = ">=2.36.0"
 entry       = "accounting.sh"
 
@@ -16,6 +16,6 @@ entry       = "accounting.sh"
 #
 # Read verbs (`report`) are free. Write verbs (`bill-create`, `bill-update`,
 # `expense-create`) produce durable, GL-posting side-effects on an external
-# system of record; their operator-confirm gate belongs at the `bwoc accounting`
-# CLI (PLUGINS §Write verbs), a follow-up slice — the plugin executes when
-# invoked and never re-implements nor bypasses that gate.
+# system of record; their gate lives at the `bwoc accounting` CLI (PLUGINS
+# §Write verbs) — a standing `writes_enabled` opt-in plus a per-write confirm.
+# The plugin executes when invoked and never re-implements nor bypasses it.

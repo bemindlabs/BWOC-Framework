@@ -63,7 +63,9 @@ The `gws` kind was added in `BWOC-EPIC-13` as a **read-mostly** integration with
 
 ### Write verbs — the operator-confirm gate (normative)
 
-Most plugin verbs read. A **write verb** — one whose `invoke` produces a durable side-effect outside the plugin's own address space — carries a **normative operator-confirm gate**. This pattern is shared across every write-capable plugin regardless of kind: `jira` (`transition` / `sync`), `workflow/gcloud-project` (`set-default`, local config), and the `workflow/gcloud-compute` instance lifecycle (`start` / `stop`, added in `BWOC-EPIC-9`, tracking [bemindlabs#96]).
+Most plugin verbs read. A **write verb** — one whose `invoke` produces a durable side-effect outside the plugin's own address space — carries a **normative operator-confirm gate**. This pattern is shared across every write-capable plugin regardless of kind: `jira` (`transition` / `sync`), `workflow/gcloud-project` (`set-default`, local config), the `workflow/gcloud-compute` instance lifecycle (`start` / `stop`, added in `BWOC-EPIC-9`, tracking [bemindlabs#96]), the `gws` write verbs (`bwoc gws docs/sheets/slides`), and `bwoc accounting` (`bill create` / `bill update` / `expense create`).
+
+**Financial writes carry a stronger, two-part gate.** A verb that posts to an external **system of record** — `bwoc accounting`'s writes each create a durable document *and* an auto double-entry GL entry on the live books — is refused by default: it needs a standing `[plugins.accounting-api] writes_enabled = true` opt-in in `.bwoc/workspace.toml` (the same T4 shape as `gcloud-iam`) **in addition to** the per-write confirm below. The opt-in is the operator's deliberate "these books are writable from here"; the confirm is the per-action ack. Reads (`bwoc accounting report`) need neither.
 
 The gate's contract:
 

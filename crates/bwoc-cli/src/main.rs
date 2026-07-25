@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod a2a;
+mod accounting;
 mod agent_run;
 mod audit;
 mod banner;
@@ -344,6 +345,15 @@ enum Commands {
     /// `notes/2026-05-28_google-workspace-plugin-architecture.md`.
     #[command(name = "gws", subcommand)]
     Gws(gws::GwsCommand),
+
+    /// Bemind Accounting Open API — read financial reports (free) and record
+    /// purchases/expenses (gated). Fronts the `workflow/accounting-api` plugin;
+    /// every financial write needs `[plugins.accounting-api] writes_enabled =
+    /// true` in `.bwoc/workspace.toml` plus a per-write confirm (or `--yes`,
+    /// required in `--json`). The plugin holds no gate — this is the single
+    /// choke point. See `docs/en/PLUGINS.en.md` §Write verbs.
+    #[command(name = "accounting", subcommand)]
+    Accounting(accounting::AccountingCommand),
 
     /// Expose a local agent over the A2A (Agent2Agent) protocol — print its
     /// Agent Card or run the JSON-RPC HTTP listener (loopback-only by default;
@@ -3047,6 +3057,12 @@ fn main() -> ExitCode {
             // gws mirrors gcloud's dispatch — own arg structs in gws.rs;
             // exit-code convention there (0/1/2/4/255).
             let code = gws::run(sub);
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Accounting(sub)) => {
+            // accounting mirrors gcloud/gws — own arg structs in accounting.rs;
+            // same exit-code convention (0/1/2/4/255).
+            let code = accounting::run(sub);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::A2a(sub)) => {

@@ -63,7 +63,9 @@ Skill กับ plugin ใช้ substrate ร่วมกัน (TOML manifest,
 
 ### Write verb — operator-confirm gate (normative)
 
-verb ส่วนใหญ่อ่าน **write verb** — verb ที่ `invoke` แล้วเกิด side-effect ที่ durable นอก address space ของ plugin เอง — พก **operator-confirm gate ที่เป็น normative** pattern นี้ใช้ร่วมกันทุก write-capable plugin ไม่ว่า kind ไหน: `jira` (`transition` / `sync`), `workflow/gcloud-project` (`set-default`, config ในเครื่อง), และ instance lifecycle ของ `workflow/gcloud-compute` (`start` / `stop`, เพิ่มใน `BWOC-EPIC-9`, ตาม [bemindlabs#96])
+verb ส่วนใหญ่อ่าน **write verb** — verb ที่ `invoke` แล้วเกิด side-effect ที่ durable นอก address space ของ plugin เอง — พก **operator-confirm gate ที่เป็น normative** pattern นี้ใช้ร่วมกันทุก write-capable plugin ไม่ว่า kind ไหน: `jira` (`transition` / `sync`), `workflow/gcloud-project` (`set-default`, config ในเครื่อง), instance lifecycle ของ `workflow/gcloud-compute` (`start` / `stop`, เพิ่มใน `BWOC-EPIC-9`, ตาม [bemindlabs#96]), write verb ของ `gws` (`bwoc gws docs/sheets/slides`) และ `bwoc accounting` (`bill create` / `bill update` / `expense create`)
+
+**Financial write พก gate ที่แข็งแรงกว่าเป็นสองชั้น** verb ที่ post ไปยัง **system of record** ภายนอก — write ของ `bwoc accounting` แต่ละครั้งสร้างทั้งเอกสาร durable *และ* auto double-entry GL entry บนบัญชีจริง — ถูก refuse เป็นค่าเริ่มต้น: ต้องมี standing opt-in `[plugins.accounting-api] writes_enabled = true` ใน `.bwoc/workspace.toml` (รูปแบบ T4 เดียวกับ `gcloud-iam`) **เพิ่มเติมจาก** per-write confirm ด้านล่าง opt-in คือเจตนา "บัญชีนี้เขียนได้จากที่นี่" ของ operator ส่วน confirm คือ ack ราย action read (`bwoc accounting report`) ไม่ต้องใช้ทั้งสอง
 
 สัญญาของ gate:
 
