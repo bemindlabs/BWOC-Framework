@@ -61,11 +61,11 @@ bwoc audit run --plugin audit-iso-29110 --json
 
 1. อ่าน `criteria.toml` จาก `BWOC_PLUGIN_DIR` (รูปทรง TOML แบบจำกัด — scalar และ array บรรทัดเดียว — parse ด้วย `awk`)
 2. สำหรับ criterion แต่ละตัวตามลำดับการประกาศ ตรวจสอบรายการ `candidates` กับ `BWOC_WORKSPACE`
-3. ส่ง finding หนึ่งรายการต่อ criterion ออกไปทาง stdout เป็น JSON array ที่สอดคล้องกับ [PLUGINS.en.md §Audit Findings Schema](../../docs/en/PLUGINS.en.md#audit-findings-schema):
+3. ส่ง finding หนึ่งรายการต่อ criterion ออกไปทาง stdout เป็น JSON array ที่สอดคล้องกับ [PLUGINS.en.md §Audit Findings Schema](../../../docs/en/PLUGINS.en.md#audit-findings-schema):
    - Candidate แรกที่มีอยู่ → `status = "pass"`, `evidence = { kind: "file", value: <found path> }`, ไม่มี `remedy`
    - ไม่มีเลย → `status = "fail"`, `evidence = { kind: "file", value: <primary path> }`, `remedy = "Create <primary> … (or one of: <alts>)"`
 
-สคริปต์ออกด้วยรหัส `0` เมื่อสำเร็จ **finding ที่ไม่ใช่ pass เป็น finding ไม่ใช่ error** การออกด้วยรหัสไม่ใช่ศูนย์บ่งบอกถึงปัญหาฝั่ง framework (env var หาย, อ่าน `criteria.toml` ไม่ได้) ซึ่ง dispatcher ของ BWOC-12 จะถือว่าเป็น bug ของปลั๊กอิน — ดู [PLUGINS.en.md line 59](../../docs/en/PLUGINS.en.md#audit-findings-schema)
+สคริปต์ออกด้วยรหัส `0` เมื่อสำเร็จ **finding ที่ไม่ใช่ pass เป็น finding ไม่ใช่ error** การออกด้วยรหัสไม่ใช่ศูนย์บ่งบอกถึงปัญหาฝั่ง framework (env var หาย, อ่าน `criteria.toml` ไม่ได้) ซึ่ง dispatcher ของ BWOC-12 จะถือว่าเป็น bug ของปลั๊กอิน — ดู [PLUGINS.en.md line 59](../../../docs/en/PLUGINS.en.md#audit-findings-schema)
 
 ## ตัวอย่าง Output
 
@@ -109,7 +109,7 @@ enabled = true
 
 ## การจับคู่ Lifecycle
 
-ตาม [PLUGINS.en.md §Lifecycle](../../docs/en/PLUGINS.en.md#lifecycle) เจ้าของ kind `audit` คือ CLI `bwoc audit`; `init` กับ `teardown` เกิดขึ้นรอบ `invoke` แต่ละครั้ง ปลั๊กอินนี้ไม่ถือ **state ภายนอก** — ทุก phase เป็น idempotent โดยปริยาย:
+ตาม [PLUGINS.en.md §Lifecycle](../../../docs/en/PLUGINS.en.md#lifecycle) เจ้าของ kind `audit` คือ CLI `bwoc audit`; `init` กับ `teardown` เกิดขึ้นรอบ `invoke` แต่ละครั้ง ปลั๊กอินนี้ไม่ถือ **state ภายนอก** — ทุก phase เป็น idempotent โดยปริยาย:
 
 | Phase | สิ่งที่ปลั๊กอินนี้ทำ |
 |---|---|

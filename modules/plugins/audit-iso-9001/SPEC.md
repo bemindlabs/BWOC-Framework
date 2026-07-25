@@ -14,7 +14,7 @@ maturity: L1
 
 # ISO 9001 Quality Management System Audit
 
-> [!abstract] **Attestation runtime (v0.2.0).** Reads operator-signed attestations from `.bwoc/workspace.toml` under `[[plugins.audit-iso-9001.attestations]]` and emits `evidence.kind = "attestation"` findings (`signer` + `signed_at` + optional `valid_through`) per the [BWOC-27 schema extension](../../docs/en/PLUGINS.en.md#evidence-kinds). Criteria without an operator attestation emit `status = "fail"` pointing at the `workspace.toml` block. Replaces the v0.1.0 stub from EPIC-2.
+> [!abstract] **Attestation runtime (v0.2.0).** Reads operator-signed attestations from `.bwoc/workspace.toml` under `[[plugins.audit-iso-9001.attestations]]` and emits `evidence.kind = "attestation"` findings (`signer` + `signed_at` + optional `valid_through`) per the [BWOC-27 schema extension](../../../docs/en/PLUGINS.en.md#evidence-kinds). Criteria without an operator attestation emit `status = "fail"` pointing at the `workspace.toml` block. Replaces the v0.1.0 stub from EPIC-2.
 
 ## Status & Roadmap
 
@@ -27,9 +27,9 @@ maturity: L1
 
 [[../../notes/2026-05-26_iso-compliance-plugins|The EPIC-2 framing note]] explained why 9001 shipped as a stub first — its evidence is organisational, not file-existence-shaped, and the v1 schema could not express attestation. EPIC-3 closed that gap:
 
-- The [BWOC-26 design note](../../notes/2026-05-27_iso-runtime-evidence-model.md) pinned the new evidence model (`attestation`, `sample`, time-bounded fields).
-- [BWOC-27](../../docs/en/PLUGINS.en.md#evidence-kinds) extended the schema with `attestation` (required `signer` + `signed_at`) and the orthogonal optional `valid_through`.
-- BWOC-28 (this change) implements the 9001 runtime against the new schema. The operator provides attestations in `workspace.toml`; the plugin emits one finding per criterion, honest about which are covered and which are not. Inferring "this organization has a documented quality policy" from "this repo contains `POLICY.md`" would still falsify the audit (Musāvāda — [PHILOSOPHY.en.md](../../docs/en/PHILOSOPHY.en.md) §Sila 5). Attestation evidence keeps the audit honest by requiring an operator to vouch for the practice, dated, with provenance.
+- The [BWOC-26 design note](../../../notes/2026-05-27_iso-runtime-evidence-model.md) pinned the new evidence model (`attestation`, `sample`, time-bounded fields).
+- [BWOC-27](../../../docs/en/PLUGINS.en.md#evidence-kinds) extended the schema with `attestation` (required `signer` + `signed_at`) and the orthogonal optional `valid_through`.
+- BWOC-28 (this change) implements the 9001 runtime against the new schema. The operator provides attestations in `workspace.toml`; the plugin emits one finding per criterion, honest about which are covered and which are not. Inferring "this organization has a documented quality policy" from "this repo contains `POLICY.md`" would still falsify the audit (Musāvāda — [PHILOSOPHY.en.md](../../agent-template/docs/en/PHILOSOPHY.en.md) §Sila 5). Attestation evidence keeps the audit honest by requiring an operator to vouch for the practice, dated, with provenance.
 
 ## Criteria (v0.2.0)
 
