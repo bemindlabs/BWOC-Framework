@@ -21,12 +21,12 @@
 //! The plugin itself holds **no** gate — it executes when invoked. This CLI is
 //! the single choke point, so a write can never reach the API un-gated.
 //!
-//! Exit codes mirror the other plugin CLIs:
-//!   - `0`   — success
-//!   - `1`   — local error (bad workspace, unreadable config)
-//!   - `2`   — operator/usage error (bad args; gated write without opt-in/ack)
-//!   - `4`   — plugin not installed or disabled
-//!   - `255` — plugin runtime error (spawn failure or non-JSON output)
+//! Exit codes mirror the other plugin CLIs (0/1/2/4/255):
+//!   - `0` — success
+//!   - `1` — reserved for a pure local I/O error (parity with gcloud/gws; not currently emitted here)
+//!   - `2` — operator/usage error (bad args; gated write without opt-in/ack; unreadable/malformed config)
+//!   - `4` — plugin not installed or disabled
+//!   - `255` — plugin discovery or runtime error (malformed manifest, spawn failure, non-JSON output)
 //!
 //! `--json` makes the exit code redundant: the envelope carries `ok`/`error`.
 
@@ -42,7 +42,6 @@ use std::process::{Command, Stdio};
 // ---------------------------------------------------------------------------
 
 const EXIT_OK: i32 = 0;
-const EXIT_LOCAL_ERROR: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_NO_PLUGIN: i32 = 4;
 const EXIT_PLUGIN_ERROR: i32 = 255;
@@ -334,12 +333,15 @@ fn require_plugin(root: &Path, label: &str, json: bool) -> Result<AccountingPlug
             Err(EXIT_NO_PLUGIN)
         }
         Err(e) => {
+            // A plugin that exists but is malformed (bad manifest / unreadable
+            // workspace.toml) is a discovery failure, not a plain local I/O
+            // error — classify it exactly as gcloud/gws do (255).
             if json {
-                emit_error_json(label, "local_error", &e);
+                emit_error_json(label, "discovery_error", &e);
             } else {
                 eprintln!("bwoc accounting {label}: {e}");
             }
-            Err(EXIT_LOCAL_ERROR)
+            Err(EXIT_PLUGIN_ERROR)
         }
     }
 }
@@ -463,12 +465,14 @@ fn financial_write_gate(
             return Err(EXIT_USAGE);
         }
         Err(e) => {
+            // Unreadable/malformed workspace.toml → config error, matching
+            // gcloud's `iam_writes_enabled` classification (`config_error`, exit 2).
             if json {
-                emit_error_json(label, "local_error", &e);
+                emit_error_json(label, "config_error", &e);
             } else {
                 eprintln!("bwoc accounting {label}: {e}");
             }
-            return Err(EXIT_LOCAL_ERROR);
+            return Err(EXIT_USAGE);
         }
     }
 
