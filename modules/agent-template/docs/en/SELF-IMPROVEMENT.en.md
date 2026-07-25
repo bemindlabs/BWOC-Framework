@@ -107,6 +107,54 @@ Sentinel matches required scale and availability.
 - Rationale references sources?
 - Revisit conditions stated?
 
+### 2.4 Core Reflection — the Like / Wish / Next Step ritual
+
+The practical, repeatable heart of Cintāmayā: a **three-line retrospective** run at the close of every task and every session. It is the smallest reflection that still turns raw experience into knowledge — cheap enough to *always* do (**Mattaññutā**), structured enough to compound.
+
+Grounded in **Paccavekkhaṇa** (reflective reviewing) — the Buddha's instruction to Rāhula (MN 61) to review each action *before, during, and after*. Core Reflection is the disciplined "after."
+
+**The three prongs:**
+
+| Prong | Asks | Produces | Feeds |
+|---|---|---|---|
+| **Like** | What worked — worth keeping / repeating? | A reinforced pattern | Suta (a `reference-*`) or a capability |
+| **Wish** | What fell short — the gap between expected and actual? | A *named gap* (not a complaint) | Cintā (a `decision-*`) or a `feedback-*` |
+| **Next step** | The single most useful thing to change next time? | One concrete, owned commitment (**Adhiṭṭhāna**) | Bhāvanā (the next task's hypothesis) |
+
+**Rules that keep it honest:**
+- **One line each.** If a prong needs a paragraph, it is a `decision-*`, not a reflection line — promote it.
+- **Wish names a gap, not a grievance.** "Wish I'd checked the migration on a copy first" — actionable. Not "the schema was bad."
+- **Exactly one Next step.** Many next-steps = none. Pick the highest-leverage one; the rest wait.
+- **Next step is owned + concrete** — it has a verb and a subject you control.
+
+**Template** (append to the task's `feedback-*` or the session note):
+
+```markdown
+## Core Reflection
+- Like: <what worked, keep it>
+- Wish: <the gap — expected vs actual, actionable>
+- Next step: <the one concrete change, owned>
+```
+
+**Example:**
+
+```markdown
+## Core Reflection
+- Like: Wrote the rollback script before the migration — made the failed run a non-event.
+- Wish: Ran the migration against prod-shaped data too late; the row-count assumption only broke at scale.
+- Next step: Add a "test against a prod-sized copy" step to the migration checklist before any ALTER.
+```
+
+**How it threads every stage** — Core Reflection is the connective tissue of the Wisdom Loop (§4). Run it at each stage boundary and it converts that stage's output into the next stage's input:
+
+| Stage | Core Reflection asks there | The Next step becomes |
+|---|---|---|
+| After **Suta** (study) | Like: which source actually helped? · Wish: what was missing or stale? | A better source to load next time (or a verification to run) |
+| After **Cintā** (a decision) | Like: which alternative held up? · Wish: which assumption was weakest? | A `Revisit If` condition on the `decision-*` |
+| After **Bhāvanā** (practice) | Like: what worked in execution? · Wish: the expected-vs-actual gap? | The hypothesis for the next attempt (→ new suta after curation) |
+
+**Escalation:** when the *same* Wish recurs 3+ times, its Next step has failed to land — push it up the Curation Pipeline (§5): from a personal reflection line → a `decision-*` → a shared capability → a convention. A repeating Wish is the fleet telling you a habit, not a task, needs to change.
+
 ---
 
 ## 3. Bhāvanāmayā — Learn from Practice
@@ -180,6 +228,8 @@ Yes → submit CCP
                   ▼
            Updated suta (via Tier 2 mining)
 ```
+
+**The ritual that drives the loop is Core Reflection (§2.4).** Run the Like / Wish / Next Step retro at each arrow: *Like* reinforces the stage you just left, *Wish* names the gap that moves you to the next stage, and *Next step* is the hypothesis you carry into it. Without the ritual the loop is a diagram; with it, every task advances the wheel one turn.
 
 ---
 
