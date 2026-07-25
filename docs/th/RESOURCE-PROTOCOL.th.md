@@ -148,7 +148,7 @@ kinds         = ["compute", "knowledge"]           # kind ที่ host นี�
 
 - `type ∈ { RES.ADVERTISE, RES.DISCOVER, RES.OFFERS, RES.CLAIM, RES.LEASE, RES.DENY, RES.RELEASE }`
 - การเซ็น/canonicalization เหมือนกับ message relay ของ gateway (reuse `cc-signing`); broker verify ลายเซ็น sender ก่อน mutate registry. consumer verify ลายเซ็น **ของ provider** บน `RES.LEASE` ที่คืนมา ก่อนไว้ใจ endpoint
-- route ใหม่ของ gateway (slice B): `POST /v1/resource/advertise`, `POST /v1/resource/discover`, `POST /v1/resource/claim`, `POST /v1/resource/release`. registry ของ broker อยู่ใน memory และ evict ตาม TTL; เป็น cache ของ offer ที่ live ไม่ใช่ system of record
+- broker เปิด resource route แค่ **สอง** อัน (slice B): `POST /v1/resource/advertise` และ `POST /v1/resource/discover`. registry อยู่ใน memory และ evict ตาม TTL — เป็น cache ของ offer ที่ live ไม่ใช่ system of record. **`RES.CLAIM` / `RES.LEASE` / `RES.RELEASE` ไม่ใช่ route ของ broker** — เป็น signed envelope ที่ relay ไป provider ผ่าน message relay เดิมของ gateway (provider ประเมิน sharing gate แล้ว mint lease). การไม่เอา claim ไว้บน broker คือสิ่งที่ทำให้ broker ยังโง่อยู่
 
 ## CLI surface
 

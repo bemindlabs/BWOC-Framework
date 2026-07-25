@@ -148,7 +148,7 @@ Resource messages are `bwoc-gateway` **signed envelopes** — the same ed25519-a
 
 - `type ∈ { RES.ADVERTISE, RES.DISCOVER, RES.OFFERS, RES.CLAIM, RES.LEASE, RES.DENY, RES.RELEASE }`.
 - Signing/canonicalization is identical to the gateway's message relay (reuse `cc-signing`); the broker verifies the sender signature before registry mutation. The consumer verifies the **provider's** signature on the returned `RES.LEASE` before trusting the endpoint.
-- New gateway routes (slice B): `POST /v1/resource/advertise`, `POST /v1/resource/discover`, `POST /v1/resource/claim`, `POST /v1/resource/release`. The broker's registry is in-memory and TTL-evicted; it is a cache of live offers, never a system of record.
+- The broker exposes exactly **two** resource routes (slice B): `POST /v1/resource/advertise` and `POST /v1/resource/discover`. Its registry is in-memory and TTL-evicted — a cache of live offers, never a system of record. **`RES.CLAIM` / `RES.LEASE` / `RES.RELEASE` are *not* broker routes** — they are signed envelopes relayed to the provider over the gateway's existing message relay (the provider evaluates the sharing gate and mints the lease). Keeping claim off the broker is what keeps the broker dumb.
 
 ## CLI surface
 

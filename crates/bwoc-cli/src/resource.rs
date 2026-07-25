@@ -696,28 +696,31 @@ fn gateway_http_base(url: &str) -> String {
 
 /// Resolve the gateway base: `--gateway` flag first, then `[resource] gateway`.
 fn resolve_gateway(flag: Option<&str>, cfg: &SharingConfig) -> Result<String, String> {
-    let raw = flag
-        .map(str::to_string)
-        .or_else(|| cfg.gateway.clone())
-        .ok_or_else(|| {
-            "no gateway configured — pass --gateway or set [resource] gateway in \
-             .bwoc/workspace.toml"
-                .to_string()
-        })?;
+    let raw = flag.map(str::to_string).or_else(|| cfg.gateway.clone()).ok_or_else(|| {
+        "no gateway configured — pass --gateway or set [resource] gateway in .bwoc/workspace.toml"
+            .to_string()
+    })?;
     Ok(gateway_http_base(&raw))
 }
 
 /// POST `body` as JSON to `url` via `curl`, returning the parsed JSON response.
-/// `curl` failure (non-zero, or a non-2xx via `--fail`) surfaces as `Err`.
+///
+/// Portable across curl versions — it does **not** use `--fail`/`--fail-with-body`
+/// (the latter is missing on older system curls, e.g. some macOS builds). Instead
+/// it appends the HTTP status via `-w` and splits it off in Rust, keeping the body
+/// for diagnostics and treating any non-2xx as an error. A non-zero curl exit is a
+/// transport failure (connection refused, timeout).
 fn http_post_json(url: &str, body: &serde_json::Value) -> Result<serde_json::Value, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
     let payload = serde_json::to_string(body).map_err(|e| format!("serialize request: {e}"))?;
+    // `-w "\n<status>"` appends a final line with the numeric HTTP code; we split
+    // it off below. A sentinel newline separates it from the (possibly newline-free)
+    // JSON body.
     let mut child = Command::new("curl")
         .args([
-            "-sS", // silent but show errors
-            "--fail-with-body",
+            "-sS", // silent but show transport errors on stderr
             "-X",
             "POST",
             "-H",
@@ -726,6 +729,8 @@ fn http_post_json(url: &str, body: &serde_json::Value) -> Result<serde_json::Val
             "5",
             "--max-time",
             "20",
+            "-w",
+            "\n%{http_code}",
             "--data-binary",
             "@-",
             url,
@@ -745,21 +750,29 @@ fn http_post_json(url: &str, body: &serde_json::Value) -> Result<serde_json::Val
         .wait_with_output()
         .map_err(|e| format!("wait curl: {e}"))?;
     if !out.status.success() {
+        // Transport failure (no HTTP response at all).
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
         return Err(format!(
-            "gateway request failed ({}): {}{}",
+            "gateway request failed ({}): {}",
             out.status.code().unwrap_or(-1),
-            stderr.trim(),
-            if stdout.trim().is_empty() {
+            stderr.trim()
+        ));
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    // Split the trailing `\n<status>` the `-w` format appended.
+    let (body_str, status) = raw.rsplit_once('\n').unwrap_or((raw.as_ref(), ""));
+    let code: u16 = status.trim().parse().unwrap_or(0);
+    if !(200..300).contains(&code) {
+        return Err(format!(
+            "gateway returned HTTP {code}{}",
+            if body_str.trim().is_empty() {
                 String::new()
             } else {
-                format!(" — {}", stdout.trim())
+                format!(" — {}", body_str.trim())
             }
         ));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(&stdout).map_err(|e| format!("gateway returned non-JSON: {e}"))
+    serde_json::from_str(body_str).map_err(|e| format!("gateway returned non-JSON: {e}"))
 }
 
 /// Build the `/v1/resource/advertise` request body (pure — unit-tested).
@@ -871,11 +884,24 @@ fn run_discover(args: DiscoverArgs) -> i32 {
         );
         return EXIT_USAGE;
     }
-    // Workspace/config is optional for discover — a gateway can be passed via
-    // --gateway with no `[resource]` block at all.
-    let cfg = find_workspace_root(args.workspace)
-        .and_then(|root| load_sharing_config(&root).ok())
-        .unwrap_or_default();
+    // Workspace/config is optional for discover — `--gateway` can stand alone with
+    // no `[resource]` block. But a *present but malformed* workspace file is a real
+    // error we must not swallow (matching advertise/gate-check); we only skip config
+    // when `--gateway` makes it unnecessary.
+    let cfg = match find_workspace_root(args.workspace) {
+        Some(root) => match load_sharing_config(&root) {
+            Ok(c) => c,
+            Err(e) => {
+                // A bad config is fatal unless --gateway lets us bypass it entirely.
+                if args.gateway.is_none() {
+                    eprintln!("bwoc resource discover: {e}");
+                    return EXIT_USAGE;
+                }
+                SharingConfig::default()
+            }
+        },
+        None => SharingConfig::default(),
+    };
     let base = match resolve_gateway(args.gateway.as_deref(), &cfg) {
         Ok(b) => b,
         Err(e) => {
@@ -1161,8 +1187,10 @@ mod tests {
 
     #[test]
     fn resolve_gateway_prefers_flag_then_config() {
-        let mut cfg = SharingConfig::default();
-        cfg.gateway = Some("wss://from-config".into());
+        let cfg = SharingConfig {
+            gateway: Some("wss://from-config".into()),
+            ..Default::default()
+        };
         assert_eq!(
             resolve_gateway(Some("ws://from-flag"), &cfg).unwrap(),
             "http://from-flag"
