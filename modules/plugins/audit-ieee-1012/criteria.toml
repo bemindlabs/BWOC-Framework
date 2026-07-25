@@ -1,0 +1,71 @@
+# IEEE 1012:2016 — declared criteria (v0.1.0 attestation runtime).
+#
+# Source: IEEE 1012:2016 — IEEE Standard for System, Software, and Hardware
+# Verification and Validation. An **IEEE**-published standard (standalone, not a
+# joint ISO/IEC/IEEE publication). See SPEC.md for the full citation. Clause
+# numbers refer to the published standard's sections; the V&V activity criteria
+# map to the process tables (Requirements / Design / Implementation / Test V&V).
+#
+# Each `[criterion.<id>]` table documents one V&V practice the runtime checks.
+# `id` is kebab-case and plugin-scoped (BWOC-11). Declaration order is the report
+# order — do not reorder casually; renames are a major version bump
+# (PLUGINS.en.md §Stability).
+#
+# Fields:
+#   severity     — closed enum {info, low, medium, high, critical}.
+#   clause       — IEEE 1012:2016 clause reference (e.g. "5", "7").
+#   title        — short clause title.
+#   description  — one-line operator-facing summary of what the runtime checks.
+#
+# audit.sh backs these criteria with the attestation runtime (shared with the
+# ISO 9001 / ISO/IEC 27001 / 29148 lanes): each criterion resolves to
+# `pass`/`fail` from signed attestation evidence in `.bwoc/workspace.toml`
+# (missing or incomplete attestation → `fail`).
+
+[criterion.1012-integrity-levels]
+severity    = "high"
+clause      = "5"
+title       = "Integrity level assignment"
+description = "Each system/software element is assigned an integrity level that scales the required V&V rigour."
+
+[criterion.1012-vv-planning]
+severity    = "high"
+clause      = "7"
+title       = "V&V planning (SVVP)"
+description = "A Verification and Validation Plan documents V&V scope, activities, tasks, methods, and the integrity-level scaling."
+
+[criterion.1012-independence]
+severity    = "medium"
+clause      = "4"
+title       = "V&V independence"
+description = "V&V independence (technical, managerial, financial) is established commensurate with the assigned integrity level."
+
+[criterion.1012-requirements-vv]
+severity    = "high"
+clause      = "Table 1"
+title       = "Requirements V&V"
+description = "Requirements are verified for correctness, consistency, completeness, and traceability, and validated against needs."
+
+[criterion.1012-design-vv]
+severity    = "high"
+clause      = "Table 1"
+title       = "Design V&V"
+description = "The design is verified for correctness and traceability to requirements, and its testability is evaluated."
+
+[criterion.1012-implementation-vv]
+severity    = "medium"
+clause      = "Table 1"
+title       = "Implementation V&V"
+description = "Source code / implementation is verified against the design and coding standards (review, static analysis)."
+
+[criterion.1012-test-vv]
+severity    = "high"
+clause      = "Table 1"
+title       = "Test V&V"
+description = "Test plans, designs, cases, procedures, and results are verified for adequacy and traced to requirements."
+
+[criterion.1012-anomaly-reporting]
+severity    = "medium"
+clause      = "7"
+title       = "Anomaly and V&V reporting"
+description = "V&V activities produce reports and anomalies are recorded, classified, and tracked to resolution."

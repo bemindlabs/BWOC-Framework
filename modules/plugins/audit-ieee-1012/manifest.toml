@@ -1,0 +1,15 @@
+[plugin]
+name        = "audit-ieee-1012"
+kind        = "audit"
+version     = "0.1.0"
+description = "IEEE 1012 System, Software, and Hardware Verification and Validation (V&V) audit — attestation runtime. IEEE 1012:2016 defines V&V processes, activities, and tasks scaled by integrity level. The first IEEE-standalone lane in the audit kind."
+compat      = ">=2.36.0"
+entry       = "audit.sh"
+
+# [config.schema] intentionally omitted. Adopts the per-criterion attestation
+# block on the workspace's [[plugins.audit-ieee-1012.attestations]] array
+# (criterion_id + statement + signer + signed_at + optional valid_through) —
+# the same shape as the ISO 9001 / ISO/IEC 27001 / ISO/IEC/IEEE 29148 lanes,
+# documented in SPEC.md §Configuration, not as a manifest schema. The universal
+# `enabled` key on `[plugins.audit-ieee-1012]` is the only manifest-declared
+# surface.
