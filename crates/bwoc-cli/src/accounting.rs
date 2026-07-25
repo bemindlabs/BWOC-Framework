@@ -395,7 +395,7 @@ fn run_id_read(operation: &str, label: &str, args: IdReadArgs) -> i32 {
     };
     if !is_valid_path_id(&args.id) {
         let msg = format!(
-            "invalid id '{}' (1..=128 chars of [A-Za-z0-9_-], no leading hyphen)",
+            "invalid id '{}' (1..=128 chars of [A-Za-z0-9_-], must start with a letter or digit)",
             args.id
         );
         if args.json {
@@ -470,7 +470,7 @@ fn run_id_write(operation: &str, label: &str, target: &str, args: IdWriteArgs) -
     };
     if !is_valid_path_id(&args.id) {
         let msg = format!(
-            "invalid id '{}' (1..=128 chars of [A-Za-z0-9_-], no leading hyphen)",
+            "invalid id '{}' (1..=128 chars of [A-Za-z0-9_-], must start with a letter or digit)",
             args.id
         );
         if args.json {
@@ -502,9 +502,10 @@ fn run_id_write(operation: &str, label: &str, target: &str, args: IdWriteArgs) -
 /// Path-id validator mirroring the plugin's `_valid_path_id` (1..=128 chars of
 /// `[A-Za-z0-9_-]`, no leading hyphen) — a local pre-check before spawn.
 fn is_valid_path_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && !id.starts_with('-')
+    id.len() <= 128
+        // First char must be alphanumeric (mirrors the plugin's `^[A-Za-z0-9]`),
+        // which also rejects the empty string and a leading `_` or `-`.
+        && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
@@ -1146,5 +1147,24 @@ mod tests {
         assert!(parse_json_object("[1,2]", "payload").is_err());
         assert!(parse_json_object("42", "payload").is_err());
         assert!(parse_json_object("nope", "payload").is_err());
+    }
+
+    #[test]
+    fn path_id_matches_plugin_rule() {
+        // Mirrors the plugin's `^[A-Za-z0-9][A-Za-z0-9_-]*$`, ≤128 chars.
+        assert!(is_valid_path_id("QS-1"));
+        assert!(is_valid_path_id("PI_123"));
+        assert!(is_valid_path_id("a"));
+        assert!(!is_valid_path_id(""), "empty rejected");
+        assert!(
+            !is_valid_path_id("_x"),
+            "leading underscore rejected (plugin requires alnum first)"
+        );
+        assert!(!is_valid_path_id("-x"), "leading hyphen rejected");
+        assert!(!is_valid_path_id("a b"), "space rejected");
+        assert!(
+            !is_valid_path_id(&"a".repeat(129)),
+            "over 128 chars rejected"
+        );
     }
 }

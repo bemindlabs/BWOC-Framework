@@ -35,7 +35,7 @@ maturity: L1
 | `quick-sales-create` | **write** | `POST /quick-sales` | `bwoc accounting sales quick create --payload` |
 | `quick-sales-convert` | **write** | `POST /quick-sales/{id}/convert-to-invoice` | `bwoc accounting sales quick convert <id>` |
 | `stock-balance` / `stock-low` / `stock-movements` | read | `GET /stock/balance/{productId}` · `/stock/low` · `/stock/movements` | `bwoc accounting stock balance <id>` / `low` / `movements` |
-| `stock-receipt` / `stock-adjust` | **write** | `POST /stock/receipts` · `/stock/adjustments` | `bwoc accounting stock receipt` / `adjust --payload` |
+| `stock-receipt` / `stock-adjust` | **write** | `POST /stock/receipts` · `/stock/adjustments` | `bwoc accounting stock receipt --payload` / `adjust --payload` |
 | `gl-journals-list` / `gl-journal-show` | read | `GET /gl/journals[/{id}]` | `bwoc accounting cashbook journals` / `journal show <id>` |
 | `gl-journal-create` | **write** | `POST /gl/journals` | `bwoc accounting cashbook journal create --payload` |
 

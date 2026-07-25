@@ -115,7 +115,7 @@ _require_document_id() {
   local id="$1"
   if [[ -z "$id" ]]; then printf '%s\n' "$PLUGIN $OPERATION: .document_id is required" >&2; exit 2; fi
   if (( ${#id} > 128 )) || [[ ! "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
-    printf '%s\n' "$PLUGIN $OPERATION: invalid document_id '$id' (1..=128 chars of [A-Za-z0-9_-], no leading hyphen)" >&2
+    printf '%s\n' "$PLUGIN $OPERATION: invalid document_id '$id' (1..=128 chars of [A-Za-z0-9_-], must start with a letter or digit)" >&2
     exit 2
   fi
 }
@@ -203,7 +203,7 @@ _valid_path_id() {
   local id="$1" field="$2"
   if [[ -z "$id" ]]; then printf '%s\n' "$PLUGIN $OPERATION: .$field is required" >&2; exit 2; fi
   if (( ${#id} > 128 )) || [[ ! "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
-    printf '%s\n' "$PLUGIN $OPERATION: invalid $field '$id' (1..=128 chars of [A-Za-z0-9_-], no leading hyphen)" >&2
+    printf '%s\n' "$PLUGIN $OPERATION: invalid $field '$id' (1..=128 chars of [A-Za-z0-9_-], must start with a letter or digit)" >&2
     exit 2
   fi
 }
@@ -267,6 +267,6 @@ case "$OPERATION" in
   gl-journal-create) _do_post_payload "${API_BASE}/gl/journals" "gl-journals" ;;
 
   *)
-    printf '%s\n' "$PLUGIN: unknown operation '$OPERATION'" >&2
+    printf '%s\n' "$PLUGIN: unknown operation '$OPERATION'. Expected one of: report | bill-create | bill-update | expense-create | sales-open-invoices | quick-sales-{list,show,create,convert} | stock-{balance,low,movements,receipt,adjust} | gl-journals-list | gl-journal-{show,create}. See modules/plugins/workflow/accounting-api/SPEC.md." >&2
     exit 2 ;;
 esac
