@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — Resource Protocol is live end-to-end: `bwoc resource advertise`/`discover` find a fleet host's free GPU through the gateway broker"
+    " — Two new audit lanes: ISO/IEC/IEEE 12207 (software life cycle) + IEEE 1012 (V&V) — the `audit` kind now covers every ISO/IEC/IEEE publication shape"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Resource Protocol live end-to-end — a light host now finds a heavy host's free GPU/RAM across the fleet: `bwoc resource advertise` publishes a host's offer to the `bwoc-gateway` broker (TTL-evicted registry) and `bwoc resource discover --kind compute --gpu-vram 24000` returns matching live offers, best-fit first. Builds on slice A's `snapshot` + `gate-check`; the `claim`→lease + `compute` offload execution land next (2.40.0, docs/en/RESOURCE-PROTOCOL)",
+    "Two new audit lanes — `audit-iso-iec-ieee-12207` (software life-cycle processes, 9 criteria) and `audit-ieee-1012` (verification & validation, 8 criteria, the first IEEE-standalone lane). The `audit` kind now covers every publication shape across the three bodies: ISO, ISO/IEC, ISO/IEC/IEEE, and standalone IEEE — all on the shared attestation runtime (2.41.0)",
+    "Resource Protocol live end-to-end — a light host finds a heavy host's free GPU/RAM across the fleet: `bwoc resource advertise` publishes an offer to the `bwoc-gateway` broker and `bwoc resource discover --kind compute --gpu-vram 24000` returns matching live offers, best-fit first (2.40.0, docs/en/RESOURCE-PROTOCOL)",
     "Gated financial writes — `bwoc accounting` fronts the `accounting-api` plugin: `report` reads are free, while `bill create/update` and `expense create` (each posts a document + an auto GL entry on the live books) need `[plugins.accounting-api] writes_enabled = true` AND a per-write confirm (2.38.0, #373)",
     "Standards, identity & accounting — the `audit` kind now spans ISO / IEC / IEEE (new `audit-iso-iec-ieee-29148` lane), the `soul` skill holds an agent's core, and the `accounting-api` plugin adapts the Bemind Accounting Open API (2.37.0, #367–#369)",
     "Skill library — 19 new framework skills under `modules/skills/` (22 total): knowledge, craft (`writer`…`lawyer`), roles (`software-engineer`, `data-scientist`, …), + the `ai-dlc` and `ai-loop-engineer` lifecycle skills (2.36.0, #359–#364)",
     "Google Workspace write path — `bwoc gws docs/sheets/slides` edit live Docs / Sheets / Slides (batchUpdate / values), behind a per-write operator-confirm gate (2.34.0, #354–#357)",
-    "`bwoc run --workdir` — opt-in un-jail so a headless agent can edit shared workspace files, bounded inside the workspace (2.33.0, #352)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

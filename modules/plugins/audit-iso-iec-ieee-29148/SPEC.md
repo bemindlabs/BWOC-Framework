@@ -62,7 +62,7 @@ Per [PLUGINS.en.md §Audit Findings Schema](../../../docs/en/PLUGINS.en.md#audit
 
 ## Exit codes
 
-`0` on success — non-pass findings are *findings*, not errors. Non-zero only on a runtime failure (missing `BWOC_WORKSPACE`, missing `criteria.toml`).
+The **plugin** (`audit.sh`) exits `0` on success — non-pass findings are *findings*, not errors — and non-zero only on a runtime failure (missing `BWOC_WORKSPACE`, unreadable `criteria.toml`). The **`bwoc audit run` dispatcher** then derives its own exit code from the run: the number of `fail` findings (clamped to `254`), or `255` on a framework/runtime error. So a clean audit exits `0`, an audit with N fails exits `N`, and a broken plugin exits `255` (`crates/bwoc-cli/src/audit.rs::compute_exit_code`).
 
 ## Maturity
 

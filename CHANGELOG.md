@@ -6,8 +6,11 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.25-3] — 2026-07-25 — 2.41.0
+
 ### Added
 
+- **Two new `audit` lanes — ISO/IEC/IEEE 12207 + IEEE 1012.** `audit-iso-iec-ieee-12207` audits **software life cycle processes** (9 criteria across the 12207:2017 agreement / technical-management / technical process groups: agreement, project planning, assessment & control, configuration management, requirements, architecture/design, implementation/integration, V&V, maintenance) — the ISO/IEC/IEEE joint standard that complements 29148's requirements lane. `audit-ieee-1012` audits **verification & validation** (8 criteria from IEEE 1012:2016: integrity levels, V&V planning/SVVP, independence, and requirements/design/implementation/test V&V + anomaly reporting) — the **first IEEE-standalone lane**, proving the `audit` kind is genuinely body-agnostic: it now spans ISO, ISO/IEC, ISO/IEC/IEEE, *and* standalone IEEE. Both reuse the shared attestation runtime (operator-signed attestations in `.bwoc/workspace.toml`; a missing attestation → `status = "fail"`) and ship with SPEC.md/th + 4 e2e tests. `docs/{en,th}/PLUGINS` audit-kind enumeration updated.
 - **Core Reflection practice in the self-improvement framework.** `modules/agent-template/docs/{en,th}/SELF-IMPROVEMENT` §2.4 adds the **Like / Wish / Next Step** three-line retrospective — a concrete, always-cheap growth habit run at the close of every task and session (grounded in Paccavekkhaṇa, MN 61's instruction to Rāhula: review before / during / after). Includes the prong table (asks → produces → feeds), honesty rules (one line each, Wish names a gap not a grievance, exactly one owned Next step), a template + worked example, a **stage-mapping table** explaining what the ritual asks after each stage (Suta / Cintā / Bhāvanā) and what the Next step becomes there, and an escalation rule (a Wish recurring 3+ times climbs the Curation Pipeline). §4 The Wisdom Loop now names Core Reflection as the ritual that drives its arrows.
 
 ## [v2026.7.25-2] — 2026-07-25 — 2.40.0

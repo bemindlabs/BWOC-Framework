@@ -1,0 +1,78 @@
+# ISO/IEC/IEEE 12207:2017 — declared criteria (v0.1.0 attestation runtime).
+#
+# Source: ISO/IEC/IEEE 12207:2017 — Systems and software engineering — Software
+# life cycle processes. A jointly published standard of **ISO, IEC, and IEEE**
+# (harmonised with ISO/IEC/IEEE 15288 for systems). See SPEC.md for the full
+# citation. Clause numbers refer to the published standard's process groups:
+# 6.1 agreement, 6.2 organizational project-enabling, 6.3 technical management,
+# 6.4 technical processes.
+#
+# Each `[criterion.<id>]` table documents one life-cycle process the runtime
+# checks. `id` is kebab-case and plugin-scoped (BWOC-11). Declaration order is
+# the report order — do not reorder casually; renames are a major version bump
+# (PLUGINS.en.md §Stability).
+#
+# Fields:
+#   severity     — closed enum {info, low, medium, high, critical}.
+#   clause       — ISO/IEC/IEEE 12207:2017 clause reference (e.g. "6.4.2").
+#   title        — short clause title.
+#   description  — one-line operator-facing summary of what the runtime checks.
+#
+# audit.sh backs these criteria with the attestation runtime (shared with the
+# ISO 9001 / ISO/IEC 27001 / 29148 lanes): each criterion resolves to
+# `pass`/`fail` from signed attestation evidence in `.bwoc/workspace.toml`
+# (missing or incomplete attestation → `fail`).
+
+[criterion.12207-agreement-processes]
+severity    = "medium"
+clause      = "6.1"
+title       = "Agreement processes (acquisition / supply)"
+description = "Acquisition and supply are governed by defined agreements stating scope, deliverables, and acceptance criteria."
+
+[criterion.12207-project-planning]
+severity    = "high"
+clause      = "6.3.1"
+title       = "Project planning"
+description = "A project plan defines scope, schedule, resources, and the selected life-cycle processes and tasks."
+
+[criterion.12207-project-assessment-control]
+severity    = "medium"
+clause      = "6.3.2"
+title       = "Project assessment and control"
+description = "Project progress and process performance are assessed against the plan and corrective action is taken."
+
+[criterion.12207-configuration-management]
+severity    = "high"
+clause      = "6.3.5"
+title       = "Configuration management"
+description = "Work products are identified, version-controlled, and baselined; changes are controlled and status is accounted for."
+
+[criterion.12207-requirements-definition]
+severity    = "high"
+clause      = "6.4.2/6.4.3"
+title       = "Requirements definition"
+description = "Stakeholder needs and system/software requirements are defined, recorded, and agreed."
+
+[criterion.12207-architecture-design]
+severity    = "high"
+clause      = "6.4.4/6.4.5"
+title       = "Architecture and design definition"
+description = "A system/software architecture and design are defined that satisfy the requirements and are traceable to them."
+
+[criterion.12207-implementation-integration]
+severity    = "medium"
+clause      = "6.4.6/6.4.7"
+title       = "Implementation and integration"
+description = "Software elements are implemented and integrated per the design, with integration verified incrementally."
+
+[criterion.12207-verification-validation]
+severity    = "high"
+clause      = "6.4.9/6.4.11"
+title       = "Verification and validation"
+description = "Work products are verified against their specifications and the system is validated against stakeholder needs."
+
+[criterion.12207-maintenance]
+severity    = "medium"
+clause      = "6.4.13"
+title       = "Maintenance"
+description = "Post-delivery modifications are managed through a defined maintenance process preserving integrity and traceability."
