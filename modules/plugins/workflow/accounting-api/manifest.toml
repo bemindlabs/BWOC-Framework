@@ -2,7 +2,7 @@
 name        = "accounting-api"
 kind        = "workflow"
 version     = "0.1.0"
-description = "Bemind Accounting Open API adapter — read financial reports (reports:read) and record purchases/expenses: create+update a purchase document (the 2-step /purchase-docs POST→PATCH bill flow, purchases:write) and post an expense (/expenses, expenses:write). Every write auto-posts a double-entry GL entry server-side. Bearer-key auth (operator-supplied, never committed) + a required User-Agent. Write gating lives at the `bwoc accounting` CLI (writes_enabled opt-in + per-write confirm), never in this plugin."
+description = "Bemind Accounting Open API adapter — read financial reports (reports:read); record purchases/expenses (2-step /purchase-docs bill flow + /expenses); and cover the sales (quick-sales + open invoices), stock (balances, movements, receipts, adjustments), and cashbook (GL journals) domains. Every write auto-posts a double-entry GL entry server-side. Bearer-key auth (operator-supplied, never committed) + a required User-Agent. Write gating lives at the `bwoc accounting` CLI (writes_enabled opt-in + per-write confirm), never in this plugin."
 compat      = ">=2.36.0"
 entry       = "accounting.sh"
 

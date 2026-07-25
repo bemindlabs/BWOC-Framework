@@ -26,6 +26,21 @@ maturity: L1
 
 ชื่อรายงาน: `pnl` · `balance-sheet` · `cashflow` · `trial-balance` · `vat` · `wht` · `ap-aging` · `ar-aging` · `expenses` · `sales-by-channel` · `mrr` · `product-margin` · `asset-register`
 
+### domain sales / stock / cashbook
+
+| Operation | ทิศ | Endpoint | CLI |
+|---|---|---|---|
+| `sales-open-invoices` | read | `GET /sales/open-invoices` | `bwoc accounting sales open-invoices` |
+| `quick-sales-list` / `quick-sales-show` | read | `GET /quick-sales[/{id}]` | `bwoc accounting sales quick list` / `show <id>` |
+| `quick-sales-create` | **write** | `POST /quick-sales` | `bwoc accounting sales quick create --payload` |
+| `quick-sales-convert` | **write** | `POST /quick-sales/{id}/convert-to-invoice` | `bwoc accounting sales quick convert <id>` |
+| `stock-balance` / `stock-low` / `stock-movements` | read | `GET /stock/balance/{productId}` · `/stock/low` · `/stock/movements` | `bwoc accounting stock balance <id>` / `low` / `movements` |
+| `stock-receipt` / `stock-adjust` | **write** | `POST /stock/receipts` · `/stock/adjustments` | `bwoc accounting stock receipt --payload` / `adjust --payload` |
+| `gl-journals-list` / `gl-journal-show` | read | `GET /gl/journals[/{id}]` | `bwoc accounting cashbook journals` / `journal show <id>` |
+| `gl-journal-create` | **write** | `POST /gl/journals` | `bwoc accounting cashbook journal create --payload` |
+
+write ทุกตัวในโดเมนนี้เป็น financial (post GL) และพก gate `bwoc accounting` เดียวกับ `bill`/`expense`. read ฟรี
+
 > [!warning] verb เขียนแก้ **system of record** ภายนอก + auto-post GL — ถาวร ย้อนยาก. gate อยู่ที่ `bwoc accounting` CLI (standing opt-in `writes_enabled` + per-write confirm) ไม่ใช่ที่ plugin. เรียก plugin ตรง ๆ = bypass gate; เขียนผ่าน `bwoc accounting` เท่านั้น
 
 ## วิธีทำงาน
@@ -68,7 +83,7 @@ enabled = true
 
 ## Maturity
 
-L1 — reports + purchase-doc bill flow + expense ผ่าน `bwoc accounting` CLI พร้อม write gate (`writes_enabled` opt-in + per-write confirm). sales/cashbook/stock เป็น follow-up. อิงจาก OpenAPI จริง (v2.3.2)
+L1 — reports + purchase-doc bill flow + expense + โดเมน **sales / stock / cashbook** (quick-sales, stock balance/movement/receipt/adjust, GL journals) ทั้งหมดผ่าน `bwoc accounting` CLI พร้อม write gate (`writes_enabled` opt-in + per-write confirm). อิงจาก OpenAPI จริง (v2.3.2)
 
 ## Neutrality
 

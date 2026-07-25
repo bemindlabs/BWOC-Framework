@@ -115,7 +115,7 @@ _require_document_id() {
   local id="$1"
   if [[ -z "$id" ]]; then printf '%s\n' "$PLUGIN $OPERATION: .document_id is required" >&2; exit 2; fi
   if (( ${#id} > 128 )) || [[ ! "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
-    printf '%s\n' "$PLUGIN $OPERATION: invalid document_id '$id' (1..=128 chars of [A-Za-z0-9_-], no leading hyphen)" >&2
+    printf '%s\n' "$PLUGIN $OPERATION: invalid document_id '$id' (1..=128 chars of [A-Za-z0-9_-], must start with a letter or digit)" >&2
     exit 2
   fi
 }
@@ -192,12 +192,81 @@ do_expense_create() {
   printf '%s' "$HTTP_BODY" | jq '(.data // .) as $d | { ok: true, plugin: "accounting-api", operation: "expense-create", expense_id: ($d.id // ""), number: ($d.number // "") }'
 }
 
+# ── Generic helpers for the sales / stock / cashbook domains ───────────────
+#
+# Reads append `.params` as URL query and emit `{ ok, operation, data }`.
+# Writes POST `.payload` (a JSON object) and emit `{ ok, operation, id, number }`.
+# The write operator-confirm gate lives at the `bwoc accounting` CLI, never here.
+
+# Validate an opaque id used in a path segment (product id, doc id, …).
+_valid_path_id() {
+  local id="$1" field="$2"
+  if [[ -z "$id" ]]; then printf '%s\n' "$PLUGIN $OPERATION: .$field is required" >&2; exit 2; fi
+  if (( ${#id} > 128 )) || [[ ! "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+    printf '%s\n' "$PLUGIN $OPERATION: invalid $field '$id' (1..=128 chars of [A-Za-z0-9_-], must start with a letter or digit)" >&2
+    exit 2
+  fi
+}
+
+# _do_get <url> <resource> — authenticated GET, optional .params query.
+_do_get() {
+  _assert_key
+  local url="$1" resource="$2"
+  local args=(-G "$url") kv
+  while IFS= read -r kv; do
+    [[ -n "$kv" ]] && args+=(--data-urlencode "$kv")
+  done < <(printf '%s' "$REQUEST" | jq -r '(.params // {}) | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null || true)
+  acct_curl "${args[@]}"
+  acct_classify "$OPERATION" "$resource"
+  printf '%s' "$HTTP_BODY" | jq --arg op "$OPERATION" '{ ok: true, plugin: "accounting-api", operation: $op, data: (.data // .) }'
+}
+
+# _do_post_payload <url> <resource> — authenticated POST of a required JSON .payload.
+_do_post_payload() {
+  _assert_key
+  local url="$1" resource="$2" payload
+  payload="$(reqjson '.payload // empty')"
+  if [[ -z "$payload" || "$payload" == "null" || "$(printf '%s' "$payload" | jq -r 'type')" != "object" ]]; then
+    printf '%s\n' "$PLUGIN $OPERATION: .payload is required (a JSON object)" >&2; exit 2
+  fi
+  _write_json POST "$url" "$payload" "$OPERATION" "$resource"
+  printf '%s' "$HTTP_BODY" | jq --arg op "$OPERATION" '(.data // .) as $d | { ok: true, plugin: "accounting-api", operation: $op, id: ($d.id // ""), number: ($d.number // "") }'
+}
+
+# _do_post_empty <url> <resource> — authenticated POST with an empty body (actions).
+_do_post_empty() {
+  _assert_key
+  local url="$1" resource="$2"
+  _write_json POST "$url" "{}" "$OPERATION" "$resource"
+  printf '%s' "$HTTP_BODY" | jq --arg op "$OPERATION" '(.data // .) as $d | { ok: true, plugin: "accounting-api", operation: $op, id: ($d.id // ""), number: ($d.number // "") }'
+}
+
 case "$OPERATION" in
   report)          do_report ;;
   bill-create)     do_bill_create ;;
   bill-update)     do_bill_update ;;
   expense-create)  do_expense_create ;;
+
+  # ── sales domain ──
+  sales-open-invoices) _do_get "${API_BASE}/sales/open-invoices" "open invoices" ;;
+  quick-sales-list)    _do_get "${API_BASE}/quick-sales" "quick sales" ;;
+  quick-sales-show)    _id="$(req '.document_id // empty')"; _valid_path_id "$_id" document_id; _do_get "${API_BASE}/quick-sales/${_id}" "quick-sale '${_id}'" ;;
+  quick-sales-create)  _do_post_payload "${API_BASE}/quick-sales" "quick-sales" ;;
+  quick-sales-convert) _id="$(req '.document_id // empty')"; _valid_path_id "$_id" document_id; _do_post_empty "${API_BASE}/quick-sales/${_id}/convert-to-invoice" "quick-sale '${_id}'" ;;
+
+  # ── stock domain ──
+  stock-balance)   _pid="$(req '.product_id // empty')"; _valid_path_id "$_pid" product_id; _do_get "${API_BASE}/stock/balance/${_pid}" "stock balance '${_pid}'" ;;
+  stock-low)       _do_get "${API_BASE}/stock/low" "low stock" ;;
+  stock-movements) _do_get "${API_BASE}/stock/movements" "stock movements" ;;
+  stock-receipt)   _do_post_payload "${API_BASE}/stock/receipts" "stock-receipts" ;;
+  stock-adjust)    _do_post_payload "${API_BASE}/stock/adjustments" "stock-adjustments" ;;
+
+  # ── cashbook domain (GL journals) ──
+  gl-journals-list)  _do_get "${API_BASE}/gl/journals" "gl journals" ;;
+  gl-journal-show)   _id="$(req '.document_id // empty')"; _valid_path_id "$_id" document_id; _do_get "${API_BASE}/gl/journals/${_id}" "gl journal '${_id}'" ;;
+  gl-journal-create) _do_post_payload "${API_BASE}/gl/journals" "gl-journals" ;;
+
   *)
-    printf '%s\n' "$PLUGIN: unknown operation '$OPERATION' (expected report | bill-create | bill-update | expense-create)" >&2
+    printf '%s\n' "$PLUGIN: unknown operation '$OPERATION'. Expected one of: report | bill-create | bill-update | expense-create | sales-open-invoices | quick-sales-{list,show,create,convert} | stock-{balance,low,movements,receipt,adjust} | gl-journals-list | gl-journal-{show,create}. See modules/plugins/workflow/accounting-api/SPEC.md." >&2
     exit 2 ;;
 esac

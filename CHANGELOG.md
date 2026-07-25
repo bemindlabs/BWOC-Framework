@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.25-4] — 2026-07-25 — 2.42.0
+
+### Added
+
+- **`bwoc accounting` gains the sales / stock / cashbook domains.** The gated CLI + the `accounting-api` plugin now cover the three remaining accounting domains, grounded in the live Accounting Open API:
+  - **`bwoc accounting sales`** — `open-invoices` (GET /sales/open-invoices), `quick list` / `quick show <id>` (reads), `quick create --payload` (POST /quick-sales) + `quick convert <id>` (POST /quick-sales/{id}/convert-to-invoice) (writes).
+  - **`bwoc accounting stock`** — `balance <product-id>` / `low` / `movements` (reads), `receipt --payload` (POST /stock/receipts) + `adjust --payload` (POST /stock/adjustments) (writes).
+  - **`bwoc accounting cashbook`** — `journals` / `journal show <id>` (reads over GL journals), `journal create --payload` (POST /gl/journals, a manual double-entry) (write).
+
+  Reads are free; every write is financial (GL-posting) and rides the **same** gate as `bill`/`expense` — the standing `[plugins.accounting-api] writes_enabled = true` opt-in plus a per-write confirm (or `--yes`, required in `--json`). Implemented with generic read/write runners (`run_read` / `run_id_read` / `run_payload_write` / `run_id_write`) sharing the existing `financial_write_gate` + dispatch; the plugin gains 12 operations behind DRY `_do_get` / `_do_post_payload` / `_do_post_empty` helpers. Path ids are validated locally before spawn. 4 new e2e tests (read-is-free, financial write refused without opt-in, write proceeds with opt-in + `--yes`, id-write gating + validation). SPEC.md/th + manifest updated.
+
 ## [v2026.7.25-3] — 2026-07-25 — 2.41.0
 
 ### Added
