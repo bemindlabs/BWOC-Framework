@@ -60,7 +60,7 @@ criterion ที่ไม่มี attestation ที่ตรง+ถูกร�
 
 ## Exit codes
 
-`0` เมื่อสำเร็จ — finding ที่ไม่ pass เป็น *finding* ไม่ใช่ error. non-zero เฉพาะ runtime ล้ม (ไม่มี `BWOC_WORKSPACE`, ไม่มี `criteria.toml`)
+**plugin** (`audit.sh`) ออก `0` เมื่อสำเร็จ — finding ที่ไม่ pass เป็น *finding* ไม่ใช่ error — และ non-zero เฉพาะ runtime ล้ม (ไม่มี `BWOC_WORKSPACE`, อ่าน `criteria.toml` ไม่ได้). **`bwoc audit run` dispatcher** คำนวณ exit code เอง: จำนวน finding ที่ `fail` (clamp ที่ `254`) หรือ `255` เมื่อ framework/runtime error. audit สะอาดออก `0`, มี N fail ออก `N`, plugin พังออก `255` (`crates/bwoc-cli/src/audit.rs::compute_exit_code`)
 
 ## Maturity
 
