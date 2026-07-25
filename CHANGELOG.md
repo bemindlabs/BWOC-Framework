@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.25-0] — 2026-07-25 — 2.38.0
+
+### Added
+
+- **`bwoc accounting` — the gated CLI front for the `accounting-api` plugin.** Closes the financial-write gap: the plugin's write verbs previously had no operator boundary. `report <name>` (READ, free), `bill create` / `bill update <id>` / `expense create` (WRITE). Each write posts a durable document **and** an auto double-entry GL entry on the live books, so it carries the framework's strongest gate — the `gcloud-iam` two-part shape: a standing `[plugins.accounting-api] writes_enabled = true` opt-in in `.bwoc/workspace.toml` (refuse-by-default) **plus** a per-write confirm echoing the target (or `--yes`, required in `--json`). `--params` / `--payload` take a JSON object, validated locally before the plugin is ever spawned. The plugin holds no gate — this CLI is the single choke point; invoking the plugin directly bypasses it. Exit codes mirror `gcloud` / `gws` (0/1/2/4/255). 4 unit + 6 e2e tests (gate refusals + happy paths against a stub plugin, no network). `docs/{en,th}/PLUGINS` §Write verbs now documents the financial-write two-part gate; the `accounting-api` manifest + SPEC drop the "follow-up slice" wording now that the CLI ships.
+
 ## [v2026.7.24-0] — 2026-07-24 — 2.37.0
 
 ### Added

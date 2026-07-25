@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.37.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `2.38.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.12.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
-**Latest release:** [`v2026.7.24-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.24-0) *(2026-07-24 — **2.37.0**; minor — **audit ISO/IEC/IEEE** (new `audit-iso-iec-ieee-29148` Requirements-Engineering lane + the audit kind generalised across ISO / IEC / IEEE), the **`soul`** identity skill (hold the agent's core: Sīla without ego-clinging), and the **`accounting-api`** workflow plugin (read reports + record purchases/expenses over the Bemind Accounting Open API). Prior: `v2026.7.23-0` 2.36.0 — ai-loop-engineer + skill-doc fix)*
+**Latest release:** [`v2026.7.25-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.25-0) *(2026-07-25 — **2.38.0**; minor — **`bwoc accounting`**, the gated CLI front for the `accounting-api` plugin: `report` reads are free, while `bill create/update` + `expense create` (each posts a document + auto GL entry on the live books) are refused unless `[plugins.accounting-api] writes_enabled = true` **and** a per-write confirm (or `--yes`). Closes the financial-write gap — the plugin holds no gate; the CLI is the single choke point. Prior: `v2026.7.24-0` 2.37.0 — audit ISO/IEC/IEEE + `soul` + `accounting-api` plugin)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-07-24T02:13:18Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-07-25T06:39:05Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 

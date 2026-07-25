@@ -13,7 +13,7 @@ maturity: L1
 
 # accounting-api — Bemind Accounting Open API
 
-> [!abstract] A `workflow`-kind plugin adapting the **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`). Reads financial **reports** and records **purchases + expenses**: create then fill a purchase document (the 2-step `/purchase-docs` `POST → PATCH` bill flow) and post an expense. Writes **post a double-entry GL entry** server-side — a purchase doc on finalize (`bill-update`), an expense on create. Bearer-key auth (operator-supplied, never committed) + a **required** User-Agent header. This is the first slice; the `bwoc accounting` CLI (which carries the write-verb operator-confirm gate) is a follow-up.
+> [!abstract] A `workflow`-kind plugin adapting the **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`). Reads financial **reports** and records **purchases + expenses**: create then fill a purchase document (the 2-step `/purchase-docs` `POST → PATCH` bill flow) and post an expense. Writes **post a double-entry GL entry** server-side — a purchase doc on finalize (`bill-update`), an expense on create. Bearer-key auth (operator-supplied, never committed) + a **required** User-Agent header. The `bwoc accounting` CLI carries the write gate (a `writes_enabled` standing opt-in + a per-write operator confirm); this plugin executes when invoked.
 
 ## Verbs
 
@@ -26,7 +26,7 @@ maturity: L1
 
 Report names (`<name>`): `pnl` · `balance-sheet` · `cashflow` · `trial-balance` · `vat` · `wht` · `ap-aging` · `ar-aging` · `expenses` · `sales-by-channel` · `mrr` · `product-margin` · `asset-register`.
 
-> [!warning] The write verbs mutate an external **system of record** and auto-post GL — durable, hard-to-reverse. Their operator-confirm gate belongs at the `bwoc accounting` CLI (PLUGINS §Write verbs), a follow-up slice — not this plugin. Until that CLI ships, invoke the write verbs deliberately.
+> [!warning] The write verbs mutate an external **system of record** and auto-post GL — durable, hard-to-reverse. Their gate lives at the `bwoc accounting` CLI (PLUGINS §Write verbs) — a standing `writes_enabled` opt-in plus a per-write operator confirm — not this plugin. Invoking the plugin directly bypasses that gate; drive writes through `bwoc accounting`.
 
 ## How it runs
 
@@ -90,7 +90,7 @@ No plugin-local config — the only surface is `enabled`. Credentials come from 
 
 ## Maturity
 
-L1 — first slice: reports + purchase-doc bill flow + expense. Sales / cashbook / stock domains, and the `bwoc accounting` CLI with the write-confirm gate, are follow-up slices. Grounded in the live OpenAPI (v2.3.2).
+L1 — reports + purchase-doc bill flow + expense, fronted by the `bwoc accounting` CLI with the write gate (`writes_enabled` opt-in + per-write confirm). Sales / cashbook / stock domains are follow-up slices. Grounded in the live OpenAPI (v2.3.2).
 
 ## Neutrality
 

@@ -13,7 +13,7 @@ maturity: L1
 
 # accounting-api — Bemind Accounting Open API
 
-> [!abstract] plugin kind `workflow` เชื่อม **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`) อ่าน **รายงาน** การเงิน และบันทึก **ซื้อ + ค่าใช้จ่าย**: สร้างแล้วเติมเอกสารซื้อ (flow 2 ขั้น `/purchase-docs` `POST → PATCH`) และลงค่าใช้จ่าย การเขียน **post GL double-entry** ฝั่ง server — purchase doc ตอน finalize (`bill-update`), expense ตอน create. auth ด้วย Bearer key (operator ใส่เอง ไม่ commit) + **ต้องมี** User-Agent header. นี่คือ slice แรก; `bwoc accounting` CLI (ที่ถือ operator-confirm gate ของ verb เขียน) เป็น follow-up.
+> [!abstract] plugin kind `workflow` เชื่อม **Bemind Accounting Open API** (v2.3.2, `https://accounting.bemind.tech/api/v1`) อ่าน **รายงาน** การเงิน และบันทึก **ซื้อ + ค่าใช้จ่าย**: สร้างแล้วเติมเอกสารซื้อ (flow 2 ขั้น `/purchase-docs` `POST → PATCH`) และลงค่าใช้จ่าย การเขียน **post GL double-entry** ฝั่ง server — purchase doc ตอน finalize (`bill-update`), expense ตอน create. auth ด้วย Bearer key (operator ใส่เอง ไม่ commit) + **ต้องมี** User-Agent header. `bwoc accounting` CLI ถือ write gate (standing opt-in `writes_enabled` + per-write confirm); plugin นี้ทำงานเมื่อถูก invoke
 
 ## Verbs
 
@@ -26,7 +26,7 @@ maturity: L1
 
 ชื่อรายงาน: `pnl` · `balance-sheet` · `cashflow` · `trial-balance` · `vat` · `wht` · `ap-aging` · `ar-aging` · `expenses` · `sales-by-channel` · `mrr` · `product-margin` · `asset-register`
 
-> [!warning] verb เขียนแก้ **system of record** ภายนอก + auto-post GL — ถาวร ย้อนยาก. operator-confirm gate อยู่ที่ `bwoc accounting` CLI (follow-up) ไม่ใช่ที่ plugin. จนกว่า CLI จะมา เรียก verb เขียนอย่างระวัง
+> [!warning] verb เขียนแก้ **system of record** ภายนอก + auto-post GL — ถาวร ย้อนยาก. gate อยู่ที่ `bwoc accounting` CLI (standing opt-in `writes_enabled` + per-write confirm) ไม่ใช่ที่ plugin. เรียก plugin ตรง ๆ = bypass gate; เขียนผ่าน `bwoc accounting` เท่านั้น
 
 ## วิธีทำงาน
 
@@ -64,11 +64,11 @@ enabled = true
 
 ## Idempotency
 
-`report` idempotent. `bill-create`/`expense-create` **ไม่** (สร้าง record ใหม่ทุกครั้ง); `bill-update` idempotent สำหรับ payload คงที่. gate (ที่ CLI ในอนาคต) มีเพราะเป็นการเขียนถาวร post-GL
+`report` idempotent. `bill-create`/`expense-create` **ไม่** (สร้าง record ใหม่ทุกครั้ง); `bill-update` idempotent สำหรับ payload คงที่. gate (ที่ `bwoc accounting` CLI) มีเพราะเป็นการเขียนถาวร post-GL
 
 ## Maturity
 
-L1 — slice แรก: reports + purchase-doc bill flow + expense. sales/cashbook/stock + `bwoc accounting` CLI (write-confirm gate) เป็น follow-up. อิงจาก OpenAPI จริง (v2.3.2)
+L1 — reports + purchase-doc bill flow + expense ผ่าน `bwoc accounting` CLI พร้อม write gate (`writes_enabled` opt-in + per-write confirm). sales/cashbook/stock เป็น follow-up. อิงจาก OpenAPI จริง (v2.3.2)
 
 ## Neutrality
 
