@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Core Reflection practice in the self-improvement framework.** `modules/agent-template/docs/{en,th}/SELF-IMPROVEMENT` §2.4 adds the **Like / Wish / Next Step** three-line retrospective — a concrete, always-cheap growth habit run at the close of every task and session (grounded in Paccavekkhaṇa, MN 61's instruction to Rāhula: review before / during / after). Includes the prong table (asks → produces → feeds), honesty rules (one line each, Wish names a gap not a grievance, exactly one owned Next step), a template + worked example, a **stage-mapping table** explaining what the ritual asks after each stage (Suta / Cintā / Bhāvanā) and what the Next step becomes there, and an escalation rule (a Wish recurring 3+ times climbs the Curation Pipeline). §4 The Wisdom Loop now names Core Reflection as the ritual that drives its arrows.
+
 ## [v2026.7.25-2] — 2026-07-25 — 2.40.0
 
 ### Added
