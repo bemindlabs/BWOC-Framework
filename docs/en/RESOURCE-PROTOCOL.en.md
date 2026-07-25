@@ -8,7 +8,7 @@ tags:
   - group/protocol
   - type/design
   - meta/framework
-status: draft (v2026.7.25 — spec + slice-A: snapshot + gate-check + sharing-gate types; broker + lease/envelope wire + offload deferred to slices B/C)
+status: draft (v2026.7.25 — slices A–C shipped: snapshot + gate-check + advertise/discover clients + the gateway broker (discovery half); claim/lease + offload deferred to slice D)
 canonical-source: DN 16 (Mahāparinibbāna Sutta) §1.4 — Aparihāniya-dhamma 7, condition 6 (honor shared resources)
 parent: English
 nav_order: 11
@@ -148,7 +148,7 @@ Resource messages are `bwoc-gateway` **signed envelopes** — the same ed25519-a
 
 - `type ∈ { RES.ADVERTISE, RES.DISCOVER, RES.OFFERS, RES.CLAIM, RES.LEASE, RES.DENY, RES.RELEASE }`.
 - Signing/canonicalization is identical to the gateway's message relay (reuse `cc-signing`); the broker verifies the sender signature before registry mutation. The consumer verifies the **provider's** signature on the returned `RES.LEASE` before trusting the endpoint.
-- New gateway routes (slice B): `POST /v1/resource/advertise`, `POST /v1/resource/discover`, `POST /v1/resource/claim`, `POST /v1/resource/release`. The broker's registry is in-memory and TTL-evicted; it is a cache of live offers, never a system of record.
+- The broker exposes exactly **two** resource routes (slice B): `POST /v1/resource/advertise` and `POST /v1/resource/discover`. Its registry is in-memory and TTL-evicted — a cache of live offers, never a system of record. **`RES.CLAIM` / `RES.LEASE` / `RES.RELEASE` are *not* broker routes** — they are signed envelopes relayed to the provider over the gateway's existing message relay (the provider evaluates the sharing gate and mints the lease). Keeping claim off the broker is what keeps the broker dumb.
 
 ## CLI surface
 
@@ -186,8 +186,9 @@ Reads (`snapshot`, `discover`, `status`) are free. `advertise` mutates the broke
 ## Slices
 
 - **A (this revision, framework):** this spec + `bwoc resource snapshot` (GPU/CPU/RAM detection) + `bwoc resource gate-check` (dry-run the sharing gate) + the shared types shipped so far (`ResourceSnapshot`, `Gpu`, `SharingConfig`/`Caps`, `ClaimSpec`, `DenyReason`, `ResourceKind`) + the `[resource]` sharing-gate config parse + `evaluate_gate`. All local + unit-tested; nothing yet talks to the broker. The `Lease` struct and `RES.*` envelope types are specified above but land with the transport in slices B/C.
-- **B (bwoc-gateway):** the broker — `/v1/resource/*` routes, the TTL-evicted offer registry, discover matching, claim forwarding.
-- **C (framework):** `advertise` heartbeat, `discover`/`claim`/`release` clients against the broker, `compute` offload execution (claim → run the job on the provider via A2A → return result → release), then `kv` and `knowledge`.
+- **B (bwoc-gateway, shipped):** the broker's discovery half — `POST /v1/resource/advertise` + `POST /v1/resource/discover` over a TTL-evicted in-memory offer registry (one live offer per provider, last-writer-wins). Claim/lease deliberately rides the existing signed-envelope relay, not a new broker route.
+- **C (framework, shipped):** the broker clients — `bwoc resource advertise` (one-shot offer publish; run on a timer for a heartbeat, gated on `[resource] share = true`) and `bwoc resource discover` (query by kind + min spec). Both reach the gateway over HTTP(S) via `curl` (the CLI stays HTTP-client-free). The discovery loop now works fleet-wide end-to-end.
+- **D (framework, next):** the borrow itself — `claim` (send a `RES.CLAIM` envelope to the provider over the relay; provider evaluates `evaluate_gate` and mints a signed `RES.LEASE`), `release`, `compute` offload execution (run the job on the provider via A2A → return the result), then `kv` and `knowledge`.
 
 ## Cross-references
 
