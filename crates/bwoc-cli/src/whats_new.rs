@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — Resource Protocol: borrow compute & memory across the fleet (`bwoc resource`), under a provider-side sharing gate"
+    " — Resource Protocol is live end-to-end: `bwoc resource advertise`/`discover` find a fleet host's free GPU through the gateway broker"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,7 +31,7 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "Resource Protocol — borrow compute & memory across the fleet: a light host leases GPU/CPU (`compute`), shared KV/context (`kv`), or federated knowledge from a heavy host through the `bwoc-gateway` broker, under a refuse-by-default provider sharing gate. Slice A ships `bwoc resource snapshot` (GPU/CPU/RAM probe) + `gate-check` (dry-run your sharing caps); the broker + offload land next (2.39.0, docs/en/RESOURCE-PROTOCOL)",
+    "Resource Protocol live end-to-end — a light host now finds a heavy host's free GPU/RAM across the fleet: `bwoc resource advertise` publishes a host's offer to the `bwoc-gateway` broker (TTL-evicted registry) and `bwoc resource discover --kind compute --gpu-vram 24000` returns matching live offers, best-fit first. Builds on slice A's `snapshot` + `gate-check`; the `claim`→lease + `compute` offload execution land next (2.40.0, docs/en/RESOURCE-PROTOCOL)",
     "Gated financial writes — `bwoc accounting` fronts the `accounting-api` plugin: `report` reads are free, while `bill create/update` and `expense create` (each posts a document + an auto GL entry on the live books) need `[plugins.accounting-api] writes_enabled = true` AND a per-write confirm (2.38.0, #373)",
     "Standards, identity & accounting — the `audit` kind now spans ISO / IEC / IEEE (new `audit-iso-iec-ieee-29148` lane), the `soul` skill holds an agent's core, and the `accounting-api` plugin adapts the Bemind Accounting Open API (2.37.0, #367–#369)",
     "Skill library — 19 new framework skills under `modules/skills/` (22 total): knowledge, craft (`writer`…`lawyer`), roles (`software-engineer`, `data-scientist`, …), + the `ai-dlc` and `ai-loop-engineer` lifecycle skills (2.36.0, #359–#364)",

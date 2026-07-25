@@ -1,20 +1,23 @@
 //! `bwoc resource` — fleet compute & memory sharing (the Resource Protocol).
 //!
-//! See `docs/en/RESOURCE-PROTOCOL.en.md` for the full design. This is **slice A**:
-//! the two local, no-network verbs plus the shared types the broker + offload
-//! slices (B/C) build on.
+//! See `docs/en/RESOURCE-PROTOCOL.en.md` for the full design. Slices A + C:
 //!
-//! - `snapshot` — print this host's `ResourceSnapshot` (GPU/CPU/RAM). READ.
+//! - `snapshot` — print this host's `ResourceSnapshot` (GPU/CPU/RAM). READ; local.
 //! - `gate-check` — dry-run the provider sharing gate: given this host's
 //!   `[resource]` config + a fresh snapshot, would a hypothetical claim (kind +
 //!   consumer + spec) be allowed? An operator runs it to validate their caps
-//!   before turning sharing on. READ.
+//!   before turning sharing on. READ; local.
+//! - `advertise` — publish this host's offer to the gateway broker (one shot;
+//!   run on a timer for a heartbeat). Requires `[resource] share = true`.
+//! - `discover` — query the broker for offers of a kind meeting a minimum spec.
 //!
-//! `advertise` / `discover` / `claim` / `release` / `kv` need the broker (the
-//! `bwoc-gateway` resource registry, slice B) and are documented in the spec —
-//! not wired here.
+//! `advertise` / `discover` reach the gateway over HTTP(S) by shelling `curl`
+//! (the framework CLI stays HTTP-client-free, matching the plugin path). The
+//! `claim` / `release` / `kv` verbs — the lease round trip over the relay + the
+//! offload execution — are documented in the spec and land in the next slice.
 //!
-//! Exit codes: `0` ok · `2` usage/config error · `1` local error.
+//! Exit codes: `0` ok · `1` local error · `2` usage/config error · `255` broker
+//! transport error (network / non-2xx / non-JSON).
 
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -23,6 +26,8 @@ use std::path::{Path, PathBuf};
 const EXIT_OK: i32 = 0;
 const EXIT_LOCAL_ERROR: i32 = 1;
 const EXIT_USAGE: i32 = 2;
+/// Gateway/broker transport failure (network, non-2xx, non-JSON response).
+const EXIT_BROKER_ERROR: i32 = 255;
 
 /// Resource kinds — one lease lifecycle, three typed resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -82,9 +87,7 @@ pub struct ResourceSnapshot {
 #[derive(Debug, Clone, Default)]
 pub struct SharingConfig {
     pub share: bool,
-    /// Broker to advertise to. Parsed now so a config author can set it, but
-    /// only consumed by the `advertise` heartbeat (slice B).
-    #[allow(dead_code)]
+    /// Broker to advertise to / discover through (`ws(s)://` or `http(s)://`).
     pub gateway: Option<String>,
     pub caps: Caps,
 }
@@ -144,6 +147,11 @@ pub enum ResourceCommand {
     /// Dry-run the sharing gate: would a hypothetical claim be allowed by this
     /// host's `[resource]` caps against a fresh snapshot? READ; local.
     GateCheck(GateCheckArgs),
+    /// Publish this host's offer to the gateway broker (one shot — run on a
+    /// timer for a heartbeat). Requires `[resource] share = true` + a gateway.
+    Advertise(AdvertiseArgs),
+    /// Query the gateway broker for offers of a kind meeting a minimum spec.
+    Discover(DiscoverArgs),
 }
 
 #[derive(Args, Debug)]
@@ -177,10 +185,53 @@ pub struct GateCheckArgs {
     pub json: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct AdvertiseArgs {
+    /// This provider's agent id (the offer key + the `RES.CLAIM` recipient).
+    #[arg(long)]
+    pub provider: String,
+    /// Offer lifetime in seconds; the broker evicts the offer after this unless
+    /// re-advertised. Run on a timer at ~half this interval for a heartbeat.
+    #[arg(long, default_value_t = 30)]
+    pub ttl: u64,
+    /// Gateway HTTP(S) base or `ws(s)://` URL (overrides `[resource] gateway`).
+    #[arg(long)]
+    pub gateway: Option<String>,
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DiscoverArgs {
+    /// Resource kind to discover: `compute` | `kv` | `knowledge`.
+    #[arg(long)]
+    pub kind: String,
+    /// Minimum free VRAM (MB) an offer's best GPU must have.
+    #[arg(long)]
+    pub gpu_vram: Option<u64>,
+    /// Minimum free RAM (MB).
+    #[arg(long)]
+    pub ram: Option<u64>,
+    /// Minimum CPU cores.
+    #[arg(long)]
+    pub cores: Option<u32>,
+    /// Gateway HTTP(S) base or `ws(s)://` URL (overrides `[resource] gateway`).
+    #[arg(long)]
+    pub gateway: Option<String>,
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub fn run(cmd: ResourceCommand) -> i32 {
     match cmd {
         ResourceCommand::Snapshot(a) => run_snapshot(a),
         ResourceCommand::GateCheck(a) => run_gate_check(a),
+        ResourceCommand::Advertise(a) => run_advertise(a),
+        ResourceCommand::Discover(a) => run_discover(a),
     }
 }
 
@@ -619,6 +670,280 @@ fn emit_gate_error_json(error: &str, message: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Broker transport — advertise / discover over HTTP(S) to the gateway.
+//
+// The framework CLI stays HTTP-client-free (like the plugin path, which shells
+// `curl`); the gateway is reachable over HTTPS (tailscale serve), which rules
+// out a hand-rolled TCP client. So these verbs shell `curl` too.
+// ---------------------------------------------------------------------------
+
+/// Normalise a configured gateway URL to an HTTP(S) base. `ws://`→`http://`,
+/// `wss://`→`https://`; an `http(s)://` value passes through; a bare host is
+/// assumed `https://`. Trailing slash trimmed.
+fn gateway_http_base(url: &str) -> String {
+    let u = url.trim().trim_end_matches('/');
+    if let Some(rest) = u.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = u.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else if u.starts_with("http://") || u.starts_with("https://") {
+        u.to_string()
+    } else {
+        format!("https://{u}")
+    }
+}
+
+/// Resolve the gateway base: `--gateway` flag first, then `[resource] gateway`.
+fn resolve_gateway(flag: Option<&str>, cfg: &SharingConfig) -> Result<String, String> {
+    let raw = flag
+        .map(str::to_string)
+        .or_else(|| cfg.gateway.clone())
+        .ok_or_else(|| {
+            "no gateway configured — pass --gateway or set [resource] gateway in \
+             .bwoc/workspace.toml"
+                .to_string()
+        })?;
+    Ok(gateway_http_base(&raw))
+}
+
+/// POST `body` as JSON to `url` via `curl`, returning the parsed JSON response.
+/// `curl` failure (non-zero, or a non-2xx via `--fail`) surfaces as `Err`.
+fn http_post_json(url: &str, body: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let payload = serde_json::to_string(body).map_err(|e| format!("serialize request: {e}"))?;
+    let mut child = Command::new("curl")
+        .args([
+            "-sS", // silent but show errors
+            "--fail-with-body",
+            "-X",
+            "POST",
+            "-H",
+            "content-type: application/json",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            "20",
+            "--data-binary",
+            "@-",
+            url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn curl (is it installed?): {e}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(payload.as_bytes())
+            .map_err(|e| format!("write request body: {e}"))?;
+    }
+    drop(child.stdin.take());
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("wait curl: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return Err(format!(
+            "gateway request failed ({}): {}{}",
+            out.status.code().unwrap_or(-1),
+            stderr.trim(),
+            if stdout.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", stdout.trim())
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str(&stdout).map_err(|e| format!("gateway returned non-JSON: {e}"))
+}
+
+/// Build the `/v1/resource/advertise` request body (pure — unit-tested).
+fn advertise_body(
+    provider: &str,
+    kinds: &[String],
+    snapshot: &ResourceSnapshot,
+    ttl: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "provider": provider,
+        "kinds": kinds,
+        "snapshot": snapshot,
+        "ttl_secs": ttl,
+    })
+}
+
+/// Build the `/v1/resource/discover` query body (pure — unit-tested).
+fn discover_body(
+    kind: &str,
+    gpu_vram: Option<u64>,
+    ram: Option<u64>,
+    cores: Option<u32>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind,
+        "min_vram_mb": gpu_vram,
+        "min_ram_mb": ram,
+        "min_cpu_cores": cores,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Verb: advertise (provider → broker).
+// ---------------------------------------------------------------------------
+
+fn run_advertise(args: AdvertiseArgs) -> i32 {
+    let Some(root) = find_workspace_root(args.workspace) else {
+        eprintln!("bwoc resource advertise: no workspace found (no .bwoc/workspace.toml)");
+        return EXIT_USAGE;
+    };
+    let cfg = match load_sharing_config(&root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("bwoc resource advertise: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    // Master opt-in — a host that isn't sharing must not advertise an offer.
+    if !cfg.share {
+        eprintln!(
+            "bwoc resource advertise: sharing is off — set [resource] share = true in \
+             .bwoc/workspace.toml before advertising"
+        );
+        return EXIT_USAGE;
+    }
+    if cfg.caps.kinds.is_empty() {
+        eprintln!(
+            "bwoc resource advertise: no kinds offered — set [resource.caps] kinds = \
+             [\"compute\", …] in .bwoc/workspace.toml"
+        );
+        return EXIT_USAGE;
+    }
+    let base = match resolve_gateway(args.gateway.as_deref(), &cfg) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("bwoc resource advertise: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let snap = detect_snapshot();
+    let body = advertise_body(&args.provider, &cfg.caps.kinds, &snap, args.ttl);
+    let url = format!("{base}/v1/resource/advertise");
+    match http_post_json(&url, &body) {
+        Ok(resp) => {
+            if args.json {
+                let _ = print_json_value(&resp);
+            } else {
+                let live = resp
+                    .get("live_offers")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                println!(
+                    "advertised {} ({}) → {} · {} live offer(s) on the broker",
+                    args.provider,
+                    cfg.caps.kinds.join(","),
+                    base,
+                    live
+                );
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            eprintln!("bwoc resource advertise: {e}");
+            EXIT_BROKER_ERROR
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Verb: discover (consumer → broker).
+// ---------------------------------------------------------------------------
+
+fn run_discover(args: DiscoverArgs) -> i32 {
+    if ResourceKind::parse(&args.kind).is_none() {
+        eprintln!(
+            "bwoc resource discover: invalid --kind '{}' — expected compute | kv | knowledge",
+            args.kind
+        );
+        return EXIT_USAGE;
+    }
+    // Workspace/config is optional for discover — a gateway can be passed via
+    // --gateway with no `[resource]` block at all.
+    let cfg = find_workspace_root(args.workspace)
+        .and_then(|root| load_sharing_config(&root).ok())
+        .unwrap_or_default();
+    let base = match resolve_gateway(args.gateway.as_deref(), &cfg) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("bwoc resource discover: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let body = discover_body(&args.kind, args.gpu_vram, args.ram, args.cores);
+    let url = format!("{base}/v1/resource/discover");
+    match http_post_json(&url, &body) {
+        Ok(resp) => {
+            if args.json {
+                let _ = print_json_value(&resp);
+                return EXIT_OK;
+            }
+            let offers = resp.get("offers").and_then(|v| v.as_array());
+            match offers {
+                Some(list) if !list.is_empty() => {
+                    println!("{} offer(s) for '{}':", list.len(), args.kind);
+                    for o in list {
+                        let provider = o.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+                        let snap = o.get("snapshot").cloned().unwrap_or(serde_json::json!({}));
+                        let host = snap.get("host").and_then(|v| v.as_str()).unwrap_or("?");
+                        let vram = snapshot_best_vram(&snap);
+                        let ram = snap
+                            .get("ram_free_mb")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let cores = snap.get("cpu_cores").and_then(|v| v.as_u64()).unwrap_or(0);
+                        println!(
+                            "  {provider} (host {host}) — GPU {vram} MB free · {ram} MB RAM · {cores} cores"
+                        );
+                    }
+                }
+                _ => println!("no live offers for '{}'", args.kind),
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            eprintln!("bwoc resource discover: {e}");
+            EXIT_BROKER_ERROR
+        }
+    }
+}
+
+/// Best single-GPU free VRAM in an offer snapshot (mirror of the broker's).
+fn snapshot_best_vram(snap: &serde_json::Value) -> u64 {
+    snap.get("gpus")
+        .and_then(|v| v.as_array())
+        .map(|gpus| {
+            gpus.iter()
+                .filter_map(|g| g.get("vram_free_mb").and_then(serde_json::Value::as_u64))
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+fn print_json_value(value: &serde_json::Value) -> bool {
+    match serde_json::to_string_pretty(value) {
+        Ok(s) => {
+            println!("{s}");
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -817,6 +1142,50 @@ mod tests {
         let cfg = load_sharing_config(tmp.path()).unwrap();
         assert!(!cfg.share);
         assert!(cfg.caps.kinds.is_empty());
+    }
+
+    #[test]
+    fn gateway_base_normalises_schemes() {
+        assert_eq!(
+            gateway_http_base("wss://gw.bemind.tech"),
+            "https://gw.bemind.tech"
+        );
+        assert_eq!(gateway_http_base("ws://gw:8787"), "http://gw:8787");
+        assert_eq!(gateway_http_base("https://gw/"), "https://gw");
+        assert_eq!(gateway_http_base("http://gw:8787"), "http://gw:8787");
+        assert_eq!(
+            gateway_http_base("gw.bemind.tech"),
+            "https://gw.bemind.tech"
+        );
+    }
+
+    #[test]
+    fn resolve_gateway_prefers_flag_then_config() {
+        let mut cfg = SharingConfig::default();
+        cfg.gateway = Some("wss://from-config".into());
+        assert_eq!(
+            resolve_gateway(Some("ws://from-flag"), &cfg).unwrap(),
+            "http://from-flag"
+        );
+        assert_eq!(resolve_gateway(None, &cfg).unwrap(), "https://from-config");
+        assert!(resolve_gateway(None, &SharingConfig::default()).is_err());
+    }
+
+    #[test]
+    fn advertise_and_discover_bodies_shape() {
+        let snap = snap_with(40000, 96000, 128);
+        let kinds = vec!["compute".to_string(), "knowledge".to_string()];
+        let a = advertise_body("bemind", &kinds, &snap, 30);
+        assert_eq!(a["provider"], "bemind");
+        assert_eq!(a["ttl_secs"], 30);
+        assert_eq!(a["kinds"][0], "compute");
+        assert_eq!(a["snapshot"]["host"], "test");
+
+        let d = discover_body("compute", Some(24000), None, Some(16));
+        assert_eq!(d["kind"], "compute");
+        assert_eq!(d["min_vram_mb"], 24000);
+        assert!(d["min_ram_mb"].is_null());
+        assert_eq!(d["min_cpu_cores"], 16);
     }
 
     #[test]

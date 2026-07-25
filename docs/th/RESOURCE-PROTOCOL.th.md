@@ -8,7 +8,7 @@ tags:
   - group/protocol
   - type/design
   - meta/framework
-status: draft (v2026.7.25 — spec + slice-A: snapshot + gate-check + sharing-gate types; broker + lease/envelope wire + offload เลื่อนไป slice B/C)
+status: draft (v2026.7.25 — ship slice A–C: snapshot + gate-check + client advertise/discover + gateway broker (ครึ่ง discovery); claim/lease + offload เลื่อนไป slice D)
 canonical-source: DN 16 (Mahāparinibbāna Sutta) §1.4 — Aparihāniya-dhamma 7 ข้อ 6 (เคารพทรัพยากรส่วนรวม)
 parent: ไทย
 nav_order: 11
@@ -186,8 +186,9 @@ read (`snapshot`, `discover`, `status`) ฟรี. `advertise` mutate มุม�
 ## Slices
 
 - **A (revision นี้, framework):** spec นี้ + `bwoc resource snapshot` (ตรวจ GPU/CPU/RAM) + `bwoc resource gate-check` (dry-run sharing gate) + types ที่ ship แล้ว (`ResourceSnapshot`, `Gpu`, `SharingConfig`/`Caps`, `ClaimSpec`, `DenyReason`, `ResourceKind`) + parse config `[resource]` sharing-gate + `evaluate_gate`. ทั้งหมด local + unit-test; ยังไม่มีอะไรคุยกับ broker. struct `Lease` และชนิดข้อความ `RES.*` ระบุไว้ด้านบนแต่จะมาพร้อม transport ใน slice B/C
-- **B (bwoc-gateway):** broker — route `/v1/resource/*`, offer registry ที่ evict ตาม TTL, discover matching, claim forwarding
-- **C (framework):** heartbeat `advertise`, client `discover`/`claim`/`release` ต่อ broker, การรัน offload `compute` (claim → รันงานบน provider ผ่าน A2A → คืนผล → release), แล้ว `kv` และ `knowledge`
+- **B (bwoc-gateway, ship แล้ว):** ครึ่ง discovery ของ broker — `POST /v1/resource/advertise` + `POST /v1/resource/discover` บน offer registry ใน memory ที่ evict ตาม TTL (หนึ่ง offer live ต่อ provider, last-writer-wins). claim/lease จงใจวิ่งผ่าน signed-envelope relay เดิม ไม่ใช่ route ใหม่ของ broker
+- **C (framework, ship แล้ว):** client ของ broker — `bwoc resource advertise` (publish offer แบบ one-shot; รันบน timer เป็น heartbeat, gate ด้วย `[resource] share = true`) และ `bwoc resource discover` (query ตาม kind + min spec). ทั้งคู่คุย gateway ผ่าน HTTP(S) ด้วย `curl` (CLI ไม่มี HTTP client). loop discovery ทำงาน end-to-end ทั้งฟลีตแล้ว
+- **D (framework, ถัดไป):** การยืมจริง — `claim` (ส่ง envelope `RES.CLAIM` ไป provider ผ่าน relay; provider ประเมิน `evaluate_gate` แล้ว mint `RES.LEASE` ที่เซ็นชื่อ), `release`, การรัน offload `compute` (รันงานบน provider ผ่าน A2A → คืนผล), แล้ว `kv` และ `knowledge`
 
 ## Cross-references
 

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.7.25-2] — 2026-07-25 — 2.40.0
+
+### Added
+
+- **Resource Protocol live end-to-end — `bwoc resource advertise` + `discover` (slice C, with the gateway broker slice B).** A light host can now find a heavy host's free compute/memory across the fleet through the `bwoc-gateway` broker. `bwoc resource advertise --provider <id> [--ttl 30]` publishes this host's snapshot + offered kinds to the broker (one shot — run on a timer for a heartbeat; gated on `[resource] share = true` + a configured `[resource] gateway`). `bwoc resource discover --kind compute [--gpu-vram N] [--ram N] [--cores N]` queries the broker and prints matching live offers, best-free-VRAM first. Both reach the gateway over HTTP(S) by shelling `curl` — the CLI stays HTTP-client-free (matching the plugin path), and the gateway's HTTPS (tailscale serve) is handled by normalising `ws(s)://` → `http(s)://`. The companion broker (`POST /v1/resource/{advertise,discover}`, a TTL-evicted in-memory offer registry, one live offer per provider) ships in `bwoc-gateway`. The `claim` → signed-`RES.LEASE` round trip (over the existing relay) + `compute` offload execution are slice D. 6 new unit tests (URL normalisation, gateway resolution, request-body shapes); `docs/{en,th}/RESOURCE-PROTOCOL` §Slices updated.
+
 ## [v2026.7.25-1] — 2026-07-25 — 2.39.0
 
 ### Added
