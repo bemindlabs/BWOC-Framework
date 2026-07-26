@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.42.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `2.42.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.12.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
 **Latest release:** [`v2026.7.25-4`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.25-4) *(2026-07-25 — **2.42.0**; minor — **`bwoc accounting` sales / stock / cashbook domains**: quick-sales (list/show/create/convert) + open invoices, stock (balance/low/movements + receipt/adjust), and cashbook GL journals (list/show/create). Reads free; every write is financial (GL-posting) and rides the same `writes_enabled` + per-write-confirm gate as bill/expense. Grounded in the live Accounting Open API. Prior: `v2026.7.25-3` 2.41.0 — audit lanes 12207 + IEEE 1012)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-07-26T16:04:23Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-07-25T13:08:59Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 

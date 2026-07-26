@@ -10,7 +10,7 @@ The MCP client advertised a hardcoded `protocolVersion: "2024-11-05"` (two spec 
 ## Decisions
 
 - **Accept-set, not exact-match.** MCP explicitly allows the server to respond with an older shared revision, so requiring an exact echo of `LATEST` would break perfectly good `2024-11-05`-only servers we already work with. Refusing only truly-unknown versions keeps interop wide while staying safe.
-- **Refuse unknown, don't warn-and-continue.** For a security framework, proceeding against a revision whose message semantics we don't implement is the wrong default. Fail the handshake loudly.
+- **Refuse unknown, don't warn-and-continue.** For a security framework, proceeding against a revision whose message semantics we don't implement is the wrong default. Fail the handshake loudly. Same for a present-but-non-string `protocolVersion` (a malformed/hostile handshake): refuse rather than mask it as "missing" and silently default (Copilot #384).
 - **No new doc.** MCP has no existing `docs/` page; per Mattaññutā this internal bump doesn't justify creating one (and thus no EN/TH pair to maintain). The behavior is covered by the module doc-comment + unit tests.
 - **HTTP/Streamable transport deferred** (unchanged `RpcTransport` trait already abstracts it). It carries real remote attack surface (SSRF, auth-token handling, host allowlist) and needs bemind Linux verification, so it stays a separate PR.
 

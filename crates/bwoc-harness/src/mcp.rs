@@ -231,13 +231,19 @@ impl McpClient {
             .await?;
         // The server MAY downgrade to an older shared revision; accept any we
         // still support. A missing field means a pre-negotiation server — assume
-        // the version we asked for. An unknown version has undefined semantics,
-        // so refuse rather than proceed blindly.
-        let negotiated = result
-            .get("protocolVersion")
-            .and_then(|v| v.as_str())
-            .unwrap_or(LATEST_PROTOCOL_VERSION)
-            .to_string();
+        // the version we asked for. A present-but-non-string value is a
+        // malformed/hostile handshake — refuse rather than mask it as "missing".
+        // An unknown (but well-typed) version has undefined semantics for us and
+        // is refused below.
+        let negotiated = match result.get("protocolVersion") {
+            Some(Value::String(v)) => v.clone(),
+            None => LATEST_PROTOCOL_VERSION.to_string(),
+            Some(other) => {
+                return Err(HarnessError::Provider(format!(
+                    "MCP server returned a non-string protocolVersion: {other}"
+                )));
+            }
+        };
         if !SUPPORTED_PROTOCOL_VERSIONS.contains(&negotiated.as_str()) {
             return Err(HarnessError::Provider(format!(
                 "MCP server negotiated unsupported protocol version {negotiated:?}; \
@@ -372,18 +378,22 @@ mod tests {
     /// Canned transport: records calls, returns scripted results per method.
     struct MockTransport {
         calls: StdMutex<Vec<(String, Value)>>,
-        /// `Some(v)` → server echoes `protocolVersion: v` at initialize;
-        /// `None` → server omits the field (pre-negotiation server).
-        init_version: Option<String>,
+        /// `Some(v)` → server echoes `protocolVersion: v` at initialize (any JSON
+        /// type, so wrong-type handshakes are testable); `None` → server omits
+        /// the field (pre-negotiation server).
+        init_version: Option<Value>,
     }
     impl MockTransport {
         fn new() -> Self {
             Self::with_init_version(Some(LATEST_PROTOCOL_VERSION))
         }
         fn with_init_version(v: Option<&str>) -> Self {
+            Self::with_init_value(v.map(|s| json!(s)))
+        }
+        fn with_init_value(v: Option<Value>) -> Self {
             Self {
                 calls: StdMutex::new(Vec::new()),
-                init_version: v.map(str::to_string),
+                init_version: v,
             }
         }
     }
@@ -451,6 +461,20 @@ mod tests {
     async fn initialize_defaults_when_server_omits_version() {
         let client = McpClient::new(Arc::new(MockTransport::with_init_version(None)));
         assert_eq!(client.initialize().await.unwrap(), LATEST_PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_non_string_version() {
+        // A present-but-wrong-type protocolVersion is a malformed handshake and
+        // must fail fast, not be masked as "missing" and defaulted.
+        let client = McpClient::new(Arc::new(MockTransport::with_init_value(Some(json!(
+            20250618
+        )))));
+        let err = client.initialize().await.unwrap_err();
+        assert!(
+            err.to_string().contains("non-string protocolVersion"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
