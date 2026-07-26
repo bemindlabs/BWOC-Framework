@@ -1121,6 +1121,7 @@ fn build_manifest(r: &Resolved) -> Manifest {
         reasoning_effort: None,
         max_tokens: None,
         prompt_cache: None,
+        thinking: None,
         memory_path: r.memory_path.clone(),
         sessions_path: r.sessions_path.clone(),
         deep_memory_cmd: r.deep_memory_cmd.clone(),

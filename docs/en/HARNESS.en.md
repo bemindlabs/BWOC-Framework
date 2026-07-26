@@ -277,7 +277,8 @@ runtime selection pool:
   "autoModels": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
   "reasoningEffort": "medium",
   "maxTokens": 32000,
-  "promptCache": true
+  "promptCache": true,
+  "thinking": false
 }
 ```
 
@@ -299,7 +300,12 @@ otherwise fall back to the provider default. `promptCache` is **on by default**
 with `cache_control`, so an agentic loop that resends it pays cache-read (~0.1×)
 instead of full input — the tools block, rendered before system, is covered by
 the same breakpoint. Below the provider's minimum cacheable size the marker is a
-silent no-op. The current BWOC harness still speaks the OpenAI-compatible
+silent no-op. `thinking` is **off by default** (opt in with `true`): the native
+Claude path then requests adaptive extended thinking on non-streaming
+completions and preserves + replays the returned thinking blocks across turns —
+required for the tool path, since the Messages API rejects a `tool_result` whose
+preceding thinking block was dropped. Streaming turns do not enable thinking yet
+(a follow-up). The current BWOC harness still speaks the OpenAI-compatible
 `/v1/chat/completions` surface so it can also run Ollama and other compatible
 providers. A native Responses API adapter is the right next step for full
 GPT-5.5 reasoning controls; until then, keep `AGENTS.md` outcome-first, avoid

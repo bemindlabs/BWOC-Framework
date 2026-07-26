@@ -1177,6 +1177,7 @@ mod tests {
             reasoning_effort: None,
             max_tokens: None,
             prompt_cache: None,
+            thinking: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
