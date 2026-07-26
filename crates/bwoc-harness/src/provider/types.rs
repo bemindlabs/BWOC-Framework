@@ -37,6 +37,16 @@ pub struct ChatMessage {
     /// Name for tool result messages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Anthropic extended-thinking blocks (raw `thinking` / `redacted_thinking`
+    /// JSON, incl. `signature`) produced on an assistant turn. Preserved so the
+    /// **same-model** next turn can replay them unchanged — the Messages API
+    /// requires the thinking block that precedes a `tool_use` to be present when
+    /// the following `tool_result` is sent, or it 400s. Retained on disk;
+    /// **stripped before egress** on OpenAI-compat (Anthropic-specific, and the
+    /// egress DTO omits it), and only re-emitted by the Anthropic request
+    /// builder. `None` for every non-Anthropic / non-thinking turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_blocks: Option<Vec<serde_json::Value>>,
     /// Immutable provenance stamp. Retained on disk (legacy lines without it
     /// default to `Unknown` → Untrusted); stripped before egress.
     #[serde(default)]
@@ -51,6 +61,7 @@ impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: Role::System,
+            thinking_blocks: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -74,6 +85,7 @@ impl ChatMessage {
     pub fn summary(content: impl Into<String>, folded_untrusted: bool) -> Self {
         Self {
             role: Role::System,
+            thinking_blocks: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -92,6 +104,7 @@ impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
+            thinking_blocks: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -105,6 +118,7 @@ impl ChatMessage {
     pub fn operator(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
+            thinking_blocks: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -125,6 +139,7 @@ impl ChatMessage {
         };
         Self {
             role: Role::User,
+            thinking_blocks: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -139,6 +154,7 @@ impl ChatMessage {
     pub fn assistant(content: Option<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
         Self {
             role: Role::Assistant,
+            thinking_blocks: None,
             content,
             tool_calls,
             tool_call_id: None,
@@ -158,6 +174,7 @@ impl ChatMessage {
     ) -> Self {
         Self {
             role: Role::Tool,
+            thinking_blocks: None,
             content: Some(result.into()),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
@@ -166,6 +183,13 @@ impl ChatMessage {
                 name: tool_name.into(),
             },
         }
+    }
+
+    /// Attach Anthropic extended-thinking blocks to an assistant message so the
+    /// same-model next turn can replay them (empty → left as `None`). Chainable.
+    pub fn with_thinking_blocks(mut self, blocks: Vec<serde_json::Value>) -> Self {
+        self.thinking_blocks = (!blocks.is_empty()).then_some(blocks);
+        self
     }
 
     /// The immutable provenance of this message.

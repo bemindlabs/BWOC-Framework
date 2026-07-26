@@ -161,6 +161,15 @@ pub struct AnthropicClient {
     /// stable system prefix (which also covers the preceding `tools` block) is
     /// cached, so an agentic loop resending it pays cache-read, not full input.
     prompt_cache: bool,
+    /// Whether to request adaptive extended thinking (`thinking:{type:adaptive}`)
+    /// on the **non-streaming** `complete()` path. Off by default; the manifest
+    /// `thinking: true` opts in. When on, `parse_completion` preserves the
+    /// returned thinking blocks on the assistant message and the request builder
+    /// replays them (required for the tool path — see [`ChatMessage::thinking_blocks`]).
+    /// Deliberately **not** applied to `stream()`: streaming thinking-block
+    /// preservation is a follow-up, and enabling it there without replay would
+    /// 400 the next tool turn.
+    thinking: bool,
     client: Client,
 }
 
@@ -185,6 +194,7 @@ impl AnthropicClient {
             max_tokens: DEFAULT_MAX_TOKENS,
             reasoning_effort: None,
             prompt_cache: true,
+            thinking: false,
             client,
         }
     }
@@ -221,6 +231,14 @@ impl AnthropicClient {
     /// `self` for chaining.
     pub fn with_prompt_cache(mut self, enabled: bool) -> Self {
         self.prompt_cache = enabled;
+        self
+    }
+
+    /// Enable/disable adaptive extended thinking on `complete()`. Off by
+    /// default; fed from the manifest `thinking` (`true` opts in). Returns
+    /// `self` for chaining.
+    pub fn with_thinking(mut self, enabled: bool) -> Self {
+        self.thinking = enabled;
         self
     }
 
@@ -285,6 +303,7 @@ impl ProviderClient for AnthropicClient {
             model,
             self.max_tokens,
             self.reasoning_effort.as_deref(),
+            self.thinking,
             self.prompt_cache,
             false,
         );
@@ -341,6 +360,10 @@ impl ProviderClient for AnthropicClient {
             model,
             self.max_tokens,
             self.reasoning_effort.as_deref(),
+            // Guard: no thinking on the streaming path. Streaming thinking-block
+            // preservation (for replay) is a follow-up; enabling it here without
+            // replay would 400 the next tool turn. See the struct-field doc.
+            false,
             self.prompt_cache,
             true,
         );
@@ -473,6 +496,7 @@ fn build_anthropic_body(
     model: &str,
     max_tokens: u32,
     reasoning_effort: Option<&str>,
+    thinking: bool,
     cache: bool,
     stream: bool,
 ) -> Value {
@@ -502,6 +526,15 @@ fn build_anthropic_body(
             }
             Role::Assistant => {
                 let mut blocks: Vec<Value> = Vec::new();
+                // Replay preserved thinking blocks FIRST, unchanged (incl. their
+                // `signature`). The Messages API requires the thinking block that
+                // preceded a `tool_use` to be present in this assistant turn when
+                // the following `tool_result` is sent — dropping it 400s. Safe
+                // when caching is on: thinking blocks precede the system prefix's
+                // effect and carry their own signature.
+                if let Some(tb) = msg.thinking_blocks {
+                    blocks.extend(tb);
+                }
                 if let Some(c) = msg.content {
                     if !c.is_empty() {
                         blocks.push(json!({"type": "text", "text": c}));
@@ -598,6 +631,14 @@ fn build_anthropic_body(
     if let Some(effort) = reasoning_effort {
         body["output_config"] = json!({ "effort": effort });
     }
+    // Adaptive extended thinking (opt-in). `{type:"adaptive"}` lets Claude decide
+    // when/how much to think (Opus 4.6+, Sonnet 4.6+, Fable 5 — `budget_tokens`
+    // is removed on 4.7+); depth is governed by `output_config.effort` above.
+    // The returned thinking blocks are preserved by `parse_completion` and
+    // replayed on the next assistant turn (see the Assistant arm).
+    if thinking {
+        body["thinking"] = json!({ "type": "adaptive" });
+    }
     body
 }
 
@@ -631,11 +672,16 @@ fn parse_completion(data: &Value) -> ChatCompletion {
     let id = data["id"].as_str().unwrap_or("anthropic").to_string();
     let mut text = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
+    // Extended-thinking blocks are preserved VERBATIM (incl. `signature`) so the
+    // same-model next turn can replay them — required before a `tool_use`'s
+    // `tool_result`, or the API 400s. See `ChatMessage::thinking_blocks`.
+    let mut thinking_blocks: Vec<Value> = Vec::new();
 
     if let Some(blocks) = data["content"].as_array() {
         for b in blocks {
             match b["type"].as_str() {
                 Some("text") => text.push_str(b["text"].as_str().unwrap_or_default()),
+                Some("thinking") | Some("redacted_thinking") => thinking_blocks.push(b.clone()),
                 Some("tool_use") => tool_calls.push(ToolCall {
                     id: b["id"].as_str().unwrap_or_default().to_string(),
                     kind: "function".to_string(),
@@ -652,7 +698,8 @@ fn parse_completion(data: &Value) -> ChatCompletion {
     let message = ChatMessage::assistant(
         (!text.is_empty()).then_some(text),
         (!tool_calls.is_empty()).then_some(tool_calls),
-    );
+    )
+    .with_thinking_blocks(thinking_blocks);
     let usage = data.get("usage").map(parse_usage);
 
     ChatCompletion {
@@ -896,7 +943,8 @@ mod tests {
     #[test]
     fn system_is_lifted_and_roles_mapped() {
         let msgs = vec![ChatMessage::system("be terse"), ChatMessage::user("hi")];
-        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false);
+        let body =
+            build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false, false);
         assert_eq!(body["system"], "be terse");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
@@ -934,7 +982,8 @@ mod tests {
             ChatMessage::tool_result("t1", "tool_a", "A"),
             ChatMessage::tool_result("t2", "tool_b", "B"),
         ];
-        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false);
+        let body =
+            build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false, false);
         let arr = body["messages"].as_array().unwrap();
         // user, assistant(tool_use x2), user(tool_result x2 merged) = 3 turns.
         assert_eq!(arr.len(), 3);
@@ -959,6 +1008,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert_eq!(body["tools"][0]["name"], "grep");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
@@ -977,6 +1027,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(plain.get("output_config").is_none());
         assert_eq!(plain["max_tokens"], 50);
@@ -987,6 +1038,7 @@ mod tests {
             "claude-x",
             64000,
             Some("high"),
+            false,
             false,
             false,
         );
@@ -1026,6 +1078,76 @@ mod tests {
     }
 
     #[test]
+    fn thinking_config_and_builder() {
+        assert!(!AnthropicClient::new("http://x").thinking, "off by default");
+        assert!(
+            AnthropicClient::new("http://x")
+                .with_thinking(true)
+                .thinking
+        );
+
+        // Top-level thinking config emitted only when enabled.
+        let on = build_anthropic_body(
+            vec![ChatMessage::user("x")],
+            Vec::new(),
+            "claude-x",
+            100,
+            None,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(on["thinking"]["type"], "adaptive");
+        let off = build_anthropic_body(
+            vec![ChatMessage::user("x")],
+            Vec::new(),
+            "claude-x",
+            100,
+            None,
+            false,
+            false,
+            false,
+        );
+        assert!(off.get("thinking").is_none());
+    }
+
+    #[test]
+    fn thinking_blocks_round_trip_and_replay() {
+        // parse_completion preserves thinking/redacted_thinking blocks verbatim.
+        let completion = parse_completion(&json!({
+            "id": "m1",
+            "content": [
+                {"type": "thinking", "thinking": "let me reason", "signature": "sig-abc"},
+                {"type": "text", "text": "answer"},
+                {"type": "tool_use", "id": "tu1", "name": "grep", "input": {"q": "x"}}
+            ],
+            "stop_reason": "tool_use"
+        }));
+        let msg = &completion.choices[0].message;
+        let tb = msg.thinking_blocks.as_ref().expect("thinking preserved");
+        assert_eq!(tb.len(), 1);
+        assert_eq!(tb[0]["signature"], "sig-abc");
+
+        // Replaying that assistant message emits the thinking block FIRST,
+        // unchanged (before text / tool_use) — the shape the API requires.
+        let body = build_anthropic_body(
+            vec![msg.clone()],
+            Vec::new(),
+            "claude-x",
+            100,
+            None,
+            true,
+            false,
+            false,
+        );
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["signature"], "sig-abc");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[2]["type"], "tool_use");
+    }
+
+    #[test]
     fn system_cache_control_toggles() {
         let msgs = vec![
             ChatMessage::system("stable prefix"),
@@ -1033,14 +1155,23 @@ mod tests {
         ];
 
         // Caching on → system is a text-block array carrying cache_control.
-        let cached =
-            build_anthropic_body(msgs.clone(), Vec::new(), "claude-x", 100, None, true, false);
+        let cached = build_anthropic_body(
+            msgs.clone(),
+            Vec::new(),
+            "claude-x",
+            100,
+            None,
+            false,
+            true,
+            false,
+        );
         assert_eq!(cached["system"][0]["type"], "text");
         assert_eq!(cached["system"][0]["text"], "stable prefix");
         assert_eq!(cached["system"][0]["cache_control"]["type"], "ephemeral");
 
         // Caching off → plain string (byte-identical to the pre-caching form).
-        let plain = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false);
+        let plain =
+            build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false, false);
         assert_eq!(plain["system"], "stable prefix");
     }
 
@@ -1076,6 +1207,7 @@ mod tests {
             "claude-x",
             50,
             None,
+            false,
             false,
             false,
         );

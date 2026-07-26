@@ -69,6 +69,14 @@ pub struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub prompt_cache: Option<bool>,
+    /// Opt **in** to adaptive extended thinking. Off by default (`None ≡ false`).
+    /// When `true`, the native Claude path requests `thinking:{type:"adaptive"}`
+    /// on non-streaming completions (Opus 4.6+/Sonnet 4.6+/Fable 5) and preserves
+    /// + replays the returned thinking blocks across turns (required for the tool
+    /// path). Streaming turns do not enable it yet. Non-thinking backends ignore
+    /// this.
+    #[serde(rename = "thinking", default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<bool>,
     #[serde(rename = "memoryPath")]
     pub memory_path: String,
     #[serde(rename = "sessionsPath", skip_serializing_if = "Option::is_none")]
@@ -354,6 +362,7 @@ impl Manifest {
             reasoning_effort: None,
             max_tokens: None,
             prompt_cache: None,
+            thinking: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -394,6 +403,7 @@ mod tests {
             reasoning_effort: None,
             max_tokens: None,
             prompt_cache: None,
+            thinking: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -503,6 +513,23 @@ mod tests {
         assert!(json2.contains("\"promptCache\":false"));
         let back: Manifest = serde_json::from_str(&json2).unwrap();
         assert_eq!(back.prompt_cache, Some(false));
+    }
+
+    /// `thinking` is optional and opt-**in**: absent → `None` (off at the call
+    /// site) and omitted on serialize; `true` round-trips.
+    #[test]
+    fn thinking_serde() {
+        let m = sample();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"thinking\""));
+        assert!(m.thinking.is_none());
+
+        let mut m2 = sample();
+        m2.thinking = Some(true);
+        let json2 = serde_json::to_string(&m2).unwrap();
+        assert!(json2.contains("\"thinking\":true"));
+        let back: Manifest = serde_json::from_str(&json2).unwrap();
+        assert_eq!(back.thinking, Some(true));
     }
 
     // ---- TrustBlock tests ---------------------------------------------------

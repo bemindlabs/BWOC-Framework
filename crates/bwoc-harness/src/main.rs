@@ -364,12 +364,13 @@ async fn run() -> HarnessResult<()> {
     // Pick up an optional `reasoningEffort` from the agent's manifest and send
     // it as `reasoning_effort` on every completion (OpenAI-compat effort
     // control). Absent manifest / field ≡ provider default.
-    let (reasoning_effort, max_tokens, prompt_cache) =
+    let (reasoning_effort, max_tokens, prompt_cache, thinking) =
         match bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json")) {
             Ok(m) => (
                 m.reasoning_effort,
                 m.max_tokens,
                 m.prompt_cache.unwrap_or(true),
+                m.thinking.unwrap_or(false),
             ),
             // A malformed manifest is worth surfacing — silently dropping
             // `reasoningEffort` / `maxTokens` here would make a config typo hard to
@@ -379,9 +380,9 @@ async fn run() -> HarnessResult<()> {
                     "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
                  ignoring reasoningEffort / maxTokens / promptCache"
                 );
-                (None, None, true)
+                (None, None, true, false)
             }
-            Err(_) => (None, None, true),
+            Err(_) => (None, None, true, false),
         };
     if let Some(ref e) = reasoning_effort {
         println!("  effort   : {e}");
@@ -397,6 +398,7 @@ async fn run() -> HarnessResult<()> {
         reasoning_effort,
         max_tokens,
         prompt_cache,
+        thinking,
     );
 
     // ── Auto model selection (primaryModel: "auto") ───────────────────────
@@ -829,23 +831,24 @@ async fn run_eval_mode(
     // normal and silent — but a *present-but-malformed* one is worth surfacing
     // (mirrors the main run path), not silently dropped.
     let manifest_path = workdir.join("config.manifest.json");
-    let (reasoning_effort, max_tokens, prompt_cache) = if manifest_path.exists() {
+    let (reasoning_effort, max_tokens, prompt_cache, thinking) = if manifest_path.exists() {
         match bwoc_core::manifest::Manifest::load_from_path(&manifest_path) {
             Ok(m) => (
                 m.reasoning_effort,
                 m.max_tokens,
                 m.prompt_cache.unwrap_or(true),
+                m.thinking.unwrap_or(false),
             ),
             Err(e) => {
                 eprintln!(
                     "[bwoc-harness] warning: ignoring malformed {}: {e}",
                     manifest_path.display()
                 );
-                (None, None, true)
+                (None, None, true, false)
             }
         }
     } else {
-        (None, None, true)
+        (None, None, true, false)
     };
     let provider = build_provider(
         &args.backend,
@@ -854,6 +857,7 @@ async fn run_eval_mode(
         reasoning_effort,
         max_tokens,
         prompt_cache,
+        thinking,
     );
 
     let config = LoopConfig {
@@ -942,6 +946,7 @@ fn build_provider(
     reasoning_effort: Option<String>,
     max_tokens: Option<u32>,
     prompt_cache: bool,
+    thinking: bool,
 ) -> Arc<dyn ProviderClient> {
     use bwoc_harness::provider::client as oai;
     match backend {
@@ -973,7 +978,8 @@ fn build_provider(
                 AnthropicClient::new(base)
                     .with_reasoning_effort(reasoning_effort)
                     .with_max_tokens(max_tokens)
-                    .with_prompt_cache(prompt_cache),
+                    .with_prompt_cache(prompt_cache)
+                    .with_thinking(thinking),
             )
         }
         "openrouter" => {
@@ -1057,21 +1063,22 @@ async fn run_chat_mode(
     use bwoc_harness::chat_session::{self, ChatConfig};
 
     // Provider — same reasoning-effort / max-tokens wiring as run().
-    let (reasoning_effort, max_tokens, prompt_cache) =
+    let (reasoning_effort, max_tokens, prompt_cache, thinking) =
         match bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json")) {
             Ok(m) => (
                 m.reasoning_effort,
                 m.max_tokens,
                 m.prompt_cache.unwrap_or(true),
+                m.thinking.unwrap_or(false),
             ),
             Err(bwoc_core::manifest::ManifestError::Json(e)) => {
                 eprintln!(
                     "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
                  ignoring reasoningEffort / maxTokens / promptCache"
                 );
-                (None, None, true)
+                (None, None, true, false)
             }
-            Err(_) => (None, None, true),
+            Err(_) => (None, None, true, false),
         };
     ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> = build_provider(
@@ -1081,6 +1088,7 @@ async fn run_chat_mode(
         reasoning_effort,
         max_tokens,
         prompt_cache,
+        thinking,
     );
 
     // Resolve the `auto` model sentinel the same way the batch path does (see
