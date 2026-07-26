@@ -377,7 +377,7 @@ async fn run() -> HarnessResult<()> {
             Err(bwoc_core::manifest::ManifestError::Json(e)) => {
                 eprintln!(
                     "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
-                 ignoring reasoningEffort / maxTokens"
+                 ignoring reasoningEffort / maxTokens / promptCache"
                 );
                 (None, None, true)
             }
@@ -1067,7 +1067,7 @@ async fn run_chat_mode(
             Err(bwoc_core::manifest::ManifestError::Json(e)) => {
                 eprintln!(
                     "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
-                 ignoring reasoningEffort / maxTokens"
+                 ignoring reasoningEffort / maxTokens / promptCache"
                 );
                 (None, None, true)
             }
