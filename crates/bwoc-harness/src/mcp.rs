@@ -186,6 +186,16 @@ pub struct McpToolDef {
     pub input_schema: Value,
 }
 
+/// The MCP revision this harness implements and advertises in `initialize`.
+/// See <https://modelcontextprotocol.io/specification>.
+pub const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Protocol revisions this harness can speak, newest first. A server may
+/// legitimately downgrade to an older shared revision during the `initialize`
+/// handshake; a version outside this set has undefined semantics for us, so we
+/// refuse the handshake rather than guess.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
 /// MCP client over a [`RpcTransport`].
 pub struct McpClient {
     transport: Arc<dyn RpcTransport>,
@@ -203,22 +213,47 @@ impl McpClient {
         Ok(client)
     }
 
-    /// Perform the MCP `initialize` handshake + `notifications/initialized`.
-    pub async fn initialize(&self) -> Result<(), HarnessError> {
-        self.transport
+    /// Perform the MCP `initialize` handshake + `notifications/initialized`,
+    /// negotiating the protocol revision. We advertise
+    /// [`LATEST_PROTOCOL_VERSION`]; the server echoes the revision it will
+    /// speak. Returns the negotiated version.
+    pub async fn initialize(&self) -> Result<String, HarnessError> {
+        let result = self
+            .transport
             .request(
                 "initialize",
                 json!({
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": LATEST_PROTOCOL_VERSION,
                     "capabilities": {},
                     "clientInfo": { "name": "bwoc-harness", "version": env!("CARGO_PKG_VERSION") }
                 }),
             )
             .await?;
+        // The server MAY downgrade to an older shared revision; accept any we
+        // still support. A missing field means a pre-negotiation server — assume
+        // the version we asked for. A present-but-non-string value is a
+        // malformed/hostile handshake — refuse rather than mask it as "missing".
+        // An unknown (but well-typed) version has undefined semantics for us and
+        // is refused below.
+        let negotiated = match result.get("protocolVersion") {
+            Some(Value::String(v)) => v.clone(),
+            None => LATEST_PROTOCOL_VERSION.to_string(),
+            Some(other) => {
+                return Err(HarnessError::Provider(format!(
+                    "MCP server returned a non-string protocolVersion: {other}"
+                )));
+            }
+        };
+        if !SUPPORTED_PROTOCOL_VERSIONS.contains(&negotiated.as_str()) {
+            return Err(HarnessError::Provider(format!(
+                "MCP server negotiated unsupported protocol version {negotiated:?}; \
+                 this harness supports {SUPPORTED_PROTOCOL_VERSIONS:?}"
+            )));
+        }
         self.transport
             .notify("notifications/initialized", json!({}))
             .await?;
-        Ok(())
+        Ok(negotiated)
     }
 
     /// List the server's tools (`tools/list`).
@@ -343,11 +378,22 @@ mod tests {
     /// Canned transport: records calls, returns scripted results per method.
     struct MockTransport {
         calls: StdMutex<Vec<(String, Value)>>,
+        /// `Some(v)` → server echoes `protocolVersion: v` at initialize (any JSON
+        /// type, so wrong-type handshakes are testable); `None` → server omits
+        /// the field (pre-negotiation server).
+        init_version: Option<Value>,
     }
     impl MockTransport {
         fn new() -> Self {
+            Self::with_init_version(Some(LATEST_PROTOCOL_VERSION))
+        }
+        fn with_init_version(v: Option<&str>) -> Self {
+            Self::with_init_value(v.map(|s| json!(s)))
+        }
+        fn with_init_value(v: Option<Value>) -> Self {
             Self {
                 calls: StdMutex::new(Vec::new()),
+                init_version: v,
             }
         }
     }
@@ -360,6 +406,11 @@ mod tests {
                 .unwrap()
                 .push((method.to_string(), params.clone()));
             match method {
+                "initialize" => Ok(match &self.init_version {
+                    Some(v) => json!({ "protocolVersion": v, "capabilities": {},
+                        "serverInfo": { "name": "mock", "version": "0" } }),
+                    None => json!({ "capabilities": {} }),
+                }),
                 "tools/list" => Ok(json!({
                     "tools": [
                         { "name": "echo", "description": "echoes input",
@@ -384,6 +435,58 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
         assert_eq!(tools[0].description, "echoes input");
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_latest_and_returns_negotiated() {
+        let mock = Arc::new(MockTransport::new());
+        let client = McpClient::new(mock.clone());
+        let v = client.initialize().await.unwrap();
+        assert_eq!(v, LATEST_PROTOCOL_VERSION);
+        // We advertised the latest version in the request params.
+        let calls = mock.calls.lock().unwrap();
+        let (_, params) = calls.iter().find(|(m, _)| m == "initialize").unwrap();
+        assert_eq!(params["protocolVersion"], LATEST_PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn initialize_accepts_server_downgrade_to_older_shared_version() {
+        let client = McpClient::new(Arc::new(MockTransport::with_init_version(Some(
+            "2024-11-05",
+        ))));
+        assert_eq!(client.initialize().await.unwrap(), "2024-11-05");
+    }
+
+    #[tokio::test]
+    async fn initialize_defaults_when_server_omits_version() {
+        let client = McpClient::new(Arc::new(MockTransport::with_init_version(None)));
+        assert_eq!(client.initialize().await.unwrap(), LATEST_PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_non_string_version() {
+        // A present-but-wrong-type protocolVersion is a malformed handshake and
+        // must fail fast, not be masked as "missing" and defaulted.
+        let client = McpClient::new(Arc::new(MockTransport::with_init_value(Some(json!(
+            20250618
+        )))));
+        let err = client.initialize().await.unwrap_err();
+        assert!(
+            err.to_string().contains("non-string protocolVersion"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_unsupported_version() {
+        let client = McpClient::new(Arc::new(MockTransport::with_init_version(Some(
+            "1999-01-01",
+        ))));
+        let err = client.initialize().await.unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported protocol version"),
+            "got: {err}"
+        );
     }
 
     #[test]
