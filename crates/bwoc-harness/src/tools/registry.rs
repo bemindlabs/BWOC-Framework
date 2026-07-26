@@ -107,10 +107,24 @@ pub async fn dispatch(
     arguments_json: &str,
     ctx: &super::ToolContext,
 ) -> String {
+    dispatch_rich(registry, tool_name, arguments_json, ctx)
+        .await
+        .content
+}
+
+/// Like [`dispatch`] but returns the full [`ToolOutput`] (text + any images),
+/// so a visual tool's screenshot survives to the `tool_result`. Errors are
+/// returned as text-only output (no images), same as [`dispatch`].
+pub async fn dispatch_rich(
+    registry: &ToolRegistry,
+    tool_name: &str,
+    arguments_json: &str,
+    ctx: &super::ToolContext,
+) -> super::ToolOutput {
     let tool = match registry.get(tool_name) {
         Some(t) => t,
         None => {
-            return format!(
+            return super::ToolOutput::text(format!(
                 "error: unknown tool `{tool_name}`. Available: {}",
                 registry
                     .tools
@@ -118,25 +132,25 @@ pub async fn dispatch(
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(", ")
-            );
+            ));
         }
     };
 
     let args: Value = match serde_json::from_str(arguments_json) {
         Ok(v) => v,
         Err(e) => {
-            return format!(
+            return super::ToolOutput::text(format!(
                 "error: failed to parse arguments for `{tool_name}`: {e}. Arguments were: {arguments_json}"
-            );
+            ));
         }
     };
 
-    match tool.execute(args, ctx).await {
+    match tool.execute_rich(args, ctx).await {
         Ok(output) => output,
-        Err(HarnessError::PathEscape(p)) => {
-            format!("error: path `{p}` is outside the allowed working directory")
-        }
-        Err(e) => format!("error: {e}"),
+        Err(HarnessError::PathEscape(p)) => super::ToolOutput::text(format!(
+            "error: path `{p}` is outside the allowed working directory"
+        )),
+        Err(e) => super::ToolOutput::text(format!("error: {e}")),
     }
 }
 
