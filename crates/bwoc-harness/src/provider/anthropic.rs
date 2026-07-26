@@ -493,6 +493,23 @@ impl ProviderClient for AnthropicClient {
 // Internal per-request builder: each arg is an independent, orthogonal wire knob
 // (max_tokens / effort / thinking / cache / stream). Bundling them into a config
 // struct would add indirection without removing any real coupling.
+/// Render multimodal images as Anthropic `image` content blocks (base64 source).
+fn anthropic_image_blocks(images: &[crate::provider::types::ImageBlock]) -> Vec<Value> {
+    images
+        .iter()
+        .map(|img| {
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data,
+                },
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_anthropic_body(
     messages: Vec<ChatMessage>,
@@ -522,10 +539,12 @@ fn build_anthropic_body(
                 last_is_tool_results = false;
             }
             Role::User => {
-                out.push(json!({
-                    "role": "user",
-                    "content": [{"type": "text", "text": msg.content.unwrap_or_default()}],
-                }));
+                let mut blocks =
+                    vec![json!({"type": "text", "text": msg.content.unwrap_or_default()})];
+                if let Some(imgs) = msg.images {
+                    blocks.extend(anthropic_image_blocks(&imgs));
+                }
+                out.push(json!({ "role": "user", "content": blocks }));
                 last_is_tool_results = false;
             }
             Role::Assistant => {
@@ -564,10 +583,25 @@ fn build_anthropic_body(
                 last_is_tool_results = false;
             }
             Role::Tool => {
+                // Text-only results keep the plain-string content (byte-identical
+                // to before); an image-bearing result switches to the block-array
+                // form (optional text part + `image` blocks).
+                let content_val = match msg.images {
+                    Some(imgs) if !imgs.is_empty() => {
+                        let mut blocks = Vec::new();
+                        let text = msg.content.unwrap_or_default();
+                        if !text.is_empty() {
+                            blocks.push(json!({"type": "text", "text": text}));
+                        }
+                        blocks.extend(anthropic_image_blocks(&imgs));
+                        json!(blocks)
+                    }
+                    _ => json!(msg.content.unwrap_or_default()),
+                };
                 let block = json!({
                     "type": "tool_result",
                     "tool_use_id": msg.tool_call_id.unwrap_or_default(),
-                    "content": msg.content.unwrap_or_default(),
+                    "content": content_val,
                 });
                 if last_is_tool_results {
                     if let Some(arr) = out.last_mut().and_then(|m| m["content"].as_array_mut()) {
@@ -1083,6 +1117,61 @@ mod tests {
         assert_eq!(results[0]["type"], "tool_result");
         assert_eq!(results[0]["tool_use_id"], "t1");
         assert_eq!(results[1]["tool_use_id"], "t2");
+    }
+
+    #[test]
+    fn user_image_becomes_anthropic_image_block() {
+        use crate::provider::types::ImageBlock;
+        let msg = ChatMessage::user("look").with_images(vec![ImageBlock {
+            media_type: "image/png".to_string(),
+            data: "QUJD".to_string(),
+        }]);
+        let body = build_anthropic_body(
+            vec![msg],
+            Vec::new(),
+            "claude-x",
+            50,
+            None,
+            false,
+            false,
+            false,
+        );
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "QUJD");
+    }
+
+    #[test]
+    fn tool_result_image_uses_block_array_text_only_stays_string() {
+        use crate::provider::types::ImageBlock;
+        let with_img =
+            ChatMessage::tool_result("t1", "computer", "shot").with_images(vec![ImageBlock {
+                media_type: "image/png".to_string(),
+                data: "Zm9v".to_string(),
+            }]);
+        let plain = ChatMessage::tool_result("t2", "read_file", "text out");
+        let body = build_anthropic_body(
+            vec![with_img, plain],
+            Vec::new(),
+            "claude-x",
+            50,
+            None,
+            false,
+            false,
+            false,
+        );
+        // Both tool results merge into one user turn.
+        let results = body["messages"][0]["content"].as_array().unwrap();
+        // Image-bearing result → array content: text part + image block.
+        let img_content = results[0]["content"].as_array().unwrap();
+        assert_eq!(img_content[0]["type"], "text");
+        assert_eq!(img_content[1]["type"], "image");
+        assert_eq!(img_content[1]["source"]["data"], "Zm9v");
+        // Text-only result → plain string content (byte-identical to before).
+        assert_eq!(results[1]["content"], "text out");
     }
 
     #[test]

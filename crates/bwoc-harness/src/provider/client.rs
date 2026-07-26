@@ -22,9 +22,10 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use reqwest::Client;
 use serde::Serialize;
+use serde::ser::{SerializeSeq, Serializer};
 use serde_json::{Value, json};
 
-use super::types::{ChatCompletion, ChatMessage, Role, StreamChunk, Tool, ToolCall};
+use super::types::{ChatCompletion, ChatMessage, ImageBlock, Role, StreamChunk, Tool, ToolCall};
 use crate::error::HarnessError;
 
 // ---------------------------------------------------------------------------
@@ -537,7 +538,7 @@ impl ProviderClient for OllamaClient {
 struct EgressMessage<'a> {
     role: &'a Role,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<&'a String>,
+    content: Option<EgressContent<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<&'a Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -546,11 +547,53 @@ struct EgressMessage<'a> {
     name: Option<&'a String>,
 }
 
+/// OpenAI-compatible message content: a plain string (the text-only common
+/// case), or a parts array when images ride along (vision input). Serializes
+/// transparently to whichever shape the wire expects, so existing text-only
+/// messages are byte-for-byte unchanged.
+enum EgressContent<'a> {
+    Text(&'a str),
+    Parts {
+        text: Option<&'a str>,
+        images: &'a [ImageBlock],
+    },
+}
+
+impl Serialize for EgressContent<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            EgressContent::Text(t) => s.serialize_str(t),
+            EgressContent::Parts { text, images } => {
+                let mut seq = s.serialize_seq(None)?;
+                if let Some(t) = text {
+                    seq.serialize_element(&json!({ "type": "text", "text": t }))?;
+                }
+                for img in *images {
+                    seq.serialize_element(&json!({
+                        "type": "image_url",
+                        "image_url": { "url": format!("data:{};base64,{}", img.media_type, img.data) }
+                    }))?;
+                }
+                seq.end()
+            }
+        }
+    }
+}
+
 impl<'a> From<&'a ChatMessage> for EgressMessage<'a> {
     fn from(m: &'a ChatMessage) -> Self {
+        // Images present → parts array (text part first, then one image_url part
+        // per image); otherwise the plain string, unchanged from before.
+        let content = match m.images.as_deref() {
+            Some(imgs) if !imgs.is_empty() => Some(EgressContent::Parts {
+                text: m.content.as_deref(),
+                images: imgs,
+            }),
+            _ => m.content.as_deref().map(EgressContent::Text),
+        };
         Self {
             role: &m.role,
-            content: m.content.as_ref(),
+            content,
             tool_calls: m.tool_calls.as_ref(),
             tool_call_id: m.tool_call_id.as_ref(),
             name: m.name.as_ref(),
@@ -727,6 +770,45 @@ mod tests {
         // The OpenAI-compat fields are still present.
         assert!(wire.contains("\"role\":\"system\""));
         assert!(wire.contains("\"tool_call_id\":\"call-1\""));
+    }
+
+    #[test]
+    fn egress_image_becomes_image_url_parts_text_only_stays_string() {
+        use super::super::types::ImageBlock;
+        let img_msg = ChatMessage::user("what is this").with_images(vec![ImageBlock {
+            media_type: "image/png".to_string(),
+            data: "QUJD".to_string(),
+        }]);
+        let body = build_request_body(
+            vec![ChatMessage::system("sys"), img_msg],
+            Vec::new(),
+            "gpt-5.5",
+            false,
+            None,
+            None,
+        );
+        let msgs = body["messages"].as_array().unwrap();
+        // Text-only system message keeps the plain-string content.
+        assert_eq!(msgs[0]["content"], "sys");
+        // Image-bearing user message → parts array: text part + image_url part.
+        let parts = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "what is this");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn chat_message_images_round_trip_on_disk() {
+        use super::super::types::ImageBlock;
+        let m = ChatMessage::tool_result("t", "computer", "shot").with_images(vec![ImageBlock {
+            media_type: "image/jpeg".to_string(),
+            data: "eHk=".to_string(),
+        }]);
+        let json = serde_json::to_string(&m).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.images.as_ref().unwrap()[0].media_type, "image/jpeg");
+        assert_eq!(back.images.as_ref().unwrap()[0].data, "eHk=");
     }
 
     #[test]
