@@ -24,7 +24,7 @@ Unlike the MCP HTTP transport (OS-agnostic), this widens the marshalling protoco
 ## Verification
 
 - **macOS:** fmt + clippy clean with `-D warnings` on `--workspace`, `--features test-redteam`, and `--features browser`; full workspace tests pass, 0 failed. `tests/process_isolation.rs` 12/12. New unit tests: `execute_rich` screenshot/click, base64 vectors, `WireResponse` image round-trip + imageless backward-compat.
-- **bemind (Ubuntu 24.04, kernel 6.17):** _(filled in from the live run — see PR body)_ process-isolation suite + `--features browser` build/tests + redteam clippy under the real Landlock/seccomp jail.
+- **bemind (Ubuntu 24.04, kernel 6.17):** fmt + clippy clean on `--workspace`, `--features test-redteam`, and `--features browser` (real `chromiumoxide`). `tests/process_isolation.rs` **12/12** under the real Landlock/seccomp jail (single-threaded) — the widened IPC frame round-trips through the actual re-exec boundary. `WireResponse` image round-trip + imageless backward-compat and the `--features browser` `execute_rich`/base64 tests all pass on Linux.
 
 ## Status
 
