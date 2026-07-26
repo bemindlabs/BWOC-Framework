@@ -71,10 +71,10 @@ pub struct Manifest {
     pub prompt_cache: Option<bool>,
     /// Opt **in** to adaptive extended thinking. Off by default (`None ≡ false`).
     /// When `true`, the native Claude path requests `thinking:{type:"adaptive"}`
-    /// on non-streaming completions (Opus 4.6+/Sonnet 4.6+/Fable 5) and preserves
-    /// + replays the returned thinking blocks across turns (required for the tool
-    /// path). Streaming turns do not enable it yet. Non-thinking backends ignore
-    /// this.
+    /// on non-streaming completions (Opus 4.6+/Sonnet 4.6+/Fable 5), then
+    /// preserves and replays the returned thinking blocks across turns (required
+    /// for the tool path). Streaming turns do not enable it yet. Non-thinking
+    /// backends ignore this.
     #[serde(rename = "thinking", default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<bool>,
     #[serde(rename = "memoryPath")]
