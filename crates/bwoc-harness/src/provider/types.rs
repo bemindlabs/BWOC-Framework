@@ -47,10 +47,27 @@ pub struct ChatMessage {
     /// builder. `None` for every non-Anthropic / non-thinking turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_blocks: Option<Vec<serde_json::Value>>,
+    /// Multimodal image inputs riding with this message (e.g. a screenshot in a
+    /// tool result, or an image in a user turn). Each is base64-encoded with its
+    /// media type. Retained on disk; emitted provider-neutrally — Anthropic
+    /// `image` blocks on the native path, OpenAI `image_url` data-URI parts on
+    /// the OpenAI-compat path. `None` for the text-only common case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<ImageBlock>>,
     /// Immutable provenance stamp. Retained on disk (legacy lines without it
     /// default to `Unknown` → Untrusted); stripped before egress.
     #[serde(default)]
     principal: Principal,
+}
+
+/// A base64-encoded image carried on a [`ChatMessage`] for multimodal input.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageBlock {
+    /// IANA media type, e.g. `image/png`.
+    pub media_type: String,
+    /// Base64-encoded image bytes (no `data:` prefix; the provider builders add
+    /// the wire wrapper each backend expects).
+    pub data: String,
 }
 
 impl ChatMessage {
@@ -62,6 +79,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             thinking_blocks: None,
+            images: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -86,6 +104,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             thinking_blocks: None,
+            images: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -105,6 +124,7 @@ impl ChatMessage {
         Self {
             role: Role::User,
             thinking_blocks: None,
+            images: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -119,6 +139,7 @@ impl ChatMessage {
         Self {
             role: Role::User,
             thinking_blocks: None,
+            images: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -140,6 +161,7 @@ impl ChatMessage {
         Self {
             role: Role::User,
             thinking_blocks: None,
+            images: None,
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
@@ -155,6 +177,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             thinking_blocks: None,
+            images: None,
             content,
             tool_calls,
             tool_call_id: None,
@@ -175,6 +198,7 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             thinking_blocks: None,
+            images: None,
             content: Some(result.into()),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
@@ -189,6 +213,13 @@ impl ChatMessage {
     /// same-model next turn can replay them (empty → left as `None`). Chainable.
     pub fn with_thinking_blocks(mut self, blocks: Vec<serde_json::Value>) -> Self {
         self.thinking_blocks = (!blocks.is_empty()).then_some(blocks);
+        self
+    }
+
+    /// Attach multimodal image inputs to this message (empty → left as `None`).
+    /// Chainable. The provider request builders render them per-backend.
+    pub fn with_images(mut self, images: Vec<ImageBlock>) -> Self {
+        self.images = (!images.is_empty()).then_some(images);
         self
     }
 

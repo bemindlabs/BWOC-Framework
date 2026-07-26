@@ -18,8 +18,12 @@
 //! Anthropic provider emits the native [`anthropic_tool_spec`] + beta header, and
 //! the policy pipeline gates it — `computer` is `Capability::Gated` (refused on
 //! untrusted turns), ask-by-default, and autoprocess-refused when there is no
-//! TTY. Default builds pull zero browser deps and never register it. Screenshot
-//! image-block transport and richer key-chord parsing remain later slices.
+//! TTY. Default builds pull zero browser deps and never register it. The
+//! provider layer now serializes image blocks on both paths (see
+//! [`crate::provider::types::ChatMessage::with_images`]); wiring a captured
+//! screenshot *through the
+//! re-exec turn-executor IPC boundary* into that field, plus richer key-chord
+//! parsing, remain later slices.
 //!
 //! [`default_registry`]: super::registry::default_registry
 
@@ -91,7 +95,9 @@ pub enum ComputerAction {
 pub struct Screenshot {
     /// IANA media type, e.g. `image/png`.
     pub media_type: String,
-    /// Raw image bytes (base64 encoding for the wire is a later slice).
+    /// Raw image bytes. Base64-encoding these into a
+    /// [`crate::provider::types::ImageBlock`] is done where the tool result is
+    /// assembled; that end-to-end wiring is a later slice (see module docs).
     pub bytes: Vec<u8>,
 }
 
@@ -196,8 +202,11 @@ pub fn anthropic_tool_spec(width: u32, height: u32, display_number: Option<u32>)
 // ---------------------------------------------------------------------------
 
 /// Renders an [`Observation`] into the string a tool result carries today. The
-/// real image-block transport (base64 `image` content) is a later slice — for
-/// now a screenshot is reported by shape so the loop is observable.
+/// provider layer can now transport a screenshot as an `image` block (see
+/// [`crate::provider::types::ChatMessage::with_images`]); routing this
+/// observation's bytes into that field across the re-exec IPC boundary is the
+/// remaining slice — for now a screenshot is reported by shape so the loop is
+/// observable.
 fn render_observation(obs: &Observation) -> String {
     match obs {
         Observation::Image(s) => {

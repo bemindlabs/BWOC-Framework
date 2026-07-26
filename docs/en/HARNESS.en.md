@@ -306,10 +306,15 @@ streaming completions and preserves + replays the returned thinking blocks acros
 turns — required for the tool path, since the Messages API rejects a `tool_result`
 whose preceding thinking block was dropped. On the streaming path the thinking
 blocks (with their signature) are reassembled from the SSE deltas and carried on
-the accumulated assistant message, so replay works identically. The current BWOC
-harness still speaks the OpenAI-compatible
-`/v1/chat/completions` surface so it can also run Ollama and other compatible
-providers. A native Responses API adapter is the right next step for full
+the accumulated assistant message, so replay works identically. **Multimodal
+image input** is provider-neutral: a `ChatMessage` may carry base64 images
+(`with_images`), rendered as Anthropic `image` blocks on the native path and as
+OpenAI `image_url` data-URI parts on the OpenAI-compat path — text-only messages
+are byte-for-byte unchanged. (Wiring a captured browser/computer screenshot
+*through the re-exec turn-executor boundary* into that field is a separate,
+bemind-verified follow-up.) The current BWOC harness still speaks the
+OpenAI-compatible `/v1/chat/completions` surface so it can also run Ollama and
+other compatible providers. A native Responses API adapter is the right next step for full
 GPT-5.5 reasoning controls; until then, keep `AGENTS.md` outcome-first, avoid
 process-heavy prompt scaffolding, and make completion criteria explicit.
 
