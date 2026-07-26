@@ -276,7 +276,8 @@ runtime selection pool:
   "primaryModel": "auto",
   "autoModels": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
   "reasoningEffort": "medium",
-  "maxTokens": 32000
+  "maxTokens": 32000,
+  "promptCache": true
 }
 ```
 
@@ -293,7 +294,12 @@ requests **and** as `output_config.effort` on the native Claude path, so effort
 now reaches every HTTP backend that supports it. `maxTokens` is likewise
 optional: Claude's Messages API requires `max_tokens`, so this overrides the
 harness default there; OpenAI-compatible backends send it only when set and
-otherwise fall back to the provider default. The current BWOC harness still speaks the OpenAI-compatible
+otherwise fall back to the provider default. `promptCache` is **on by default**
+(`false` opts out): the native Claude path marks the stable system-prompt prefix
+with `cache_control`, so an agentic loop that resends it pays cache-read (~0.1×)
+instead of full input — the tools block, rendered before system, is covered by
+the same breakpoint. Below the provider's minimum cacheable size the marker is a
+silent no-op. The current BWOC harness still speaks the OpenAI-compatible
 `/v1/chat/completions` surface so it can also run Ollama and other compatible
 providers. A native Responses API adapter is the right next step for full
 GPT-5.5 reasoning controls; until then, keep `AGENTS.md` outcome-first, avoid

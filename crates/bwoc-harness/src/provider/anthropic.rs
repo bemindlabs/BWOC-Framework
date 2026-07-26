@@ -156,6 +156,11 @@ pub struct AnthropicClient {
     /// is Anthropic's (`low`..`max`); the operator sets a valid literal via the
     /// manifest `reasoningEffort`, mirroring the OpenAI-compat path.
     reasoning_effort: Option<String>,
+    /// Whether to mark the system prompt with `cache_control` (prompt caching).
+    /// On by default; the manifest `promptCache: false` opts out. When on, the
+    /// stable system prefix (which also covers the preceding `tools` block) is
+    /// cached, so an agentic loop resending it pays cache-read, not full input.
+    prompt_cache: bool,
     client: Client,
 }
 
@@ -179,6 +184,7 @@ impl AnthropicClient {
             api_key: resolve_api_key(),
             max_tokens: DEFAULT_MAX_TOKENS,
             reasoning_effort: None,
+            prompt_cache: true,
             client,
         }
     }
@@ -207,6 +213,14 @@ impl AnthropicClient {
         if let Some(n) = max_tokens.filter(|&n| n > 0) {
             self.max_tokens = n;
         }
+        self
+    }
+
+    /// Enable/disable prompt caching (system-prefix `cache_control`). Defaults
+    /// to on; fed from the manifest `promptCache` (`false` opts out). Returns
+    /// `self` for chaining.
+    pub fn with_prompt_cache(mut self, enabled: bool) -> Self {
+        self.prompt_cache = enabled;
         self
     }
 
@@ -271,6 +285,7 @@ impl ProviderClient for AnthropicClient {
             model,
             self.max_tokens,
             self.reasoning_effort.as_deref(),
+            self.prompt_cache,
             false,
         );
 
@@ -326,6 +341,7 @@ impl ProviderClient for AnthropicClient {
             model,
             self.max_tokens,
             self.reasoning_effort.as_deref(),
+            self.prompt_cache,
             true,
         );
         body["stream"] = json!(true);
@@ -457,6 +473,7 @@ fn build_anthropic_body(
     model: &str,
     max_tokens: u32,
     reasoning_effort: Option<&str>,
+    cache: bool,
     stream: bool,
 ) -> Value {
     let mut system = String::new();
@@ -534,7 +551,21 @@ fn build_anthropic_body(
         "stream": stream,
     });
     if !system.is_empty() {
-        body["system"] = json!(system);
+        // Prompt caching: send `system` as a single text block carrying
+        // `cache_control` so Claude caches the stable prefix (tools render
+        // before system, so this breakpoint covers the tools block too). SBPL
+        // of the API: last-block-of-prefix cache. Below the provider's minimum
+        // cacheable size the marker is a silent no-op. When caching is off we
+        // keep the plain-string form (byte-identical to the prior behaviour).
+        if cache {
+            body["system"] = json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": { "type": "ephemeral" },
+            }]);
+        } else {
+            body["system"] = json!(system);
+        }
     }
     if !tools.is_empty() {
         let mapped: Vec<Value> = tools
@@ -865,7 +896,7 @@ mod tests {
     #[test]
     fn system_is_lifted_and_roles_mapped() {
         let msgs = vec![ChatMessage::system("be terse"), ChatMessage::user("hi")];
-        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false);
+        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false);
         assert_eq!(body["system"], "be terse");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
@@ -903,7 +934,7 @@ mod tests {
             ChatMessage::tool_result("t1", "tool_a", "A"),
             ChatMessage::tool_result("t2", "tool_b", "B"),
         ];
-        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false);
+        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false);
         let arr = body["messages"].as_array().unwrap();
         // user, assistant(tool_use x2), user(tool_result x2 merged) = 3 turns.
         assert_eq!(arr.len(), 3);
@@ -927,6 +958,7 @@ mod tests {
             50,
             None,
             false,
+            false,
         );
         assert_eq!(body["tools"][0]["name"], "grep");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
@@ -944,6 +976,7 @@ mod tests {
             50,
             None,
             false,
+            false,
         );
         assert!(plain.get("output_config").is_none());
         assert_eq!(plain["max_tokens"], 50);
@@ -954,6 +987,7 @@ mod tests {
             "claude-x",
             64000,
             Some("high"),
+            false,
             false,
         );
         assert_eq!(with_effort["output_config"]["effort"], "high");
@@ -981,6 +1015,33 @@ mod tests {
         // `max_tokens: 0` (the Messages API rejects it).
         let z = AnthropicClient::new("http://x").with_max_tokens(Some(0));
         assert_eq!(z.max_tokens, DEFAULT_MAX_TOKENS);
+
+        // Prompt caching defaults on; opt-out flips it.
+        assert!(AnthropicClient::new("http://x").prompt_cache);
+        assert!(
+            !AnthropicClient::new("http://x")
+                .with_prompt_cache(false)
+                .prompt_cache
+        );
+    }
+
+    #[test]
+    fn system_cache_control_toggles() {
+        let msgs = vec![
+            ChatMessage::system("stable prefix"),
+            ChatMessage::user("hi"),
+        ];
+
+        // Caching on → system is a text-block array carrying cache_control.
+        let cached =
+            build_anthropic_body(msgs.clone(), Vec::new(), "claude-x", 100, None, true, false);
+        assert_eq!(cached["system"][0]["type"], "text");
+        assert_eq!(cached["system"][0]["text"], "stable prefix");
+        assert_eq!(cached["system"][0]["cache_control"]["type"], "ephemeral");
+
+        // Caching off → plain string (byte-identical to the pre-caching form).
+        let plain = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false, false);
+        assert_eq!(plain["system"], "stable prefix");
     }
 
     #[test]
@@ -1015,6 +1076,7 @@ mod tests {
             "claude-x",
             50,
             None,
+            false,
             false,
         );
         let arr = body["tools"].as_array().unwrap();
