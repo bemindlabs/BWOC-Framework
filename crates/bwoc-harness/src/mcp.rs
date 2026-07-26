@@ -1,16 +1,20 @@
 //! MCP client (HV2-5) — consume external MCP tool servers.
 //!
 //! The harness speaks the Model Context Protocol as a **client only** (the
-//! server role is deferred — a network surface with no current need).  An MCP
-//! server is launched as a subprocess; the harness speaks JSON-RPC 2.0 over its
-//! stdio (line-delimited messages), discovers the server's tools, and registers
-//! each as an ordinary [`ToolImpl`](crate::tools::ToolImpl).  Because they are
-//! ordinary tools, MCP calls flow through `dispatch` → `execute_tool_calls` →
-//! guardrails → permission → sandbox like every other tool — no bypass.
+//! server role is deferred — a network surface with no current need).  Two
+//! transports implement the same [`RpcTransport`] seam: a **stdio** transport
+//! that launches an MCP server as a subprocess and speaks JSON-RPC 2.0 over its
+//! stdio (line-delimited), and a **Streamable HTTP** transport that POSTs
+//! JSON-RPC to a remote endpoint (response as JSON or SSE). Either way the
+//! harness discovers the server's tools and registers each as an ordinary
+//! [`ToolImpl`](crate::tools::ToolImpl), so MCP calls flow through `dispatch` →
+//! `execute_tool_calls` → guardrails → permission → sandbox like every other
+//! tool — no bypass.
 //!
-//! Hand-rolled on `serde_json` + `tokio::process` (both already deps) rather
-//! than an SDK, matching the hand-rolled OpenAI provider and keeping the
-//! dep-quarantine clean.  stdio transport only; HTTP/SSE is deferred.
+//! Hand-rolled on `serde_json` + `tokio::process` + `reqwest` (all already deps)
+//! rather than an SDK, matching the hand-rolled OpenAI provider and keeping the
+//! dep-quarantine clean. The HTTP transport enforces https (except loopback) and
+//! disables redirects as SSRF hardening.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -175,6 +179,235 @@ impl RpcTransport for StdioTransport {
 }
 
 // ---------------------------------------------------------------------------
+// Streamable HTTP transport
+// ---------------------------------------------------------------------------
+
+/// Reject a non-HTTPS MCP endpoint unless it targets loopback (SSRF / cleartext
+/// guard). Operator-configured URLs still must not silently downgrade to
+/// cleartext on the open network. Pure + unit-tested.
+fn validate_http_url(url: &str) -> Result<(), HarnessError> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+    if let Some(rest) = lower.strip_prefix("http://") {
+        let host = http_host(rest);
+        // Accept loopback only, including the bracketed IPv6 literal.
+        if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
+            return Ok(());
+        }
+        return Err(HarnessError::Other(format!(
+            "MCP HTTP endpoint must be https (got cleartext `{url}`); only http://localhost is allowed"
+        )));
+    }
+    Err(HarnessError::Other(format!(
+        "MCP endpoint must be an http(s) URL: `{url}`"
+    )))
+}
+
+/// Extract the host from a URL authority (scheme already stripped), preserving a
+/// bracketed IPv6 literal (`[::1]:8080/x` → `[::1]`) instead of splitting it on
+/// the inner `:`. For a normal authority the host ends at the first `:` or `/`.
+fn http_host(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        if let Some(end) = authority.find(']') {
+            return &authority[..=end]; // include the brackets
+        }
+    }
+    authority.split(['/', ':']).next().unwrap_or("")
+}
+
+/// Extract the JSON-RPC `result` for `expected_id` from an MCP HTTP response
+/// body, which per the Streamable HTTP transport may be **either** a single
+/// `application/json` object (or batch array) **or** a `text/event-stream` whose
+/// `data:` lines carry the JSON-RPC messages. Pure + unit-tested — the socket
+/// stays out of the framing logic.
+fn parse_http_rpc_response(
+    content_type: &str,
+    body: &str,
+    expected_id: u64,
+    method: &str,
+) -> Result<Value, HarnessError> {
+    let candidates: Vec<Value> = if content_type.contains("text/event-stream") {
+        body.lines()
+            .filter_map(|l| l.trim().strip_prefix("data:"))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+            .collect()
+    } else {
+        match serde_json::from_str::<Value>(body.trim()) {
+            Ok(Value::Array(a)) => a,
+            Ok(v) => vec![v],
+            Err(e) => {
+                return Err(HarnessError::Other(format!(
+                    "MCP `{method}` invalid JSON response: {e}"
+                )));
+            }
+        }
+    };
+    for msg in candidates {
+        if msg.get("id").and_then(|v| v.as_u64()) != Some(expected_id) {
+            continue; // server->client request / other id — not our response
+        }
+        if let Some(err) = msg.get("error") {
+            return Err(HarnessError::Other(format!("MCP `{method}` error: {err}")));
+        }
+        return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
+    }
+    Err(HarnessError::Other(format!(
+        "MCP `{method}`: no JSON-RPC response with id {expected_id}"
+    )))
+}
+
+/// JSON-RPC 2.0 over the MCP **Streamable HTTP** transport: one POST per request
+/// to a single endpoint, response as JSON or an SSE stream. Redirects are
+/// disabled (SSRF hardening) and the server-assigned `Mcp-Session-Id` is echoed
+/// on subsequent requests.
+pub struct HttpTransport {
+    client: reqwest::Client,
+    url: String,
+    /// Optional bearer token (`Authorization: Bearer …`).
+    auth: Option<String>,
+    /// Server-assigned session id (from the `initialize` response header),
+    /// echoed on every later request.
+    session_id: Mutex<Option<String>>,
+    next_id: AtomicU64,
+}
+
+impl HttpTransport {
+    /// Build a transport for `url`. Enforces https (except loopback) and
+    /// disables redirects so a server can't bounce the client at an internal
+    /// address. `auth` is an optional bearer token.
+    pub fn new(url: impl Into<String>, auth: Option<String>) -> Result<Self, HarnessError> {
+        let url = url.into();
+        validate_http_url(&url)?;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| HarnessError::Other(format!("MCP HTTP client build failed: {e}")))?;
+        Ok(Self {
+            client,
+            url,
+            auth,
+            session_id: Mutex::new(None),
+            next_id: AtomicU64::new(1),
+        })
+    }
+
+    async fn post(&self, body: &Value, method: &str) -> Result<reqwest::Response, HarnessError> {
+        let mut req = self
+            .client
+            .post(&self.url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .json(body);
+        if let Some(tok) = &self.auth {
+            req = req.header("authorization", format!("Bearer {tok}"));
+        }
+        if let Some(sid) = self.session_id.lock().await.as_ref() {
+            req = req.header("mcp-session-id", sid.as_str());
+        }
+        req.send()
+            .await
+            .map_err(|e| HarnessError::Other(format!("MCP HTTP `{method}` request failed: {e}")))
+    }
+}
+
+#[async_trait]
+impl RpcTransport for HttpTransport {
+    async fn request(&self, method: &str, params: Value) -> Result<Value, HarnessError> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        let call = async {
+            let resp = self.post(&body, method).await?;
+            let status = resp.status();
+            // Capture a server-assigned session id (sent on the initialize
+            // response) so subsequent requests are bound to the same session.
+            if let Some(sid) = resp
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+            {
+                *self.session_id.lock().await = Some(sid.to_string());
+            }
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let text = resp.text().await.map_err(|e| {
+                HarnessError::Other(format!("MCP HTTP `{method}` body read failed: {e}"))
+            })?;
+            if !status.is_success() {
+                let snippet: String = text.chars().take(200).collect();
+                return Err(HarnessError::Other(format!(
+                    "MCP HTTP `{method}` status {status}: {snippet}"
+                )));
+            }
+            parse_http_rpc_response(&content_type, &text, id, method)
+        };
+        // Same bound as stdio: a server that never answers (or holds an SSE
+        // stream open) can't hang the agent loop past REQUEST_TIMEOUT.
+        match tokio::time::timeout(REQUEST_TIMEOUT, call).await {
+            Ok(res) => res,
+            Err(_) => Err(HarnessError::Other(format!(
+                "MCP `{method}` timed out after {}s",
+                REQUEST_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+
+    async fn notify(&self, method: &str, params: Value) -> Result<(), HarnessError> {
+        let body = json!({ "jsonrpc": "2.0", "method": method, "params": params });
+        // Fire-and-forget: a notification has no response channel. A transport
+        // failure is still surfaced; a non-2xx body is ignored. Bounded by the
+        // same REQUEST_TIMEOUT as `request` so a wedged server can't hang the
+        // loop (the initialize handshake sends `notifications/initialized`).
+        let send = async {
+            self.post(&body, method).await?;
+            Ok::<(), HarnessError>(())
+        };
+        match tokio::time::timeout(REQUEST_TIMEOUT, send).await {
+            Ok(res) => res,
+            Err(_) => Err(HarnessError::Other(format!(
+                "MCP `{method}` notify timed out after {}s",
+                REQUEST_TIMEOUT.as_secs()
+            ))),
+        }
+    }
+}
+
+/// Resolve an MCP server's bearer token from the per-user
+/// `~/.bwoc/secrets.toml` (`[mcp] <label>_token`) — the same location and
+/// `0600` guard as the provider API keys. `None` when unset (an unauthenticated
+/// server still works).
+pub fn token_from_secrets(label: &str) -> Option<String> {
+    let path = crate::provider::anthropic::home_dir()?
+        .join(".bwoc")
+        .join("secrets.toml");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                eprintln!(
+                    "bwoc-harness: ignoring {} — it is group/world-accessible; `chmod 600` it.",
+                    path.display()
+                );
+                return None;
+            }
+        }
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let value: toml::Value = toml::from_str(&content).ok()?;
+    let key = format!("{label}_token");
+    let tok = value.get("mcp")?.get(&key)?.as_str()?.trim().to_string();
+    (!tok.is_empty()).then_some(tok)
+}
+
+// ---------------------------------------------------------------------------
 // MCP client
 // ---------------------------------------------------------------------------
 
@@ -209,6 +442,14 @@ impl McpClient {
     /// Spawn an MCP server subprocess and complete the initialize handshake.
     pub async fn connect_stdio(program: &str, args: &[String]) -> Result<Self, HarnessError> {
         let client = Self::new(Arc::new(StdioTransport::spawn(program, args)?));
+        client.initialize().await?;
+        Ok(client)
+    }
+
+    /// Connect to a remote MCP server over the Streamable HTTP transport and
+    /// complete the initialize handshake. `auth` is an optional bearer token.
+    pub async fn connect_http(url: &str, auth: Option<String>) -> Result<Self, HarnessError> {
+        let client = Self::new(Arc::new(HttpTransport::new(url, auth)?));
         client.initialize().await?;
         Ok(client)
     }
@@ -461,6 +702,58 @@ mod tests {
     async fn initialize_defaults_when_server_omits_version() {
         let client = McpClient::new(Arc::new(MockTransport::with_init_version(None)));
         assert_eq!(client.initialize().await.unwrap(), LATEST_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn http_url_requires_https_except_loopback() {
+        assert!(validate_http_url("https://example.com/mcp").is_ok());
+        assert!(validate_http_url("http://localhost:8080/mcp").is_ok());
+        assert!(validate_http_url("http://127.0.0.1/mcp").is_ok());
+        // IPv6 loopback literal (brackets must not be split on the inner `:`).
+        assert!(validate_http_url("http://[::1]:9000/mcp").is_ok());
+        assert_eq!(http_host("[::1]:9000/mcp"), "[::1]");
+        // Cleartext to a non-loopback host is refused (SSRF / downgrade guard).
+        assert!(validate_http_url("http://example.com/mcp").is_err());
+        // A non-loopback IPv6 literal over cleartext is still refused.
+        assert!(validate_http_url("http://[2001:db8::1]/mcp").is_err());
+        // Non-http(s) schemes are refused.
+        assert!(validate_http_url("ftp://example.com").is_err());
+        assert!(validate_http_url("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn http_response_parses_plain_json() {
+        let body = r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#;
+        let r = parse_http_rpc_response("application/json", body, 7, "tools/call").unwrap();
+        assert_eq!(r["ok"], true);
+    }
+
+    #[test]
+    fn http_response_parses_sse_and_skips_other_ids() {
+        // An SSE body may carry unrelated messages (a server->client ping with a
+        // different id) before our response; we pick the one matching our id.
+        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"other\":1}}\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"mine\":true}}\n\n";
+        let r = parse_http_rpc_response("text/event-stream", body, 2, "tools/list").unwrap();
+        assert_eq!(r["mine"], true);
+    }
+
+    #[test]
+    fn http_response_surfaces_rpc_error_and_missing_id() {
+        let err_body = r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"nope"}}"#;
+        let e = parse_http_rpc_response("application/json", err_body, 3, "tools/call").unwrap_err();
+        assert!(e.to_string().contains("nope"), "got: {e}");
+        // A body with no matching id is an error, not a silent null.
+        let miss = parse_http_rpc_response("application/json", err_body, 99, "x").unwrap_err();
+        assert!(
+            miss.to_string().contains("no JSON-RPC response"),
+            "got: {miss}"
+        );
+    }
+
+    #[test]
+    fn http_transport_rejects_cleartext_at_construction() {
+        assert!(HttpTransport::new("http://evil.example/mcp", None).is_err());
+        assert!(HttpTransport::new("https://ok.example/mcp", Some("t".into())).is_ok());
     }
 
     #[tokio::test]
