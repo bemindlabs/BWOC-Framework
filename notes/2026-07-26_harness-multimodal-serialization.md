@@ -1,6 +1,6 @@
 # 2026-07-26 — Harness multimodal input: provider-neutral image serialization
 
-First slice of the "#8 multimodal input" gap: a `ChatMessage` can now carry base64 images, serialized correctly on **both** provider paths. The end-to-end screenshot wiring is deliberately deferred (see below).
+First slice of the **multimodal-input** gap (LLM-backend audit item 8 — a local audit-list number, *not* GitHub Issue #8, which is unrelated `bwoc update`): a `ChatMessage` can now carry base64 images, serialized correctly on **both** provider paths. The end-to-end screenshot wiring is deliberately deferred (see below).
 
 ## Why split here
 
@@ -27,7 +27,7 @@ macOS: fmt + clippy (`--workspace` and `-p bwoc-harness --features test-redteam`
 ## Status / deferred
 
 - **Deferred (bemind-verified follow-up):** wire `Observation::Image` → base64 `ImageBlock` through the re-exec turn-executor IPC output protocol into the `tool_result` message. Security-critical (widens the isolation boundary's marshalling); needs Linux verification.
-- Also still open: MCP Streamable HTTP transport. #5 structured output stays parked. With this slice, the "go next all" LLM-backend roadmap's serialization surfaces (effort, max_tokens, usage, caching, thinking incl. streaming, MCP negotiation, multimodal) are all landed.
+- Also still open: MCP Streamable HTTP transport. Structured output (audit item 5) stays parked. With this slice, the "go next all" LLM-backend roadmap's serialization surfaces (effort, max_tokens, usage, caching, thinking incl. streaming, MCP negotiation, multimodal) are all landed.
 
 ## Related
 

@@ -565,7 +565,9 @@ impl Serialize for EgressContent<'_> {
             EgressContent::Text(t) => s.serialize_str(t),
             EgressContent::Parts { text, images } => {
                 let mut seq = s.serialize_seq(None)?;
-                if let Some(t) = text {
+                // `text` is `&Option<&str>` here (serialize takes `&self`);
+                // deref-copy the Copy `Option<&str>` before matching for clarity.
+                if let Some(t) = *text {
                     seq.serialize_element(&json!({ "type": "text", "text": t }))?;
                 }
                 for img in *images {
