@@ -275,7 +275,8 @@ ln -s AGENTS.md OLLAMA.md
   "primaryModel": "auto",
   "autoModels": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
   "reasoningEffort": "medium",
-  "maxTokens": 32000
+  "maxTokens": 32000,
+  "promptCache": true
 }
 ```
 
@@ -292,7 +293,11 @@ harness จะส่งเป็น `reasoning_effort` ใน request แบบ 
 backend ที่รองรับ. `maxTokens` ก็ optional เช่นกัน: Messages API ของ Claude
 บังคับต้องมี `max_tokens` ค่านี้จึง override ค่า default ของ harness ที่นั่น; ส่วน
 backend แบบ OpenAI-compatible จะส่งเมื่อ set เท่านั้น ไม่งั้นใช้ default ของ provider.
-ปัจจุบัน BWOC harness ยังพูดผ่าน surface OpenAI-compatible `/v1/chat/completions`
+`promptCache` **เปิดโดยดีฟอลต์** (`false` = ปิด): path ของ Claude native จะ mark
+prefix ของ system prompt ที่เสถียรด้วย `cache_control` — agentic loop ที่ resend
+ทุก turn จึงจ่าย cache-read (~0.1×) แทน full input (block `tools` ที่ render ก่อน
+system ถูกครอบด้วย breakpoint เดียวกัน). ต่ำกว่า min cacheable size ของ provider =
+no-op เงียบ ๆ. ปัจจุบัน BWOC harness ยังพูดผ่าน surface OpenAI-compatible `/v1/chat/completions`
 เพื่อให้รันได้ทั้ง Ollama และ provider compatible อื่นๆ adapter แบบ native
 Responses API คือขั้นถัดไปสำหรับ control reasoning ของ GPT-5.5 แบบเต็ม ระหว่างนี้
 ให้ `AGENTS.md` เน้น outcome, ลด prompt scaffolding แบบบอกขั้นตอนละเอียดเกินจำเป็น,

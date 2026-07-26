@@ -57,6 +57,18 @@ pub struct Manifest {
     /// otherwise leave it to the provider default. `None` = backend default.
     #[serde(rename = "maxTokens", default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Opt **out** of provider prompt caching. Caching is **on by default**
+    /// (`None` ≡ `true`): the native Claude path marks the stable system-prompt
+    /// prefix with `cache_control` so an agentic loop that resends it every turn
+    /// pays cache-read (~0.1×) instead of full input. Set `false` for a volatile
+    /// system prompt where the cache-write premium (~1.25×) would not pay back.
+    /// Below the provider's minimum cacheable size the marker is a silent no-op.
+    #[serde(
+        rename = "promptCache",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub prompt_cache: Option<bool>,
     #[serde(rename = "memoryPath")]
     pub memory_path: String,
     #[serde(rename = "sessionsPath", skip_serializing_if = "Option::is_none")]
@@ -341,6 +353,7 @@ impl Manifest {
             auto_models: None,
             reasoning_effort: None,
             max_tokens: None,
+            prompt_cache: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -380,6 +393,7 @@ mod tests {
             auto_models: None,
             reasoning_effort: None,
             max_tokens: None,
+            prompt_cache: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -472,6 +486,23 @@ mod tests {
         assert!(json2.contains("\"maxTokens\":64000"));
         let back: Manifest = serde_json::from_str(&json2).unwrap();
         assert_eq!(back.max_tokens, Some(64000));
+    }
+
+    /// `promptCache` is optional and opt-**out**: absent → `None` (caching on by
+    /// default at the call site) and omitted on serialize; `false` round-trips.
+    #[test]
+    fn prompt_cache_serde() {
+        let m = sample();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"promptCache\""));
+        assert!(m.prompt_cache.is_none());
+
+        let mut m2 = sample();
+        m2.prompt_cache = Some(false);
+        let json2 = serde_json::to_string(&m2).unwrap();
+        assert!(json2.contains("\"promptCache\":false"));
+        let back: Manifest = serde_json::from_str(&json2).unwrap();
+        assert_eq!(back.prompt_cache, Some(false));
     }
 
     // ---- TrustBlock tests ---------------------------------------------------
