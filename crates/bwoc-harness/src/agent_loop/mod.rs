@@ -2571,6 +2571,7 @@ mod tests {
                 finish_reason: None,
             }],
             usage: None,
+            thinking_block: None,
         }
     }
 
@@ -2590,6 +2591,7 @@ mod tests {
                         total_tokens: 19,
                         ..Usage::default()
                     }),
+                    thinking_block: None,
                 },
             ],
         };

@@ -301,11 +301,13 @@ with `cache_control`, so an agentic loop that resends it pays cache-read (~0.1×
 instead of full input — the tools block, rendered before system, is covered by
 the same breakpoint. Below the provider's minimum cacheable size the marker is a
 silent no-op. `thinking` is **off by default** (opt in with `true`): the native
-Claude path then requests adaptive extended thinking on non-streaming
-completions and preserves + replays the returned thinking blocks across turns —
-required for the tool path, since the Messages API rejects a `tool_result` whose
-preceding thinking block was dropped. Streaming turns do not enable thinking yet
-(a follow-up). The current BWOC harness still speaks the OpenAI-compatible
+Claude path then requests adaptive extended thinking on both non-streaming and
+streaming completions and preserves + replays the returned thinking blocks across
+turns — required for the tool path, since the Messages API rejects a `tool_result`
+whose preceding thinking block was dropped. On the streaming path the thinking
+blocks (with their signature) are reassembled from the SSE deltas and carried on
+the accumulated assistant message, so replay works identically. The current BWOC
+harness still speaks the OpenAI-compatible
 `/v1/chat/completions` surface so it can also run Ollama and other compatible
 providers. A native Responses API adapter is the right next step for full
 GPT-5.5 reasoning controls; until then, keep `AGENTS.md` outcome-first, avoid

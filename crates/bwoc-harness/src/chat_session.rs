@@ -1115,6 +1115,7 @@ mod tests {
                     finish_reason: Some(FinishReason::Stop),
                 }],
                 usage,
+                thinking_block: None,
             };
             Ok(Box::pin(futures_util::stream::once(
                 async move { Ok(chunk) },
