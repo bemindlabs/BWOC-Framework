@@ -128,6 +128,14 @@ struct Args {
     #[arg(long)]
     mcp: Vec<String>,
 
+    /// Connect to a remote MCP server over Streamable HTTP and register its
+    /// tools. Value is the endpoint URL, e.g. `--mcp-http https://host/mcp`.
+    /// Must be https (except http://localhost). Repeatable. A bearer token is
+    /// read from `~/.bwoc/secrets.toml` `[mcp] <label>_token`, where `<label>`
+    /// is the URL host. Tools are exposed as `mcp__<label>__<tool>`.
+    #[arg(long = "mcp-http")]
+    mcp_http: Vec<String>,
+
     /// Working directory (worktree root).  Relative tool paths resolve against
     /// it, and — unless `--unrestricted` — file operations are confined to it.
     /// Defaults to the current directory.
@@ -506,6 +514,26 @@ async fn run() -> HarnessResult<()> {
                 }
             },
             Err(e) => eprintln!("[bwoc-harness] warning: MCP connect `{program}`: {e}"),
+        }
+    }
+    // Remote MCP servers over Streamable HTTP. The server label (and secrets
+    // token key prefix) is the URL host. Same fail-soft posture as --mcp.
+    for url in &args.mcp_http {
+        let label = url
+            .split("://")
+            .nth(1)
+            .and_then(|rest| rest.split(['/', ':']).next())
+            .filter(|h| !h.is_empty())
+            .unwrap_or(url.as_str());
+        let token = bwoc_harness::mcp::token_from_secrets(label);
+        match bwoc_harness::mcp::McpClient::connect_http(url, token).await {
+            Ok(client) => match client.register_tools(&mut registry, label).await {
+                Ok(n) => println!("  mcp      : {n} tool(s) from `{url}`"),
+                Err(e) => {
+                    eprintln!("[bwoc-harness] warning: MCP `tools/list` from `{url}`: {e}")
+                }
+            },
+            Err(e) => eprintln!("[bwoc-harness] warning: MCP connect `{url}`: {e}"),
         }
     }
     let registry = Arc::new(registry);
