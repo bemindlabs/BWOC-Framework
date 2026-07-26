@@ -272,8 +272,10 @@ pub struct CompletionTokensDetails {
 /// **nested** (`*_tokens_details`) — serde populates those directly; Anthropic
 /// reports cache tokens **flat** on the message usage, so its parser sets
 /// [`Self::cache_read_tokens`] / [`Self::cache_creation_tokens`] by hand. Read
-/// them provider-agnostically via [`Self::cached_tokens`] /
-/// [`Self::reasoning_tokens`].
+/// cache-**read** and reasoning tokens provider-agnostically via
+/// [`Self::cached_tokens`] / [`Self::reasoning_tokens`]; cache-**write** tokens
+/// are Anthropic-only (no OpenAI-compat equivalent) — read
+/// [`Self::cache_creation_tokens`] directly.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,

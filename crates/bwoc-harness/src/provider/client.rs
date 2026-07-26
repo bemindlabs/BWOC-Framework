@@ -228,11 +228,13 @@ impl OllamaClient {
         self
     }
 
-    /// Set the `max_tokens` output ceiling sent on every completion. `None` is a
-    /// no-op (provider default). Fed from the manifest `maxTokens`. Returns
-    /// `self` for chaining at construction.
+    /// Set the `max_tokens` output ceiling sent on every completion. `None` (or
+    /// `Some(0)`) is a no-op — the field is left off the body, so the provider
+    /// default applies. Non-positive values are dropped because most
+    /// OpenAI-compatible backends reject `max_tokens: 0`, turning a config typo
+    /// into a confusing 400. Fed from the manifest `maxTokens`. Returns `self`.
     pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
-        self.max_tokens = max_tokens;
+        self.max_tokens = max_tokens.filter(|&n| n > 0);
         self
     }
 
@@ -725,6 +727,25 @@ mod tests {
         // The OpenAI-compat fields are still present.
         assert!(wire.contains("\"role\":\"system\""));
         assert!(wire.contains("\"tool_call_id\":\"call-1\""));
+    }
+
+    #[test]
+    fn with_max_tokens_drops_zero() {
+        // A `Some(0)` (config typo) must be treated as unset so the body omits
+        // `max_tokens` rather than sending `max_tokens: 0` (rejected by most
+        // OpenAI-compat backends).
+        assert!(
+            OllamaClient::new(DEFAULT_ENDPOINT)
+                .with_max_tokens(Some(0))
+                .max_tokens
+                .is_none()
+        );
+        assert_eq!(
+            OllamaClient::new(DEFAULT_ENDPOINT)
+                .with_max_tokens(Some(4096))
+                .max_tokens,
+            Some(4096)
+        );
     }
 
     #[test]

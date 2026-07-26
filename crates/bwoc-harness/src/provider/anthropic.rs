@@ -199,9 +199,12 @@ impl AnthropicClient {
 
     /// Override the required `max_tokens` output ceiling. `None` keeps the
     /// [`DEFAULT_MAX_TOKENS`] default. Fed from the manifest `maxTokens` so long
-    /// outputs are no longer capped at the hardcoded default. Returns `self`.
+    /// outputs are no longer capped at the hardcoded default. `Some(0)` is
+    /// treated as unset (the Messages API rejects `max_tokens: 0`, so a config
+    /// typo keeps the default rather than producing a confusing provider 400).
+    /// Returns `self`.
     pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
-        if let Some(n) = max_tokens {
+        if let Some(n) = max_tokens.filter(|&n| n > 0) {
             self.max_tokens = n;
         }
         self
@@ -973,6 +976,11 @@ mod tests {
             d.max_tokens, DEFAULT_MAX_TOKENS,
             "unset max_tokens keeps default"
         );
+
+        // `Some(0)` is a config typo — keep the default rather than sending
+        // `max_tokens: 0` (the Messages API rejects it).
+        let z = AnthropicClient::new("http://x").with_max_tokens(Some(0));
+        assert_eq!(z.max_tokens, DEFAULT_MAX_TOKENS);
     }
 
     #[test]
