@@ -151,6 +151,11 @@ pub struct AnthropicClient {
     base_url: String,
     api_key: String,
     max_tokens: u32,
+    /// Optional effort passed through as `output_config.effort` on every
+    /// request. `None` leaves the field off (backend default). The value space
+    /// is Anthropic's (`low`..`max`); the operator sets a valid literal via the
+    /// manifest `reasoningEffort`, mirroring the OpenAI-compat path.
+    reasoning_effort: Option<String>,
     client: Client,
 }
 
@@ -173,6 +178,7 @@ impl AnthropicClient {
             base_url: base,
             api_key: resolve_api_key(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            reasoning_effort: None,
             client,
         }
     }
@@ -180,6 +186,25 @@ impl AnthropicClient {
     /// Client at the default Anthropic endpoint.
     pub fn default_endpoint() -> Self {
         Self::new(ANTHROPIC_DEFAULT_ENDPOINT)
+    }
+
+    /// Set the effort emitted as `output_config.effort`. `None` (or an
+    /// empty/whitespace value) leaves it off. Mirrors
+    /// [`super::client::OllamaClient::with_reasoning_effort`] so the manifest
+    /// `reasoningEffort` reaches Anthropic too. Returns `self` for chaining.
+    pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort.filter(|e| !e.trim().is_empty());
+        self
+    }
+
+    /// Override the required `max_tokens` output ceiling. `None` keeps the
+    /// [`DEFAULT_MAX_TOKENS`] default. Fed from the manifest `maxTokens` so long
+    /// outputs are no longer capped at the hardcoded default. Returns `self`.
+    pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
+        if let Some(n) = max_tokens {
+            self.max_tokens = n;
+        }
+        self
     }
 
     /// Override the API key explicitly instead of resolving it from the
@@ -237,7 +262,14 @@ impl ProviderClient for AnthropicClient {
     ) -> Result<ChatCompletion, HarnessError> {
         self.require_key()?;
         let beta = anthropic_beta_for(&tools);
-        let body = build_anthropic_body(messages, tools, model, self.max_tokens, false);
+        let body = build_anthropic_body(
+            messages,
+            tools,
+            model,
+            self.max_tokens,
+            self.reasoning_effort.as_deref(),
+            false,
+        );
 
         let mut req = self.auth(self.client.post(self.messages_url()));
         if let Some(b) = beta {
@@ -285,7 +317,14 @@ impl ProviderClient for AnthropicClient {
 
         self.require_key()?;
         let beta = anthropic_beta_for(&tools);
-        let mut body = build_anthropic_body(messages, tools, model, self.max_tokens, true);
+        let mut body = build_anthropic_body(
+            messages,
+            tools,
+            model,
+            self.max_tokens,
+            self.reasoning_effort.as_deref(),
+            true,
+        );
         body["stream"] = json!(true);
 
         let mut req = self.auth(self.client.post(self.messages_url()));
@@ -414,6 +453,7 @@ fn build_anthropic_body(
     tools: Vec<Tool>,
     model: &str,
     max_tokens: u32,
+    reasoning_effort: Option<&str>,
     stream: bool,
 ) -> Value {
     let mut system = String::new();
@@ -516,6 +556,14 @@ fn build_anthropic_body(
             .collect();
         body["tools"] = json!(mapped);
     }
+    // Effort control — the Anthropic analogue of the OpenAI-compat
+    // `reasoning_effort` field, nested under `output_config` (GA on Opus 4.6+,
+    // Sonnet 4.6+, Fable 5). Only emitted when the manifest configured it;
+    // models that don't support the value reject the request, exactly as the
+    // OpenAI-compat path already behaves.
+    if let Some(effort) = reasoning_effort {
+        body["output_config"] = json!({ "effort": effort });
+    }
     body
 }
 
@@ -589,10 +637,18 @@ fn parse_completion(data: &Value) -> ChatCompletion {
 fn parse_usage(u: &Value) -> Usage {
     let prompt = u["input_tokens"].as_u64().unwrap_or(0) as u32;
     let completion = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+    // Anthropic reports prompt-cache accounting flat on the message usage
+    // (not nested like OpenAI-compat). Capture it so caching telemetry isn't
+    // dropped; `None` when the field is absent (uncached request / older API).
+    let cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
+    let cache_creation = u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
     Usage {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: prompt + completion,
+        cache_read_tokens: cache_read,
+        cache_creation_tokens: cache_creation,
+        ..Usage::default()
     }
 }
 
@@ -684,10 +740,15 @@ fn translate_sse_event(
             let output = ev["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
             vec![Ok(mk(
                 Vec::new(),
+                // Streaming cache-token capture is deferred: the flat cache
+                // fields live on the `message_start` usage (input side), which
+                // would need threading through the stream-state. Non-streaming
+                // `parse_usage` captures them; here they default to `None`.
                 Some(Usage {
                     prompt_tokens: *input_tokens,
                     completion_tokens: output,
                     total_tokens: *input_tokens + output,
+                    ..Usage::default()
                 }),
             ))]
         }
@@ -801,7 +862,7 @@ mod tests {
     #[test]
     fn system_is_lifted_and_roles_mapped() {
         let msgs = vec![ChatMessage::system("be terse"), ChatMessage::user("hi")];
-        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, false);
+        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false);
         assert_eq!(body["system"], "be terse");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
@@ -839,7 +900,7 @@ mod tests {
             ChatMessage::tool_result("t1", "tool_a", "A"),
             ChatMessage::tool_result("t2", "tool_b", "B"),
         ];
-        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, false);
+        let body = build_anthropic_body(msgs, Vec::new(), "claude-x", 100, None, false);
         let arr = body["messages"].as_array().unwrap();
         // user, assistant(tool_use x2), user(tool_result x2 merged) = 3 turns.
         assert_eq!(arr.len(), 3);
@@ -856,10 +917,80 @@ mod tests {
     #[test]
     fn tools_use_input_schema() {
         let tools = vec![Tool::function("grep", "search", json!({"type": "object"}))];
-        let body = build_anthropic_body(vec![ChatMessage::user("x")], tools, "claude-x", 50, false);
+        let body = build_anthropic_body(
+            vec![ChatMessage::user("x")],
+            tools,
+            "claude-x",
+            50,
+            None,
+            false,
+        );
         assert_eq!(body["tools"][0]["name"], "grep");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
         assert!(body["tools"][0].get("parameters").is_none());
+    }
+
+    #[test]
+    fn output_config_effort_and_max_tokens() {
+        // Effort is emitted under output_config only when configured; max_tokens
+        // is the required top-level field carrying the configured ceiling.
+        let plain = build_anthropic_body(
+            vec![ChatMessage::user("x")],
+            Vec::new(),
+            "claude-x",
+            50,
+            None,
+            false,
+        );
+        assert!(plain.get("output_config").is_none());
+        assert_eq!(plain["max_tokens"], 50);
+
+        let with_effort = build_anthropic_body(
+            vec![ChatMessage::user("x")],
+            Vec::new(),
+            "claude-x",
+            64000,
+            Some("high"),
+            false,
+        );
+        assert_eq!(with_effort["output_config"]["effort"], "high");
+        assert_eq!(with_effort["max_tokens"], 64000);
+    }
+
+    #[test]
+    fn client_builders_thread_effort_and_max_tokens() {
+        // The builders reach the request body: effort filters blanks; max_tokens
+        // overrides the hardcoded default.
+        let c = AnthropicClient::new("http://x")
+            .with_reasoning_effort(Some("  ".to_string()))
+            .with_max_tokens(Some(120_000));
+        assert!(c.reasoning_effort.is_none(), "blank effort is dropped");
+        assert_eq!(c.max_tokens, 120_000);
+
+        let d = AnthropicClient::new("http://x").with_reasoning_effort(Some("max".to_string()));
+        assert_eq!(d.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(
+            d.max_tokens, DEFAULT_MAX_TOKENS,
+            "unset max_tokens keeps default"
+        );
+    }
+
+    #[test]
+    fn parse_usage_captures_cache_tokens() {
+        let u = parse_usage(&json!({
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_read_input_tokens": 640,
+            "cache_creation_input_tokens": 128
+        }));
+        assert_eq!(u.prompt_tokens, 1000);
+        assert_eq!(u.completion_tokens, 200);
+        assert_eq!(u.cached_tokens(), Some(640));
+        assert_eq!(u.cache_creation_tokens, Some(128));
+        // Absent cache fields → None, no panic.
+        let bare = parse_usage(&json!({"input_tokens": 5, "output_tokens": 3}));
+        assert_eq!(bare.cached_tokens(), None);
+        assert_eq!(bare.cache_creation_tokens, None);
     }
 
     #[test]
@@ -870,7 +1001,14 @@ mod tests {
             Tool::function("grep", "search", json!({"type": "object"})),
             Tool::function("computer", "drive a gui", json!({"type": "object"})),
         ];
-        let body = build_anthropic_body(vec![ChatMessage::user("x")], tools, "claude-x", 50, false);
+        let body = build_anthropic_body(
+            vec![ChatMessage::user("x")],
+            tools,
+            "claude-x",
+            50,
+            None,
+            false,
+        );
         let arr = body["tools"].as_array().unwrap();
         let comp = arr.iter().find(|t| t["name"] == "computer").unwrap();
         assert_eq!(comp["type"], "computer_20250124");

@@ -875,6 +875,7 @@ mod tests {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 total_tokens: prompt + completion,
+                ..Usage::default()
             }),
         }
     }
@@ -2587,6 +2588,7 @@ mod tests {
                         prompt_tokens: 12,
                         completion_tokens: 7,
                         total_tokens: 19,
+                        ..Usage::default()
                     }),
                 },
             ],

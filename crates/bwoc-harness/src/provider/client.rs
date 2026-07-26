@@ -179,6 +179,10 @@ pub struct OllamaClient {
     /// leaves the field off the body (provider default). Set via
     /// [`Self::with_reasoning_effort`] from the agent's manifest.
     reasoning_effort: Option<String>,
+    /// Optional `max_tokens` output ceiling sent on every completion. `None`
+    /// leaves the field off the body (provider default). Set via
+    /// [`Self::with_max_tokens`] from the agent's manifest `maxTokens`.
+    max_tokens: Option<u32>,
     /// Optional bearer token attached as `Authorization: Bearer <key>` to every
     /// request. `None` (the Ollama default) sends no auth header — a plain local
     /// Ollama server needs none. Set via [`Self::with_api_key`] for hosted
@@ -204,6 +208,7 @@ impl OllamaClient {
         Self {
             base_url: base_url.into(),
             reasoning_effort: None,
+            max_tokens: None,
             api_key: None,
             extra_headers: Vec::new(),
             client,
@@ -220,6 +225,14 @@ impl OllamaClient {
     /// chaining at construction.
     pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
         self.reasoning_effort = effort;
+        self
+    }
+
+    /// Set the `max_tokens` output ceiling sent on every completion. `None` is a
+    /// no-op (provider default). Fed from the manifest `maxTokens`. Returns
+    /// `self` for chaining at construction.
+    pub fn with_max_tokens(mut self, max_tokens: Option<u32>) -> Self {
+        self.max_tokens = max_tokens;
         self
     }
 
@@ -295,6 +308,7 @@ impl ProviderClient for OllamaClient {
             model,
             false,
             self.reasoning_effort.as_deref(),
+            self.max_tokens,
         );
 
         let resp = self
@@ -334,6 +348,7 @@ impl ProviderClient for OllamaClient {
             model,
             true,
             self.reasoning_effort.as_deref(),
+            self.max_tokens,
         );
 
         let resp = self
@@ -547,6 +562,7 @@ fn build_request_body(
     model: &str,
     stream: bool,
     reasoning_effort: Option<&str>,
+    max_tokens: Option<u32>,
 ) -> Value {
     // Project to the egress DTO so `principal` never reaches the provider.
     let egress: Vec<EgressMessage> = messages.iter().map(EgressMessage::from).collect();
@@ -564,6 +580,13 @@ fn build_request_body(
     // that don't understand it (e.g. plain Ollama) ignore the extra field.
     if let Some(effort) = reasoning_effort {
         body["reasoning_effort"] = json!(effort);
+    }
+
+    // Output-token ceiling. OpenAI-compat treats `max_tokens` as optional, so
+    // it is only sent when the manifest configured it; otherwise the provider
+    // default applies (unchanged behaviour).
+    if let Some(n) = max_tokens {
+        body["max_tokens"] = json!(n);
     }
 
     // Ask for token usage on the streaming path (HV2-7).  Providers that don't
@@ -607,6 +630,7 @@ mod tests {
             "gpt-5.5",
             false,
             None,
+            None,
         );
 
         assert_eq!(body["model"], "gpt-5.5");
@@ -621,9 +645,60 @@ mod tests {
             "gpt-5.5",
             false,
             Some("medium"),
+            None,
         );
 
         assert_eq!(body["reasoning_effort"], "medium");
+    }
+
+    #[test]
+    fn request_body_max_tokens_only_when_configured() {
+        // Omitted by default (OpenAI-compat treats it as optional → provider
+        // default; unchanged behaviour).
+        let default = build_request_body(
+            vec![ChatMessage::user("task")],
+            Vec::new(),
+            "gpt-5.5",
+            false,
+            None,
+            None,
+        );
+        assert!(default.get("max_tokens").is_none());
+
+        // Sent verbatim when the manifest configured it.
+        let capped = build_request_body(
+            vec![ChatMessage::user("task")],
+            Vec::new(),
+            "gpt-5.5",
+            false,
+            None,
+            Some(32000),
+        );
+        assert_eq!(capped["max_tokens"], 32000);
+    }
+
+    #[test]
+    fn usage_reads_nested_openai_cache_and_reasoning() {
+        // OpenAI-compat reports cache/reasoning nested under `*_tokens_details`;
+        // the accessors surface them provider-agnostically.
+        let u: crate::provider::types::Usage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 40,
+            "total_tokens": 140,
+            "prompt_tokens_details": { "cached_tokens": 64 },
+            "completion_tokens_details": { "reasoning_tokens": 12 }
+        }))
+        .unwrap();
+        assert_eq!(u.cached_tokens(), Some(64));
+        assert_eq!(u.reasoning_tokens(), Some(12));
+
+        // A bare usage object (no details) leaves both None — no panic.
+        let bare: crate::provider::types::Usage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15
+        }))
+        .unwrap();
+        assert_eq!(bare.cached_tokens(), None);
+        assert_eq!(bare.reasoning_tokens(), None);
     }
 
     #[test]
@@ -641,6 +716,7 @@ mod tests {
             Vec::new(),
             "gpt-5.5",
             false,
+            None,
             None,
         );
         let wire = serde_json::to_string(&body).unwrap();
