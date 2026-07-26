@@ -364,24 +364,27 @@ async fn run() -> HarnessResult<()> {
     // Pick up an optional `reasoningEffort` from the agent's manifest and send
     // it as `reasoning_effort` on every completion (OpenAI-compat effort
     // control). Absent manifest / field ≡ provider default.
-    let reasoning_effort = match bwoc_core::manifest::Manifest::load_from_path(
+    let (reasoning_effort, max_tokens) = match bwoc_core::manifest::Manifest::load_from_path(
         &workdir.join("config.manifest.json"),
     ) {
-        Ok(m) => m.reasoning_effort,
+        Ok(m) => (m.reasoning_effort, m.max_tokens),
         // A malformed manifest is worth surfacing — silently dropping
-        // `reasoningEffort` here would make a config typo hard to debug. A
-        // missing file is normal (no manifest ⇒ no effort), so stay quiet.
+        // `reasoningEffort` / `maxTokens` here would make a config typo hard to
+        // debug. A missing file is normal (no manifest ⇒ defaults), so stay quiet.
         Err(bwoc_core::manifest::ManifestError::Json(e)) => {
             eprintln!(
                 "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
-                 ignoring reasoningEffort"
+                 ignoring reasoningEffort / maxTokens"
             );
-            None
+            (None, None)
         }
-        Err(_) => None,
+        Err(_) => (None, None),
     };
     if let Some(ref e) = reasoning_effort {
         println!("  effort   : {e}");
+    }
+    if let Some(n) = max_tokens {
+        println!("  maxTokens: {n}");
     }
     ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> = build_provider(
@@ -389,6 +392,7 @@ async fn run() -> HarnessResult<()> {
         &args.endpoint,
         &args.cli_cmd,
         reasoning_effort,
+        max_tokens,
     );
 
     // ── Auto model selection (primaryModel: "auto") ───────────────────────
@@ -821,25 +825,26 @@ async fn run_eval_mode(
     // normal and silent — but a *present-but-malformed* one is worth surfacing
     // (mirrors the main run path), not silently dropped.
     let manifest_path = workdir.join("config.manifest.json");
-    let reasoning_effort = if manifest_path.exists() {
+    let (reasoning_effort, max_tokens) = if manifest_path.exists() {
         match bwoc_core::manifest::Manifest::load_from_path(&manifest_path) {
-            Ok(m) => m.reasoning_effort,
+            Ok(m) => (m.reasoning_effort, m.max_tokens),
             Err(e) => {
                 eprintln!(
                     "[bwoc-harness] warning: ignoring malformed {}: {e}",
                     manifest_path.display()
                 );
-                None
+                (None, None)
             }
         }
     } else {
-        None
+        (None, None)
     };
     let provider = build_provider(
         &args.backend,
         &args.endpoint,
         &args.cli_cmd,
         reasoning_effort,
+        max_tokens,
     );
 
     let config = LoopConfig {
@@ -926,6 +931,7 @@ fn build_provider(
     endpoint: &str,
     cli_cmd: &str,
     reasoning_effort: Option<String>,
+    max_tokens: Option<u32>,
 ) -> Arc<dyn ProviderClient> {
     use bwoc_harness::provider::client as oai;
     match backend {
@@ -953,7 +959,11 @@ fn build_provider(
             } else {
                 endpoint
             };
-            Arc::new(AnthropicClient::new(base))
+            Arc::new(
+                AnthropicClient::new(base)
+                    .with_reasoning_effort(reasoning_effort)
+                    .with_max_tokens(max_tokens),
+            )
         }
         "openrouter" => {
             // OpenRouter is OpenAI-compatible, so it reuses OllamaClient — the
@@ -970,7 +980,8 @@ fn build_provider(
                 OllamaClient::new(base)
                     .with_api_key(Some(oai::resolve_openrouter_api_key()))
                     .with_headers(oai::openrouter_headers())
-                    .with_reasoning_effort(reasoning_effort),
+                    .with_reasoning_effort(reasoning_effort)
+                    .with_max_tokens(max_tokens),
             )
         }
         "litellm" => {
@@ -986,7 +997,9 @@ fn build_provider(
                 endpoint.to_string()
             };
             let key = oai::resolve_litellm_api_key();
-            let client = OllamaClient::new(&base).with_reasoning_effort(reasoning_effort);
+            let client = OllamaClient::new(&base)
+                .with_reasoning_effort(reasoning_effort)
+                .with_max_tokens(max_tokens);
             let client = if key.trim().is_empty() {
                 client
             } else {
@@ -994,7 +1007,11 @@ fn build_provider(
             };
             Arc::new(client)
         }
-        _ => Arc::new(OllamaClient::new(endpoint).with_reasoning_effort(reasoning_effort)),
+        _ => Arc::new(
+            OllamaClient::new(endpoint)
+                .with_reasoning_effort(reasoning_effort)
+                .with_max_tokens(max_tokens),
+        ),
     }
 }
 
@@ -1028,19 +1045,19 @@ async fn run_chat_mode(
 ) -> HarnessResult<()> {
     use bwoc_harness::chat_session::{self, ChatConfig};
 
-    // Provider — same reasoning-effort wiring as run().
-    let reasoning_effort = match bwoc_core::manifest::Manifest::load_from_path(
+    // Provider — same reasoning-effort / max-tokens wiring as run().
+    let (reasoning_effort, max_tokens) = match bwoc_core::manifest::Manifest::load_from_path(
         &workdir.join("config.manifest.json"),
     ) {
-        Ok(m) => m.reasoning_effort,
+        Ok(m) => (m.reasoning_effort, m.max_tokens),
         Err(bwoc_core::manifest::ManifestError::Json(e)) => {
             eprintln!(
                 "[bwoc-harness] warning: config.manifest.json parse error: {e}; \
-                 ignoring reasoningEffort"
+                 ignoring reasoningEffort / maxTokens"
             );
-            None
+            (None, None)
         }
-        Err(_) => None,
+        Err(_) => (None, None),
     };
     ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> = build_provider(
@@ -1048,6 +1065,7 @@ async fn run_chat_mode(
         &args.endpoint,
         &args.cli_cmd,
         reasoning_effort,
+        max_tokens,
     );
 
     // Resolve the `auto` model sentinel the same way the batch path does (see

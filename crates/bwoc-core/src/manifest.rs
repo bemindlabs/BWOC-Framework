@@ -51,6 +51,12 @@ pub struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub reasoning_effort: Option<String>,
+    /// Optional per-agent output-token ceiling. Backends that **require**
+    /// `max_tokens` (Anthropic Messages API) use this instead of the hardcoded
+    /// default; OpenAI-compatible backends send it as `max_tokens` when set and
+    /// otherwise leave it to the provider default. `None` = backend default.
+    #[serde(rename = "maxTokens", default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
     #[serde(rename = "memoryPath")]
     pub memory_path: String,
     #[serde(rename = "sessionsPath", skip_serializing_if = "Option::is_none")]
@@ -334,6 +340,7 @@ impl Manifest {
             fallback_model: None,
             auto_models: None,
             reasoning_effort: None,
+            max_tokens: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -372,6 +379,7 @@ mod tests {
             fallback_model: None,
             auto_models: None,
             reasoning_effort: None,
+            max_tokens: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,
@@ -446,6 +454,24 @@ mod tests {
         assert!(json2.contains("\"reasoningEffort\":\"max\""));
         let back: Manifest = serde_json::from_str(&json2).unwrap();
         assert_eq!(back.reasoning_effort, Some("max".into()));
+    }
+
+    /// `maxTokens` is optional: absent → `None` and omitted on serialize;
+    /// present → preserved and round-trips. Backward-compatible (a manifest
+    /// written before this field still deserializes).
+    #[test]
+    fn max_tokens_serde() {
+        let m = sample();
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"maxTokens\""));
+        assert!(m.max_tokens.is_none());
+
+        let mut m2 = sample();
+        m2.max_tokens = Some(64000);
+        let json2 = serde_json::to_string(&m2).unwrap();
+        assert!(json2.contains("\"maxTokens\":64000"));
+        let back: Manifest = serde_json::from_str(&json2).unwrap();
+        assert_eq!(back.max_tokens, Some(64000));
     }
 
     // ---- TrustBlock tests ---------------------------------------------------

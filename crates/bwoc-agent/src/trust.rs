@@ -1175,6 +1175,7 @@ mod tests {
             fallback_model: None,
             auto_models: None,
             reasoning_effort: None,
+            max_tokens: None,
             memory_path: "memories/".into(),
             sessions_path: None,
             deep_memory_cmd: None,

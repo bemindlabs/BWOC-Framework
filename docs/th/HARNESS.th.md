@@ -274,7 +274,8 @@ ln -s AGENTS.md OLLAMA.md
   "baseUrl": "https://api.openai.com/v1",
   "primaryModel": "auto",
   "autoModels": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
-  "reasoningEffort": "medium"
+  "reasoningEffort": "medium",
+  "maxTokens": 32000
 }
 ```
 
@@ -287,6 +288,10 @@ OpenAI แนะนำ GPT-5.5 สำหรับงาน coding และ agen
 โดยใช้ `medium` reasoning effort เป็นจุดเริ่มต้นที่สมดุล และลอง effort ต่ำกว่า
 ก่อนปิด reasoning ทั้งหมด `reasoningEffort` เป็น optional; ถ้าตั้งค่าไว้
 harness จะส่งเป็น `reasoning_effort` ใน request แบบ OpenAI-compatible completion
+**และ** เป็น `output_config.effort` บน path ของ Claude native — effort จึงถึงทุก HTTP
+backend ที่รองรับ. `maxTokens` ก็ optional เช่นกัน: Messages API ของ Claude
+บังคับต้องมี `max_tokens` ค่านี้จึง override ค่า default ของ harness ที่นั่น; ส่วน
+backend แบบ OpenAI-compatible จะส่งเมื่อ set เท่านั้น ไม่งั้นใช้ default ของ provider.
 ปัจจุบัน BWOC harness ยังพูดผ่าน surface OpenAI-compatible `/v1/chat/completions`
 เพื่อให้รันได้ทั้ง Ollama และ provider compatible อื่นๆ adapter แบบ native
 Responses API คือขั้นถัดไปสำหรับ control reasoning ของ GPT-5.5 แบบเต็ม ระหว่างนี้

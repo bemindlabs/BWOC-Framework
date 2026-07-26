@@ -1119,6 +1119,7 @@ fn build_manifest(r: &Resolved) -> Manifest {
         auto_models: None,
         // No --reasoning-effort flag either; set in the manifest by hand.
         reasoning_effort: None,
+        max_tokens: None,
         memory_path: r.memory_path.clone(),
         sessions_path: r.sessions_path.clone(),
         deep_memory_cmd: r.deep_memory_cmd.clone(),

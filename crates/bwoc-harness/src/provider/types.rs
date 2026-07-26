@@ -248,12 +248,69 @@ pub struct Choice {
     pub finish_reason: Option<FinishReason>,
 }
 
+/// OpenAI-compat `prompt_tokens_details` — the nested object carrying
+/// prompt-cache accounting on providers that report it (OpenAI, DeepSeek, …).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+}
+
+/// OpenAI-compat `completion_tokens_details` — carries the reasoning-token
+/// count on reasoning models (OpenAI o-series, DeepSeek-R1, Qwen, …).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CompletionTokensDetails {
+    #[serde(default)]
+    pub reasoning_tokens: Option<u32>,
+}
+
 /// Token usage.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// The three top-level counts are the OpenAI-compat baseline. The optional
+/// fields capture modern accounting that older code dropped: prompt-cache
+/// read/write and reasoning tokens. OpenAI-compat reports cache/reasoning
+/// **nested** (`*_tokens_details`) — serde populates those directly; Anthropic
+/// reports cache tokens **flat** on the message usage, so its parser sets
+/// [`Self::cache_read_tokens`] / [`Self::cache_creation_tokens`] by hand. Read
+/// cache-**read** and reasoning tokens provider-agnostically via
+/// [`Self::cached_tokens`] / [`Self::reasoning_tokens`]; cache-**write** tokens
+/// are Anthropic-only (no OpenAI-compat equivalent) — read
+/// [`Self::cache_creation_tokens`] directly.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// OpenAI-compat nested cache accounting (`prompt_tokens_details`).
+    #[serde(default)]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// OpenAI-compat nested reasoning accounting (`completion_tokens_details`).
+    #[serde(default)]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+    /// Anthropic `cache_read_input_tokens` (flat). `None` on OpenAI-compat.
+    #[serde(default)]
+    pub cache_read_tokens: Option<u32>,
+    /// Anthropic `cache_creation_input_tokens` (flat). `None` on OpenAI-compat.
+    #[serde(default)]
+    pub cache_creation_tokens: Option<u32>,
+}
+
+impl Usage {
+    /// Prompt-cache read tokens, whichever way the provider reported them.
+    pub fn cached_tokens(&self) -> Option<u32> {
+        self.cache_read_tokens.or_else(|| {
+            self.prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+        })
+    }
+
+    /// Reasoning/thinking tokens counted in the output, when reported.
+    pub fn reasoning_tokens(&self) -> Option<u32> {
+        self.completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens)
+    }
 }
 
 /// Why the model stopped.

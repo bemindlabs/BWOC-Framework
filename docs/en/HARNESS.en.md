@@ -275,7 +275,8 @@ runtime selection pool:
   "baseUrl": "https://api.openai.com/v1",
   "primaryModel": "auto",
   "autoModels": ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini"],
-  "reasoningEffort": "medium"
+  "reasoningEffort": "medium",
+  "maxTokens": 32000
 }
 ```
 
@@ -288,7 +289,11 @@ OpenAI recommends GPT-5.5 for reasoning-heavy coding and agent workflows, with
 `medium` reasoning effort as the balanced starting point and lower effort
 evaluated before disabling reasoning. `reasoningEffort` is optional; when set,
 the harness sends it as `reasoning_effort` on OpenAI-compatible completion
-requests. The current BWOC harness still speaks the OpenAI-compatible
+requests **and** as `output_config.effort` on the native Claude path, so effort
+now reaches every HTTP backend that supports it. `maxTokens` is likewise
+optional: Claude's Messages API requires `max_tokens`, so this overrides the
+harness default there; OpenAI-compatible backends send it only when set and
+otherwise fall back to the provider default. The current BWOC harness still speaks the OpenAI-compatible
 `/v1/chat/completions` surface so it can also run Ollama and other compatible
 providers. A native Responses API adapter is the right next step for full
 GPT-5.5 reasoning controls; until then, keep `AGENTS.md` outcome-first, avoid
