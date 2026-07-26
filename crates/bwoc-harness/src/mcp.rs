@@ -191,8 +191,8 @@ fn validate_http_url(url: &str) -> Result<(), HarnessError> {
         return Ok(());
     }
     if let Some(rest) = lower.strip_prefix("http://") {
-        // Host is up to the first `/`, `:`, or end — accept loopback only.
-        let host = rest.split(['/', ':']).next().unwrap_or("");
+        let host = http_host(rest);
+        // Accept loopback only, including the bracketed IPv6 literal.
         if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
             return Ok(());
         }
@@ -203,6 +203,18 @@ fn validate_http_url(url: &str) -> Result<(), HarnessError> {
     Err(HarnessError::Other(format!(
         "MCP endpoint must be an http(s) URL: `{url}`"
     )))
+}
+
+/// Extract the host from a URL authority (scheme already stripped), preserving a
+/// bracketed IPv6 literal (`[::1]:8080/x` → `[::1]`) instead of splitting it on
+/// the inner `:`. For a normal authority the host ends at the first `:` or `/`.
+fn http_host(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        if let Some(end) = authority.find(']') {
+            return &authority[..=end]; // include the brackets
+        }
+    }
+    authority.split(['/', ':']).next().unwrap_or("")
 }
 
 /// Extract the JSON-RPC `result` for `expected_id` from an MCP HTTP response
@@ -350,9 +362,20 @@ impl RpcTransport for HttpTransport {
     async fn notify(&self, method: &str, params: Value) -> Result<(), HarnessError> {
         let body = json!({ "jsonrpc": "2.0", "method": method, "params": params });
         // Fire-and-forget: a notification has no response channel. A transport
-        // failure is still surfaced; a non-2xx body is ignored.
-        let _ = self.post(&body, method).await?;
-        Ok(())
+        // failure is still surfaced; a non-2xx body is ignored. Bounded by the
+        // same REQUEST_TIMEOUT as `request` so a wedged server can't hang the
+        // loop (the initialize handshake sends `notifications/initialized`).
+        let send = async {
+            self.post(&body, method).await?;
+            Ok::<(), HarnessError>(())
+        };
+        match tokio::time::timeout(REQUEST_TIMEOUT, send).await {
+            Ok(res) => res,
+            Err(_) => Err(HarnessError::Other(format!(
+                "MCP `{method}` notify timed out after {}s",
+                REQUEST_TIMEOUT.as_secs()
+            ))),
+        }
     }
 }
 
@@ -686,8 +709,13 @@ mod tests {
         assert!(validate_http_url("https://example.com/mcp").is_ok());
         assert!(validate_http_url("http://localhost:8080/mcp").is_ok());
         assert!(validate_http_url("http://127.0.0.1/mcp").is_ok());
+        // IPv6 loopback literal (brackets must not be split on the inner `:`).
+        assert!(validate_http_url("http://[::1]:9000/mcp").is_ok());
+        assert_eq!(http_host("[::1]:9000/mcp"), "[::1]");
         // Cleartext to a non-loopback host is refused (SSRF / downgrade guard).
         assert!(validate_http_url("http://example.com/mcp").is_err());
+        // A non-loopback IPv6 literal over cleartext is still refused.
+        assert!(validate_http_url("http://[2001:db8::1]/mcp").is_err());
         // Non-http(s) schemes are refused.
         assert!(validate_http_url("ftp://example.com").is_err());
         assert!(validate_http_url("file:///etc/passwd").is_err());

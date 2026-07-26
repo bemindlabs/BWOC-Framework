@@ -132,7 +132,9 @@ struct Args {
     /// tools. Value is the endpoint URL, e.g. `--mcp-http https://host/mcp`.
     /// Must be https (except http://localhost). Repeatable. A bearer token is
     /// read from `~/.bwoc/secrets.toml` `[mcp] <label>_token`, where `<label>`
-    /// is the URL host. Tools are exposed as `mcp__<label>__<tool>`.
+    /// is the URL host with non-alphanumerics replaced by `_` (so `example.com`
+    /// → `example_com`, a valid bare TOML key). Tools are exposed as
+    /// `mcp__<label>__<tool>`.
     #[arg(long = "mcp-http")]
     mcp_http: Vec<String>,
 
@@ -519,15 +521,27 @@ async fn run() -> HarnessResult<()> {
     // Remote MCP servers over Streamable HTTP. The server label (and secrets
     // token key prefix) is the URL host. Same fail-soft posture as --mcp.
     for url in &args.mcp_http {
-        let label = url
+        let host = url
             .split("://")
             .nth(1)
             .and_then(|rest| rest.split(['/', ':']).next())
             .filter(|h| !h.is_empty())
             .unwrap_or(url.as_str());
-        let token = bwoc_harness::mcp::token_from_secrets(label);
+        // Sanitize the host into a label usable as both a tool-name prefix
+        // segment and a bare TOML secrets key: `example.com` → `example_com`.
+        let label: String = host
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let token = bwoc_harness::mcp::token_from_secrets(&label);
         match bwoc_harness::mcp::McpClient::connect_http(url, token).await {
-            Ok(client) => match client.register_tools(&mut registry, label).await {
+            Ok(client) => match client.register_tools(&mut registry, &label).await {
                 Ok(n) => println!("  mcp      : {n} tool(s) from `{url}`"),
                 Err(e) => {
                     eprintln!("[bwoc-harness] warning: MCP `tools/list` from `{url}`: {e}")

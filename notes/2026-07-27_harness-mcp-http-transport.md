@@ -14,7 +14,7 @@ When this was split off (#384/#385 notes) I flagged it as bemind-only. That was 
   - `parse_http_rpc_response` — extracts the JSON-RPC `result` for our id from **either** a JSON body (object or batch array) **or** an SSE body (`data:` lines), skipping unrelated ids and surfacing RPC errors.
 - **`McpClient::connect_http(url, auth)`** — mirrors `connect_stdio`, reusing the `initialize` version-negotiation from #384.
 - **`token_from_secrets(label)`** — bearer token from `~/.bwoc/secrets.toml` `[mcp] <label>_token`, same per-user location + `0600` guard as the provider API keys.
-- **CLI `--mcp-http <url>`** (repeatable) in `main.rs` — label = URL host; token auto-resolved; same fail-soft posture as `--mcp` (a failed server warns, the run proceeds). Tools exposed as `mcp__<label>__<tool>`.
+- **CLI `--mcp-http <url>`** (repeatable) in `main.rs` — label = URL host **sanitized to `[a-z0-9_]`** (`example.com` → `example_com`) so it works as both a tool-name prefix segment and a bare TOML secrets key; token auto-resolved; same fail-soft posture as `--mcp` (a failed server warns, the run proceeds). Tools exposed as `mcp__<label>__<tool>`.
 - Module doc updated (stdio-only → two transports); the bounded `REQUEST_TIMEOUT` is shared with stdio.
 
 ## Decisions
