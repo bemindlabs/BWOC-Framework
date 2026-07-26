@@ -698,11 +698,14 @@ pub async fn run_loop(
             } else if result.denied {
                 tb.denials += 1;
             }
-            history.push(ChatMessage::tool_result(
-                result.call_id.clone(),
-                result.tool_name.clone(),
-                result.content.clone(),
-            ));
+            history.push(
+                ChatMessage::tool_result(
+                    result.call_id.clone(),
+                    result.tool_name.clone(),
+                    result.content.clone(),
+                )
+                .with_images(result.images.clone()),
+            );
         }
 
         let m = tb.finish();

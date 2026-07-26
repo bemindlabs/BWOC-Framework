@@ -64,7 +64,7 @@ pub(super) async fn execute_tool_calls(
             let tool_name = &call.function.name;
             let args_json = &call.function.arguments;
 
-            let (content, denied, capability_denied) = match outcome {
+            let (content, images, denied, capability_denied) = match outcome {
                 PolicyOutcome::Proceed => {
                     // ── Layer 3: Process isolation (Phase 5 t5) ──────────────────
                     // Execution of an approved call no longer happens in this
@@ -83,7 +83,7 @@ pub(super) async fn execute_tool_calls(
                         turn_trust,
                     )
                     .await;
-                    (r.content, r.denied, r.capability_denied)
+                    (r.content, r.images, r.denied, r.capability_denied)
                 }
                 PolicyOutcome::CapabilityDenied { tool, reason } => {
                     // C4: structured log line — tool + reason + turn-trust — so a
@@ -96,14 +96,14 @@ pub(super) async fn execute_tool_calls(
                     let msg = PolicyOutcome::CapabilityDenied { tool, reason }
                         .into_tool_result()
                         .unwrap_or_else(|| "blocked".to_string());
-                    (msg, true, true)
+                    (msg, Vec::new(), true, true)
                 }
                 blocked => {
                     // Feed the denial back to the model as the tool result.
                     let msg = blocked
                         .into_tool_result()
                         .unwrap_or_else(|| "blocked".to_string());
-                    (msg, true, false)
+                    (msg, Vec::new(), true, false)
                 }
             };
 
@@ -111,6 +111,7 @@ pub(super) async fn execute_tool_calls(
                 call_id: call.id.clone(),
                 tool_name: call.function.name.clone(),
                 content,
+                images,
                 denied,
                 capability_denied,
             }
@@ -124,6 +125,9 @@ pub(super) struct ToolCallResult {
     pub(super) call_id: String,
     pub(super) tool_name: String,
     pub(super) content: String,
+    /// Multimodal images the tool produced (e.g. a screenshot), attached to the
+    /// `tool_result` message. Empty for text-only tools and denial paths.
+    pub(super) images: Vec<crate::provider::types::ImageBlock>,
     /// Blocked by any policy layer (guardrail / permission / capability gate) —
     /// the content is the refusal fed back to the model.
     pub(super) denied: bool,

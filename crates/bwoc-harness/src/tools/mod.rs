@@ -126,6 +126,25 @@ fn normalize_path(p: &Path) -> PathBuf {
 // Tool trait
 // ---------------------------------------------------------------------------
 
+/// A tool's result: the text fed back to the model, plus any multimodal images
+/// (e.g. a screenshot) to attach to the `tool_result` message. The common case
+/// is text-only ([`ToolOutput::text`]); only visual tools populate `images`.
+#[derive(Debug, Clone, Default)]
+pub struct ToolOutput {
+    pub content: String,
+    pub images: Vec<crate::provider::types::ImageBlock>,
+}
+
+impl ToolOutput {
+    /// A text-only result (no images) — the common case.
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            images: Vec::new(),
+        }
+    }
+}
+
 /// A single callable tool.
 #[async_trait]
 pub trait ToolImpl: Send + Sync {
@@ -140,6 +159,17 @@ pub trait ToolImpl: Send + Sync {
 
     /// Execute the tool with the given parsed arguments.
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError>;
+
+    /// Execute and return a rich result that may carry images (screenshots).
+    /// Defaults to text-only, wrapping [`Self::execute`]; visual tools override
+    /// it. The isolated turn-executor calls this so images survive the IPC.
+    async fn execute_rich(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, HarnessError> {
+        Ok(ToolOutput::text(self.execute(args, ctx).await?))
+    }
 }
 
 #[cfg(test)]

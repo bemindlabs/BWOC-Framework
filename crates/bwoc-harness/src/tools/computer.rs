@@ -18,12 +18,13 @@
 //! Anthropic provider emits the native [`anthropic_tool_spec`] + beta header, and
 //! the policy pipeline gates it — `computer` is `Capability::Gated` (refused on
 //! untrusted turns), ask-by-default, and autoprocess-refused when there is no
-//! TTY. Default builds pull zero browser deps and never register it. The
-//! provider layer now serializes image blocks on both paths (see
-//! [`crate::provider::types::ChatMessage::with_images`]); wiring a captured
-//! screenshot *through the
-//! re-exec turn-executor IPC boundary* into that field, plus richer key-chord
-//! parsing, remain later slices.
+//! TTY. Default builds pull zero browser deps and never register it. A captured
+//! screenshot now flows end-to-end: [`ComputerTool::execute_rich`] base64-encodes
+//! it into an [`crate::provider::types::ImageBlock`], which the isolated
+//! turn-executor marshals back across its IPC and the agent loop attaches to the
+//! `tool_result` (see [`crate::provider::types::ChatMessage::with_images`]);
+//! the provider layer renders it per-backend. Richer key-chord parsing remains a
+//! later slice.
 //!
 //! [`default_registry`]: super::registry::default_registry
 
@@ -95,9 +96,9 @@ pub enum ComputerAction {
 pub struct Screenshot {
     /// IANA media type, e.g. `image/png`.
     pub media_type: String,
-    /// Raw image bytes. Base64-encoding these into a
-    /// [`crate::provider::types::ImageBlock`] is done where the tool result is
-    /// assembled; that end-to-end wiring is a later slice (see module docs).
+    /// Raw image bytes. [`ComputerTool::execute_rich`] base64-encodes these into
+    /// an [`crate::provider::types::ImageBlock`] that survives the turn-executor
+    /// IPC and reaches the model.
     pub bytes: Vec<u8>,
 }
 
@@ -303,6 +304,59 @@ impl<E: ComputerExecutor + 'static> ToolImpl for ComputerTool<E> {
         let obs = self.executor.execute(&action).await?;
         Ok(render_observation(&obs))
     }
+
+    async fn execute_rich(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+    ) -> Result<crate::tools::ToolOutput, HarnessError> {
+        let action: ComputerAction =
+            serde_json::from_value(args).map_err(|e| HarnessError::ToolExecution {
+                tool: "computer".to_string(),
+                reason: format!("invalid action: {e}"),
+            })?;
+        let obs = self.executor.execute(&action).await?;
+        // A screenshot rides back as a real image block (base64) alongside the
+        // text shape; every other observation is text-only.
+        let images = match &obs {
+            Observation::Image(s) => vec![crate::provider::types::ImageBlock {
+                media_type: s.media_type.clone(),
+                data: base64_encode(&s.bytes),
+            }],
+            _ => Vec::new(),
+        };
+        Ok(crate::tools::ToolOutput {
+            content: render_observation(&obs),
+            images,
+        })
+    }
+}
+
+/// Minimal standard-alphabet base64 encoder (no padding-free variant, no line
+/// wrapping). Hand-rolled to keep the harness dep-quarantine clean — a
+/// screenshot's bytes become the `data` of an [`crate::provider::types::ImageBlock`].
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -381,6 +435,43 @@ mod tests {
             other => panic!("expected image, got {other:?}"),
         }
         assert_eq!(exec.display_size(), (1024, 768));
+    }
+
+    #[test]
+    fn base64_encode_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"ABC"), "QUJD");
+        // Round-trips the mock PNG's magic bytes at the start.
+        assert!(base64_encode(MOCK_PNG).starts_with("iVBOR"));
+    }
+
+    #[tokio::test]
+    async fn execute_rich_screenshot_carries_image_block() {
+        let tool = ComputerTool::new(MockExecutor::default());
+        let ctx = ToolContext::new(std::env::temp_dir());
+        let out = tool
+            .execute_rich(json!({"action": "screenshot"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].media_type, "image/png");
+        assert!(!out.images[0].data.is_empty());
+        assert!(out.content.contains("screenshot"));
+    }
+
+    #[tokio::test]
+    async fn execute_rich_click_is_text_only() {
+        let tool = ComputerTool::new(MockExecutor::default());
+        let ctx = ToolContext::new(std::env::temp_dir());
+        let out = tool
+            .execute_rich(json!({"action": "click", "coordinate": [1, 2]}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.images.is_empty());
+        assert_eq!(out.content, "ok");
     }
 
     #[tokio::test]

@@ -154,7 +154,7 @@ use crate::jail::{JailSpec, JailStatus};
 use crate::sandbox::OsSandbox;
 #[cfg(unix)]
 use crate::sandbox::{make_os_sandbox, run_sandboxed, scrub_env};
-use crate::tools::registry::{default_registry, dispatch};
+use crate::tools::registry::{default_registry, dispatch_rich};
 use crate::tools::{ToolContext, ToolRegistry};
 use bwoc_core::trust::TrustLevel;
 
@@ -218,6 +218,10 @@ struct WireRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct WireResponse {
     content: String,
+    /// Multimodal images produced by the tool (e.g. a screenshot). Empty for
+    /// every text-only tool; `#[serde(default)]` keeps the frame backward-compatible.
+    #[serde(default)]
+    images: Vec<crate::provider::types::ImageBlock>,
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +597,9 @@ pub fn is_marshallable_tool(name: &str) -> bool {
 /// The result of executing one approved tool call.
 pub struct ExecOutcome {
     pub content: String,
+    /// Multimodal images the tool produced (e.g. a screenshot). Empty for
+    /// text-only tools and all denial paths.
+    pub images: Vec<crate::provider::types::ImageBlock>,
     pub denied: bool,
     pub capability_denied: bool,
 }
@@ -635,6 +642,7 @@ pub async fn execute_proceeded(
                  marshals default-registry tools — others are denied until IPC supports \
                  them. [Phase 5 t5]"
             ),
+            images: Vec::new(),
             denied: true,
             capability_denied: false,
         };
@@ -650,8 +658,10 @@ pub async fn execute_proceeded(
             workdir: ctx.workdir.clone(),
             confine: ctx.confine,
         };
+        let out = execute_via_isolated_process(inv).await;
         ExecOutcome {
-            content: execute_via_isolated_process(inv).await,
+            content: out.content,
+            images: out.images,
             denied: false,
             capability_denied: false,
         }
@@ -660,9 +670,10 @@ pub async fn execute_proceeded(
     #[cfg(not(all(unix, not(test))))]
     {
         let _ = turn_trust;
-        let content = run_in_process(tool_name, args_json, ctx, registry, os_sandbox).await;
+        let out = run_in_process(tool_name, args_json, ctx, registry, os_sandbox).await;
         ExecOutcome {
-            content,
+            content: out.content,
+            images: out.images,
             denied: false,
             capability_denied: false,
         }
@@ -679,27 +690,30 @@ async fn run_in_process(
     ctx: &ToolContext,
     registry: &ToolRegistry,
     os_sandbox: &dyn OsSandbox,
-) -> String {
+) -> crate::tools::ToolOutput {
+    use crate::tools::ToolOutput;
     if tool_name == "run_command" {
+        // run_command is text-only (no images).
         match serde_json::from_str::<serde_json::Value>(args_json)
             .ok()
             .and_then(|v| v["command"].as_str().map(|s| s.to_string()))
         {
             #[cfg(unix)]
             Some(cmd) => match run_sandboxed(&cmd, &ctx.workdir, os_sandbox).await {
-                Ok(output) => output.into_tool_result(),
-                Err(e) => format!("error: {e}"),
+                Ok(output) => ToolOutput::text(output.into_tool_result()),
+                Err(e) => ToolOutput::text(format!("error: {e}")),
             },
             #[cfg(not(unix))]
             Some(cmd) => {
                 let _ = (&cmd, os_sandbox);
-                dispatch(registry, tool_name, args_json, ctx).await
+                dispatch_rich(registry, tool_name, args_json, ctx).await
             }
-            None => dispatch(registry, tool_name, args_json, ctx).await,
+            None => dispatch_rich(registry, tool_name, args_json, ctx).await,
         }
     } else {
+        // Rich dispatch so a visual tool's screenshot survives as an image.
         let _ = os_sandbox;
-        dispatch(registry, tool_name, args_json, ctx).await
+        dispatch_rich(registry, tool_name, args_json, ctx).await
     }
 }
 
@@ -722,6 +736,9 @@ pub struct ToolInvocation {
 #[derive(Debug)]
 pub struct ExecutorOutcome {
     pub content: String,
+    /// Multimodal images the tool produced (e.g. a screenshot), carried back
+    /// across the IPC. Empty for text-only tools.
+    pub images: Vec<crate::provider::types::ImageBlock>,
     pub child_pid: u32,
     /// The per-turn tempdir handed to the child as its process cwd.
     pub cwd: PathBuf,
@@ -749,27 +766,35 @@ pub enum ForgeMode {
 /// return the tool result string. Any spawn/IPC failure is surfaced as an error
 /// string — there is **no in-process fallback** (fail-closed).
 #[cfg(unix)]
-pub async fn execute_via_isolated_process(inv: ToolInvocation) -> String {
+pub async fn execute_via_isolated_process(inv: ToolInvocation) -> crate::tools::ToolOutput {
+    use crate::tools::ToolOutput;
     let program = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            return format!(
+            return ToolOutput::text(format!(
                 "error: process-isolation could not resolve current_exe: {e} \
                  (fail-closed, no in-process fallback) [Phase 5 t5]"
-            );
+            ));
         }
     };
     tokio::task::spawn_blocking(
         move || match roundtrip(&program, &inv, false, ForgeMode::Valid) {
-            Ok(out) => out.content,
-            Err(e) => format!(
+            Ok(out) => ToolOutput {
+                content: out.content,
+                images: out.images,
+            },
+            Err(e) => ToolOutput::text(format!(
                 "error: isolated tool execution failed: {e} \
              (fail-closed, no in-process fallback) [Phase 5 t5]"
-            ),
+            )),
         },
     )
     .await
-    .unwrap_or_else(|e| format!("error: executor task join failed: {e} [Phase 5 t5]"))
+    .unwrap_or_else(|e| {
+        ToolOutput::text(format!(
+            "error: executor task join failed: {e} [Phase 5 t5]"
+        ))
+    })
 }
 
 /// Run a tool in an isolated child (test/explicit-program form).
@@ -1099,6 +1124,7 @@ fn roundtrip(
     let resp: WireResponse = serde_json::from_slice(&resp_bytes).map_err(std::io::Error::other)?;
     Ok(ExecutorOutcome {
         content: resp.content,
+        images: resp.images,
         child_pid,
         cwd: tmp_path,
         jail_status,
@@ -1180,7 +1206,7 @@ pub fn run_executor_blocking() -> i32 {
             rlimits: snapshot_rlimits(),
         };
         let content = serde_json::to_string(&report).unwrap_or_default();
-        let _ = respond(&mut sock, content);
+        let _ = respond(&mut sock, crate::tools::ToolOutput::text(content));
         return 0;
     }
 
@@ -1192,7 +1218,7 @@ pub fn run_executor_blocking() -> i32 {
              denied (fail-closed) [Phase 5 t5]",
             req.tool_name
         );
-        let _ = respond(&mut sock, content);
+        let _ = respond(&mut sock, crate::tools::ToolOutput::text(content));
         return 0;
     }
 
@@ -1226,7 +1252,7 @@ pub fn run_executor_blocking() -> i32 {
 /// case (the arg-scan + env-scrub in `run_sandboxed` still apply), and fall back
 /// to [`make_os_sandbox`] only when the executor jail was unavailable.
 #[cfg(unix)]
-async fn execute_one(req: &WireRequest) -> String {
+async fn execute_one(req: &WireRequest) -> crate::tools::ToolOutput {
     let ctx = if req.confine {
         ToolContext::new(req.workdir.clone())
     } else {
@@ -1248,8 +1274,15 @@ async fn execute_one(req: &WireRequest) -> String {
 }
 
 #[cfg(unix)]
-fn respond(sock: &mut std::os::unix::net::UnixStream, content: String) -> std::io::Result<()> {
-    let payload = serde_json::to_vec(&WireResponse { content }).map_err(std::io::Error::other)?;
+fn respond(
+    sock: &mut std::os::unix::net::UnixStream,
+    output: crate::tools::ToolOutput,
+) -> std::io::Result<()> {
+    let payload = serde_json::to_vec(&WireResponse {
+        content: output.content,
+        images: output.images,
+    })
+    .map_err(std::io::Error::other)?;
     write_frame(sock, &payload)
 }
 
@@ -1333,6 +1366,32 @@ mod tests {
         // Dynamic / MCP / unknown tools are not marshallable.
         assert!(!is_marshallable_tool("mcp__server__do_thing"));
         assert!(!is_marshallable_tool("totally_unknown_tool"));
+    }
+
+    #[test]
+    fn wire_response_round_trips_images_across_the_frame() {
+        // The IPC frame must carry a tool's images (e.g. a screenshot) intact.
+        let resp = WireResponse {
+            content: "screenshot captured".to_string(),
+            images: vec![crate::provider::types::ImageBlock {
+                media_type: "image/png".to_string(),
+                data: "QUJD".to_string(),
+            }],
+        };
+        let bytes = serde_json::to_vec(&resp).unwrap();
+        let back: WireResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.content, "screenshot captured");
+        assert_eq!(back.images.len(), 1);
+        assert_eq!(back.images[0].data, "QUJD");
+    }
+
+    #[test]
+    fn wire_response_is_backward_compatible_with_imageless_frame() {
+        // An old executor's frame (no `images` field) must still deserialize —
+        // serde default → empty vec, no error.
+        let back: WireResponse = serde_json::from_str(r#"{"content":"ok"}"#).unwrap();
+        assert_eq!(back.content, "ok");
+        assert!(back.images.is_empty());
     }
 
     #[test]
