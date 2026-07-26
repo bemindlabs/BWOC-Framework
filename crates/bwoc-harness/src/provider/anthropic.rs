@@ -490,6 +490,10 @@ impl ProviderClient for AnthropicClient {
 /// Splits out `system`, maps roles to Anthropic content blocks, merges
 /// consecutive tool results into one user turn, and rewrites tools to
 /// `input_schema`.
+// Internal per-request builder: each arg is an independent, orthogonal wire knob
+// (max_tokens / effort / thinking / cache / stream). Bundling them into a config
+// struct would add indirection without removing any real coupling.
+#[allow(clippy::too_many_arguments)]
 fn build_anthropic_body(
     messages: Vec<ChatMessage>,
     tools: Vec<Tool>,
