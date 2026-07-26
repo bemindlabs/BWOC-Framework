@@ -265,6 +265,7 @@ impl ProviderClient for CliClient {
                 finish_reason: Some(FinishReason::Stop),
             }],
             usage: None,
+            thinking_block: None,
         };
         Ok(Box::pin(futures_util::stream::iter(vec![Ok(chunk)])))
     }

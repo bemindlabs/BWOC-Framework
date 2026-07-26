@@ -299,10 +299,11 @@ prefix ของ system prompt ที่เสถียรด้วย `cache_co
 ทุก turn จึงจ่าย cache-read (~0.1×) แทน full input (block `tools` ที่ render ก่อน
 system ถูกครอบด้วย breakpoint เดียวกัน). ต่ำกว่า min cacheable size ของ provider =
 no-op เงียบ ๆ. `thinking` **ปิดโดยดีฟอลต์** (เปิดด้วย `true`): path ของ Claude native
-จะขอ adaptive extended thinking บน completion แบบ non-streaming แล้ว preserve +
-replay thinking blocks ข้าม turn — จำเป็นสำหรับ tool path เพราะ Messages API reject
-`tool_result` ที่ thinking block นำหน้าถูกตัดทิ้ง. streaming turn ยังไม่เปิด thinking
-(follow-up). ปัจจุบัน BWOC harness ยังพูดผ่าน surface OpenAI-compatible `/v1/chat/completions`
+จะขอ adaptive extended thinking บน completion ทั้งแบบ non-streaming และ streaming
+แล้ว preserve + replay thinking blocks ข้าม turn — จำเป็นสำหรับ tool path เพราะ
+Messages API reject `tool_result` ที่ thinking block นำหน้าถูกตัดทิ้ง. บน path streaming
+thinking block (พร้อม signature) จะถูกประกอบกลับจาก SSE delta แล้วแนบไปกับ assistant
+message ที่ accumulate ไว้ — replay จึงทำงานเหมือนกัน. ปัจจุบัน BWOC harness ยังพูดผ่าน surface OpenAI-compatible `/v1/chat/completions`
 เพื่อให้รันได้ทั้ง Ollama และ provider compatible อื่นๆ adapter แบบ native
 Responses API คือขั้นถัดไปสำหรับ control reasoning ของ GPT-5.5 แบบเต็ม ระหว่างนี้
 ให้ `AGENTS.md` เน้น outcome, ลด prompt scaffolding แบบบอกขั้นตอนละเอียดเกินจำเป็น,

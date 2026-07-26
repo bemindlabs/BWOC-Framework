@@ -360,10 +360,10 @@ impl ProviderClient for AnthropicClient {
             model,
             self.max_tokens,
             self.reasoning_effort.as_deref(),
-            // Guard: no thinking on the streaming path. Streaming thinking-block
-            // preservation (for replay) is a follow-up; enabling it here without
-            // replay would 400 the next tool turn. See the struct-field doc.
-            false,
+            // Streaming now preserves thinking blocks (with signature) for replay
+            // via SseState → StreamChunk.thinking_block, so it can request thinking
+            // like the non-streaming path without 400-ing the next tool turn.
+            self.thinking,
             self.prompt_cache,
             true,
         );
@@ -393,7 +393,7 @@ impl ProviderClient for AnthropicClient {
         tokio::spawn(async move {
             let mut bytes = resp.bytes_stream();
             let mut buf = String::new();
-            let mut input_tokens: u32 = 0;
+            let mut state = SseState::default();
             while let Some(chunk) = bytes.next().await {
                 match chunk {
                     Err(e) => {
@@ -418,7 +418,7 @@ impl ProviderClient for AnthropicClient {
                     let Ok(ev) = serde_json::from_str::<Value>(data) else {
                         continue;
                     };
-                    for out in translate_sse_event(&ev, &mut input_tokens) {
+                    for out in translate_sse_event(&ev, &mut state) {
                         if tx.send(out).await.is_err() {
                             return; // receiver dropped — stop early
                         }
@@ -741,14 +741,44 @@ fn parse_usage(u: &Value) -> Usage {
 /// accumulator understands. `input_tokens` is carried across events so the
 /// final `message_delta` can emit a complete [`Usage`] (Anthropic splits input
 /// tokens into `message_start` and output tokens into `message_delta`).
-fn translate_sse_event(
-    ev: &Value,
-    input_tokens: &mut u32,
-) -> Vec<Result<StreamChunk, HarnessError>> {
+/// Mutable state threaded through the Anthropic SSE translation: input-side
+/// token/cache accounting (from `message_start`) and the in-flight thinking
+/// block accumulated across deltas (finalized at `content_block_stop`).
+#[derive(Default)]
+struct SseState {
+    input_tokens: u32,
+    cache_read: Option<u32>,
+    cache_creation: Option<u32>,
+    thinking: Option<ThinkingAccum>,
+}
+
+/// A `thinking` / `redacted_thinking` block accumulated across streamed deltas.
+struct ThinkingAccum {
+    index: u32,
+    redacted: bool,
+    thinking: String,
+    signature: String,
+    data: String,
+}
+
+impl ThinkingAccum {
+    /// Finalize into the raw block Value Anthropic sends — the exact shape
+    /// [`parse_completion`] collects and `build_anthropic_body` replays.
+    fn into_block(self) -> Value {
+        if self.redacted {
+            json!({ "type": "redacted_thinking", "data": self.data })
+        } else {
+            json!({ "type": "thinking", "thinking": self.thinking, "signature": self.signature })
+        }
+    }
+}
+
+fn translate_sse_event(ev: &Value, state: &mut SseState) -> Vec<Result<StreamChunk, HarnessError>> {
     let mk = |choices: Vec<StreamDelta>, usage: Option<Usage>| StreamChunk {
         id: "anthropic".to_string(),
         choices,
         usage,
+        thinking_block: None,
     };
     let text_chunk = |content: Option<String>, tool_calls: Option<Vec<ToolCallDelta>>| {
         mk(
@@ -767,15 +797,18 @@ fn translate_sse_event(
 
     match ev["type"].as_str() {
         Some("message_start") => {
-            *input_tokens = ev["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
+            let u = &ev["message"]["usage"];
+            state.input_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+            state.cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
+            state.cache_creation = u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
             Vec::new()
         }
         Some("content_block_start") => {
-            // A tool_use block opening carries its id + name; emit them as the
-            // start of a tool-call delta keyed by the block index.
-            if ev["content_block"]["type"].as_str() == Some("tool_use") {
-                let index = ev["index"].as_u64().unwrap_or(0) as u32;
-                vec![Ok(text_chunk(
+            let index = ev["index"].as_u64().unwrap_or(0) as u32;
+            match ev["content_block"]["type"].as_str() {
+                // A tool_use block opening carries its id + name; emit them as
+                // the start of a tool-call delta keyed by the block index.
+                Some("tool_use") => vec![Ok(text_chunk(
                     None,
                     Some(vec![ToolCallDelta {
                         index,
@@ -786,9 +819,31 @@ fn translate_sse_event(
                             arguments: None,
                         }),
                     }]),
-                ))]
-            } else {
-                Vec::new()
+                ))],
+                Some("thinking") => {
+                    state.thinking = Some(ThinkingAccum {
+                        index,
+                        redacted: false,
+                        thinking: String::new(),
+                        signature: String::new(),
+                        data: String::new(),
+                    });
+                    Vec::new()
+                }
+                Some("redacted_thinking") => {
+                    state.thinking = Some(ThinkingAccum {
+                        index,
+                        redacted: true,
+                        thinking: String::new(),
+                        signature: String::new(),
+                        data: ev["content_block"]["data"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    });
+                    Vec::new()
+                }
+                _ => Vec::new(),
             }
         }
         Some("content_block_delta") => match ev["delta"]["type"].as_str() {
@@ -799,6 +854,20 @@ fn translate_sse_event(
                 } else {
                     vec![Ok(text_chunk(Some(text), None))]
                 }
+            }
+            Some("thinking_delta") => {
+                if let Some(t) = state.thinking.as_mut() {
+                    t.thinking
+                        .push_str(ev["delta"]["thinking"].as_str().unwrap_or_default());
+                }
+                Vec::new()
+            }
+            Some("signature_delta") => {
+                if let Some(t) = state.thinking.as_mut() {
+                    t.signature
+                        .push_str(ev["delta"]["signature"].as_str().unwrap_or_default());
+                }
+                Vec::new()
             }
             Some("input_json_delta") => {
                 let index = ev["index"].as_u64().unwrap_or(0) as u32;
@@ -821,18 +890,33 @@ fn translate_sse_event(
             }
             _ => Vec::new(),
         },
+        Some("content_block_stop") => {
+            // Finalize an in-flight thinking block into a carrier chunk so the
+            // accumulator can preserve it (with signature) for replay. A stop
+            // for any other block type (tool_use / text) leaves state untouched.
+            let idx = ev["index"].as_u64().unwrap_or(0) as u32;
+            match state.thinking.take() {
+                Some(t) if t.index == idx => {
+                    let mut chunk = mk(Vec::new(), None);
+                    chunk.thinking_block = Some(t.into_block());
+                    vec![Ok(chunk)]
+                }
+                other => {
+                    state.thinking = other;
+                    Vec::new()
+                }
+            }
+        }
         Some("message_delta") => {
             let output = ev["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
             vec![Ok(mk(
                 Vec::new(),
-                // Streaming cache-token capture is deferred: the flat cache
-                // fields live on the `message_start` usage (input side), which
-                // would need threading through the stream-state. Non-streaming
-                // `parse_usage` captures them; here they default to `None`.
                 Some(Usage {
-                    prompt_tokens: *input_tokens,
+                    prompt_tokens: state.input_tokens,
                     completion_tokens: output,
-                    total_tokens: *input_tokens + output,
+                    total_tokens: state.input_tokens + output,
+                    cache_read_tokens: state.cache_read,
+                    cache_creation_tokens: state.cache_creation,
                     ..Usage::default()
                 }),
             ))]
@@ -843,7 +927,7 @@ fn translate_sse_event(
                 .unwrap_or("anthropic stream error");
             vec![Err(HarnessError::Provider(msg.to_string()))]
         }
-        // ping / content_block_stop / message_stop carry nothing we re-emit.
+        // ping / message_stop carry nothing we re-emit.
         _ => Vec::new(),
     }
 }
@@ -1266,10 +1350,10 @@ mod tests {
 
     #[test]
     fn sse_text_delta_becomes_token_content() {
-        let mut input = 0u32;
+        let mut st = SseState::default();
         let ev = json!({"type": "content_block_delta", "index": 0,
             "delta": {"type": "text_delta", "text": "Hi"}});
-        let out = translate_sse_event(&ev, &mut input);
+        let out = translate_sse_event(&ev, &mut st);
         assert_eq!(out.len(), 1);
         let chunk = out.into_iter().next().unwrap().unwrap();
         assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("Hi"));
@@ -1277,13 +1361,13 @@ mod tests {
 
     #[test]
     fn sse_usage_combines_input_start_with_output_delta() {
-        let mut input = 0u32;
+        let mut st = SseState::default();
         let start = json!({"type": "message_start", "message": {"usage": {"input_tokens": 42}}});
-        assert!(translate_sse_event(&start, &mut input).is_empty());
-        assert_eq!(input, 42);
+        assert!(translate_sse_event(&start, &mut st).is_empty());
+        assert_eq!(st.input_tokens, 42);
         let delta = json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
             "usage": {"output_tokens": 7}});
-        let out = translate_sse_event(&delta, &mut input);
+        let out = translate_sse_event(&delta, &mut st);
         let chunk = out.into_iter().next().unwrap().unwrap();
         let u = chunk.usage.unwrap();
         assert_eq!(u.prompt_tokens, 42);
@@ -1293,10 +1377,10 @@ mod tests {
 
     #[test]
     fn sse_tool_use_start_and_json_delta_accumulate() {
-        let mut input = 0u32;
+        let mut st = SseState::default();
         let start = json!({"type": "content_block_start", "index": 1,
             "content_block": {"type": "tool_use", "id": "tu_9", "name": "edit"}});
-        let out = translate_sse_event(&start, &mut input);
+        let out = translate_sse_event(&start, &mut st);
         let chunk = out.into_iter().next().unwrap().unwrap();
         let tc = &chunk.choices[0].delta.tool_calls.as_ref().unwrap()[0];
         assert_eq!(tc.index, 1);
@@ -1305,12 +1389,87 @@ mod tests {
 
         let jd = json!({"type": "content_block_delta", "index": 1,
             "delta": {"type": "input_json_delta", "partial_json": "{\"path\":"}});
-        let out = translate_sse_event(&jd, &mut input);
+        let out = translate_sse_event(&jd, &mut st);
         let chunk = out.into_iter().next().unwrap().unwrap();
         let tc = &chunk.choices[0].delta.tool_calls.as_ref().unwrap()[0];
         assert_eq!(
             tc.function.as_ref().unwrap().arguments.as_deref(),
             Some("{\"path\":")
         );
+    }
+
+    #[test]
+    fn sse_message_start_captures_cache_tokens() {
+        let mut st = SseState::default();
+        let start = json!({"type": "message_start", "message": {"usage": {
+            "input_tokens": 100,
+            "cache_read_input_tokens": 640,
+            "cache_creation_input_tokens": 128
+        }}});
+        assert!(translate_sse_event(&start, &mut st).is_empty());
+        let delta = json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 9}});
+        let chunk = translate_sse_event(&delta, &mut st)
+            .into_iter()
+            .next()
+            .unwrap()
+            .unwrap();
+        let u = chunk.usage.unwrap();
+        assert_eq!(u.prompt_tokens, 100);
+        assert_eq!(u.cached_tokens(), Some(640));
+        assert_eq!(u.cache_creation_tokens, Some(128));
+    }
+
+    #[test]
+    fn sse_thinking_block_round_trips_for_replay() {
+        // A thinking block streamed as start → thinking_delta(s) → signature_delta
+        // → stop must be finalized into a carrier chunk whose thinking_block is the
+        // exact shape parse_completion produces (so the accumulator can replay it).
+        let mut st = SseState::default();
+
+        let start = json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}});
+        assert!(translate_sse_event(&start, &mut st).is_empty());
+        assert!(st.thinking.is_some());
+
+        for piece in ["Let me ", "reason."] {
+            let d = json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": piece}});
+            assert!(translate_sse_event(&d, &mut st).is_empty());
+        }
+        let sig = json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "signature_delta", "signature": "SIG=="}});
+        assert!(translate_sse_event(&sig, &mut st).is_empty());
+
+        let stop = json!({"type": "content_block_stop", "index": 0});
+        let out = translate_sse_event(&stop, &mut st);
+        let chunk = out.into_iter().next().unwrap().unwrap();
+        let block = chunk
+            .thinking_block
+            .expect("carrier chunk carries the block");
+        assert_eq!(block["type"], "thinking");
+        assert_eq!(block["thinking"], "Let me reason.");
+        assert_eq!(block["signature"], "SIG==");
+        // State is cleared so a following block doesn't leak into it.
+        assert!(st.thinking.is_none());
+        // No token deltas emitted for a pure thinking block.
+        assert!(chunk.choices.is_empty());
+    }
+
+    #[test]
+    fn sse_redacted_thinking_block_preserves_data() {
+        let mut st = SseState::default();
+        let start = json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "redacted_thinking", "data": "ENCRYPTED"}});
+        assert!(translate_sse_event(&start, &mut st).is_empty());
+        let stop = json!({"type": "content_block_stop", "index": 0});
+        let chunk = translate_sse_event(&stop, &mut st)
+            .into_iter()
+            .next()
+            .unwrap()
+            .unwrap();
+        let block = chunk.thinking_block.unwrap();
+        assert_eq!(block["type"], "redacted_thinking");
+        assert_eq!(block["data"], "ENCRYPTED");
     }
 }

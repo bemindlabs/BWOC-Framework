@@ -367,6 +367,13 @@ pub struct StreamChunk {
     /// chunks.
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// A **completed** Anthropic thinking / redacted_thinking block (raw JSON,
+    /// incl. `signature`), emitted once when the streamed block closes so the
+    /// accumulator can preserve it on the assistant message for same-model
+    /// replay. `None` on OpenAI-compat and on every non-thinking chunk. Never
+    /// sent by any provider — this is the harness's own stream-carrier field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_block: Option<serde_json::Value>,
 }
 
 /// One streaming choice delta.

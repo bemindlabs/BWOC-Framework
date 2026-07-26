@@ -151,11 +151,17 @@ pub(super) async fn stream_and_accumulate(
     // Usage arrives on the final chunk (stream_options.include_usage); keep the
     // last non-empty one (HV2-7 — closes the streaming-usage gap).
     let mut usage: Option<crate::provider::Usage> = None;
+    // Thinking blocks arrive as carrier chunks (Anthropic streaming). Preserved
+    // verbatim in stream order so the next tool turn can replay them (else 400).
+    let mut thinking_blocks: Vec<serde_json::Value> = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result?;
         if chunk.usage.is_some() {
             usage = chunk.usage;
+        }
+        if let Some(block) = chunk.thinking_block {
+            thinking_blocks.push(block);
         }
         for delta_choice in chunk.choices {
             let delta = delta_choice.delta;
@@ -205,7 +211,7 @@ pub(super) async fn stream_and_accumulate(
             .collect()
     };
 
-    let message = ChatMessage::assistant(
+    let mut message = ChatMessage::assistant(
         if content_buf.is_empty() {
             None
         } else {
@@ -217,6 +223,9 @@ pub(super) async fn stream_and_accumulate(
             Some(tool_calls)
         },
     );
+    if !thinking_blocks.is_empty() {
+        message = message.with_thinking_blocks(thinking_blocks);
+    }
     Ok((message, usage))
 }
 
