@@ -54,13 +54,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF##refs/tags/}"
+          # Idempotent: if a Release object for this tag already exists (a tag
+          # re-push, a re-run, or a race that created it first), `gh release
+          # create` 422s ("already_exists") and fails the whole job — which
+          # `needs:`-chains build + bump-formula into `skipped`, shipping a
+          # release with zero binaries (issue #371). Reuse the existing shell
+          # instead; the matrix build jobs append their assets to it.
           # --notes-start-tag=$prev would be ideal but `gh release create`
           # auto-generates from history when --generate-notes is set;
           # safer for the first release where no prior tag exists.
-          gh release create "$tag" \
-            --title "$tag" \
-            --generate-notes \
-            --repo "$GITHUB_REPOSITORY"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists — reusing it (matrix jobs append assets)."
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --generate-notes \
+              --repo "$GITHUB_REPOSITORY"
+          fi
 
   build:
     name: build ${{ matrix.target }} (${{ matrix.os }})
