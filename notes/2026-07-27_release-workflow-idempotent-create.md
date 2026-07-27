@@ -10,7 +10,7 @@ Fixes issue #371. The `create-release` job called `gh release create "$tag"` unc
 - **No TH pair / no version bump.** `.github/` is operator-internal (EN-only per CONTRIBUTING); a `.yml` edit doesn't trip the auto-version hook.
 
 ## Verification
-`python -c 'yaml.safe_load(...)'` parses clean. Full behaviour is only observable on the next tag push (a real release run); the logic is a standard idempotent-create guard.
+`python3 -c 'import yaml; yaml.safe_load(open(".github/workflows/release.yml"))'` parses clean. Full behaviour is only observable on the next tag push (a real release run); the logic is a standard idempotent-create guard.
 
 ## Related
 - Closes #371. Filed alongside the dep-vuln sweep (PR #388 quinn-proto, issue #389 rustls-webpki/rumqttc).
