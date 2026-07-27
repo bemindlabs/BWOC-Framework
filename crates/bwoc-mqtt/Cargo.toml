@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 bwoc-core = { path = "../bwoc-core" }
-rumqttc = "0.24"
+rumqttc = { version = "0.24", default-features = false }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
