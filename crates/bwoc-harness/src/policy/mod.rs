@@ -32,8 +32,11 @@
 //!
 //! Per-tool / per-pattern `allow | ask | deny` modes loaded from
 //! `config.manifest.json` and `.bwoc/harness-policy.toml`.  `ask` prompts
-//! the operator on TTY; in non-TTY / autonomous mode it falls back to the
-//! policy default (deny).  Denials are fed back to the model as tool results.
+//! the operator on TTY; without a TTY it either escalates to a human via the
+//! opt-in approval console (`--approval-channel`, see [`approval`]) or, absent
+//! that, falls back to the policy default (deny).  A channel can only turn a
+//! would-be deny into an operator-approved allow, never weaken a deny. Denials
+//! are fed back to the model as tool results.
 //!
 //! ## Layer 3 — Sandbox (`crate::sandbox`)
 //!
@@ -41,9 +44,11 @@
 //! allowlist; `run_command` with env scrub and arg-level scan; OS-level
 //! sandbox stub (macOS / Linux pluggable trait, v1 is worktree+allowlist).
 
+pub mod approval;
 pub mod guardrails;
 pub mod permission;
 
+pub use approval::{ApprovalChannel, ApprovalDecision, ApprovalRequest, FileApprovalChannel};
 pub use guardrails::{GuardrailViolation, check as guardrail_check};
 pub use permission::{
     HarnessPolicy, Mode, PermissionDecision, Policy, evaluate as permission_evaluate,
@@ -263,6 +268,7 @@ mod tests {
             default_mode: Mode::Allow,
             tools: std::collections::HashMap::new(),
             patterns: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -271,6 +277,7 @@ mod tests {
             default_mode: Mode::Deny,
             tools: std::collections::HashMap::new(),
             patterns: Vec::new(),
+            ..Default::default()
         }
     }
 

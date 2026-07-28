@@ -39,21 +39,37 @@ pub(super) async fn execute_tool_calls(
 
     // ── Phase 0/1: Capability gate → Guardrails → Permission, SEQUENTIALLY ──
     // Decide every call in order before any execution so an interactive `ask`
-    // prompt can't race another call's prompt for the same stdin/terminal. The
-    // Layer-0 capability gate (Phase 5 t2) consumes this turn's trust verdict.
-    let decisions: Vec<PolicyOutcome> = calls
-        .iter()
-        .map(|call| {
-            run_pipeline(
-                &call.function.name,
-                &call.function.arguments,
-                &ctx.workdir,
-                &config.policy,
-                config.is_tty,
-                turn_trust,
-            )
+    // prompt (or approval-console wait) can't race another call's for the same
+    // stdin/terminal. The Layer-0 capability gate (Phase 5 t2) consumes this
+    // turn's trust verdict.
+    //
+    // `run_pipeline` is synchronous and may **block** for a long time — an
+    // interactive `ask` reads stdin, and the opt-in approval channel polls a
+    // file for up to `APPROVAL_TIMEOUT_S`. Running it inline would wedge a Tokio
+    // worker (starving streaming / heartbeats), so each check is offloaded to
+    // the blocking pool and awaited **one at a time** — off the async workers,
+    // yet still strictly sequential so the no-stdin-race invariant holds.
+    let mut decisions: Vec<PolicyOutcome> = Vec::with_capacity(calls.len());
+    for call in calls {
+        let name = call.function.name.clone();
+        let args = call.function.arguments.clone();
+        let workdir = ctx.workdir.clone();
+        let policy = config.policy.clone();
+        let is_tty = config.is_tty;
+        let outcome = tokio::task::spawn_blocking(move || {
+            run_pipeline(&name, &args, &workdir, &policy, is_tty, turn_trust)
         })
-        .collect();
+        .await
+        // A panic in the policy task is near-impossible, but fail **closed** if
+        // it ever happens — deny rather than silently proceed.
+        .unwrap_or_else(|_| {
+            PolicyOutcome::PermissionDenied(format!(
+                "tool `{}` denied: the policy check task failed unexpectedly (fail-closed).",
+                call.function.name
+            ))
+        });
+        decisions.push(outcome);
+    }
 
     // ── Phase 2: Sandbox → execute, CONCURRENTLY ────────────────────────────
     // `join_all` preserves input order so results line up with `calls`; each

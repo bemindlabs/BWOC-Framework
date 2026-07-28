@@ -34,10 +34,16 @@
 //! # `ask` mode in non-TTY / autonomous contexts
 //!
 //! When the harness is running without a controlling TTY (e.g. in CI, in a
-//! background agent, or spawned by `bwoc spawn`), there is no operator to
-//! ask.  In that case `ask` falls back to the `default_mode` — which itself
-//! defaults to `deny`.  This is the fail-safe behaviour required by the
-//! design note.
+//! background agent, or spawned by `bwoc spawn`), there is no operator at the
+//! terminal.  Two paths then apply:
+//!
+//! - **Approval console attached** (opt-in `--approval-channel`): the `ask` is
+//!   escalated to a human out-of-band via [`super::approval`] and blocks for the
+//!   verdict.  A timeout / I/O error falls through to the fail-safe below, so the
+//!   channel can only ever turn a would-be deny into an operator-approved allow.
+//! - **No console**: `ask` falls back to the `default_mode` — which itself
+//!   defaults to `deny` (high-blast-radius tools deny regardless).  This is the
+//!   fail-safe behaviour required by the design note.
 //!
 //! # Taṇhā 3 mapping
 //!
@@ -104,6 +110,14 @@ pub struct Policy {
     pub tools: std::collections::HashMap<String, Mode>,
     /// Pattern rules, evaluated in declaration order; first match wins.
     pub patterns: Vec<PatternRule>,
+    /// The agent whose turns this policy governs — stamped onto approval
+    /// requests so the console knows who is asking. Empty when unset.
+    pub agent_id: String,
+    /// Optional human-in-the-loop channel used to resolve an `ask` when there is
+    /// **no TTY**. `None` → the pre-existing fail-safe applies unchanged. The
+    /// channel can only ever turn a would-be deny into an operator-approved
+    /// allow — never weaken a deny (see [`super::approval`]).
+    pub approval: Option<std::sync::Arc<dyn super::approval::ApprovalChannel>>,
 }
 
 impl Default for Policy {
@@ -112,6 +126,8 @@ impl Default for Policy {
             default_mode: Mode::Deny, // fail-safe
             tools: std::collections::HashMap::new(),
             patterns: Vec::new(),
+            agent_id: String::new(),
+            approval: None,
         }
     }
 }
@@ -190,6 +206,7 @@ impl From<HarnessPolicy> for Policy {
             default_mode,
             tools,
             patterns,
+            ..Default::default()
         }
     }
 }
@@ -335,34 +352,83 @@ fn apply_mode(
         Mode::Ask => {
             if is_tty {
                 prompt_operator(tool_name, arguments_json)
-            } else if ASK_BY_DEFAULT_TOOLS.contains(&tool_name) {
-                // High-blast-radius tool with no explicit per-tool grant (an
-                // explicit `allow` would have resolved to `Allow` upstream and
-                // never reached here). Non-TTY → fail-safe *deny* regardless of
-                // `default_mode`, so autoprocess can never silently drive it.
-                PermissionDecision::Deny {
-                    reason: format!(
-                        "tool `{tool_name}` is computer-use (high blast radius) and requires \
-                         operator approval, but no TTY is available. Denied by fail-safe \
-                         policy. Set `{tool_name} = \"allow\"` in `.bwoc/harness-policy.toml` \
-                         to permit it in autonomous mode."
-                    ),
-                }
-            } else {
-                // Non-TTY: fail-safe to default_mode (which is deny unless
-                // explicitly set to allow, which would be unusual).
-                match &policy.default_mode {
-                    Mode::Allow => PermissionDecision::Allow,
-                    _ => PermissionDecision::Deny {
+            } else if let Some(channel) = &policy.approval {
+                // No controlling TTY, but a human is reachable out-of-band via
+                // the approval console. Escalate and block for the verdict. A
+                // timeout / I/O error returns `None`, and we then apply the
+                // *exact* fail-safe we would have with no channel at all — the
+                // channel can only ever turn a would-be deny into an
+                // operator-approved allow, never weaken a deny.
+                let req = super::approval::ApprovalRequest::new(
+                    policy.agent_id.as_str(),
+                    tool_name,
+                    arguments_json,
+                    "", // trust badge — populated by a later slice
+                    APPROVAL_TIMEOUT_S,
+                );
+                match channel.request(&req) {
+                    Some(d) if d.allow => {
+                        if d.always {
+                            eprintln!(
+                                "[bwoc-harness] approval: operator allowed `{tool_name}` \
+                                 (always — honoured for this call; persistent rules are a \
+                                 later slice)"
+                            );
+                        }
+                        PermissionDecision::Allow
+                    }
+                    Some(_) => PermissionDecision::Deny {
                         reason: format!(
-                            "tool `{tool_name}` requires operator approval (`ask` mode) \
-                             but no TTY is available. Denied by fail-safe policy. \
-                             Set mode to `allow` in `.bwoc/harness-policy.toml` to \
-                             permit this tool in autonomous mode."
+                            "tool `{tool_name}` was denied by the operator via the approval \
+                             console."
                         ),
                     },
+                    None => fail_safe_ask(policy, tool_name),
                 }
+            } else {
+                fail_safe_ask(policy, tool_name)
             }
+        }
+    }
+}
+
+/// How long a non-TTY `ask` waits for an operator verdict on the approval
+/// channel before falling back to fail-safe. Long enough for a human to notice
+/// the console prompt; short enough not to wedge an agent turn indefinitely.
+const APPROVAL_TIMEOUT_S: u64 = 300;
+
+/// The fail-safe applied to a non-TTY `ask` when no operator is reachable —
+/// either no approval channel is configured, or the channel timed out. Factored
+/// out so the "no channel" and "channel timeout" paths are provably identical to
+/// the pre-existing behaviour: a high-blast-radius tool denies regardless of
+/// `default_mode`; anything else falls back to `default_mode`.
+fn fail_safe_ask(policy: &Policy, tool_name: &str) -> PermissionDecision {
+    if ASK_BY_DEFAULT_TOOLS.contains(&tool_name) {
+        // High-blast-radius tool with no explicit per-tool grant (an explicit
+        // `allow` would have resolved to `Allow` upstream and never reached
+        // here). Non-TTY → fail-safe *deny* regardless of `default_mode`, so
+        // autoprocess can never silently drive it.
+        PermissionDecision::Deny {
+            reason: format!(
+                "tool `{tool_name}` is computer-use (high blast radius) and requires \
+                 operator approval, but no TTY is available. Denied by fail-safe \
+                 policy. Set `{tool_name} = \"allow\"` in `.bwoc/harness-policy.toml` \
+                 to permit it in autonomous mode."
+            ),
+        }
+    } else {
+        // Fail-safe to default_mode (which is deny unless explicitly set to
+        // allow, which would be unusual).
+        match &policy.default_mode {
+            Mode::Allow => PermissionDecision::Allow,
+            _ => PermissionDecision::Deny {
+                reason: format!(
+                    "tool `{tool_name}` requires operator approval (`ask` mode) \
+                     but no TTY is available. Denied by fail-safe policy. \
+                     Set mode to `allow` in `.bwoc/harness-policy.toml` to \
+                     permit this tool in autonomous mode."
+                ),
+            },
         }
     }
 }
@@ -407,11 +473,94 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// Scripted approval channel: `Some(true)` allow, `Some(false)` deny,
+    /// `None` timeout (→ caller applies fail-safe).
+    #[derive(Debug)]
+    struct MockChannel(Option<bool>);
+    impl crate::policy::approval::ApprovalChannel for MockChannel {
+        fn request(
+            &self,
+            _req: &crate::policy::approval::ApprovalRequest,
+        ) -> Option<crate::policy::approval::ApprovalDecision> {
+            self.0
+                .map(|allow| crate::policy::approval::ApprovalDecision {
+                    allow,
+                    always: false,
+                    by: "test".into(),
+                })
+        }
+    }
+
+    fn ask_policy_with_channel(ch: Option<bool>) -> Policy {
+        let mut p = Policy::default(); // default_mode = Deny (fail-safe)
+        p.tools.insert("write_file".into(), Mode::Ask);
+        p.approval = Some(std::sync::Arc::new(MockChannel(ch)));
+        p
+    }
+
+    #[test]
+    fn ask_channel_allow_proceeds_without_tty() {
+        let d = evaluate(
+            &ask_policy_with_channel(Some(true)),
+            "write_file",
+            r#"{"path":"x"}"#,
+            false,
+        );
+        assert_eq!(d, PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn ask_channel_deny_blocks_without_tty() {
+        let d = evaluate(
+            &ask_policy_with_channel(Some(false)),
+            "write_file",
+            r#"{"path":"x"}"#,
+            false,
+        );
+        assert!(matches!(d, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn ask_channel_timeout_falls_back_to_failsafe_deny() {
+        // No operator verdict (None) → exact fail-safe: default_mode is Deny.
+        let d = evaluate(
+            &ask_policy_with_channel(None),
+            "write_file",
+            r#"{"path":"x"}"#,
+            false,
+        );
+        assert!(matches!(d, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn ask_channel_can_approve_high_blast_radius() {
+        // A human CAN approve computer-use via the console (the point of it).
+        let p = Policy {
+            approval: Some(std::sync::Arc::new(MockChannel(Some(true)))),
+            ..Default::default()
+        };
+        let d = evaluate(&p, "computer", r#"{"action":"screenshot"}"#, false);
+        assert_eq!(d, PermissionDecision::Allow);
+    }
+
+    #[test]
+    fn ask_channel_timeout_cannot_weaken_high_blast_radius() {
+        // computer + channel timeout → still deny, even with default_mode=Allow.
+        let p = Policy {
+            default_mode: Mode::Allow,
+            approval: Some(std::sync::Arc::new(MockChannel(None))),
+            ..Default::default()
+        };
+        let d = evaluate(&p, "computer", r#"{"action":"screenshot"}"#, false);
+        assert!(matches!(d, PermissionDecision::Deny { .. }));
+    }
+
     fn allow_all() -> Policy {
         Policy {
             default_mode: Mode::Allow,
             tools: HashMap::new(),
             patterns: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -420,6 +569,7 @@ mod tests {
             default_mode: Mode::Deny,
             tools: HashMap::new(),
             patterns: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -438,6 +588,7 @@ mod tests {
                 mode,
                 reason: reason.map(|s| s.to_string()),
             }],
+            ..Default::default()
         }
     }
 

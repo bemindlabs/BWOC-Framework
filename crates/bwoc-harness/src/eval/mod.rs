@@ -534,6 +534,7 @@ mod tests {
                 default_mode: Mode::Allow,
                 tools: std::collections::HashMap::new(),
                 patterns: Vec::new(),
+                ..Default::default()
             },
             is_tty: false,
             context_limit: 0,
