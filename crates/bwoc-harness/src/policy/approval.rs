@@ -137,10 +137,19 @@ impl ApprovalChannel for FileApprovalChannel {
         std::fs::create_dir_all(pending.parent()?).ok()?;
         std::fs::create_dir_all(decided.parent()?).ok()?;
 
-        // Atomic publish: write a temp file then rename into place.
+        // Atomic publish: write a temp file then rename into place. Clean the
+        // temp up on either failure path so a permission/IO error never leaves a
+        // stray `*.tmp` cluttering `pending/`.
+        let payload = serde_json::to_vec(req).ok()?;
         let tmp = pending.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_vec(req).ok()?).ok()?;
-        std::fs::rename(&tmp, &pending).ok()?;
+        if std::fs::write(&tmp, &payload).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
+        if std::fs::rename(&tmp, &pending).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
 
         let deadline = Instant::now() + Duration::from_secs(req.timeout_s);
         let result = loop {
