@@ -1171,6 +1171,7 @@ mod tests {
             default_mode: Mode::Allow,
             tools: HashMap::new(),
             patterns: Vec::new(),
+            ..Default::default()
         }
     }
 

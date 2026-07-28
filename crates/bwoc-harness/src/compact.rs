@@ -570,6 +570,7 @@ mod tests {
             default_mode: Mode::Allow,
             tools: std::collections::HashMap::new(),
             patterns: Vec::new(),
+            ..Default::default()
         };
         let wt = std::path::Path::new("/tmp/agent-luban/gate-survive");
 

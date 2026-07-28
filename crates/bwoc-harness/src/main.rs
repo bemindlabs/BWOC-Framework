@@ -77,6 +77,15 @@ struct Args {
     #[arg(long, requires = "eval")]
     json: bool,
 
+    /// Route `ask`-mode tools to the human-in-the-loop approval console when
+    /// there is no TTY (e.g. a fleet agent spawned by the macOS control center).
+    /// The harness writes each pending request to `<workdir>/.bwoc/approvals/`
+    /// and blocks for the operator's verdict; a timeout falls back to the same
+    /// fail-safe as without the flag (an approval can only turn a would-be deny
+    /// into an operator-approved allow, never weaken a deny).
+    #[arg(long = "approval-channel")]
+    approval_channel: bool,
+
     /// Path to the Saṅgha `tasks.jsonl` (required with `--lead`).
     #[arg(long, requires = "lead")]
     tasks: Option<PathBuf>,
@@ -562,7 +571,7 @@ async fn run() -> HarnessResult<()> {
     // ── Permission policy ─────────────────────────────────────────────────
     // Load from .bwoc/harness-policy.toml relative to the workdir.
     // Falls back to a fail-safe deny-all policy if the file is absent.
-    let policy: Policy = HarnessPolicy::load(&workdir)
+    let mut policy: Policy = HarnessPolicy::load(&workdir)
         .unwrap_or_else(|e| {
             eprintln!(
                 "[bwoc-harness] warning: could not load harness-policy.toml: {e}. \
@@ -571,6 +580,16 @@ async fn run() -> HarnessResult<()> {
             bwoc_harness::policy::HarnessPolicy::default()
         })
         .into();
+
+    // Human-in-the-loop approval console (opt-in). Only meaningful without a TTY
+    // (with one, `ask` prompts on stdin as before); attaching it is harmless
+    // otherwise since the channel is consulted only on the non-TTY `ask` path.
+    if args.approval_channel {
+        policy.agent_id = args.agent.clone();
+        policy.approval = Some(std::sync::Arc::new(
+            bwoc_harness::policy::FileApprovalChannel::new(workdir.join(".bwoc").join("approvals")),
+        ));
+    }
 
     // Detect TTY: if stderr is a terminal, the operator can respond to `ask` prompts.
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
@@ -916,6 +935,7 @@ async fn run_eval_mode(
             default_mode: Mode::Allow,
             tools: std::collections::HashMap::new(),
             patterns: Vec::new(),
+            ..Default::default()
         },
         is_tty: false,
         context_limit: 0,
@@ -1274,6 +1294,7 @@ fn chat_default_policy() -> Policy {
         default_mode: Mode::Ask,
         tools,
         patterns: Vec::new(),
+        ..Default::default()
     }
 }
 
