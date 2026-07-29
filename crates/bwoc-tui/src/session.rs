@@ -30,7 +30,8 @@ struct FleetSnapshot {
 }
 
 /// Run `<bwoc> list --json` and parse the fleet. Returns an empty list on any
-/// failure (the caller shows an empty sidebar rather than crashing).
+/// failure; the caller decides what an empty fleet means (`run_fleet` treats it
+/// as a user error and exits rather than opening an empty sidebar).
 pub fn fetch_fleet(bwoc_bin: &str, workdir: &str) -> Vec<AgentInfo> {
     let out = Command::new(bwoc_bin)
         .args(["list", "--json", "--workspace", workdir])
@@ -67,23 +68,32 @@ pub struct Session {
 impl Session {
     /// Spawn `bwoc-harness --chat` for `agent` and start the reader thread.
     pub fn spawn(agent: &str, cfg: &SessionConfig) -> std::io::Result<Self> {
+        // An empty model omits `--model` entirely — matching the single-agent
+        // path, so the harness falls back to its own default rather than being
+        // handed an empty (invalid) model string.
+        let mut args: Vec<&str> = vec![
+            "--chat",
+            "--agent",
+            agent,
+            "--workdir",
+            &cfg.workdir,
+            "--backend",
+            &cfg.backend,
+            "--endpoint",
+            &cfg.endpoint,
+        ];
+        if !cfg.model.is_empty() {
+            args.push("--model");
+            args.push(&cfg.model);
+        }
         let mut child = Command::new(&cfg.harness_bin)
-            .args([
-                "--chat",
-                "--agent",
-                agent,
-                "--workdir",
-                &cfg.workdir,
-                "--backend",
-                &cfg.backend,
-                "--model",
-                &cfg.model,
-                "--endpoint",
-                &cfg.endpoint,
-            ])
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            // Inherit stderr like the single-agent TUI: invisible under the alt
+            // screen, but still captured by a shell redirect so a crashed
+            // session is diagnosable (it would otherwise vanish silently).
+            .stderr(Stdio::inherit())
             .spawn()?;
 
         let stdin = child.stdin.take().expect("piped stdin");
@@ -112,6 +122,13 @@ impl Session {
         });
 
         Ok(Self { child, stdin, rx })
+    }
+
+    /// Whether the child is still running. Used to reap a session whose harness
+    /// exited *without* emitting `Bye` (channel disconnect alone can't be told
+    /// apart from "no messages yet" via `try_iter`).
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 
     /// Send one input line to the session. Best-effort — a broken pipe means the

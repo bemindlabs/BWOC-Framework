@@ -661,7 +661,7 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
 // streaming into its pane (and its sidebar dot) while you read another. `Tab`
 // switches which pane fills the chat area.
 
-/// Args for the multi-agent fleet TUI (`bwoc chat --tui` with no agent).
+/// Args for the multi-agent fleet TUI (`bwoc chat <agent> --tui --fleet`).
 /// Backend/model/endpoint are chosen once for the session and applied to every
 /// agent (per-agent manifest resolution is a later slice).
 pub struct FleetArgs {
@@ -744,6 +744,13 @@ impl Fleet {
                     p.apply(ev);
                 }
             }
+            // A harness that exited *without* a Bye leaves the channel merely
+            // disconnected (indistinguishable from "empty" via try_iter), so
+            // check the child directly and reap it — otherwise the Session +
+            // its Child handle would leak.
+            if self.sessions.get_mut(&id).is_some_and(|s| !s.is_alive()) {
+                dead.push(id.clone());
+            }
         }
         for id in dead {
             self.sessions.remove(&id);
@@ -790,7 +797,9 @@ pub fn run_fleet(args: FleetArgs) -> i32 {
             "bwoc chat --tui: no agents found in {} (bwoc list --json).",
             cfg.workdir
         );
-        return 1;
+        // Exit 2 — a user/input error (no fleet to show), consistent with the
+        // CLI's "no workspace" / "no agent" codes.
+        return 2;
     }
 
     let mut term = match setup_terminal() {
