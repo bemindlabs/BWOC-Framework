@@ -40,6 +40,11 @@ pub struct ChatArgs {
     /// `--tui` with a harness backend (ollama / openai-compatible / openrouter);
     /// ignored otherwise. The agent must be a member of the team.
     pub team: Option<String>,
+    /// Open the multi-agent **fleet** TUI (left sidebar of every agent, `Tab`
+    /// to switch, one live session per agent) instead of a single-agent chat.
+    /// Requires `--tui` with a harness backend; the named agent's backend/model
+    /// seed the shared session config for the whole fleet.
+    pub fleet: bool,
 }
 
 pub fn run(args: ChatArgs) -> i32 {
@@ -114,6 +119,38 @@ pub fn run(args: ChatArgs) -> i32 {
             "bwoc chat: --team needs --tui with a harness backend \
              (ollama / openai-compatible / openrouter); running this session solo."
         );
+    }
+
+    if args.tui && args.fleet {
+        // Fleet TUI: every agent in the workspace, one live session each. The
+        // named agent's backend/model seed the shared session config (per-agent
+        // manifest resolution is a later slice). Harness backends only.
+        if backend.uses_harness() {
+            let manifest = bwoc_core::manifest::Manifest::load_from_path(
+                &agent_path.join("config.manifest.json"),
+            )
+            .ok();
+            let model = manifest
+                .as_ref()
+                .map(|m| m.primary_model.clone())
+                .unwrap_or_default();
+            let endpoint = manifest
+                .as_ref()
+                .and_then(|m| m.base_url.clone())
+                .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
+            return bwoc_tui::run_fleet(bwoc_tui::FleetArgs {
+                workdir: workspace.clone(),
+                backend: backend.display_name().to_string(),
+                model,
+                endpoint,
+            });
+        }
+        eprintln!(
+            "bwoc chat --tui --fleet: agent '{}' uses the '{}' backend, which the TUI can't drive.",
+            entry.id,
+            backend.display_name()
+        );
+        return 1;
     }
 
     if args.tui {

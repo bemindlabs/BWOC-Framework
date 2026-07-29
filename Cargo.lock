@@ -474,6 +474,7 @@ dependencies = [
  "bwoc-core",
  "crossterm",
  "ratatui",
+ "serde",
  "serde_json",
 ]
 
