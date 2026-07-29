@@ -16,7 +16,7 @@
 //!     events on a short (50ms) timeout, draining the channel between polls,
 //!     and writing [`ChatInput`] lines to the child's stdin.
 //!
-//! Layout (one screen, no mouse, no scrollbar — v1 is deliberately lean):
+//! Layout (one screen, no mouse; PgUp/PgDn/End scroll the conversation):
 //!   ┌ status ──────────────────────────────────────────┐
 //!   ┌ conversation ────────────┬ tools / activity ──────┐
 //!   │ user + assistant turns   │ ToolCall/ToolResult,    │
@@ -250,6 +250,10 @@ struct App {
     usage: Option<(u64, u64)>,
     /// Set once the harness sends `Bye` (or its stream closes) — the loop exits.
     done: bool,
+    /// Conversation scrollback offset: lines up from the live bottom. `0` pins
+    /// the view to the newest turn; `PageUp` raises it, `End` returns to live.
+    /// New content never yanks the view because the offset is bottom-relative.
+    scroll: usize,
 }
 
 struct ReadyStatus {
@@ -271,6 +275,29 @@ impl App {
             pending: None,
             usage: None,
             done: false,
+            scroll: 0,
+        }
+    }
+
+    /// Apply a scroll key. `PageUp`/`PageDown` move by ~a screenful (bounded by
+    /// the caller's clamp in `draw_conversation`); `End` returns to live. Returns
+    /// true if the key was a scroll key (so the caller stops processing it).
+    fn scroll_key(&mut self, code: KeyCode) -> bool {
+        const PAGE: usize = 10;
+        match code {
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_add(PAGE);
+                true
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_sub(PAGE);
+                true
+            }
+            KeyCode::End => {
+                self.scroll = 0;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -461,10 +488,16 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         }
     }
 
+    // Scrollback navigation (PageUp/PageDown/End) — before input editing.
+    if app.scroll_key(code) {
+        return Ok(false);
+    }
+
     match code {
         KeyCode::Enter => {
             let text = std::mem::take(&mut app.input);
             if !text.trim().is_empty() {
+                app.scroll = 0; // jump to live so the reply is visible
                 app.conversation.push(format!("you: {text}"));
                 // The local TUI is the trusted operator channel (Phase 5 t1).
                 send_input(
@@ -581,15 +614,28 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
         )));
     }
 
-    // Pin the view to the tail: keep only the last `height` lines so the most
-    // recent turn is always visible (no scrollbar in v1).
+    // The view is anchored to the tail; `app.scroll` (lines up from the bottom)
+    // lets the operator page back through history. `skip` drops that many lines
+    // from the front, scaled up by the scroll offset; both are clamped, so the
+    // window can never run past either end.
     let inner_height = area.height.saturating_sub(2) as usize; // borders
-    let skip = lines.len().saturating_sub(inner_height.max(1));
-    let visible: Vec<Line> = lines.into_iter().skip(skip).collect();
+    let total = lines.len();
+    let scroll = app.scroll.min(total.saturating_sub(inner_height.max(1)));
+    let skip = total.saturating_sub(inner_height.max(1) + scroll);
+    let visible: Vec<Line> = lines
+        .into_iter()
+        .skip(skip)
+        .take(inner_height.max(1))
+        .collect();
 
+    let title = if scroll > 0 {
+        format!(" conversation ↑{scroll} (End=live) ")
+    } else {
+        " conversation ".to_string()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" conversation ")
+        .title(title)
         .border_style(Style::default().fg(tone(design::color::ACCENT)));
     let p = Paragraph::new(visible)
         .block(block)
@@ -887,6 +933,13 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
         }
     }
 
+    // Scrollback on the active pane (PageUp/PageDown/End).
+    if let Some(p) = fleet.panes.get_mut(&id) {
+        if p.scroll_key(code) {
+            return Ok(false);
+        }
+    }
+
     match code {
         KeyCode::Enter => {
             let text = fleet
@@ -897,6 +950,7 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
             if !text.trim().is_empty() {
                 if let Some(p) = fleet.panes.get_mut(&id) {
                     p.conversation.push(format!("you: {text}"));
+                    p.scroll = 0; // jump to live
                 }
                 if let Some(s) = fleet.sessions.get_mut(&id) {
                     s.send(&ChatInput::User {
@@ -1187,5 +1241,24 @@ mod tests {
         assert!(!app.done);
         app.apply(ChatEvent::Bye);
         assert!(app.done);
+    }
+
+    #[test]
+    fn scroll_key_pages_and_end_returns_to_live() {
+        let mut app = App::new("a".into(), "ollama");
+        assert_eq!(app.scroll, 0);
+        assert!(app.scroll_key(KeyCode::PageUp));
+        assert_eq!(app.scroll, 10);
+        assert!(app.scroll_key(KeyCode::PageUp));
+        assert_eq!(app.scroll, 20);
+        assert!(app.scroll_key(KeyCode::PageDown));
+        assert_eq!(app.scroll, 10);
+        assert!(app.scroll_key(KeyCode::End));
+        assert_eq!(app.scroll, 0);
+        // PageDown at the bottom saturates at 0 (never negative).
+        assert!(app.scroll_key(KeyCode::PageDown));
+        assert_eq!(app.scroll, 0);
+        // A non-scroll key is not consumed.
+        assert!(!app.scroll_key(KeyCode::Enter));
     }
 }
