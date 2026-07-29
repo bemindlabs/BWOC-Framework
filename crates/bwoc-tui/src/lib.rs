@@ -279,9 +279,9 @@ impl App {
         }
     }
 
-    /// Apply a scroll key. `PageUp`/`PageDown` move by ~a screenful (bounded by
-    /// the caller's clamp in `draw_conversation`); `End` returns to live. Returns
-    /// true if the key was a scroll key (so the caller stops processing it).
+    /// Apply a scroll key. `PageUp`/`PageDown` move by a fixed 10 lines (the
+    /// offset is clamped to the content in `draw_conversation`); `End` returns to
+    /// live. Returns true if the key was a scroll key (caller stops processing).
     fn scroll_key(&mut self, code: KeyCode) -> bool {
         const PAGE: usize = 10;
         match code {
