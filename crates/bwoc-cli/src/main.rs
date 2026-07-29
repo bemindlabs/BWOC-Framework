@@ -1460,6 +1460,11 @@ struct ChatArgs {
     /// `--tui` with a harness backend; the agent must be a team member.
     #[arg(long)]
     team: Option<String>,
+    /// Open the multi-agent **fleet** TUI: a left sidebar of every agent, `Tab`
+    /// to switch, one live session per agent. Requires `--tui` with a harness
+    /// backend; the named agent's backend/model seed the shared session config.
+    #[arg(long, requires = "tui")]
+    fleet: bool,
 }
 
 impl ChatArgs {
@@ -1472,6 +1477,7 @@ impl ChatArgs {
             ghostty: self.ghostty,
             tui: self.tui,
             team: self.team,
+            fleet: self.fleet,
         }
     }
 }

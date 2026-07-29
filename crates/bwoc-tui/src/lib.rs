@@ -28,11 +28,16 @@
 //! permission request `a`/`d` allow/deny; Ctrl-C (or `q` when input is empty)
 //! sends `Quit`, restores the terminal, and exits.
 
+mod session;
+
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
+
+use session::{AgentInfo, Session, SessionConfig, fetch_fleet};
 
 use bwoc_core::chat_proto::{ChatEvent, ChatInput};
 use bwoc_core::design;
@@ -48,7 +53,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
 /// Default OpenAI-compatible endpoint when the agent's manifest has no
 /// `baseUrl` (Ollama). Mirrors the harness's own `DEFAULT_ENDPOINT`; defined
@@ -644,6 +649,358 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .border_style(border);
     let p = Paragraph::new(Line::from(format!("> {}", app.input))).block(block);
     f.render_widget(p, area);
+}
+
+// ===========================================================================
+// Fleet mode (multi-agent) — a left fleet sidebar + one live session per agent
+// ===========================================================================
+//
+// Additive over the single-agent path: it reuses the very same per-agent [`App`]
+// (event mapping + draw helpers), one instance per fleet member, and drains
+// **every** live [`session::Session`] each tick so a background agent keeps
+// streaming into its pane (and its sidebar dot) while you read another. `Tab`
+// switches which pane fills the chat area.
+
+/// Args for the multi-agent fleet TUI (`bwoc chat <agent> --tui --fleet`).
+/// Backend/model/endpoint are chosen once for the session and applied to every
+/// agent (per-agent manifest resolution is a later slice).
+pub struct FleetArgs {
+    pub workdir: PathBuf,
+    pub backend: String,
+    pub model: String,
+    pub endpoint: String,
+}
+
+struct Fleet {
+    cfg: SessionConfig,
+    agents: Vec<AgentInfo>,
+    panes: HashMap<String, App>,
+    sessions: HashMap<String, Session>,
+    selected: usize,
+}
+
+impl Fleet {
+    fn new(agents: Vec<AgentInfo>, cfg: SessionConfig) -> Self {
+        let mut f = Self {
+            cfg,
+            agents,
+            panes: HashMap::new(),
+            sessions: HashMap::new(),
+            selected: 0,
+        };
+        if let Some(id) = f.agents.first().map(|a| a.id.clone()) {
+            f.open(&id);
+        }
+        f
+    }
+
+    fn active_id(&self) -> Option<String> {
+        self.agents.get(self.selected).map(|a| a.id.clone())
+    }
+
+    /// Ensure a pane + session exist for `agent` (lazy, idempotent).
+    fn open(&mut self, agent: &str) {
+        let backend = self
+            .agents
+            .iter()
+            .find(|a| a.id == agent)
+            .map(|a| a.backend.clone())
+            .unwrap_or_default();
+        self.panes
+            .entry(agent.to_string())
+            .or_insert_with(|| App::new(agent.to_string(), &backend));
+        if self.sessions.contains_key(agent) {
+            return;
+        }
+        match Session::spawn(agent, &self.cfg) {
+            Ok(s) => {
+                self.sessions.insert(agent.to_string(), s);
+            }
+            Err(e) => {
+                if let Some(p) = self.panes.get_mut(agent) {
+                    p.activity.push(format!("✗ failed to start session: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Fold every live session's pending events into its pane. Collect each
+    /// session's currently-available events first (immutable borrow), then apply
+    /// them to the pane (mutable) — two phases so `sessions` and `panes` never
+    /// alias, and no manual `try_recv` loop for clippy to grumble about.
+    fn drain(&mut self) {
+        let ids: Vec<String> = self.sessions.keys().cloned().collect();
+        let mut dead = Vec::new();
+        for id in ids {
+            let events: Vec<ChatEvent> = match self.sessions.get(&id) {
+                Some(s) => s.rx.try_iter().collect(),
+                None => continue,
+            };
+            for ev in events {
+                if matches!(ev, ChatEvent::Bye) {
+                    dead.push(id.clone());
+                }
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.apply(ev);
+                }
+            }
+            // A harness that exited *without* a Bye leaves the channel merely
+            // disconnected (indistinguishable from "empty" via try_iter), so
+            // check the child directly and reap it — otherwise the Session +
+            // its Child handle would leak.
+            if self.sessions.get_mut(&id).is_some_and(|s| !s.is_alive()) {
+                dead.push(id.clone());
+            }
+        }
+        for id in dead {
+            self.sessions.remove(&id);
+        }
+    }
+
+    fn switch(&mut self, delta: i32) {
+        if self.agents.is_empty() {
+            return;
+        }
+        let n = self.agents.len() as i32;
+        self.selected = (((self.selected as i32 + delta) % n + n) % n) as usize;
+        if let Some(id) = self.active_id() {
+            self.open(&id);
+        }
+    }
+}
+
+/// Entry point for the fleet TUI. Discovers agents via `bwoc list --json`,
+/// opens the first, and runs the sidebar loop.
+pub fn run_fleet(args: FleetArgs) -> i32 {
+    use std::io::IsTerminal;
+    if !io::stdout().is_terminal() {
+        eprintln!("bwoc chat --tui: stdout is not a TTY — run in an interactive terminal.");
+        return 2;
+    }
+    let Some(harness) = bwoc_core::exec::sibling_binary("bwoc-harness") else {
+        eprintln!("bwoc chat --tui: bwoc-harness binary not found (install it or add to PATH).");
+        return 2;
+    };
+    let bwoc_bin = bwoc_core::exec::sibling_binary("bwoc")
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "bwoc".to_string());
+    let cfg = SessionConfig {
+        harness_bin: harness.to_string_lossy().into_owned(),
+        workdir: args.workdir.to_string_lossy().into_owned(),
+        backend: args.backend,
+        model: args.model,
+        endpoint: args.endpoint,
+    };
+    let agents = fetch_fleet(&bwoc_bin, &cfg.workdir);
+    if agents.is_empty() {
+        eprintln!(
+            "bwoc chat --tui: no agents found in {} (bwoc list --json).",
+            cfg.workdir
+        );
+        // Exit 2 — a user/input error (no fleet to show), consistent with the
+        // CLI's "no workspace" / "no agent" codes.
+        return 2;
+    }
+
+    let mut term = match setup_terminal() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("bwoc chat --tui: failed to enter alt screen: {e}");
+            return 1;
+        }
+    };
+    let mut fleet = Fleet::new(agents, cfg);
+    let result = fleet_event_loop(&mut term, &mut fleet);
+    if let Err(e) = restore_terminal() {
+        eprintln!("bwoc chat --tui: warning — failed to restore terminal: {e}");
+    }
+    // Dropping `fleet` drops each Session → Quit + kill + reap every child.
+    drop(fleet);
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("bwoc chat --tui: {e}");
+            1
+        }
+    }
+}
+
+fn fleet_event_loop(
+    term: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    fleet: &mut Fleet,
+) -> io::Result<()> {
+    loop {
+        term.draw(|f| draw_fleet(f, fleet))?;
+        fleet.drain();
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+            && fleet_handle_key(fleet, key)?
+        {
+            return Ok(());
+        }
+    }
+}
+
+/// Returns `Ok(true)` on quit. Routes input to the **active** pane's session.
+fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
+    let KeyEvent {
+        code, modifiers, ..
+    } = key;
+    if let (KeyCode::Char('c'), KeyModifiers::CONTROL) = (code, modifiers) {
+        return Ok(true);
+    }
+    match code {
+        KeyCode::Tab => {
+            fleet.switch(1);
+            return Ok(false);
+        }
+        KeyCode::BackTab => {
+            fleet.switch(-1);
+            return Ok(false);
+        }
+        _ => {}
+    }
+    let Some(id) = fleet.active_id() else {
+        return Ok(false);
+    };
+
+    // A pending approval on the active pane captures a/d.
+    let pending_id = fleet
+        .panes
+        .get(&id)
+        .and_then(|p| p.pending.as_ref().map(|pd| pd.id.clone()));
+    if let Some(pid) = pending_id {
+        match code {
+            KeyCode::Char('a') | KeyCode::Char('d') => {
+                let allow = code == KeyCode::Char('a');
+                if let Some(s) = fleet.sessions.get_mut(&id) {
+                    s.send(&ChatInput::Permission { id: pid, allow });
+                }
+                if let Some(p) = fleet.panes.get_mut(&id) {
+                    p.pending = None;
+                    p.activity
+                        .push(if allow { "✓ allowed" } else { "✗ denied" }.to_string());
+                }
+                return Ok(false);
+            }
+            _ => {}
+        }
+    }
+
+    match code {
+        KeyCode::Enter => {
+            let text = fleet
+                .panes
+                .get_mut(&id)
+                .map(|p| std::mem::take(&mut p.input))
+                .unwrap_or_default();
+            if !text.trim().is_empty() {
+                if let Some(p) = fleet.panes.get_mut(&id) {
+                    p.conversation.push(format!("you: {text}"));
+                }
+                if let Some(s) = fleet.sessions.get_mut(&id) {
+                    s.send(&ChatInput::User {
+                        text,
+                        principal: Principal::LocalOperator,
+                    });
+                }
+            }
+            Ok(false)
+        }
+        KeyCode::Backspace => {
+            if let Some(p) = fleet.panes.get_mut(&id) {
+                p.input.pop();
+            }
+            Ok(false)
+        }
+        KeyCode::Char('q')
+            if fleet
+                .panes
+                .get(&id)
+                .map(|p| p.input.is_empty())
+                .unwrap_or(true) =>
+        {
+            Ok(true)
+        }
+        KeyCode::Char(c) => {
+            if let Some(p) = fleet.panes.get_mut(&id) {
+                p.input.push(c);
+            }
+            Ok(false)
+        }
+        KeyCode::Esc => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+fn draw_fleet(f: &mut ratatui::Frame, fleet: &Fleet) {
+    let area = f.area();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(20), Constraint::Min(20)])
+        .split(rows[1]);
+
+    draw_fleet_sidebar(f, cols[0], fleet);
+    if let Some(id) = fleet.active_id() {
+        if let Some(app) = fleet.panes.get(&id) {
+            draw_status(f, rows[0], app);
+            draw_body(f, cols[1], app);
+            draw_input(f, rows[2], app);
+        }
+    }
+}
+
+fn draw_fleet_sidebar(f: &mut ratatui::Frame, area: Rect, fleet: &Fleet) {
+    let items: Vec<ListItem> = fleet
+        .agents
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let pane = fleet.panes.get(&a.id);
+            let busy = pane
+                .map(|p| !p.streaming.is_empty() || p.pending.is_some())
+                .unwrap_or(false);
+            let (dot, color) = if busy {
+                ("●", Color::Green)
+            } else if a.inbox_count > 0 {
+                ("◍", Color::Yellow)
+            } else if a.running {
+                ("●", Color::DarkGray)
+            } else {
+                ("○", Color::DarkGray)
+            };
+            let name = a.id.strip_prefix("agent-").unwrap_or(&a.id).to_string();
+            let unread = if a.inbox_count > 0 {
+                format!(" ({})", a.inbox_count)
+            } else {
+                String::new()
+            };
+            let name_style = if i == fleet.selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{dot} "), Style::default().fg(color)),
+                Span::styled(format!("{name}{unread}"), name_style),
+            ]))
+        })
+        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" fleet ")
+        .border_style(Style::default().fg(tone(design::color::ACCENT)));
+    f.render_widget(List::new(items).block(block), area);
 }
 
 #[cfg(test)]
