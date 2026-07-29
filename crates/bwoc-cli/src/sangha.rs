@@ -368,7 +368,6 @@ fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<
     // races the `execve()`; the kernel clears it within a few ms. A short
     // bounded retry makes that deterministic without masking a genuine failure
     // (any other error, or ETXTBSY that persists past the retries, still fails).
-    const ETXTBSY: i32 = 26;
     let mut attempt = 0u32;
     let output = loop {
         match std::process::Command::new(&hook)
@@ -377,7 +376,7 @@ fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<
             .output()
         {
             Ok(o) => break o,
-            Err(e) if e.raw_os_error() == Some(ETXTBSY) && attempt < 5 => {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 5 => {
                 attempt += 1;
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
