@@ -362,11 +362,27 @@ fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<
     #[cfg(not(unix))]
     let _ = &meta;
 
-    let output = std::process::Command::new(&hook)
-        .envs(env.iter().copied())
-        .current_dir(workspace)
-        .output()
-        .map_err(|e| format!("hook {event} failed to run: {e}"))?;
+    // Exec, retrying on ETXTBSY ("Text file busy"). A hook installed moments
+    // earlier — a concurrent `bwoc` that just wrote+chmod'd it, or this crate's
+    // own test — can transiently refuse to exec while the writer's `close()`
+    // races the `execve()`; the kernel clears it within a few ms. A short
+    // bounded retry makes that deterministic without masking a genuine failure
+    // (any other error, or ETXTBSY that persists past the retries, still fails).
+    let mut attempt = 0u32;
+    let output = loop {
+        match std::process::Command::new(&hook)
+            .envs(env.iter().copied())
+            .current_dir(workspace)
+            .output()
+        {
+            Ok(o) => break o,
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 5 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => return Err(format!("hook {event} failed to run: {e}")),
+        }
+    };
     if output.status.success() {
         Ok(())
     } else {
