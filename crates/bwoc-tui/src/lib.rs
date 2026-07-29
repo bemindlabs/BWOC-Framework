@@ -254,8 +254,10 @@ struct App {
     /// the view to the newest turn; `PageUp` raises it, `End` returns to live.
     /// New content never yanks the view because the offset is bottom-relative.
     scroll: usize,
-    /// Permission mode reflected from the harness (`default` | `accept_edits` |
-    /// `bypass`), cycled with `F2`. Shown in the status line.
+    /// Permission mode as last reported by the harness's `ModeChanged` — the
+    /// harness is authoritative, so this mirrors whatever it sends (today
+    /// `default` | `accept_edits` | `bypass`). `F2` cycles through those three.
+    /// Shown in the status line.
     mode: String,
 }
 
@@ -365,8 +367,8 @@ impl App {
                 self.pending = Some(Pending { id, tool, detail });
             }
             ChatEvent::ModeChanged { mode } => {
-                self.mode = mode.clone();
                 self.conversation.push(format!("● permission mode: {mode}"));
+                self.mode = mode;
             }
             ChatEvent::Compacted { removed } => {
                 self.conversation.push(format!(
