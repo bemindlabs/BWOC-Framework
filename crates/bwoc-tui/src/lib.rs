@@ -844,8 +844,8 @@ impl Fleet {
             self.palette = None;
             return false;
         };
-        let quit = match item.action {
-            PaletteAction::Switch(i) => {
+        let quit = match &item.action {
+            &PaletteAction::Switch(i) => {
                 self.selected = i;
                 if let Some(id) = self.active_id() {
                     self.open(&id);
