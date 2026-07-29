@@ -254,6 +254,12 @@ struct App {
     /// the view to the newest turn; `PageUp` raises it, `End` returns to live.
     /// New content never yanks the view because the offset is bottom-relative.
     scroll: usize,
+    /// Permission mode as last reported by the harness's `ModeChanged` — the
+    /// harness is authoritative, so this mirrors whatever it sends (`default` |
+    /// `accept_edits` | `bypass`, and `plan` if the harness enters it). `F2`
+    /// cycles the first three; `plan` (only ever entered harness-side) falls
+    /// back to `default` on the next `F2`. Shown in the status line.
+    mode: String,
 }
 
 struct ReadyStatus {
@@ -276,6 +282,18 @@ impl App {
             usage: None,
             done: false,
             scroll: 0,
+            mode: "default".to_string(),
+        }
+    }
+
+    /// The mode `F2` cycles to next: default → accept_edits → bypass → default.
+    /// Any other value the harness may report (e.g. `plan`) also maps to
+    /// `default`, so `F2` always re-enters the cycle from a known point.
+    fn next_mode(&self) -> &'static str {
+        match self.mode.as_str() {
+            "default" => "accept_edits",
+            "accept_edits" => "bypass",
+            _ => "default",
         }
     }
 
@@ -353,6 +371,7 @@ impl App {
             }
             ChatEvent::ModeChanged { mode } => {
                 self.conversation.push(format!("● permission mode: {mode}"));
+                self.mode = mode;
             }
             ChatEvent::Compacted { removed } => {
                 self.conversation.push(format!(
@@ -494,6 +513,16 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
     }
 
     match code {
+        // F2 cycles the permission mode. Update `mode` optimistically so a
+        // second press advances even before the harness echoes `ModeChanged`
+        // (it may not, e.g. while a permission prompt is outstanding); the echo
+        // overwrites it authoritatively when it arrives.
+        KeyCode::F(2) => {
+            let next = app.next_mode().to_string();
+            app.mode = next.clone();
+            send_input(stdin, &ChatInput::SetMode { mode: next })?;
+            Ok(false)
+        }
         KeyCode::Enter => {
             let text = std::mem::take(&mut app.input);
             if !text.trim().is_empty() {
@@ -584,10 +613,11 @@ fn status_line(app: &App) -> String {
             app.agent_id, app.backend
         ),
     };
-    match app.usage {
+    let usage = match app.usage {
         Some((p, c)) => format!("{base}· tokens {p}+{c} "),
         None => base,
-    }
+    };
+    format!("{usage}· mode {} (F2) ", app.mode)
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -941,6 +971,20 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     }
 
     match code {
+        // F2 cycles the active pane's permission mode. Update the pane's `mode`
+        // optimistically (see the single-agent F2 handler) so repeated presses
+        // advance even if the harness defers its `ModeChanged` echo.
+        KeyCode::F(2) => {
+            if let Some(next) = fleet.panes.get(&id).map(|p| p.next_mode().to_string()) {
+                if let Some(p) = fleet.panes.get_mut(&id) {
+                    p.mode = next.clone();
+                }
+                if let Some(s) = fleet.sessions.get_mut(&id) {
+                    s.send(&ChatInput::SetMode { mode: next });
+                }
+            }
+            Ok(false)
+        }
         KeyCode::Enter => {
             let text = fleet
                 .panes
@@ -1241,6 +1285,23 @@ mod tests {
         assert!(!app.done);
         app.apply(ChatEvent::Bye);
         assert!(app.done);
+    }
+
+    #[test]
+    fn mode_cycles_and_reflects_mode_changed() {
+        let mut app = App::new("a".into(), "ollama");
+        assert_eq!(app.mode, "default");
+        assert_eq!(app.next_mode(), "accept_edits");
+        app.apply(ChatEvent::ModeChanged {
+            mode: "accept_edits".into(),
+        });
+        assert_eq!(app.mode, "accept_edits");
+        assert_eq!(app.next_mode(), "bypass");
+        app.apply(ChatEvent::ModeChanged {
+            mode: "bypass".into(),
+        });
+        assert_eq!(app.next_mode(), "default");
+        assert!(status_line(&app).contains("mode bypass"));
     }
 
     #[test]
