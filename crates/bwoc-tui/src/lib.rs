@@ -254,6 +254,9 @@ struct App {
     /// the view to the newest turn; `PageUp` raises it, `End` returns to live.
     /// New content never yanks the view because the offset is bottom-relative.
     scroll: usize,
+    /// Permission mode reflected from the harness (`default` | `accept_edits` |
+    /// `bypass`), cycled with `F2`. Shown in the status line.
+    mode: String,
 }
 
 struct ReadyStatus {
@@ -276,6 +279,16 @@ impl App {
             usage: None,
             done: false,
             scroll: 0,
+            mode: "default".to_string(),
+        }
+    }
+
+    /// The mode `F2` cycles to next: default → accept_edits → bypass → default.
+    fn next_mode(&self) -> &'static str {
+        match self.mode.as_str() {
+            "default" => "accept_edits",
+            "accept_edits" => "bypass",
+            _ => "default",
         }
     }
 
@@ -352,6 +365,7 @@ impl App {
                 self.pending = Some(Pending { id, tool, detail });
             }
             ChatEvent::ModeChanged { mode } => {
+                self.mode = mode.clone();
                 self.conversation.push(format!("● permission mode: {mode}"));
             }
             ChatEvent::Compacted { removed } => {
@@ -494,6 +508,12 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
     }
 
     match code {
+        // F2 cycles the permission mode; the harness echoes `ModeChanged`.
+        KeyCode::F(2) => {
+            let next = app.next_mode().to_string();
+            send_input(stdin, &ChatInput::SetMode { mode: next })?;
+            Ok(false)
+        }
         KeyCode::Enter => {
             let text = std::mem::take(&mut app.input);
             if !text.trim().is_empty() {
@@ -584,10 +604,11 @@ fn status_line(app: &App) -> String {
             app.agent_id, app.backend
         ),
     };
-    match app.usage {
+    let usage = match app.usage {
         Some((p, c)) => format!("{base}· tokens {p}+{c} "),
         None => base,
-    }
+    };
+    format!("{usage}· mode {} (F2) ", app.mode)
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -941,6 +962,15 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     }
 
     match code {
+        // F2 cycles the active pane's permission mode.
+        KeyCode::F(2) => {
+            if let Some(next) = fleet.panes.get(&id).map(|p| p.next_mode().to_string()) {
+                if let Some(s) = fleet.sessions.get_mut(&id) {
+                    s.send(&ChatInput::SetMode { mode: next });
+                }
+            }
+            Ok(false)
+        }
         KeyCode::Enter => {
             let text = fleet
                 .panes
@@ -1241,6 +1271,23 @@ mod tests {
         assert!(!app.done);
         app.apply(ChatEvent::Bye);
         assert!(app.done);
+    }
+
+    #[test]
+    fn mode_cycles_and_reflects_mode_changed() {
+        let mut app = App::new("a".into(), "ollama");
+        assert_eq!(app.mode, "default");
+        assert_eq!(app.next_mode(), "accept_edits");
+        app.apply(ChatEvent::ModeChanged {
+            mode: "accept_edits".into(),
+        });
+        assert_eq!(app.mode, "accept_edits");
+        assert_eq!(app.next_mode(), "bypass");
+        app.apply(ChatEvent::ModeChanged {
+            mode: "bypass".into(),
+        });
+        assert_eq!(app.next_mode(), "default");
+        assert!(status_line(&app).contains("mode bypass"));
     }
 
     #[test]
