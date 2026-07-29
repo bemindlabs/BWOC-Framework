@@ -255,9 +255,10 @@ struct App {
     /// New content never yanks the view because the offset is bottom-relative.
     scroll: usize,
     /// Permission mode as last reported by the harness's `ModeChanged` — the
-    /// harness is authoritative, so this mirrors whatever it sends (today
-    /// `default` | `accept_edits` | `bypass`). `F2` cycles through those three.
-    /// Shown in the status line.
+    /// harness is authoritative, so this mirrors whatever it sends (`default` |
+    /// `accept_edits` | `bypass`, and `plan` if the harness enters it). `F2`
+    /// cycles the first three; `plan` (only ever entered harness-side) falls
+    /// back to `default` on the next `F2`. Shown in the status line.
     mode: String,
 }
 
@@ -286,6 +287,8 @@ impl App {
     }
 
     /// The mode `F2` cycles to next: default → accept_edits → bypass → default.
+    /// Any other value the harness may report (e.g. `plan`) also maps to
+    /// `default`, so `F2` always re-enters the cycle from a known point.
     fn next_mode(&self) -> &'static str {
         match self.mode.as_str() {
             "default" => "accept_edits",
@@ -510,9 +513,13 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
     }
 
     match code {
-        // F2 cycles the permission mode; the harness echoes `ModeChanged`.
+        // F2 cycles the permission mode. Update `mode` optimistically so a
+        // second press advances even before the harness echoes `ModeChanged`
+        // (it may not, e.g. while a permission prompt is outstanding); the echo
+        // overwrites it authoritatively when it arrives.
         KeyCode::F(2) => {
             let next = app.next_mode().to_string();
+            app.mode = next.clone();
             send_input(stdin, &ChatInput::SetMode { mode: next })?;
             Ok(false)
         }
@@ -964,9 +971,14 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     }
 
     match code {
-        // F2 cycles the active pane's permission mode.
+        // F2 cycles the active pane's permission mode. Update the pane's `mode`
+        // optimistically (see the single-agent F2 handler) so repeated presses
+        // advance even if the harness defers its `ModeChanged` echo.
         KeyCode::F(2) => {
             if let Some(next) = fleet.panes.get(&id).map(|p| p.next_mode().to_string()) {
+                if let Some(p) = fleet.panes.get_mut(&id) {
+                    p.mode = next.clone();
+                }
                 if let Some(s) = fleet.sessions.get_mut(&id) {
                     s.send(&ChatInput::SetMode { mode: next });
                 }
