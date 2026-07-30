@@ -869,21 +869,35 @@ impl Fleet {
         quit
     }
 
-    /// Ensure a pane + session exist for `agent` (lazy, idempotent).
+    /// Ensure a pane + session exist for `agent` (lazy, idempotent). Each agent
+    /// is driven with its **own** backend + manifest-resolved model/endpoint
+    /// (see [`SessionConfig::for_agent`]); a vendor-CLI backend the harness can't
+    /// drive gets a pane with a hint but no session.
     fn open(&mut self, agent: &str) {
-        let backend = self
-            .agents
-            .iter()
-            .find(|a| a.id == agent)
-            .map(|a| a.backend.clone())
-            .unwrap_or_default();
+        let Some(info) = self.agents.iter().find(|a| a.id == agent).cloned() else {
+            return;
+        };
         self.panes
             .entry(agent.to_string())
-            .or_insert_with(|| App::new(agent.to_string(), &backend));
+            .or_insert_with(|| App::new(agent.to_string(), &info.backend));
         if self.sessions.contains_key(agent) {
             return;
         }
-        match Session::spawn(agent, &self.cfg) {
+        if !session::is_harness_drivable(&info.backend) {
+            if let Some(p) = self.panes.get_mut(agent) {
+                // Only note it once — `open` is called on every pane switch.
+                let hint = format!(
+                    "● {} backend — not harness-drivable; open with `bwoc chat {}` directly",
+                    info.backend, agent
+                );
+                if p.conversation.last() != Some(&hint) {
+                    p.conversation.push(hint);
+                }
+            }
+            return;
+        }
+        let cfg = self.cfg.for_agent(&info);
+        match Session::spawn(agent, &cfg) {
             Ok(s) => {
                 self.sessions.insert(agent.to_string(), s);
             }
@@ -1510,6 +1524,7 @@ mod tests {
                 .map(|id| AgentInfo {
                     id: (*id).to_string(),
                     backend: "ollama".into(),
+                    path: format!("agents/{id}"),
                     running: false,
                     inbox_count: 0,
                 })

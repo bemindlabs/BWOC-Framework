@@ -6,6 +6,7 @@
 //! [`Session::send`] writes a [`ChatInput`] to the child's stdin.
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -17,9 +18,44 @@ use serde::Deserialize;
 pub struct AgentInfo {
     pub id: String,
     pub backend: String,
+    /// Workspace-relative agent directory (e.g. `agents/agent-anna`), used to
+    /// locate the agent's `config.manifest.json` for per-agent model/endpoint
+    /// resolution. `default` tolerates an older `bwoc` that omits the field.
+    #[serde(default)]
+    pub path: String,
     pub running: bool,
     #[serde(rename = "inbox_count", default)]
     pub inbox_count: u32,
+}
+
+/// Whether the fleet can drive `backend` through `bwoc-harness --chat`. Mirrors
+/// `bwoc_cli::spawn::Backend::uses_harness` (the TUI must not depend on
+/// `bwoc-cli`): the OpenAI-compatible family speaks `chat_proto`, while vendor
+/// CLIs (claude / agy / codex / kimi / copilot) speak their own interactive
+/// protocol and must be opened with `bwoc chat` directly.
+pub fn is_harness_drivable(backend: &str) -> bool {
+    matches!(
+        backend,
+        "ollama" | "openai-compatible" | "openrouter" | "litellm"
+    )
+}
+
+/// Whether `path` is safe to join under the workspace root: non-empty and every
+/// component a plain name — no root (`/`), drive prefix (`C:\`), or `..` that
+/// could escape the workspace. Guards the untrusted `path` from
+/// `bwoc list --json` before it selects which `config.manifest.json` to read.
+fn is_safe_relative_path(path: &str) -> bool {
+    use std::path::Component;
+    let mut has_name = false;
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(_) => has_name = true,
+            Component::CurDir => {}
+            // RootDir / Prefix (absolute) or ParentDir (`..`) — reject.
+            _ => return false,
+        }
+    }
+    has_name
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,8 +82,12 @@ pub fn fetch_fleet(bwoc_bin: &str, workdir: &str) -> Vec<AgentInfo> {
 }
 
 /// Where the harness binary lives + how to reach the model — passed straight
-/// through to `bwoc-harness --chat`. (Per-agent manifest resolution is a later
-/// slice; P1 uses one operator-supplied backend/model for every session.)
+/// through to `bwoc-harness --chat`.
+///
+/// The `backend` / `model` / `endpoint` here are the **fleet defaults** (seeded
+/// from the launching agent). [`SessionConfig::for_agent`] derives a per-agent
+/// config that overrides them from each agent's own `config.manifest.json`, so a
+/// mixed fleet drives every pane with its author's declared backend and model.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub harness_bin: String,
@@ -55,6 +95,55 @@ pub struct SessionConfig {
     pub backend: String,
     pub model: String,
     pub endpoint: String,
+}
+
+impl SessionConfig {
+    /// A per-agent config: the agent's own `backend`, plus `model` and
+    /// `endpoint` read from its `<workdir>/<path>/config.manifest.json`. Any
+    /// field the manifest omits (or a missing/unreadable manifest) falls back to
+    /// this config's default value — never a broken empty string.
+    pub fn for_agent(&self, agent: &AgentInfo) -> SessionConfig {
+        // `agent.path` is untrusted `bwoc list --json` output. `Path::join`
+        // treats an absolute path as a new base (dropping `workdir`) and honours
+        // `..`, so a rooted or traversing path could read a manifest *outside*
+        // the workspace and silently override this session's endpoint/model.
+        // Only load when the path stays inside the workspace; otherwise fall
+        // back to the fleet defaults (the backend still comes from the registry).
+        let manifest = if is_safe_relative_path(&agent.path) {
+            let path = Path::new(&self.workdir)
+                .join(&agent.path)
+                .join("config.manifest.json");
+            bwoc_core::manifest::Manifest::load_from_path(&path).ok()
+        } else {
+            None
+        };
+        let model = manifest.as_ref().map(|m| m.primary_model.clone());
+        let endpoint = manifest.as_ref().and_then(|m| m.base_url.clone());
+        self.with_overrides(&agent.backend, model, endpoint)
+    }
+
+    /// Pure merge (no I/O): the agent's `backend` plus optional manifest `model`
+    /// / `endpoint` layered over this config's defaults. An empty or `None`
+    /// override keeps the default; a concrete value (including `"auto"`, which
+    /// the harness resolves itself) is passed through.
+    fn with_overrides(
+        &self,
+        backend: &str,
+        model: Option<String>,
+        endpoint: Option<String>,
+    ) -> SessionConfig {
+        let pick = |over: Option<String>, default: &str| {
+            over.filter(|s| !s.is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        SessionConfig {
+            harness_bin: self.harness_bin.clone(),
+            workdir: self.workdir.clone(),
+            backend: backend.to_string(),
+            model: pick(model, &self.model),
+            endpoint: pick(endpoint, &self.endpoint),
+        }
+    }
 }
 
 /// A running chat session bound to one agent.
@@ -148,5 +237,100 @@ impl Drop for Session {
         self.send(&ChatInput::Quit);
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn defaults() -> SessionConfig {
+        SessionConfig {
+            harness_bin: "/bin/bwoc-harness".into(),
+            workdir: "/ws".into(),
+            backend: "ollama".into(),
+            model: "seed-model".into(),
+            endpoint: "http://seed/v1".into(),
+        }
+    }
+
+    #[test]
+    fn harness_drivable_matches_uses_harness() {
+        for b in ["ollama", "openai-compatible", "openrouter", "litellm"] {
+            assert!(is_harness_drivable(b), "{b} should be drivable");
+        }
+        for b in ["claude", "agy", "codex", "kimi", "copilot", "cli", ""] {
+            assert!(!is_harness_drivable(b), "{b} should not be drivable");
+        }
+    }
+
+    #[test]
+    fn overrides_use_agent_values_when_present() {
+        let cfg = defaults().with_overrides(
+            "openrouter",
+            Some("vendor/model-x".into()),
+            Some("https://openrouter.ai/api/v1".into()),
+        );
+        assert_eq!(cfg.backend, "openrouter");
+        assert_eq!(cfg.model, "vendor/model-x");
+        assert_eq!(cfg.endpoint, "https://openrouter.ai/api/v1");
+        // Shared bits are preserved verbatim.
+        assert_eq!(cfg.harness_bin, "/bin/bwoc-harness");
+        assert_eq!(cfg.workdir, "/ws");
+    }
+
+    #[test]
+    fn overrides_fall_back_on_missing_or_empty() {
+        // None (manifest field absent) and empty string both keep the default.
+        let cfg = defaults().with_overrides("openai-compatible", None, Some(String::new()));
+        assert_eq!(cfg.backend, "openai-compatible");
+        assert_eq!(cfg.model, "seed-model");
+        assert_eq!(cfg.endpoint, "http://seed/v1");
+    }
+
+    #[test]
+    fn safe_relative_path_accepts_workspace_dirs() {
+        for p in ["agents/agent-anna", "./agents/x", "agent-pi", "a/b/c"] {
+            assert!(is_safe_relative_path(p), "{p} should be accepted");
+        }
+    }
+
+    #[test]
+    fn safe_relative_path_rejects_escape_and_empty() {
+        for p in [
+            "",
+            "/etc/passwd",
+            "../secrets",
+            "agents/../../etc",
+            "..",
+            "./..",
+        ] {
+            assert!(!is_safe_relative_path(p), "{p} should be rejected");
+        }
+    }
+
+    #[test]
+    fn for_agent_ignores_manifest_on_unsafe_path() {
+        // An absolute path must not be joined/loaded — endpoint/model stay on the
+        // fleet defaults (backend still taken from the untrusted-but-gated field).
+        let agent = AgentInfo {
+            id: "agent-x".into(),
+            backend: "openrouter".into(),
+            path: "/etc".into(),
+            running: false,
+            inbox_count: 0,
+        };
+        let cfg = defaults().for_agent(&agent);
+        assert_eq!(cfg.backend, "openrouter");
+        assert_eq!(cfg.model, "seed-model");
+        assert_eq!(cfg.endpoint, "http://seed/v1");
+    }
+
+    #[test]
+    fn override_passes_auto_model_through() {
+        // "auto" is a real primaryModel value the harness resolves — not empty,
+        // so it must reach the session rather than collapsing to the default.
+        let cfg = defaults().with_overrides("ollama", Some("auto".into()), None);
+        assert_eq!(cfg.model, "auto");
     }
 }

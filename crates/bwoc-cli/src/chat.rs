@@ -123,8 +123,11 @@ pub fn run(args: ChatArgs) -> i32 {
 
     if args.tui && args.fleet {
         // Fleet TUI: every agent in the workspace, one live session each. The
-        // named agent's backend/model seed the shared session config (per-agent
-        // manifest resolution is a later slice). Harness backends only.
+        // named agent's backend/model seed the fleet *defaults*; each pane then
+        // overrides them from its own `config.manifest.json` (see
+        // `SessionConfig::for_agent`), so a mixed fleet drives every agent with
+        // its author's declared backend/model. The launching agent must itself
+        // be a harness backend so the seed is harness-shaped.
         if backend.uses_harness() {
             let manifest = bwoc_core::manifest::Manifest::load_from_path(
                 &agent_path.join("config.manifest.json"),
