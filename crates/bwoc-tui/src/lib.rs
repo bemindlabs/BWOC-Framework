@@ -753,6 +753,30 @@ struct Fleet {
     panes: HashMap<String, App>,
     sessions: HashMap<String, Session>,
     selected: usize,
+    /// The `Ctrl-P` command palette when open (`None` = closed).
+    palette: Option<Palette>,
+}
+
+/// Command-palette state: the filter text + the highlighted row.
+#[derive(Default)]
+struct Palette {
+    query: String,
+    sel: usize,
+}
+
+/// What a chosen palette row does.
+enum PaletteAction {
+    /// Switch the active pane to `agents[i]`.
+    Switch(usize),
+    /// Forget the active agent's persisted conversation.
+    Forget,
+    /// Quit the TUI.
+    Quit,
+}
+
+struct PaletteItem {
+    label: String,
+    action: PaletteAction,
 }
 
 impl Fleet {
@@ -763,6 +787,7 @@ impl Fleet {
             panes: HashMap::new(),
             sessions: HashMap::new(),
             selected: 0,
+            palette: None,
         };
         if let Some(id) = f.agents.first().map(|a| a.id.clone()) {
             f.open(&id);
@@ -772,6 +797,76 @@ impl Fleet {
 
     fn active_id(&self) -> Option<String> {
         self.agents.get(self.selected).map(|a| a.id.clone())
+    }
+
+    /// The command set, filtered by the palette query (case-insensitive
+    /// substring). Order: switch-to-each-agent, forget, quit.
+    fn commands(&self) -> Vec<PaletteItem> {
+        let mut items: Vec<PaletteItem> = self
+            .agents
+            .iter()
+            .enumerate()
+            .map(|(i, a)| PaletteItem {
+                label: format!("→ switch to {}", a.id),
+                action: PaletteAction::Switch(i),
+            })
+            .collect();
+        items.push(PaletteItem {
+            label: "⊘ forget this agent's conversation".to_string(),
+            action: PaletteAction::Forget,
+        });
+        items.push(PaletteItem {
+            label: "✕ quit".to_string(),
+            action: PaletteAction::Quit,
+        });
+        let q = self
+            .palette
+            .as_ref()
+            .map(|p| p.query.to_lowercase())
+            .unwrap_or_default();
+        if q.is_empty() {
+            items
+        } else {
+            items
+                .into_iter()
+                .filter(|it| it.label.to_lowercase().contains(&q))
+                .collect()
+        }
+    }
+
+    /// Execute the highlighted command. Returns true iff it was Quit.
+    fn palette_execute(&mut self) -> bool {
+        let Some(p) = self.palette.as_ref() else {
+            return false;
+        };
+        let items = self.commands();
+        let Some(item) = items.get(p.sel) else {
+            self.palette = None;
+            return false;
+        };
+        let quit = match &item.action {
+            &PaletteAction::Switch(i) => {
+                self.selected = i;
+                if let Some(id) = self.active_id() {
+                    self.open(&id);
+                }
+                false
+            }
+            PaletteAction::Forget => {
+                if let Some(id) = self.active_id() {
+                    if let Some(s) = self.sessions.get_mut(&id) {
+                        s.send(&ChatInput::Forget);
+                    }
+                    if let Some(pane) = self.panes.get_mut(&id) {
+                        pane.conversation.push("● forgot conversation".to_string());
+                    }
+                }
+                false
+            }
+            PaletteAction::Quit => true,
+        };
+        self.palette = None;
+        quit
     }
 
     /// Ensure a pane + session exist for `agent` (lazy, idempotent).
@@ -925,6 +1020,45 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     if let (KeyCode::Char('c'), KeyModifiers::CONTROL) = (code, modifiers) {
         return Ok(true);
     }
+
+    // Command palette captures all input while open.
+    if fleet.palette.is_some() {
+        let n = fleet.commands().len();
+        match code {
+            KeyCode::Esc => fleet.palette = None,
+            KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => fleet.palette = None,
+            KeyCode::Enter => return Ok(fleet.palette_execute()),
+            KeyCode::Up => {
+                if let Some(p) = fleet.palette.as_mut() {
+                    p.sel = p.sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(p) = fleet.palette.as_mut() {
+                    p.sel = (p.sel + 1).min(n.saturating_sub(1));
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = fleet.palette.as_mut() {
+                    p.query.pop();
+                    p.sel = 0;
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(p) = fleet.palette.as_mut() {
+                    p.query.push(c);
+                    p.sel = 0;
+                }
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+    if let (KeyCode::Char('p'), KeyModifiers::CONTROL) = (code, modifiers) {
+        fleet.palette = Some(Palette::default());
+        return Ok(false);
+    }
+
     match code {
         KeyCode::Tab => {
             fleet.switch(1);
@@ -1054,6 +1188,81 @@ fn draw_fleet(f: &mut ratatui::Frame, fleet: &Fleet) {
             draw_input(f, rows[2], app);
         }
     }
+    if fleet.palette.is_some() {
+        draw_palette(f, area, fleet);
+    }
+}
+
+/// Centered command-palette overlay: a filter line + the matching commands with
+/// the selected row highlighted.
+fn draw_palette(f: &mut ratatui::Frame, area: Rect, fleet: &Fleet) {
+    let items = fleet.commands();
+    let sel = fleet.palette.as_ref().map(|p| p.sel).unwrap_or(0);
+    let query = fleet
+        .palette
+        .as_ref()
+        .map(|p| p.query.as_str())
+        .unwrap_or("");
+
+    // A modest centered box (guarding the caps so clamp can't be inverted on a
+    // tiny terminal).
+    let w = area.width.saturating_sub(8).clamp(20, 60);
+    let h_cap = area.height.saturating_sub(4).max(4);
+    let h = (items.len() as u16 + 4).clamp(4, h_cap);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" commands (Esc close) ")
+        .border_style(Style::default().fg(tone(design::color::ACCENT)));
+    f.render_widget(block, rect);
+
+    let inner = Rect {
+        x: rect.x + 1,
+        y: rect.y + 1,
+        width: rect.width.saturating_sub(2),
+        height: rect.height.saturating_sub(2),
+    };
+    let irows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("› ", Style::default().fg(Color::DarkGray)),
+            Span::raw(query.to_string()),
+            Span::styled("▏", Style::default().fg(Color::Gray)),
+        ])),
+        irows[0],
+    );
+    let list: Vec<ListItem> = items
+        .iter()
+        .enumerate()
+        .map(|(i, it)| {
+            let style = if i == sel {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let marker = if i == sel { "▶ " } else { "  " };
+            ListItem::new(Line::from(Span::styled(
+                format!("{marker}{}", it.label),
+                style,
+            )))
+        })
+        .collect();
+    f.render_widget(List::new(list), irows[1]);
 }
 
 fn draw_fleet_sidebar(f: &mut ratatui::Frame, area: Rect, fleet: &Fleet) {
@@ -1285,6 +1494,56 @@ mod tests {
         assert!(!app.done);
         app.apply(ChatEvent::Bye);
         assert!(app.done);
+    }
+
+    fn fleet_for_test(ids: &[&str]) -> Fleet {
+        Fleet {
+            cfg: SessionConfig {
+                harness_bin: "true".into(),
+                workdir: "/tmp".into(),
+                backend: "ollama".into(),
+                model: String::new(),
+                endpoint: "x".into(),
+            },
+            agents: ids
+                .iter()
+                .map(|id| AgentInfo {
+                    id: (*id).to_string(),
+                    backend: "ollama".into(),
+                    running: false,
+                    inbox_count: 0,
+                })
+                .collect(),
+            panes: HashMap::new(),
+            sessions: HashMap::new(),
+            selected: 0,
+            palette: Some(Palette::default()),
+        }
+    }
+
+    #[test]
+    fn palette_lists_and_filters_commands() {
+        let mut fleet = fleet_for_test(&["agent-pi", "agent-jisoo"]);
+        // 2 switch entries + forget + quit.
+        let all = fleet.commands();
+        assert_eq!(all.len(), 4);
+        assert!(all[0].label.contains("agent-pi"));
+        assert!(matches!(all[3].action, PaletteAction::Quit));
+        // Case-insensitive substring filter.
+        fleet.palette = Some(Palette {
+            query: "JISOO".into(),
+            sel: 0,
+        });
+        let filtered = fleet.commands();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].label.contains("jisoo"));
+        // Filtering to quit, then executing it, returns true.
+        fleet.palette = Some(Palette {
+            query: "quit".into(),
+            sel: 0,
+        });
+        assert!(fleet.palette_execute());
+        assert!(fleet.palette.is_none()); // closes after execute
     }
 
     #[test]
