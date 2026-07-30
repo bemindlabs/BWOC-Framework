@@ -35,6 +35,12 @@ operator-supplied config for the whole fleet.
 - **Defaults, not hard failure, on a missing manifest.** A pane without a readable
   manifest still opens on the fleet-default model/endpoint — the harness has its
   own fallback anyway. Mattaññutā: don't fail a whole fleet over one agent's gap.
+- **`agent.path` is untrusted → path-traversal guard.** `path` comes from
+  `bwoc list --json`; `Path::join` treats an absolute path as a new base and
+  honours `..`, so a rooted/traversing value could read a manifest outside the
+  workspace and silently override a session's endpoint/model. `is_safe_relative_path`
+  rejects empty, rooted, prefixed, and `..` paths; on rejection `for_agent` skips
+  the manifest and uses fleet defaults. (Copilot #399 review.)
 
 ## Status / deferred
 

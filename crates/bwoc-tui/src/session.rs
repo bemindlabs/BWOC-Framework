@@ -40,6 +40,24 @@ pub fn is_harness_drivable(backend: &str) -> bool {
     )
 }
 
+/// Whether `path` is safe to join under the workspace root: non-empty and every
+/// component a plain name — no root (`/`), drive prefix (`C:\`), or `..` that
+/// could escape the workspace. Guards the untrusted `path` from
+/// `bwoc list --json` before it selects which `config.manifest.json` to read.
+fn is_safe_relative_path(path: &str) -> bool {
+    use std::path::Component;
+    let mut has_name = false;
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(_) => has_name = true,
+            Component::CurDir => {}
+            // RootDir / Prefix (absolute) or ParentDir (`..`) — reject.
+            _ => return false,
+        }
+    }
+    has_name
+}
+
 #[derive(Debug, Deserialize)]
 struct FleetSnapshot {
     agents: Vec<AgentInfo>,
@@ -85,10 +103,20 @@ impl SessionConfig {
     /// field the manifest omits (or a missing/unreadable manifest) falls back to
     /// this config's default value — never a broken empty string.
     pub fn for_agent(&self, agent: &AgentInfo) -> SessionConfig {
-        let manifest = Path::new(&self.workdir)
-            .join(&agent.path)
-            .join("config.manifest.json");
-        let manifest = bwoc_core::manifest::Manifest::load_from_path(&manifest).ok();
+        // `agent.path` is untrusted `bwoc list --json` output. `Path::join`
+        // treats an absolute path as a new base (dropping `workdir`) and honours
+        // `..`, so a rooted or traversing path could read a manifest *outside*
+        // the workspace and silently override this session's endpoint/model.
+        // Only load when the path stays inside the workspace; otherwise fall
+        // back to the fleet defaults (the backend still comes from the registry).
+        let manifest = if is_safe_relative_path(&agent.path) {
+            let path = Path::new(&self.workdir)
+                .join(&agent.path)
+                .join("config.manifest.json");
+            bwoc_core::manifest::Manifest::load_from_path(&path).ok()
+        } else {
+            None
+        };
         let model = manifest.as_ref().map(|m| m.primary_model.clone());
         let endpoint = manifest.as_ref().and_then(|m| m.base_url.clone());
         self.with_overrides(&agent.backend, model, endpoint)
@@ -256,6 +284,44 @@ mod tests {
         // None (manifest field absent) and empty string both keep the default.
         let cfg = defaults().with_overrides("openai-compatible", None, Some(String::new()));
         assert_eq!(cfg.backend, "openai-compatible");
+        assert_eq!(cfg.model, "seed-model");
+        assert_eq!(cfg.endpoint, "http://seed/v1");
+    }
+
+    #[test]
+    fn safe_relative_path_accepts_workspace_dirs() {
+        for p in ["agents/agent-anna", "./agents/x", "agent-pi", "a/b/c"] {
+            assert!(is_safe_relative_path(p), "{p} should be accepted");
+        }
+    }
+
+    #[test]
+    fn safe_relative_path_rejects_escape_and_empty() {
+        for p in [
+            "",
+            "/etc/passwd",
+            "../secrets",
+            "agents/../../etc",
+            "..",
+            "./..",
+        ] {
+            assert!(!is_safe_relative_path(p), "{p} should be rejected");
+        }
+    }
+
+    #[test]
+    fn for_agent_ignores_manifest_on_unsafe_path() {
+        // An absolute path must not be joined/loaded — endpoint/model stay on the
+        // fleet defaults (backend still taken from the untrusted-but-gated field).
+        let agent = AgentInfo {
+            id: "agent-x".into(),
+            backend: "openrouter".into(),
+            path: "/etc".into(),
+            running: false,
+            inbox_count: 0,
+        };
+        let cfg = defaults().for_agent(&agent);
+        assert_eq!(cfg.backend, "openrouter");
         assert_eq!(cfg.model, "seed-model");
         assert_eq!(cfg.endpoint, "http://seed/v1");
     }
