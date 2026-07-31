@@ -246,8 +246,17 @@ struct App {
     input: String,
     /// A permission request awaiting `a`/`d`. Only one at a time.
     pending: Option<Pending>,
-    /// Cumulative token usage from the last `TurnEnd`.
+    /// The last `TurnEnd`'s `(prompt_tokens, completion_tokens)`. Because
+    /// `prompt_tokens` already counts the whole resent history, the latest value
+    /// doubles as an honest *current context size* proxy — no model→window table
+    /// needed (which is why the header shows an absolute token count, not a %).
     usage: Option<(u64, u64)>,
+    /// Session-cumulative completion (output) tokens — Σ over every `TurnEnd`.
+    /// Summing `completion_tokens` is honest (each turn's output is disjoint);
+    /// summing `prompt_tokens` would not be (history is recounted every turn).
+    total_out: u64,
+    /// How many times the harness compacted this session's context.
+    compactions: u32,
     /// Set once the harness sends `Bye` (or its stream closes) — the loop exits.
     done: bool,
     /// Conversation scrollback offset: lines up from the live bottom. `0` pins
@@ -280,6 +289,8 @@ impl App {
             input: String::new(),
             pending: None,
             usage: None,
+            total_out: 0,
+            compactions: 0,
             done: false,
             scroll: 0,
             mode: "default".to_string(),
@@ -374,6 +385,7 @@ impl App {
                 self.mode = mode;
             }
             ChatEvent::Compacted { removed } => {
+                self.compactions = self.compactions.saturating_add(1);
                 self.conversation.push(format!(
                     "● context compacted — folded {removed} earlier messages"
                 ));
@@ -388,6 +400,7 @@ impl App {
                     self.conversation.push(format!("assistant: {text}"));
                 }
                 self.usage = Some((prompt_tokens, completion_tokens));
+                self.total_out = self.total_out.saturating_add(completion_tokens);
             }
             ChatEvent::TeamMessage { from, text, .. } => {
                 // A teammate's broadcast (HV3-3a) — render distinctly from this
@@ -603,7 +616,26 @@ fn draw_status(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
+/// Compact a token count: `512`, `9.1k`, `1.2M`. Keeps the header narrow while
+/// staying readable (one decimal above 1k / 1M, dropping a trailing `.0`).
+fn fmt_tokens(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+            .replace(".0k", "k")
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+            .replace(".0M", "M")
+    }
+}
+
 /// Build the one-line status string from the `Ready` event + live usage.
+///
+/// Token segment is honest-data-only (no model→window/price tables): `ctx` is
+/// the last turn's `prompt_tokens` (which already counts the resent history, so
+/// it *is* the current context size), `out` is Σ completion tokens this session,
+/// and `⟳N` the compaction count. Absolute counts, never a fabricated %/cost.
 /// Pure + tested.
 fn status_line(app: &App) -> String {
     let base = match &app.status {
@@ -614,10 +646,19 @@ fn status_line(app: &App) -> String {
         ),
     };
     let usage = match app.usage {
-        Some((p, c)) => format!("{base}· tokens {p}+{c} "),
+        Some((p, _)) => format!(
+            "{base}· ctx {} · out {} ",
+            fmt_tokens(p),
+            fmt_tokens(app.total_out)
+        ),
         None => base,
     };
-    format!("{usage}· mode {} (F2) ", app.mode)
+    let compacted = if app.compactions > 0 {
+        format!("· ⟳{} ", app.compactions)
+    } else {
+        String::new()
+    };
+    format!("{usage}{compacted}· mode {} (F2) ", app.mode)
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1487,6 +1528,51 @@ mod tests {
         assert_eq!(app.usage, Some((10, 20)));
         assert!(app.streaming.is_empty());
         assert!(app.conversation.iter().any(|l| l == "assistant: streamed"));
+    }
+
+    #[test]
+    fn total_out_accumulates_but_ctx_tracks_latest_prompt() {
+        let mut app = App::new("a".into(), "ollama");
+        app.apply(ChatEvent::TurnEnd {
+            prompt_tokens: 1_000,
+            completion_tokens: 200,
+        });
+        app.apply(ChatEvent::TurnEnd {
+            prompt_tokens: 1_500, // grew as history was resent
+            completion_tokens: 300,
+        });
+        // out is Σ completion; ctx is the *latest* prompt (not summed).
+        assert_eq!(app.total_out, 500);
+        assert_eq!(app.usage, Some((1_500, 300)));
+        let s = status_line(&app);
+        assert!(s.contains("ctx 1.5k"), "got: {s}");
+        assert!(s.contains("out 500"), "got: {s}");
+    }
+
+    #[test]
+    fn compaction_count_shown_only_after_a_compaction() {
+        let mut app = App::new("a".into(), "ollama");
+        app.apply(ChatEvent::Ready {
+            agent: "a".into(),
+            model: "m".into(),
+            backend: "ollama".into(),
+            tools: vec![],
+        });
+        assert!(!status_line(&app).contains('⟳'));
+        app.apply(ChatEvent::Compacted { removed: 4 });
+        app.apply(ChatEvent::Compacted { removed: 2 });
+        assert_eq!(app.compactions, 2);
+        assert!(status_line(&app).contains("⟳2"));
+    }
+
+    #[test]
+    fn fmt_tokens_is_compact_and_readable() {
+        assert_eq!(fmt_tokens(0), "0");
+        assert_eq!(fmt_tokens(512), "512");
+        assert_eq!(fmt_tokens(1_000), "1k");
+        assert_eq!(fmt_tokens(9_100), "9.1k");
+        assert_eq!(fmt_tokens(1_200_000), "1.2M");
+        assert_eq!(fmt_tokens(2_000_000), "2M");
     }
 
     #[test]
