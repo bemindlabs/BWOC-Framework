@@ -1133,6 +1133,11 @@ fn fleet_route_to(fleet: &mut Fleet, from: &str, idx: usize, target: &str, msg: 
     }
     fleet.selected = idx;
     fleet.open(target);
+    // Pin the target to live so the routed message — or a failure note below —
+    // is visible even if the user had scrolled up in that pane earlier.
+    if let Some(p) = fleet.panes.get_mut(target) {
+        p.scroll = 0;
+    }
     if fleet.sessions.contains_key(target) {
         fleet_send_local(fleet, target, msg);
     } else if !msg.trim().is_empty() {
@@ -1259,8 +1264,10 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
             if text.trim().is_empty() {
                 return Ok(false);
             }
-            // A leading `@agent` routes to another fleet member's live session;
-            // a self-mention or an unresolved name just sends locally.
+            // A leading `@agent` naming *another* fleet member routes there. A
+            // self-mention or an unresolved name is not a route — fall through
+            // and send the line verbatim to this pane (nothing swallowed, so a
+            // bare `@self` isn't silently dropped).
             if let Some((name, msg)) = parse_mention(&text) {
                 if let Some(idx) = fleet.resolve_agent(name) {
                     let target = fleet.agents[idx].id.clone();
@@ -1268,9 +1275,6 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
                         fleet_route_to(fleet, &id, idx, &target, msg);
                         return Ok(false);
                     }
-                    // Self-mention: drop the `@self`, send only the remainder.
-                    fleet_send_local(fleet, &id, msg);
-                    return Ok(false);
                 }
             }
             fleet_send_local(fleet, &id, &text);
