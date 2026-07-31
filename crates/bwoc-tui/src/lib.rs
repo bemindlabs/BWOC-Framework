@@ -616,15 +616,28 @@ fn draw_status(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
-/// Compact a token count: `512`, `9.1k`, `1.2M`. Keeps the header narrow while
-/// staying readable (one decimal above 1k / 1M, dropping a trailing `.0`).
+/// Compact a token count: `512`, `9.1k`, `1.2M`. Keeps the header narrow with a
+/// single truncated decimal above 1k / 1M (a trailing `.0` is dropped).
+///
+/// Integer math, **truncating** — never rounds up across a unit boundary, so a
+/// value just under the next unit (e.g. `999_950`) renders `999.9k`, never the
+/// wider/inconsistent `1000k`.
 fn fmt_tokens(n: u64) -> String {
+    let unit = |value: u64, div: u64, suffix: char| {
+        let whole = value / div;
+        let tenths = (value % div) / (div / 10);
+        if tenths == 0 {
+            format!("{whole}{suffix}")
+        } else {
+            format!("{whole}.{tenths}{suffix}")
+        }
+    };
     if n < 1_000 {
         n.to_string()
     } else if n < 1_000_000 {
-        format!("{:.1}k", n as f64 / 1_000.0).replace(".0k", "k")
+        unit(n, 1_000, 'k')
     } else {
-        format!("{:.1}M", n as f64 / 1_000_000.0).replace(".0M", "M")
+        unit(n, 1_000_000, 'M')
     }
 }
 
@@ -1567,10 +1580,14 @@ mod tests {
     fn fmt_tokens_is_compact_and_readable() {
         assert_eq!(fmt_tokens(0), "0");
         assert_eq!(fmt_tokens(512), "512");
+        assert_eq!(fmt_tokens(999), "999");
         assert_eq!(fmt_tokens(1_000), "1k");
         assert_eq!(fmt_tokens(9_100), "9.1k");
         assert_eq!(fmt_tokens(1_200_000), "1.2M");
         assert_eq!(fmt_tokens(2_000_000), "2M");
+        // Truncation never rounds up across a unit boundary → never "1000k".
+        assert_eq!(fmt_tokens(999_950), "999.9k");
+        assert_eq!(fmt_tokens(999_999), "999.9k");
     }
 
     #[test]
