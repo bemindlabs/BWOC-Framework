@@ -26,7 +26,9 @@
 //!
 //! Keys: Enter sends the input buffer as `ChatInput::User`; on a pending
 //! permission request `a`/`d` allow/deny; Ctrl-C (or `q` when input is empty)
-//! sends `Quit`, restores the terminal, and exits.
+//! sends `Quit`, restores the terminal, and exits. In the fleet, a line that
+//! begins with `@<agent>` routes the rest of the message to that fleet member's
+//! live session (opening its pane and switching to it).
 
 mod session;
 
@@ -641,6 +643,19 @@ fn fmt_tokens(n: u64) -> String {
     }
 }
 
+/// Parse a leading `@mention` from a fleet input line. Returns the mentioned
+/// name (without the `@`; the `agent-` prefix may or may not be present) and the
+/// trimmed remaining message. `None` when the line doesn't begin with a
+/// non-empty `@token` (so `"email @ me"` and a bare `"@"` route normally).
+fn parse_mention(input: &str) -> Option<(&str, &str)> {
+    let rest = input.trim_start().strip_prefix('@')?;
+    let (name, msg) = match rest.find(char::is_whitespace) {
+        Some(i) => (&rest[..i], rest[i..].trim()),
+        None => (rest, ""),
+    };
+    (!name.is_empty()).then_some((name, msg))
+}
+
 /// Build the one-line status string from the `Ready` event + live usage.
 ///
 /// Token segment is honest-data-only (no model→window/price tables): `ctx` is
@@ -849,6 +864,16 @@ impl Fleet {
 
     fn active_id(&self) -> Option<String> {
         self.agents.get(self.selected).map(|a| a.id.clone())
+    }
+
+    /// Resolve a `@mention` name to a fleet-member index, tolerating the
+    /// `agent-` prefix on either side (so `@busaba` and `@agent-busaba` both
+    /// match `agent-busaba`). The id body is matched case-sensitively.
+    fn resolve_agent(&self, name: &str) -> Option<usize> {
+        let want = name.strip_prefix("agent-").unwrap_or(name);
+        self.agents
+            .iter()
+            .position(|a| a.id.strip_prefix("agent-").unwrap_or(&a.id) == want)
     }
 
     /// The command set, filtered by the palette query (case-insensitive
@@ -1078,6 +1103,46 @@ fn fleet_event_loop(
     }
 }
 
+/// Deliver `text` to `id`'s own pane + live session (the normal path). Empty
+/// text is a no-op. Echoes `you: …` and pins the view to live.
+fn fleet_send_local(fleet: &mut Fleet, id: &str, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    if let Some(p) = fleet.panes.get_mut(id) {
+        p.conversation.push(format!("you: {text}"));
+        p.scroll = 0;
+    }
+    if let Some(s) = fleet.sessions.get_mut(id) {
+        s.send(&ChatInput::User {
+            text: text.to_string(),
+            principal: Principal::LocalOperator,
+        });
+    }
+}
+
+/// Route a `@mention` message from `from`'s pane to fleet member `idx`
+/// (`target`): note the handoff in the sender's pane, switch to the target,
+/// ensure its session is live, and deliver `msg` there. An empty `msg` just
+/// jumps to the target pane. A target the harness can't drive (no session after
+/// `open`) reports the failure instead of silently dropping the message.
+fn fleet_route_to(fleet: &mut Fleet, from: &str, idx: usize, target: &str, msg: &str) {
+    if let Some(p) = fleet.panes.get_mut(from) {
+        p.conversation.push(format!("→ routed to {target}"));
+        p.scroll = 0;
+    }
+    fleet.selected = idx;
+    fleet.open(target);
+    if fleet.sessions.contains_key(target) {
+        fleet_send_local(fleet, target, msg);
+    } else if !msg.trim().is_empty() {
+        if let Some(p) = fleet.panes.get_mut(target) {
+            p.conversation
+                .push(format!("✗ can't route here: {target} has no live session"));
+        }
+    }
+}
+
 /// Returns `Ok(true)` on quit. Routes input to the **active** pane's session.
 fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     let KeyEvent {
@@ -1191,18 +1256,24 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
                 .get_mut(&id)
                 .map(|p| std::mem::take(&mut p.input))
                 .unwrap_or_default();
-            if !text.trim().is_empty() {
-                if let Some(p) = fleet.panes.get_mut(&id) {
-                    p.conversation.push(format!("you: {text}"));
-                    p.scroll = 0; // jump to live
-                }
-                if let Some(s) = fleet.sessions.get_mut(&id) {
-                    s.send(&ChatInput::User {
-                        text,
-                        principal: Principal::LocalOperator,
-                    });
+            if text.trim().is_empty() {
+                return Ok(false);
+            }
+            // A leading `@agent` routes to another fleet member's live session;
+            // a self-mention or an unresolved name just sends locally.
+            if let Some((name, msg)) = parse_mention(&text) {
+                if let Some(idx) = fleet.resolve_agent(name) {
+                    let target = fleet.agents[idx].id.clone();
+                    if target != id {
+                        fleet_route_to(fleet, &id, idx, &target, msg);
+                        return Ok(false);
+                    }
+                    // Self-mention: drop the `@self`, send only the remainder.
+                    fleet_send_local(fleet, &id, msg);
+                    return Ok(false);
                 }
             }
+            fleet_send_local(fleet, &id, &text);
             Ok(false)
         }
         KeyCode::Backspace => {
@@ -1609,6 +1680,36 @@ mod tests {
         assert!(!app.done);
         app.apply(ChatEvent::Bye);
         assert!(app.done);
+    }
+
+    #[test]
+    fn parse_mention_splits_name_and_message() {
+        assert_eq!(
+            parse_mention("@busaba do the thing"),
+            Some(("busaba", "do the thing"))
+        );
+        assert_eq!(parse_mention("@agent-pi hi"), Some(("agent-pi", "hi")));
+        // Bare mention → jump only (empty message).
+        assert_eq!(parse_mention("@pi"), Some(("pi", "")));
+        // Leading whitespace tolerated; message is trimmed.
+        assert_eq!(parse_mention("  @x   y "), Some(("x", "y")));
+    }
+
+    #[test]
+    fn parse_mention_ignores_non_mentions() {
+        assert_eq!(parse_mention("no mention here"), None);
+        assert_eq!(parse_mention("email @ me"), None); // '@' not leading a token
+        assert_eq!(parse_mention("@"), None); // empty name
+        assert_eq!(parse_mention(""), None);
+    }
+
+    #[test]
+    fn resolve_agent_tolerates_prefix() {
+        let fleet = fleet_for_test(&["agent-anna", "agent-busaba"]);
+        assert_eq!(fleet.resolve_agent("busaba"), Some(1));
+        assert_eq!(fleet.resolve_agent("agent-busaba"), Some(1));
+        assert_eq!(fleet.resolve_agent("anna"), Some(0));
+        assert_eq!(fleet.resolve_agent("nobody"), None);
     }
 
     fn fleet_for_test(ids: &[&str]) -> Fleet {
