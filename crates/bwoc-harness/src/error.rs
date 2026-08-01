@@ -19,7 +19,19 @@ pub enum HarnessError {
     /// from the models list).  The spike confirmed Ollama returns 404 for
     /// wrong model tags — surface this clearly rather than letting it
     /// manifest as a mysterious JSON parse failure.
-    #[error("model not found: `{0}` — check the model tag with `ollama list`")]
+    ///
+    /// For OpenAI-compatible backends a bare 404 on the completions call is
+    /// ambiguous: it means either a wrong model tag **or** a wrong endpoint path
+    /// (e.g. a `baseUrl` missing the trailing `/v1`, which returns 404 for any
+    /// model). The message stays general (this variant is shared with the
+    /// Anthropic / CLI backends, which have no `/v1`) but scopes the endpoint
+    /// hint to OpenAI-compatible endpoints so the operator doesn't chase the
+    /// model tag when the endpoint is the real fault (#402).
+    #[error(
+        "model `{0}` not found — check the model name is correct; \
+         for OpenAI-compatible endpoints also verify the endpoint URL \
+         (it must end in `/v1`)"
+    )]
     ModelNotFound(String),
 
     /// All models in the fallback chain failed or were exhausted.
@@ -100,3 +112,23 @@ impl HarnessError {
 
 /// Convenience alias.
 pub type HarnessResult<T> = Result<T, HarnessError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_not_found_message_names_both_causes() {
+        // A 404 is ambiguous between a wrong model name and a wrong endpoint;
+        // the message must point at both, but keep the endpoint hint scoped to
+        // OpenAI-compatible backends (this variant is shared with others) (#402).
+        let msg = HarnessError::ModelNotFound("qwen3:8b".to_string()).to_string();
+        assert!(msg.contains("qwen3:8b"), "names the model: {msg}");
+        assert!(msg.contains("model name"), "mentions the model name: {msg}");
+        assert!(
+            msg.contains("OpenAI-compatible"),
+            "scopes the endpoint hint: {msg}"
+        );
+        assert!(msg.contains("/v1"), "mentions the endpoint path: {msg}");
+    }
+}
