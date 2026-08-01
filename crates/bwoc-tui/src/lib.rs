@@ -507,6 +507,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                 let tool = p.tool.clone();
                 app.pending = None;
                 app.conversation.push(format!("✓ allowed {tool}"));
+                app.scroll = 0; // show the decision even if scrolled up
                 send_input(stdin, &ChatInput::Permission { id, allow: true })?;
                 return Ok(false);
             }
@@ -515,6 +516,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                 let tool = p.tool.clone();
                 app.pending = None;
                 app.conversation.push(format!("✗ denied {tool}"));
+                app.scroll = 0; // show the decision even if scrolled up
                 send_input(stdin, &ChatInput::Permission { id, allow: false })?;
                 return Ok(false);
             }
@@ -1195,11 +1197,12 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     };
 
     // A pending approval on the active pane captures a/d.
-    let pending_id = fleet
-        .panes
-        .get(&id)
-        .and_then(|p| p.pending.as_ref().map(|pd| pd.id.clone()));
-    if let Some(pid) = pending_id {
+    let pending = fleet.panes.get(&id).and_then(|p| {
+        p.pending
+            .as_ref()
+            .map(|pd| (pd.id.clone(), pd.tool.clone()))
+    });
+    if let Some((pid, tool)) = pending {
         match code {
             KeyCode::Char('a') | KeyCode::Char('d') => {
                 let allow = code == KeyCode::Char('a');
@@ -1208,8 +1211,12 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
                 }
                 if let Some(p) = fleet.panes.get_mut(&id) {
                     p.pending = None;
-                    p.conversation
-                        .push(if allow { "✓ allowed" } else { "✗ denied" }.to_string());
+                    // Name the tool so the decision is unambiguous in the shared
+                    // transcript (matches the single-agent handler).
+                    p.conversation.push(format!(
+                        "{} {tool}",
+                        if allow { "✓ allowed" } else { "✗ denied" }
+                    ));
                     p.scroll = 0;
                 }
                 return Ok(false);
