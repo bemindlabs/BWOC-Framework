@@ -19,6 +19,25 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - **A tool call emitted as plain text is no longer a silent no-op.** A weak or mis-templated model that returns a tool call as text (no structured `tool_calls`) now surfaces a warning — inline in the chat TUI, on stderr in batch — instead of ending the turn silently. Warn only; the text is never parsed or executed (#403).
 - **Saṅgha task-hook flake under load.** The task-hook exec now retries on `ETXTBSY` (a write-then-exec race on Linux under high parallelism), fixing an intermittent CI failure (#394).
 
+## [v2026.7.27-0] — 2026-07-27 — 2.42.0
+
+Backfilled: this release shipped without a CHANGELOG entry at the time.
+
+### Added
+
+- **LLM Sprints 1–3 (Anthropic backend).** Effort parity, configurable `max_tokens`, and usage accounting (#380); provider prompt caching, on by default (#381); extended thinking + replay on the non-streaming path (#382); streaming thinking-block preservation + cache-token capture (#383).
+- **MCP transport upgrades.** Protocol-version bump + negotiation (#384) and a Streamable HTTP transport for remote MCP servers (#386).
+- **Multimodal + computer tool.** Provider-neutral multimodal image serialization (#385); computer-tool screenshots wired through the isolated-executor IPC (#387).
+
+### Fixed
+
+- **Release idempotency.** `release.yml` no longer 422s / skips binary builds when the release pre-exists — `create-release` is now idempotent (#390, closes #371).
+- **Dependency hygiene.** Bumped `quinn-proto` 0.11.14 → 0.11.15 (GHSA-4w2j-m93h-cj5j) (#388); dropped `rumqttc`'s unused `rustls` feature, removing `rustls-webpki` 0.102.8 (#391, fixes #389).
+
+### Changed
+
+- README `Latest-release` pointer bumped to v2026.7.25-4 (2.42.0) (#379).
+
 ## [v2026.7.25-4] — 2026-07-25 — 2.42.0
 
 ### Added
