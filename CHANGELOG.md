@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.1-0] — 2026-08-01 — 2.42.0
+
+### Added
+
+- **Multi-agent fleet TUI (OpenCode-style).** `bwoc chat <agent> --tui --fleet` opens a left fleet sidebar with one live `bwoc-harness --chat` session per agent, `Tab` / `BackTab` to switch (#393). The conversation surface gained: scrollback (`PageUp` / `PageDown` / `End`) (#395), an `F2` permission-mode selector (default → accept_edits → bypass) (#398), a `Ctrl-P` command palette (switch / forget / quit, fuzzy-filtered) (#397), a per-agent honest token header (`ctx` / `out` / compaction count — real `chat_proto` data only, no drift-prone context-window or price tables) (#400), and `@mention` routing that injects a message straight into another fleet member's live session (#401). Each pane drives its agent with that agent's **own** backend + manifest-resolved model / endpoint, guarding the untrusted `path` field against traversal (#399). Tool calls, results, permission prompts, and errors now render inline in one full-width transcript with an inline `[a]llow / [d]eny` affordance (#404).
+- **Human-in-the-loop approval channel for non-TTY `ask` tools.** A fleet agent spawned without a TTY routes `ask`-mode tool calls to a file-based approval console under `<workdir>/.bwoc/approvals/`, blocking for the operator's verdict. Fail-safe preserved: the channel can only turn a would-be **deny** into an operator-approved **allow**, never weaken a deny (#392).
+
+### Fixed
+
+- **`ModelNotFound` no longer misdirects on a wrong endpoint.** A 404 from a `baseUrl` missing `/v1` was reported as "check the model tag"; the message now names both causes and scopes the endpoint hint to OpenAI-compatible backends (the variant is shared with the Anthropic / CLI backends) (#402).
+- **A tool call emitted as plain text is no longer a silent no-op.** A weak or mis-templated model that returns a tool call as text (no structured `tool_calls`) now surfaces a warning — inline in the chat TUI, on stderr in batch — instead of ending the turn silently. Warn only; the text is never parsed or executed (#403).
+- **Saṅgha task-hook flake under load.** The task-hook exec now retries on `ETXTBSY` (a write-then-exec race on Linux under high parallelism), fixing an intermittent CI failure (#394).
+
 ## [v2026.7.25-4] — 2026-07-25 — 2.42.0
 
 ### Added
