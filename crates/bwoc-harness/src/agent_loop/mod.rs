@@ -640,6 +640,16 @@ pub async fn run_loop(
         if tool_calls.is_empty() {
             // No tool calls → model has given its final answer.
             let final_response = completion.content.clone().unwrap_or_default();
+            // A weak/mis-templated model sometimes emits a tool call as plain
+            // text with no structured `tool_calls`, which would silently end the
+            // run as if it were a final answer. Warn (never parse/execute the
+            // text) so the dropped action is visible in the logs (#403).
+            if crate::looks_like_text_tool_call(&final_response) {
+                eprintln!(
+                    "[bwoc-harness] WARNING: `{active_model}` emitted a tool call as plain text \
+                     — it was NOT executed (the model may be too weak for structured tool use)"
+                );
+            }
             history.push(completion);
 
             let m = tb.finish();

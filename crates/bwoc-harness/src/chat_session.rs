@@ -730,6 +730,21 @@ where
         if tool_calls.is_empty() {
             // Final answer for this turn.
             let final_text = message.content.clone().unwrap_or_default();
+            // A weak/mis-templated model sometimes emits a tool call as plain
+            // text (no structured `tool_calls`), which would otherwise end the
+            // turn as a silent no-op. Surface it so the operator knows the action
+            // was NOT run — without parsing/executing the text (#403).
+            if crate::looks_like_text_tool_call(&final_text) {
+                emit(
+                    out,
+                    &ChatEvent::Error {
+                        message: "the model emitted a tool call as plain text — it was NOT \
+                                  executed (the model may be too weak for structured tool use)"
+                            .to_string(),
+                    },
+                )
+                .await?;
+            }
             history.push(message);
             emit(out, &ChatEvent::Message { text: final_text }).await?;
             emit(
