@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.1-0] — 2026-08-01 — 2.42.0
+
+### Added
+
+- **Multi-agent fleet TUI (OpenCode-style).** `bwoc chat <agent> --tui --fleet` opens a left fleet sidebar with one live `bwoc-harness --chat` session per agent, `Tab` / `BackTab` to switch (#393). The conversation surface gained: scrollback (`PageUp` / `PageDown` / `End`) (#395), an `F2` permission-mode selector (default → accept_edits → bypass) (#398), a `Ctrl-P` command palette (switch / forget / quit, fuzzy-filtered) (#397), a per-agent honest token header (`ctx` / `out` / compaction count — real `chat_proto` data only, no drift-prone context-window or price tables) (#400), and `@mention` routing that injects a message straight into another fleet member's live session (#401). Each pane drives its agent with that agent's **own** backend + manifest-resolved model / endpoint, guarding the untrusted `path` field against traversal (#399). Tool calls, results, permission prompts, and errors now render inline in one full-width transcript with an inline `[a]llow / [d]eny` affordance (#404).
+- **Human-in-the-loop approval channel for non-TTY `ask` tools.** A fleet agent spawned without a TTY routes `ask`-mode tool calls to a file-based approval console under `<workdir>/.bwoc/approvals/`, blocking for the operator's verdict. Fail-safe preserved: the channel can only turn a would-be **deny** into an operator-approved **allow**, never weaken a deny (#392).
+
+### Fixed
+
+- **`ModelNotFound` no longer misdirects on a wrong endpoint.** A 404 from a `baseUrl` missing `/v1` was reported as "check the model tag"; the message now names both causes and scopes the endpoint hint to OpenAI-compatible backends (the variant is shared with the Anthropic / CLI backends) (#402).
+- **A tool call emitted as plain text is no longer a silent no-op.** A weak or mis-templated model that returns a tool call as text (no structured `tool_calls`) now surfaces a warning — inline in the chat TUI, on stderr in batch — instead of ending the turn silently. Warn only; the text is never parsed or executed (#403).
+- **Saṅgha task-hook flake under load.** The task-hook exec now retries on `ETXTBSY` (a write-then-exec race on Linux under high parallelism), fixing an intermittent CI failure (#394).
+
+## [v2026.7.27-0] — 2026-07-27 — 2.42.0
+
+Backfilled: this release shipped without a CHANGELOG entry at the time.
+
+### Added
+
+- **LLM Sprints 1–3 (Anthropic backend).** Effort parity, configurable `max_tokens`, and usage accounting (#380); provider prompt caching, on by default (#381); extended thinking + replay on the non-streaming path (#382); streaming thinking-block preservation + cache-token capture (#383).
+- **MCP transport upgrades.** Protocol-version bump + negotiation (#384) and a Streamable HTTP transport for remote MCP servers (#386).
+- **Multimodal + computer tool.** Provider-neutral multimodal image serialization (#385); computer-tool screenshots wired through the isolated-executor IPC (#387).
+
+### Fixed
+
+- **Release idempotency.** `release.yml` no longer 422s / skips binary builds when the release pre-exists — `create-release` is now idempotent (#390, closes #371).
+- **Dependency hygiene.** Bumped `quinn-proto` 0.11.14 → 0.11.15 (GHSA-4w2j-m93h-cj5j) (#388); dropped `rumqttc`'s unused `rustls` feature, removing `rustls-webpki` 0.102.8 (#391, fixes #389).
+
+### Changed
+
+- README `Latest-release` pointer bumped to v2026.7.25-4 (2.42.0) (#379).
+
 ## [v2026.7.25-4] — 2026-07-25 — 2.42.0
 
 ### Added
