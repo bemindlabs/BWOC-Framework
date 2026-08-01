@@ -19,7 +19,17 @@ pub enum HarnessError {
     /// from the models list).  The spike confirmed Ollama returns 404 for
     /// wrong model tags — surface this clearly rather than letting it
     /// manifest as a mysterious JSON parse failure.
-    #[error("model not found: `{0}` — check the model tag with `ollama list`")]
+    ///
+    /// A bare 404 on the completions call is ambiguous: it means either a wrong
+    /// model tag **or** a wrong endpoint path (e.g. a `baseUrl` missing the
+    /// trailing `/v1`, which returns 404 for any model). The message names both
+    /// causes so the operator doesn't chase the model tag when the endpoint is
+    /// the real fault (#402).
+    #[error(
+        "model `{0}` not found at the endpoint — verify the model tag \
+         (e.g. `ollama list`) and that the endpoint URL is correct \
+         (OpenAI-compatible paths must end in `/v1`)"
+    )]
     ModelNotFound(String),
 
     /// All models in the fallback chain failed or were exhausted.
@@ -100,3 +110,18 @@ impl HarnessError {
 
 /// Convenience alias.
 pub type HarnessResult<T> = Result<T, HarnessError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_not_found_message_names_both_causes() {
+        // A 404 is ambiguous between a wrong model tag and a wrong endpoint;
+        // the message must point at both so neither cause is missed (#402).
+        let msg = HarnessError::ModelNotFound("qwen3:8b".to_string()).to_string();
+        assert!(msg.contains("qwen3:8b"), "names the model: {msg}");
+        assert!(msg.contains("model tag"), "mentions the model tag: {msg}");
+        assert!(msg.contains("/v1"), "mentions the endpoint path: {msg}");
+    }
+}
