@@ -18,10 +18,11 @@
 //!
 //! Layout (one screen, no mouse; PgUp/PgDn/End scroll the conversation):
 //!   ┌ status ──────────────────────────────────────────┐
-//!   ┌ conversation ────────────┬ tools / activity ──────┐
-//!   │ user + assistant turns   │ ToolCall/ToolResult,    │
-//!   │ (streamed tokens inline) │ ⚠ PermissionRequest     │
-//!   └──────────────────────────┴─────────────────────────┘
+//!   ┌ conversation ────────────────────────────────────┐
+//!   │ user + assistant turns (streamed tokens inline),  │
+//!   │ → ToolCall, ✓/✗ ToolResult, ⚠ PermissionRequest   │
+//!   │ all interleaved into one transcript               │
+//!   └───────────────────────────────────────────────────┘
 //!   ┌ input ───────────────────────────────────────────┐
 //!
 //! Keys: Enter sends the input buffer as `ChatInput::User`; on a pending
@@ -242,8 +243,6 @@ struct App {
     /// Accumulator for the in-flight streamed assistant turn. Flushed to
     /// `conversation` on `Message`/`TurnEnd`.
     streaming: String,
-    /// Tools / activity pane lines.
-    activity: Vec<String>,
     /// The current input buffer (one line).
     input: String,
     /// A permission request awaiting `a`/`d`. Only one at a time.
@@ -287,7 +286,6 @@ impl App {
             status: None,
             conversation: vec!["(waiting for harness to become ready…)".to_string()],
             streaming: String::new(),
-            activity: Vec::new(),
             input: String::new(),
             pending: None,
             usage: None,
@@ -365,7 +363,7 @@ impl App {
                 self.conversation.push(format!("assistant: {text}"));
             }
             ChatEvent::ToolCall { id, name, args } => {
-                self.activity.push(format!("→ {name}({args})  [{id}]"));
+                self.conversation.push(format!("→ {name}({args})  [{id}]"));
             }
             ChatEvent::ToolResult {
                 id,
@@ -374,12 +372,14 @@ impl App {
                 output,
             } => {
                 let mark = if ok { "✓" } else { "✗" };
-                self.activity
+                self.conversation
                     .push(format!("{mark} {name}: {output}  [{id}]"));
             }
             ChatEvent::PermissionRequest { id, tool, detail } => {
-                self.activity
-                    .push(format!("⚠ permission: {tool} — {detail}  [{id}]"));
+                // Inline in the transcript, with the key affordance shown where
+                // the operator is already reading (the input border echoes it too).
+                self.conversation
+                    .push(format!("⚠ permission: {tool} — {detail}  [a]llow / [d]eny"));
                 self.pending = Some(Pending { id, tool, detail });
             }
             ChatEvent::ModeChanged { mode } => {
@@ -410,7 +410,7 @@ impl App {
                 self.conversation.push(format!("📢 {from}: {text}"));
             }
             ChatEvent::Error { message } => {
-                self.activity.push(format!("✗ error: {message}"));
+                self.conversation.push(format!("✗ error: {message}"));
             }
             ChatEvent::Bye => {
                 self.conversation.push("● session ended".to_string());
@@ -506,7 +506,8 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                 let id = p.id.clone();
                 let tool = p.tool.clone();
                 app.pending = None;
-                app.activity.push(format!("✓ allowed {tool}"));
+                app.conversation.push(format!("✓ allowed {tool}"));
+                app.scroll = 0; // show the decision even if scrolled up
                 send_input(stdin, &ChatInput::Permission { id, allow: true })?;
                 return Ok(false);
             }
@@ -514,7 +515,8 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                 let id = p.id.clone();
                 let tool = p.tool.clone();
                 app.pending = None;
-                app.activity.push(format!("✗ denied {tool}"));
+                app.conversation.push(format!("✗ denied {tool}"));
+                app.scroll = 0; // show the decision even if scrolled up
                 send_input(stdin, &ChatInput::Permission { id, allow: false })?;
                 return Ok(false);
             }
@@ -578,7 +580,7 @@ fn draw_frame(f: &mut ratatui::Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // status
-            Constraint::Min(0),    // body (conversation + activity)
+            Constraint::Min(0),    // body (full-width transcript)
             Constraint::Length(3), // input box
         ])
         .split(area);
@@ -688,20 +690,17 @@ fn status_line(app: &App) -> String {
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(area);
-
-    draw_conversation(f, h[0], app);
-    draw_activity(f, h[1], app);
+    // Single full-width transcript: tool calls, results, permission prompts, and
+    // errors are interleaved into `conversation` (see `App::apply`), so there is
+    // no longer a separate tools/activity pane to split off.
+    draw_conversation(f, area, app);
 }
 
 fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = app
         .conversation
         .iter()
-        .map(|l| Line::from(l.clone()))
+        .map(|l| Line::from(Span::styled(l.clone(), transcript_style(l))))
         .collect();
     // Show the in-flight streamed turn live, below the committed history.
     if !app.streaming.is_empty() {
@@ -740,37 +739,23 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
-fn draw_activity(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let skip = app.activity.len().saturating_sub(inner_height.max(1));
-    let lines: Vec<Line> = app
-        .activity
-        .iter()
-        .skip(skip)
-        .map(|l| {
-            let style = if l.starts_with('⚠') {
-                Style::default()
-                    .fg(tone(design::color::WARNING))
-                    .add_modifier(Modifier::BOLD)
-            } else if l.starts_with('✗') {
-                Style::default().fg(tone(design::color::DANGER))
-            } else if l.starts_with('✓') {
-                Style::default().fg(tone(design::color::SUCCESS))
-            } else {
-                Style::default()
-            };
-            Line::from(Span::styled(l.clone(), style))
-        })
-        .collect();
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" tools / activity ")
-        .border_style(Style::default().add_modifier(Modifier::DIM));
-    let p = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(p, area);
+/// Per-line style for the transcript: color the inline tool-action markers
+/// (⚠ permission, ✗ error/denied, ✓ result/allowed, → tool call) so they stand
+/// out from plain user/assistant turns now that they share one column.
+fn transcript_style(line: &str) -> Style {
+    if line.starts_with('⚠') {
+        Style::default()
+            .fg(tone(design::color::WARNING))
+            .add_modifier(Modifier::BOLD)
+    } else if line.starts_with('✗') {
+        Style::default().fg(tone(design::color::DANGER))
+    } else if line.starts_with('✓') {
+        Style::default().fg(tone(design::color::SUCCESS))
+    } else if line.starts_with('→') || line.starts_with('●') || line.starts_with('📢') {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default()
+    }
 }
 
 fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -980,7 +965,8 @@ impl Fleet {
             }
             Err(e) => {
                 if let Some(p) = self.panes.get_mut(agent) {
-                    p.activity.push(format!("✗ failed to start session: {e}"));
+                    p.conversation
+                        .push(format!("✗ failed to start session: {e}"));
                 }
             }
         }
@@ -1211,11 +1197,12 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     };
 
     // A pending approval on the active pane captures a/d.
-    let pending_id = fleet
-        .panes
-        .get(&id)
-        .and_then(|p| p.pending.as_ref().map(|pd| pd.id.clone()));
-    if let Some(pid) = pending_id {
+    let pending = fleet.panes.get(&id).and_then(|p| {
+        p.pending
+            .as_ref()
+            .map(|pd| (pd.id.clone(), pd.tool.clone()))
+    });
+    if let Some((pid, tool)) = pending {
         match code {
             KeyCode::Char('a') | KeyCode::Char('d') => {
                 let allow = code == KeyCode::Char('a');
@@ -1224,8 +1211,13 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
                 }
                 if let Some(p) = fleet.panes.get_mut(&id) {
                     p.pending = None;
-                    p.activity
-                        .push(if allow { "✓ allowed" } else { "✗ denied" }.to_string());
+                    // Name the tool so the decision is unambiguous in the shared
+                    // transcript (matches the single-agent handler).
+                    p.conversation.push(format!(
+                        "{} {tool}",
+                        if allow { "✓ allowed" } else { "✗ denied" }
+                    ));
+                    p.scroll = 0;
                 }
                 return Ok(false);
             }
@@ -1666,7 +1658,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_request_sets_pending_and_marks_activity() {
+    fn permission_request_sets_pending_and_shows_inline_affordance() {
         let mut app = App::new("a".into(), "ollama");
         app.apply(ChatEvent::PermissionRequest {
             id: "p1".into(),
@@ -1675,7 +1667,31 @@ mod tests {
         });
         assert!(app.pending.is_some());
         assert_eq!(app.pending.as_ref().unwrap().id, "p1");
-        assert!(app.activity.iter().any(|l| l.starts_with('⚠')));
+        // The prompt is inline in the transcript with the a/d affordance shown.
+        let line = app
+            .conversation
+            .iter()
+            .find(|l| l.starts_with('⚠'))
+            .expect("inline permission line");
+        assert!(line.contains("[a]llow / [d]eny"), "got: {line}");
+    }
+
+    #[test]
+    fn tool_call_and_result_go_inline_to_the_transcript() {
+        let mut app = App::new("a".into(), "ollama");
+        app.apply(ChatEvent::ToolCall {
+            id: "t1".into(),
+            name: "read_file".into(),
+            args: "{\"path\":\"x\"}".into(),
+        });
+        app.apply(ChatEvent::ToolResult {
+            id: "t1".into(),
+            name: "read_file".into(),
+            ok: true,
+            output: "ok".into(),
+        });
+        assert!(app.conversation.iter().any(|l| l.starts_with('→')));
+        assert!(app.conversation.iter().any(|l| l.starts_with('✓')));
     }
 
     #[test]
