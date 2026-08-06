@@ -47,6 +47,12 @@ const MAX_EVENT_LINES: usize = 100_000;
 /// across a human's think-time, short enough not to hoard processes.
 const DEFAULT_MSG_IDLE: Duration = Duration::from_secs(600);
 
+/// Upper bound on concurrent warm sessions. The pool is keyed by the envelope's
+/// `from`, which is remote-controlled — an attacker could otherwise flood
+/// distinct sender ids and spawn unbounded harness processes (resource DoS).
+/// At the cap, a new sender evicts the least-recently-active session.
+const MAX_WARM_SESSIONS: usize = 16;
+
 /// How to spawn a per-sender `bwoc-harness --chat` — owned so it can be built
 /// from `&AutoProcessor` and then used while `self.sessions` is mutated.
 struct SessionCfg {
@@ -106,10 +112,9 @@ impl WarmSession {
     }
 
     /// Inject `message` as an UNTRUSTED user turn and return the assistant's
-    /// final reply. Reads events until `TurnEnd` — the true turn boundary — so
-    /// the stream is left positioned cleanly for the *next* turn (breaking early
-    /// on `Message` would leave a stray `TurnEnd` that the next turn would then
-    /// consume as an instant empty reply). Auto-denies permission prompts.
+    /// final reply. The event loop lives in [`drive_turn`] (pure + tested); an
+    /// error leaves the session for `handle` to drop (its `Drop` reaps the
+    /// child, so a runaway that tripped the line cap is still killed).
     fn run_turn(&mut self, message: &str) -> Result<String, String> {
         let user = ChatInput::User {
             text: message.to_string(),
@@ -117,45 +122,57 @@ impl WarmSession {
         };
         writeln!(self.stdin, "{}", user.to_line().map_err(|e| e.to_string())?)
             .map_err(|e| format!("write user input: {e}"))?;
-
-        let mut reply = String::new();
-        let mut acc = String::new();
-        let mut err: Option<String> = None;
-        let mut lines = 0usize;
-        // `by_ref` so the iterator survives the loop for the *next* turn. Ends on
-        // `TurnEnd` (`break`) or EOF — the child exited, loop ends.
-        for line in self.stdout.by_ref() {
-            let line = line.map_err(|e| format!("read harness: {e}"))?;
-            lines += 1;
-            if lines > MAX_EVENT_LINES {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                return Err("harness output exceeded line cap".into());
-            }
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<ChatEvent>(&line) {
-                Ok(ChatEvent::Token { text }) => acc.push_str(&text),
-                Ok(ChatEvent::Message { text }) => reply = text, // capture; keep draining
-                Ok(ChatEvent::TurnEnd { .. }) => break,          // clean turn boundary
-                Ok(ChatEvent::Error { message }) => err = Some(message),
-                Ok(ChatEvent::PermissionRequest { id, .. }) => {
-                    // A remote sender can never approve a tool — deny + continue.
-                    let deny = ChatInput::Permission { id, allow: false };
-                    if let Ok(l) = deny.to_line() {
-                        let _ = writeln!(self.stdin, "{l}");
-                    }
-                }
-                _ => {} // ready/restored/bye / unparsable: ignore
-            }
-        }
+        // `by_ref` so the iterator survives for the *next* turn; disjoint from the
+        // `stdin` borrow used to write denials.
+        let out = drive_turn(&mut self.stdout, &mut self.stdin);
         self.last_activity = Instant::now();
-        if let Some(e) = err {
-            return Err(format!("harness turn error: {e}"));
-        }
-        Ok(if reply.is_empty() { acc } else { reply })
+        out
     }
+}
+
+/// Drive one turn's events off `lines`, auto-denying permission prompts via
+/// `deny`. Drains to `TurnEnd` (capturing `Message` en route) and **stops
+/// there** — leaving `lines` positioned for the next turn — or ends on EOF.
+/// Pure over its two streams, so it is unit-testable with in-memory data:
+/// breaking early on `Message` would leave a stray `TurnEnd` that a reused
+/// session's next turn would consume as an instant empty reply.
+fn drive_turn<I, W>(lines: &mut I, deny: &mut W) -> Result<String, String>
+where
+    I: Iterator<Item = std::io::Result<String>>,
+    W: Write,
+{
+    let mut reply = String::new();
+    let mut acc = String::new();
+    let mut err: Option<String> = None;
+    let mut n = 0usize;
+    for line in lines {
+        let line = line.map_err(|e| format!("read harness: {e}"))?;
+        n += 1;
+        if n > MAX_EVENT_LINES {
+            return Err("harness output exceeded line cap".into());
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<ChatEvent>(&line) {
+            Ok(ChatEvent::Token { text }) => acc.push_str(&text),
+            Ok(ChatEvent::Message { text }) => reply = text, // capture; keep draining
+            Ok(ChatEvent::TurnEnd { .. }) => break,          // clean turn boundary
+            Ok(ChatEvent::Error { message }) => err = Some(message),
+            Ok(ChatEvent::PermissionRequest { id, .. }) => {
+                // A remote sender can never approve a tool — deny + continue.
+                let d = ChatInput::Permission { id, allow: false };
+                if let Ok(l) = d.to_line() {
+                    let _ = writeln!(deny, "{l}");
+                }
+            }
+            _ => {} // ready/restored/bye / unparsable: ignore
+        }
+    }
+    if let Some(e) = err {
+        return Err(format!("harness turn error: {e}"));
+    }
+    Ok(if reply.is_empty() { acc } else { reply })
 }
 
 impl Drop for WarmSession {
@@ -304,6 +321,24 @@ impl AutoProcessor {
             .map(WarmSession::is_alive)
             .unwrap_or(false);
         if !alive {
+            // Bound the pool against a flood of distinct remote sender ids: at
+            // the cap, evict the least-recently-active session before adding a
+            // new sender. (A present-but-dead sender just respawns in place — no
+            // eviction, the map size is unchanged.)
+            if !self.sessions.contains_key(from) && self.sessions.len() >= MAX_WARM_SESSIONS {
+                if let Some(victim) = self
+                    .sessions
+                    .iter()
+                    .min_by_key(|(_, s)| s.last_activity)
+                    .map(|(k, _)| k.clone())
+                {
+                    eprintln!(
+                        "bwoc-agent --serve: warm message pool at cap ({MAX_WARM_SESSIONS}) — \
+                         evicting least-recent sender `{victim}`"
+                    );
+                    self.sessions.remove(&victim); // Drop reaps the child
+                }
+            }
             match WarmSession::spawn(&cfg) {
                 Ok(s) => {
                     self.sessions.insert(from.to_string(), s);
@@ -394,6 +429,63 @@ mod tests {
         let p = dir.join("interconnect");
         fs::create_dir_all(&p).unwrap();
         fs::write(p.join("gateway.toml"), body).unwrap();
+    }
+
+    /// Build an iterator of `io::Result<String>` events for `drive_turn`.
+    fn ev(lines: &[&str]) -> std::vec::IntoIter<std::io::Result<String>> {
+        lines
+            .iter()
+            .map(|s| Ok(s.to_string()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn drive_turn_drains_to_turn_end_and_stops() {
+        let mut it = ev(&[
+            r#"{"type":"token","text":"hi "}"#,
+            r#"{"type":"message","text":"final answer"}"#,
+            r#"{"type":"turn_end","prompt_tokens":1,"completion_tokens":1}"#,
+            r#"{"type":"message","text":"NEXT TURN — must NOT be read now"}"#,
+        ]);
+        let mut deny: Vec<u8> = Vec::new();
+        let reply = drive_turn(&mut it, &mut deny).unwrap();
+        assert_eq!(reply, "final answer"); // captured Message, not the token acc
+        assert!(deny.is_empty(), "no permission prompts → no denials");
+        // Stopped exactly at TurnEnd: the next turn's line is still queued, proving
+        // a reused session won't eat a stray TurnEnd.
+        assert!(
+            it.next().is_some(),
+            "over-consumed past the TurnEnd boundary"
+        );
+    }
+
+    #[test]
+    fn drive_turn_auto_denies_permission() {
+        let mut it = ev(&[
+            r#"{"type":"permission_request","id":"p1","tool":"run_command","detail":"rm -rf /"}"#,
+            r#"{"type":"message","text":"ok"}"#,
+            r#"{"type":"turn_end","prompt_tokens":0,"completion_tokens":0}"#,
+        ]);
+        let mut deny: Vec<u8> = Vec::new();
+        let reply = drive_turn(&mut it, &mut deny).unwrap();
+        assert_eq!(reply, "ok");
+        let denied = String::from_utf8(deny).unwrap();
+        assert!(
+            denied.contains("\"id\":\"p1\""),
+            "denial targets the request: {denied}"
+        );
+        assert!(denied.contains("\"allow\":false"), "auto-denied: {denied}");
+    }
+
+    #[test]
+    fn drive_turn_surfaces_error() {
+        let mut it = ev(&[
+            r#"{"type":"error","message":"boom"}"#,
+            r#"{"type":"turn_end","prompt_tokens":0,"completion_tokens":0}"#,
+        ]);
+        let mut deny: Vec<u8> = Vec::new();
+        assert!(drive_turn(&mut it, &mut deny).is_err());
     }
 
     #[test]
