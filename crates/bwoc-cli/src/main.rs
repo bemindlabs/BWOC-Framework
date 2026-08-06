@@ -26,6 +26,7 @@ mod doctor;
 mod eval;
 mod figma;
 mod fleet;
+mod fleet_term;
 mod gcloud;
 mod git_worktree;
 mod gws;
@@ -777,6 +778,27 @@ enum FleetCommand {
     Status(FleetStatusArgs),
     /// Check all 7 Aparihāniya-dhamma fleet-governance signals (read-only).
     Health(FleetHealthArgs),
+    /// Open a terminal for every agent in the fleet — one tmux pane each,
+    /// arranged by `--layout`. Portable across macOS + Linux (uses tmux).
+    Term(FleetTermArgs),
+}
+
+#[derive(Args, Debug)]
+struct FleetTermArgs {
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Pane arrangement: grid (default) | columns | rows | main-vertical | main-horizontal.
+    /// Cycle layouts live inside tmux with `<prefix> Space`.
+    #[arg(long, value_enum, default_value_t = fleet_term::TmuxLayout::Grid)]
+    layout: fleet_term::TmuxLayout,
+    /// tmux session name to create.
+    #[arg(long, default_value = "bwoc-fleet")]
+    session: String,
+    /// Build the session but don't attach — just print the attach command
+    /// (implied when stdout is not a TTY).
+    #[arg(long)]
+    print: bool,
 }
 
 #[derive(Args, Debug)]
@@ -2881,6 +2903,12 @@ fn main() -> ExitCode {
                     workspace: args.workspace,
                     json: args.json,
                     stale_days: args.stale_days,
+                }),
+                Some(FleetCommand::Term(args)) => fleet_term::run(fleet_term::FleetTermArgs {
+                    workspace: args.workspace,
+                    layout: args.layout,
+                    session: args.session,
+                    print: args.print,
                 }),
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
