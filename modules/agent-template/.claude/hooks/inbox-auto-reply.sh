@@ -136,20 +136,25 @@ sender = marker.group(2)
 if sender == "user":
     sys.exit(0)
 
-# Most recent assistant text after the bus-marked user prompt.
-last_assistant_text = ""
-for i in range(last_user_idx + 1, len(events)):
-    if events[i].get("type") == "assistant":
-        text = extract_text(events[i].get("message", {}).get("content", ""))
-        if text.strip():
-            last_assistant_text = text  # keep updating to get the latest
+# The assistant's reply text. Prefer the Stop payload's `last_assistant_message`
+# — at Stop time the transcript file may not have flushed the just-finished
+# assistant turn yet, so re-parsing it from disk races and silently yields no
+# reply (the bug that made bus auto-reply never fire). Fall back to scanning the
+# transcript for older Claude Code versions that don't provide the field.
+reply_text = (payload.get("last_assistant_message") or "").strip()
+if not reply_text:
+    for i in range(last_user_idx + 1, len(events)):
+        if events[i].get("type") == "assistant":
+            text = extract_text(events[i].get("message", {}).get("content", ""))
+            if text.strip():
+                reply_text = text.strip()  # keep updating to get the latest
 
-if not last_assistant_text.strip():
+if not reply_text:
     sys.exit(0)
 
 # Cap so an over-long assistant turn doesn't bloat the recipient's inbox.
 MAX_LEN = 4000
-reply = last_assistant_text
+reply = reply_text
 if len(reply) > MAX_LEN:
     reply = reply[:MAX_LEN] + "…[truncated]"
 
