@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.6-0] — 2026-08-06 — 2.42.0
+
+### Added
+
+- **`bwoc fleet term` — tiled fleet terminals + cross-pane messaging.** Opens one titled tmux pane per fleet agent in a single session, arranged by a selectable layout (`grid` / `columns` / `rows` / `main-vertical` / `main-horizontal`, cycled live with `<prefix> Space`); portable across macOS + Linux. `bwoc send <agent>` now resolves a recipient to its *pane* (matched by title), so a peer message wakes that agent's specific tile — the human watches the exchange land in place — and `remain-on-exit` keeps a finished agent's pane from collapsing the layout (#414).
+- **Warm per-sender message sessions in `bwoc-agent --serve`.** Untrusted inbound messages reuse a warm resident session per sender (LRU-capped, idle-evicted) instead of cold-starting a subprocess per message, cutting latency on the untrusted delivery path (#412).
+
+### Fixed
+
+- **Inbox auto-reply now actually fires.** The Stop hook read the reply from the transcript, which may not have flushed the just-finished turn yet — silently dropping bus replies. It now takes the reply from the Stop payload's `last_assistant_message` (transcript scan retained as a fallback) and preserves leading whitespace so an indented code block at the start of a reply survives (#413).
+- **Inbox wakeup reaches `bwoc`-launched tmux sessions.** `bwoc send` resolved only bare session names, missing the `bwoc-agent-<x>` sessions `bwoc chat --tmux` creates; it now tries the launcher's naming candidates and delivers the notification as a literal keystroke (#411).
+
 ## [v2026.8.1-0] — 2026-08-01 — 2.42.0
 
 ### Added
