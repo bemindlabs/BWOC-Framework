@@ -468,20 +468,20 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     Ok(())
 }
 
-/// Candidate tmux session names for an `agent-<x>` recipient, most-specific
-/// last. Covers the naming conventions an agent can actually be launched under:
-/// the bare `<x>` (manual `tmux new -s <x>` / upstream convention), the full
-/// `agent-<x>`, and — critically — `bwoc-agent-<x>`, which is what
-/// `bwoc chat --tmux` itself creates (`new-session -s bwoc-<agent_id>` in
-/// `chat.rs`). Targeting only the bare name silently missed bwoc-launched
+/// Candidate tmux session names for an `agent-<x>` recipient, **most-specific
+/// first** so a coincidentally-named session can't steal the wake: the
+/// unambiguous `bwoc-agent-<x>` (what `bwoc chat --tmux` creates —
+/// `new-session -s bwoc-<agent_id>` in `chat.rs`) and `agent-<x>` are tried
+/// before the bare `<x>`, which is the most likely to collide with an unrelated
+/// session. Targeting only the bare name silently missed bwoc-launched
 /// sessions, so the wake never landed and the agent never woke.
 fn tmux_session_candidates(to: &str) -> Vec<String> {
     let bare = to.strip_prefix("agent-").unwrap_or(to);
     vec![
-        bare.to_string(),       // <x>          (bare / upstream convention)
-        to.to_string(),         // agent-<x>    (full recipient id)
-        format!("bwoc-{to}"),   // bwoc-agent-<x> (bwoc chat --tmux)
+        format!("bwoc-{to}"),   // bwoc-agent-<x> (bwoc chat --tmux) — most specific
+        to.to_string(),         // agent-<x>      (full recipient id)
         format!("bwoc-{bare}"), // bwoc-<x>
+        bare.to_string(),       // <x>            (bare / upstream — collision-prone, last)
     ]
 }
 
@@ -500,8 +500,9 @@ fn resolve_tmux_session(to: &str) -> Option<String> {
 
 /// Best-effort tmux send-keys ping that wakes a recipient TUI session.
 ///
-/// Convention: recipient `agent-<x>` → a tmux session named `<x>`, `agent-<x>`,
-/// or `bwoc-agent-<x>` (see [`tmux_session_candidates`] — we try each). The
+/// Convention: recipient `agent-<x>` → a tmux session named `bwoc-agent-<x>`,
+/// `agent-<x>`, `bwoc-<x>`, or the bare `<x>` (see [`tmux_session_candidates`]
+/// for the exact set + ordering — the first live one is woken). The
 /// marker `[bwoc inbox <msg-id> from <sender>]` prefixes the message body so the
 /// Stop hook at `modules/agent-template/.claude/hooks/inbox-auto-reply.sh` can
 /// detect a bus-triggered turn and thread its reply via `--reply-to`.
