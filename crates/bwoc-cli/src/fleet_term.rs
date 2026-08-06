@@ -210,7 +210,7 @@ pub fn run(args: FleetTermArgs) -> i32 {
              kill it with `tmux kill-session -t {0}`, or pass a different --session.",
             args.session
         );
-        return 1;
+        return 2; // user/input error — consistent with the refusals above
     }
 
     let bwoc = spawn::bwoc_exe();
