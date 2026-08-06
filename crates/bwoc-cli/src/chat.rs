@@ -363,7 +363,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
     }
 }
 
-fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
+pub(crate) fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p);
     }

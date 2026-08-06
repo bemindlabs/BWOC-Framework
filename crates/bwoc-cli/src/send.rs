@@ -498,6 +498,42 @@ fn resolve_tmux_session(to: &str) -> Option<String> {
     })
 }
 
+/// From a `tmux list-panes -a -F '#{pane_title}\t#{pane_id}'` listing, the pane
+/// id (`%N`) of the first pane whose title matches one of `candidates`. Pure so
+/// the title-matching is unit-testable without a running tmux server.
+fn match_pane_by_title(listing: &str, candidates: &[String]) -> Option<String> {
+    listing.lines().find_map(|line| {
+        let (title, pane_id) = line.split_once('\t')?;
+        candidates
+            .iter()
+            .any(|c| c == title)
+            .then(|| pane_id.to_string())
+    })
+}
+
+/// Resolve a `send-keys -t` target for `to`: a whole session named for the agent
+/// (single-agent launches), else a **pane** titled for the agent — which is how
+/// `bwoc fleet term` tiles a fleet (one titled pane per agent) so a peer message
+/// still wakes the right tile, not just whatever pane is active. Returns a
+/// session name or a pane id (`%N`); both are valid `send-keys` targets.
+fn resolve_tmux_target(to: &str) -> Option<String> {
+    if let Some(session) = resolve_tmux_session(to) {
+        return Some(session);
+    }
+    let out = std::process::Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{pane_title}\t#{pane_id}"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    match_pane_by_title(
+        &String::from_utf8_lossy(&out.stdout),
+        &tmux_session_candidates(to),
+    )
+}
+
 /// Best-effort tmux send-keys ping that wakes a recipient TUI session.
 ///
 /// Convention: recipient `agent-<x>` → a tmux session named `bwoc-agent-<x>`,
@@ -510,30 +546,31 @@ fn resolve_tmux_session(to: &str) -> Option<String> {
 /// Silent no-op when:
 /// - the recipient is not `agent-*` (topics, user-only flows)
 /// - `tmux` binary is missing
-/// - none of the candidate session names is live
+/// - no candidate session is live AND no pane is titled for the agent
 ///
 /// Two-step send (literal text → 200ms → Enter) — a single-call submission gets
 /// dropped by Claude Code's TUI input layer. The text goes via `send-keys -l`
 /// (literal) so a body containing a tmux key token (`Enter`, `C-c`, `;`, …) is
 /// injected verbatim, not reinterpreted as a keypress. Verified against a live
 /// Claude Code TUI: idle → submits immediately; mid-turn → queues and runs when
-/// the current turn ends.
+/// the current turn ends. The target may be a session or a fleet-term pane (see
+/// [`resolve_tmux_target`]) — both are valid `send-keys -t` targets.
 fn notify_tmux(to: &str, from: &str, msg_id: &str, message: &str) {
     if !to.starts_with("agent-") {
         return;
     }
-    let Some(session) = resolve_tmux_session(to) else {
+    let Some(target) = resolve_tmux_target(to) else {
         return;
     };
     let notify = format!("[bwoc inbox {msg_id} from {from}] {message}");
     let _ = std::process::Command::new("tmux")
-        .args(["send-keys", "-t", &session, "-l", "--", &notify])
+        .args(["send-keys", "-t", &target, "-l", "--", &notify])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
     std::thread::sleep(std::time::Duration::from_millis(200));
     let _ = std::process::Command::new("tmux")
-        .args(["send-keys", "-t", &session, "Enter"])
+        .args(["send-keys", "-t", &target, "Enter"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -592,6 +629,23 @@ mod tests {
         AgentEntry, AgentsRegistry, Workspace, WorkspaceDefaults, WorkspaceMeta,
     };
     use std::fs;
+
+    #[test]
+    fn match_pane_by_title_finds_the_fleet_tile() {
+        // `tmux fleet term` titles each pane with the agent id; a peer message to
+        // agent-ji must resolve to that pane (%7), not just any active pane.
+        let listing = "agent-pi\t%3\nagent-ji\t%7\nagent-mu\t%9";
+        let got = match_pane_by_title(listing, &tmux_session_candidates("agent-ji"));
+        assert_eq!(got.as_deref(), Some("%7"));
+        // bare-name pane title also matches (via the candidate set).
+        let bare = "ji\t%2\nother\t%4";
+        assert_eq!(
+            match_pane_by_title(bare, &tmux_session_candidates("agent-ji")).as_deref(),
+            Some("%2")
+        );
+        // no matching title → None.
+        assert!(match_pane_by_title("zzz\t%1", &tmux_session_candidates("agent-ji")).is_none());
+    }
 
     #[test]
     fn tmux_candidates_cover_the_launch_conventions() {
