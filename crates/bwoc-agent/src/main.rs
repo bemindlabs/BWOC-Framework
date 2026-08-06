@@ -269,7 +269,7 @@ where
 
     // Gateway auto-process (standalone agents): if opted in, a passing remote
     // (non-`user`) inbox envelope drives an UNTRUSTED harness turn that replies.
-    let autoproc = autoprocess::AutoProcessor::detect(cwd);
+    let mut autoproc = autoprocess::AutoProcessor::detect(cwd);
     autoproc.announce();
 
     // Warm task execution (#301): when `BWOC_WARM=1` and the backend is
@@ -290,7 +290,7 @@ where
                     inbox_pos,
                     &trust_ctx,
                     &refusals_path,
-                    &autoproc,
+                    &mut autoproc,
                 );
                 if new_pos != inbox_pos {
                     inbox_pos = new_pos;
@@ -304,6 +304,8 @@ where
                 }
                 // Reap the resident warm harness if it has gone idle (#301).
                 warm.tick_idle();
+                // Reap idle per-sender message sessions too (#410).
+                autoproc.tick_idle();
                 // Keep the connector child alive (respawn on exit, backoff-bounded).
                 connectors.tick();
                 // Keep the gateway recv bridge alive (respawn = reconnect).
@@ -321,6 +323,7 @@ where
     connectors.shutdown();
     gateway.shutdown();
     warm.shutdown();
+    autoproc.shutdown();
     if let Err(e) = std::fs::remove_file(&pid_path) {
         eprintln!(
             "bwoc-agent --serve: warning — failed to remove {}: {e}",
@@ -485,7 +488,7 @@ fn check_inbox_for_new(
     from_offset: u64,
     trust_ctx: &trust::TrustContext,
     refusals_path: &std::path::Path,
-    autoproc: &autoprocess::AutoProcessor,
+    autoproc: &mut autoprocess::AutoProcessor,
 ) -> u64 {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -555,7 +558,7 @@ fn check_inbox_for_new(
 /// Drive an untrusted auto-process turn for a delivered envelope from a remote
 /// agent sender. Skips `user`-origin (local operator) and malformed/empty
 /// lines — those are not remote messages to answer.
-fn maybe_auto_process(autoproc: &autoprocess::AutoProcessor, line: &str) {
+fn maybe_auto_process(autoproc: &mut autoprocess::AutoProcessor, line: &str) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
         return;
     };
