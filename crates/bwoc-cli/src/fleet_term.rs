@@ -99,6 +99,17 @@ pub(crate) fn tmux_fleet_commands(
     ];
     first.extend(spawn_argv(p0, b0));
     cmds.push(first);
+    // Keep a pane visible after its agent exits (dead panes read "[exited]")
+    // instead of closing — so one finished/crashed agent can't collapse the
+    // layout (or the whole session, if it were the last pane). Set immediately
+    // after the session exists, before any split.
+    cmds.push(vec![
+        "set-option".into(),
+        "-t".into(),
+        session.into(),
+        "remain-on-exit".into(),
+        "on".into(),
+    ]);
     cmds.push(title_cmd(session, id0));
 
     // One pane per remaining agent; rebalance to `tiled` between splits so the
@@ -305,6 +316,12 @@ mod tests {
                 .any(|w| w == ["--path", "/ws/agents/agent-pi"])
         );
         assert!(first.windows(2).any(|w| w == ["--backend", "claude"]));
+        // remain-on-exit is set right after the session is created so an exiting
+        // agent can't collapse the layout.
+        assert!(
+            c.iter()
+                .any(|cmd| cmd.contains(&"remain-on-exit".to_string()))
+        );
     }
 
     #[test]
