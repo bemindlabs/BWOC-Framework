@@ -4,9 +4,12 @@
 # prompt carried a `[bwoc inbox msg-XYZ from <sender>]` marker.
 #
 # The marker is written by `bwoc send` (see notify_tmux in
-# crates/bwoc-cli/src/send.rs) when it wakes a recipient's tmux session.
-# When the agent finishes that turn, this hook reads the transcript, finds
-# the last assistant text after the marked user prompt, and shells out to:
+# crates/bwoc-cli/src/send.rs) when it wakes a recipient's tmux session/pane.
+# When the agent finishes that turn, this hook reads the *marker* (sender +
+# msg-id) from the transcript's last user event, takes the reply text from the
+# Stop payload's `last_assistant_message` (the transcript may not have flushed
+# the just-finished turn yet — a race that silently dropped replies; it falls
+# back to scanning the transcript when the field is absent), and shells out to:
 #
 #   bwoc send --from <self> --reply-to <msg-id> --no-wakeup <sender> "<reply>"
 #
@@ -141,16 +144,21 @@ if sender == "user":
 # assistant turn yet, so re-parsing it from disk races and silently yields no
 # reply (the bug that made bus auto-reply never fire). Fall back to scanning the
 # transcript for older Claude Code versions that don't provide the field.
-reply_text = (payload.get("last_assistant_message") or "").strip()
-if not reply_text:
+# Preserve leading whitespace (an indented Markdown code block at the start of
+# the reply is significant); only .strip() to *test* for emptiness.
+reply_text = payload.get("last_assistant_message") or ""
+if not reply_text.strip():
     for i in range(last_user_idx + 1, len(events)):
         if events[i].get("type") == "assistant":
             text = extract_text(events[i].get("message", {}).get("content", ""))
             if text.strip():
-                reply_text = text.strip()  # keep updating to get the latest
+                reply_text = text  # keep updating to get the latest
 
-if not reply_text:
+if not reply_text.strip():
     sys.exit(0)
+
+# Trim trailing whitespace/newlines only — leading is kept (see above).
+reply_text = reply_text.rstrip()
 
 # Cap so an over-long assistant turn doesn't bloat the recipient's inbox.
 MAX_LEN = 4000
