@@ -468,44 +468,72 @@ fn send(args: SendArgs) -> Result<(), SendError> {
     Ok(())
 }
 
+/// Candidate tmux session names for an `agent-<x>` recipient, **most-specific
+/// first** so a coincidentally-named session can't steal the wake: the
+/// unambiguous `bwoc-agent-<x>` (what `bwoc chat --tmux` creates —
+/// `new-session -s bwoc-<agent_id>` in `chat.rs`) and `agent-<x>` are tried
+/// before the bare `<x>`, which is the most likely to collide with an unrelated
+/// session. Targeting only the bare name silently missed bwoc-launched
+/// sessions, so the wake never landed and the agent never woke.
+fn tmux_session_candidates(to: &str) -> Vec<String> {
+    let bare = to.strip_prefix("agent-").unwrap_or(to);
+    vec![
+        format!("bwoc-{to}"),   // bwoc-agent-<x> (bwoc chat --tmux) — most specific
+        to.to_string(),         // agent-<x>      (full recipient id)
+        format!("bwoc-{bare}"), // bwoc-<x>
+        bare.to_string(),       // <x>            (bare / upstream — collision-prone, last)
+    ]
+}
+
+/// First candidate session that tmux reports as live, if any.
+fn resolve_tmux_session(to: &str) -> Option<String> {
+    tmux_session_candidates(to).into_iter().find(|s| {
+        std::process::Command::new("tmux")
+            .args(["has-session", "-t", s])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false)
+    })
+}
+
 /// Best-effort tmux send-keys ping that wakes a recipient TUI session.
 ///
-/// Convention: recipient `agent-<x>` → tmux session `<x>`. The marker
-/// `[bwoc inbox <msg-id> from <sender>]` prefixes the message body so
-/// the Stop hook at `modules/agent-template/.claude/hooks/inbox-auto-reply.sh`
-/// can detect a bus-triggered turn and thread its reply via `--reply-to`.
+/// Convention: recipient `agent-<x>` → a tmux session named `bwoc-agent-<x>`,
+/// `agent-<x>`, `bwoc-<x>`, or the bare `<x>` (see [`tmux_session_candidates`]
+/// for the exact set + ordering — the first live one is woken). The
+/// marker `[bwoc inbox <msg-id> from <sender>]` prefixes the message body so the
+/// Stop hook at `modules/agent-template/.claude/hooks/inbox-auto-reply.sh` can
+/// detect a bus-triggered turn and thread its reply via `--reply-to`.
 ///
 /// Silent no-op when:
 /// - the recipient is not `agent-*` (topics, user-only flows)
 /// - `tmux` binary is missing
-/// - no tmux session matches the recipient's bare name
+/// - none of the candidate session names is live
 ///
-/// Two-step send (text → 200ms → Enter) — single-call submission gets
-/// dropped by Claude Code's TUI input layer; this is the upstream
-/// pattern from `it-app-workspace/bin/agent-send`.
+/// Two-step send (literal text → 200ms → Enter) — a single-call submission gets
+/// dropped by Claude Code's TUI input layer. The text goes via `send-keys -l`
+/// (literal) so a body containing a tmux key token (`Enter`, `C-c`, `;`, …) is
+/// injected verbatim, not reinterpreted as a keypress. Verified against a live
+/// Claude Code TUI: idle → submits immediately; mid-turn → queues and runs when
+/// the current turn ends.
 fn notify_tmux(to: &str, from: &str, msg_id: &str, message: &str) {
-    let Some(session) = to.strip_prefix("agent-") else {
-        return;
-    };
-    if std::process::Command::new("tmux")
-        .args(["has-session", "-t", session])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| !s.success())
-        .unwrap_or(true)
-    {
+    if !to.starts_with("agent-") {
         return;
     }
+    let Some(session) = resolve_tmux_session(to) else {
+        return;
+    };
     let notify = format!("[bwoc inbox {msg_id} from {from}] {message}");
     let _ = std::process::Command::new("tmux")
-        .args(["send-keys", "-t", session, "--", &notify])
+        .args(["send-keys", "-t", &session, "-l", "--", &notify])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
     std::thread::sleep(std::time::Duration::from_millis(200));
     let _ = std::process::Command::new("tmux")
-        .args(["send-keys", "-t", session, "Enter"])
+        .args(["send-keys", "-t", &session, "Enter"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -564,6 +592,18 @@ mod tests {
         AgentEntry, AgentsRegistry, Workspace, WorkspaceDefaults, WorkspaceMeta,
     };
     use std::fs;
+
+    #[test]
+    fn tmux_candidates_cover_the_launch_conventions() {
+        let c = tmux_session_candidates("agent-pi");
+        // bare (upstream / manual), full id, and the bwoc chat --tmux name.
+        assert!(c.contains(&"pi".to_string()), "bare name");
+        assert!(c.contains(&"agent-pi".to_string()), "full recipient id");
+        assert!(
+            c.contains(&"bwoc-agent-pi".to_string()),
+            "bwoc chat --tmux session (was silently missed): {c:?}"
+        );
+    }
 
     fn setup(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("bwoc-send-{label}-{}", std::process::id()));
