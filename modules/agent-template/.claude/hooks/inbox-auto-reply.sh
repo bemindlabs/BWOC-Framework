@@ -4,9 +4,12 @@
 # prompt carried a `[bwoc inbox msg-XYZ from <sender>]` marker.
 #
 # The marker is written by `bwoc send` (see notify_tmux in
-# crates/bwoc-cli/src/send.rs) when it wakes a recipient's tmux session.
-# When the agent finishes that turn, this hook reads the transcript, finds
-# the last assistant text after the marked user prompt, and shells out to:
+# crates/bwoc-cli/src/send.rs) when it wakes a recipient's tmux session/pane.
+# When the agent finishes that turn, this hook reads the *marker* (sender +
+# msg-id) from the transcript's last user event, takes the reply text from the
+# Stop payload's `last_assistant_message` (the transcript may not have flushed
+# the just-finished turn yet — a race that silently dropped replies; it falls
+# back to scanning the transcript when the field is absent), and shells out to:
 #
 #   bwoc send --from <self> --reply-to <msg-id> --no-wakeup <sender> "<reply>"
 #
@@ -136,20 +139,30 @@ sender = marker.group(2)
 if sender == "user":
     sys.exit(0)
 
-# Most recent assistant text after the bus-marked user prompt.
-last_assistant_text = ""
-for i in range(last_user_idx + 1, len(events)):
-    if events[i].get("type") == "assistant":
-        text = extract_text(events[i].get("message", {}).get("content", ""))
-        if text.strip():
-            last_assistant_text = text  # keep updating to get the latest
+# The assistant's reply text. Prefer the Stop payload's `last_assistant_message`
+# — at Stop time the transcript file may not have flushed the just-finished
+# assistant turn yet, so re-parsing it from disk races and silently yields no
+# reply (the bug that made bus auto-reply never fire). Fall back to scanning the
+# transcript for older Claude Code versions that don't provide the field.
+# Preserve leading whitespace (an indented Markdown code block at the start of
+# the reply is significant); only .strip() to *test* for emptiness.
+reply_text = payload.get("last_assistant_message") or ""
+if not reply_text.strip():
+    for i in range(last_user_idx + 1, len(events)):
+        if events[i].get("type") == "assistant":
+            text = extract_text(events[i].get("message", {}).get("content", ""))
+            if text.strip():
+                reply_text = text  # keep updating to get the latest
 
-if not last_assistant_text.strip():
+if not reply_text.strip():
     sys.exit(0)
+
+# Trim trailing whitespace/newlines only — leading is kept (see above).
+reply_text = reply_text.rstrip()
 
 # Cap so an over-long assistant turn doesn't bloat the recipient's inbox.
 MAX_LEN = 4000
-reply = last_assistant_text
+reply = reply_text
 if len(reply) > MAX_LEN:
     reply = reply[:MAX_LEN] + "…[truncated]"
 
