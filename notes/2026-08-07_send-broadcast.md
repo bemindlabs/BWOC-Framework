@@ -62,6 +62,17 @@ third. See the coordination-gap triage from this session.
   positional, `--all`+`--team` conflict, no-message, two-positional ambiguity,
   `--reply-to` rejection, missing recipient. 850 cli tests green; fmt + clippy clean.
 
+## Review fixes (Copilot, #417)
+
+- **Path traversal (security).** `--team <name>` was joined into
+  `.bwoc/teams/<name>.toml` unvalidated — `--team ../foo` escaped the teams dir.
+  Added `is_safe_segment` (one `Normal` path component) + a refusal test.
+- **Exit-code consistency.** `run_group` returned `1` for any hard error; it now
+  takes the most-severe code via the shared `exit_code` map (usage-class `2`
+  dominates runtime `1`), matching a single `bwoc send`.
+- **Windows `\r\n`.** `read_file_body` stripped only `\n`, leaving a stray `\r`
+  in the envelope; now trims both.
+
 ## Related
 
 - `crates/bwoc-cli/src/send.rs`, `crates/bwoc-cli/src/main.rs`

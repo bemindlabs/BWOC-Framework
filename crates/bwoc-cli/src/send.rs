@@ -753,6 +753,17 @@ pub fn run_group(args: GroupArgs) -> i32 {
     let ids: Vec<String> = match &args.recipients {
         Recipients::All => registry.agents.iter().map(|a| a.id.clone()).collect(),
         Recipients::Team(name) => {
+            // Guard against path traversal: the team name is joined into
+            // `.bwoc/teams/<name>.toml`, so it MUST be a single safe path
+            // segment — `--team ../foo` must not escape the teams directory and
+            // read an arbitrary file.
+            if !is_safe_segment(name) {
+                eprintln!(
+                    "bwoc send: invalid team name '{name}' — must be a single path segment \
+                     (no '/', '\\', or '..')"
+                );
+                return 2;
+            }
             let path = workspace
                 .join(".bwoc")
                 .join("teams")
@@ -789,6 +800,10 @@ pub fn run_group(args: GroupArgs) -> i32 {
 
     println!("Broadcasting to {} agent(s) ({scope}):", recipients.len());
     let (mut delivered, mut soft, mut hard) = (0usize, 0usize, 0usize);
+    // Most-severe exit code among hard per-recipient errors, via the shared
+    // `exit_code` mapping (a usage-class 2 dominates a runtime 1), so the
+    // broadcast's exit agrees with what a single `bwoc send` would return.
+    let mut hard_code = 0i32;
     for id in &recipients {
         let one = SendArgs {
             to: id.clone(),
@@ -827,6 +842,7 @@ pub fn run_group(args: GroupArgs) -> i32 {
                     println!("  • {id:<28} not delivered live — {e}");
                 } else {
                     hard += 1;
+                    hard_code = hard_code.max(exit_code(&e));
                     println!("  ✗ {id:<28} {e}");
                 }
             }
@@ -834,7 +850,15 @@ pub fn run_group(args: GroupArgs) -> i32 {
     }
     println!();
     println!("{delivered} delivered, {soft} not-live (offline/parked), {hard} failed.");
-    if hard > 0 { 1 } else { 0 }
+    hard_code // 0 when no hard errors occurred
+}
+
+/// True if `s` is a single, safe path segment — one `Normal` component, so no
+/// separators, no `..`/`.`, not empty, not absolute. Guards `--team <name>`
+/// before it's joined into a file path.
+fn is_safe_segment(s: &str) -> bool {
+    let mut comps = std::path::Path::new(s).components();
+    matches!(comps.next(), Some(std::path::Component::Normal(_))) && comps.next().is_none()
 }
 
 #[cfg(test)]
@@ -1699,6 +1723,34 @@ mod tests {
             workspace: Some(root.clone()),
         });
         assert_eq!(code, 2, "unknown team → usage error");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn is_safe_segment_rejects_traversal() {
+        assert!(is_safe_segment("tianting"));
+        assert!(is_safe_segment("team-1"));
+        assert!(is_safe_segment("team_1"));
+        assert!(!is_safe_segment(".."));
+        assert!(!is_safe_segment("."));
+        assert!(!is_safe_segment(""));
+        assert!(!is_safe_segment("../foo"));
+        assert!(!is_safe_segment("a/b"));
+        assert!(!is_safe_segment("/etc/passwd"));
+        assert!(!is_safe_segment("a/../b"));
+    }
+
+    #[test]
+    fn broadcast_team_traversal_is_refused() {
+        let root = setup_group("trav");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::Team("../agents.toml".into()),
+            message: "x".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+        });
+        assert_eq!(code, 2, "traversal team name → usage error, no file escape");
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -1603,11 +1603,12 @@ enum SendMode {
 }
 
 impl SendArgs {
-    /// Read `--file` content, trimming trailing newlines (a vim/EOF newline
-    /// shouldn't bloat the JSONL envelope; explicit content stays preserved).
+    /// Read `--file` content, trimming trailing newlines and carriage returns (a
+    /// vim/EOF newline shouldn't bloat the JSONL envelope, and a Windows `\r\n`
+    /// must not leave a stray `\r` in the body; explicit content stays preserved).
     fn read_file_body(path: &std::path::Path) -> Result<String, String> {
         std::fs::read_to_string(path)
-            .map(|s| s.trim_end_matches('\n').to_string())
+            .map(|s| s.trim_end_matches(['\n', '\r']).to_string())
             .map_err(|e| format!("failed to read {}: {e}", path.display()))
     }
 
