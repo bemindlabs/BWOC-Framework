@@ -87,12 +87,22 @@ bwoc send <to> <message> --reply-to <msg-id>      # thread as reply
 bwoc send <to> <message> --no-wakeup              # skip tmux ping
 bwoc send --all <message>                         # broadcast to every workspace agent
 bwoc send --team <team> <message>                 # broadcast to a Saṅgha team's members
+bwoc outbox [list]                                # pending durable-retry messages
+bwoc outbox flush [--peer <id>]                   # retry spooled deliveries
 ```
 
 Broadcast (`--all` / `--team`) fans the same message out to each recipient over that recipient's own resolved transport (local inbox / MQTT / gateway), reusing the single-send path per recipient so signing and routing are identical. Notes:
 - The recipient comes from the flag, so the message is the only positional: `bwoc send --all "text"`. `--all` and `--team` are mutually exclusive, and `--reply-to` has no meaning for a fan-out (rejected).
 - A broadcast with `--from <agent>` excludes that agent from its own broadcast.
-- Per-recipient delivery failures are **labeled but do not fail the run** (an offline peer relays as "not delivered live") — mirroring `bwoc ping --all`. Only resolution errors (no workspace, unknown team, empty set) and *hard* per-recipient errors return non-zero.
+- Per-recipient delivery failures are **labeled but do not fail the run** (an offline peer is spooled — see below) — mirroring `bwoc ping --all`. Only resolution errors (no workspace, unknown team, empty set) and *hard* per-recipient errors return non-zero.
+
+### Durable offline delivery (outbox)
+
+A `bwoc send` to a **remote peer that is offline/unreachable** (a gateway/MQTT relay failure) does not lose the message: the signed envelope is spooled to `<workspace>/.bwoc/outbox/<recipientId>.jsonl` and reported as *spooled* (exit 0), not failed. This is durable — it survives a restart, unlike the gateway's in-memory park.
+
+- **`bwoc outbox`** (or `list`) — pending counts per peer.
+- **`bwoc outbox flush [--peer <id>]`** — retry delivery. Each spooled envelope is **replayed verbatim** (same `messageId` + signature), so the recipient's inbox dedup (`inbox::append_envelope_deduped`) makes at-least-once retry **effectively-once**. Delivered messages are dropped from the spool; a peer that's still offline stays queued for the next flush; a hard error (stale route, unsigned gateway) keeps the line and surfaces the error.
+- Only the *remote* transports spool. A **local**-inbox delivery either succeeds or is a hard error (a local write can't be "offline"). Spool decisions never expose queued lines to path traversal — the recipient id is a canonical `agent-<x>` segment.
 
 Resolution rules for `--from`:
 - The argument is the agent's `name` (or full `agentId`); `agent-` prefix is added if absent. Mirrors `--to` resolution.

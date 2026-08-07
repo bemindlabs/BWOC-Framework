@@ -15,6 +15,7 @@ pub mod inbox;
 pub mod ipc;
 pub mod lifecycle;
 pub mod manifest;
+pub mod outbox;
 pub mod routing;
 pub mod team;
 pub mod time;

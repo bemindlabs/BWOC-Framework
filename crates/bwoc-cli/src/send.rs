@@ -181,6 +181,13 @@ pub enum Delivered {
     },
     /// Relayed through a `bwoc-gateway` websocket.
     Gateway { url: String },
+    /// The remote peer was offline/unreachable, so the signed envelope was
+    /// spooled to the outbox for a later `bwoc outbox flush` (durable retry).
+    /// `reason` is the underlying relay error, for display.
+    Spooled {
+        outbox_path: PathBuf,
+        reason: String,
+    },
 }
 
 /// Print the single-send confirmation block (unchanged wording from when the
@@ -228,6 +235,19 @@ fn print_single(r: &SendReport) {
             );
             println!("  Gateway: {url} (at {})", r.ts);
         }
+        Delivered::Spooled {
+            outbox_path,
+            reason,
+        } => {
+            println!(
+                "Spooled for {} (from {}) [id {}{reply_suffix}] — not delivered live ({reason}).",
+                r.recipient_id, r.from, r.message_id,
+            );
+            println!(
+                "  Queued: {} — retry with `bwoc outbox flush`",
+                outbox_path.display()
+            );
+        }
     }
     println!();
 }
@@ -240,84 +260,13 @@ fn send(args: SendArgs) -> Result<SendReport, SendError> {
     let registry = AgentsRegistry::load(&workspace)?;
 
     let lookup_id = canonicalize(&args.to);
-
-    // Step 1 — local registry (fast path, unchanged).
-    // Step 2 — on a local miss, consult routes.toml (peer routing).
-    // The result is a (resolved_workspace, entry) pair; everything below
-    // is identical for both local and peer hits. Only the recipient gains
-    // a peer workspace path — the sender stays anchored to the local registry.
-    // `force_peer_route` (set by `bwoc peer feedback`) skips the local fast
-    // path so a recipient id that also exists locally still routes to the peer.
-    let local_hit = if args.force_peer_route {
-        None
-    } else {
-        registry.agents.iter().find(|a| a.id == lookup_id).cloned()
-    };
-    // Resolve the recipient to a delivery `Target`. The canonical recipient id
-    // (`recipient_id`) is the envelope's `to` and the signing subject for both
-    // transports — it equals a local/peer `entry.id` and the MQTT route key.
-    let (target, recipient_id): (Target, String) = {
-        if let Some(local_entry) = local_hit {
-            let inbox = workspace
-                .join(&local_entry.path)
-                .join(".bwoc")
-                .join("inbox.jsonl");
-            (Target::LocalInbox { inbox_path: inbox }, local_entry.id)
-        } else {
-            // Local miss → consult routes.toml.
-            let routes = Routes::load(&workspace)?;
-            match routes.resolve_target(&lookup_id) {
-                Some(RouteTarget::Local(peer_ws)) => {
-                    // Found a local-FS peer workspace. Load its registry and
-                    // locate the recipient there (stale route → NotFound).
-                    let peer_registry = AgentsRegistry::load(peer_ws)?;
-                    match peer_registry.agents.into_iter().find(|a| a.id == lookup_id) {
-                        Some(peer_entry) => {
-                            let inbox = peer_ws
-                                .join(&peer_entry.path)
-                                .join(".bwoc")
-                                .join("inbox.jsonl");
-                            (Target::LocalInbox { inbox_path: inbox }, peer_entry.id)
-                        }
-                        None => {
-                            return Err(SendError::NotFound {
-                                name: args.to.clone(),
-                                workspace: workspace.clone(),
-                            });
-                        }
-                    }
-                }
-                Some(RouteTarget::Mqtt { broker, topic }) => {
-                    // Remote peer over MQTT. The peer's `bwoc-mqtt serve`
-                    // resolves the recipient on its side, so no local registry
-                    // lookup — the `to` id is the route key.
-                    let topic = topic
-                        .clone()
-                        .unwrap_or_else(|| format!("bwoc/{lookup_id}/inbox"));
-                    (
-                        Target::Mqtt {
-                            broker: broker.clone(),
-                            topic,
-                        },
-                        lookup_id.clone(),
-                    )
-                }
-                Some(RouteTarget::Gateway { url }) => {
-                    // Remote peer over a bwoc-gateway relay. The gateway routes
-                    // by recipient id on its side, so — as with MQTT — there is
-                    // no local registry lookup; the `to` id is the route key.
-                    (Target::Gateway { url: url.clone() }, lookup_id.clone())
-                }
-                // No match in routes.toml either. Existing behaviour.
-                None => {
-                    return Err(SendError::NotFound {
-                        name: args.to.clone(),
-                        workspace: workspace.clone(),
-                    });
-                }
-            }
-        }
-    };
+    let (target, recipient_id) = resolve_target_for(
+        &workspace,
+        &registry,
+        &lookup_id,
+        &args.to,
+        args.force_peer_route,
+    )?;
 
     // Resolve sender identity. None → "user" (default, legacy behavior).
     // Some(name) → must match an agent in the LOCAL registry.
@@ -406,29 +355,163 @@ fn send(args: SendArgs) -> Result<SendReport, SendError> {
 
     let line = serde_json::to_string(&serde_json::Value::Object(envelope))?;
 
-    // Perform the delivery side effect and capture *what* happened as a
-    // `Delivered` value. Printing is the caller's job (`run` for a single send,
-    // `run_group` for a broadcast) so both share one delivery path — see
-    // `print_single`.
-    let delivered = match target {
+    // Deliver over the resolved transport. On a *remote* peer being offline /
+    // unreachable (a relay/publish failure), spool the signed envelope so
+    // `bwoc outbox flush` can retry it later — durable, unlike the gateway's
+    // in-memory park, and reported as `Spooled` rather than lost. Hard errors
+    // (local I/O, unsigned gateway, missing sibling binary) still propagate.
+    let delivered = match deliver(
+        target,
+        &line,
+        &recipient_id,
+        &from,
+        &message_id,
+        &args.message,
+        args.no_wakeup,
+        sender_bwoc_dir.as_deref(),
+    ) {
+        Ok(d) => d,
+        Err(e) if is_spoolable(&e) => {
+            bwoc_core::outbox::spool(&workspace, &recipient_id, &message_id, &line)?;
+            Delivered::Spooled {
+                outbox_path: bwoc_core::outbox::outbox_path(&workspace, &recipient_id),
+                reason: e.to_string(),
+            }
+        }
+        Err(e) => return Err(e),
+    };
+
+    Ok(SendReport {
+        recipient_id,
+        from,
+        message_id,
+        ts,
+        reply_to: args.reply_to.clone(),
+        message: args.message.clone(),
+        delivered,
+    })
+}
+
+/// Resolve a recipient id to its delivery `Target`. Step 1: the local registry
+/// (fast path). Step 2 (on a local miss): `routes.toml` peer routing. Returns
+/// the `Target` and the canonical recipient id (the envelope `to` / signing
+/// subject). `orig_to` is the caller's raw argument, used only for error
+/// messages; `force_peer_route` skips the local fast path (`bwoc peer feedback`
+/// sets it so a recipient id that also exists locally still routes to the peer).
+fn resolve_target_for(
+    workspace: &std::path::Path,
+    registry: &AgentsRegistry,
+    lookup_id: &str,
+    orig_to: &str,
+    force_peer_route: bool,
+) -> Result<(Target, String), SendError> {
+    let local_hit = if force_peer_route {
+        None
+    } else {
+        registry.agents.iter().find(|a| a.id == lookup_id).cloned()
+    };
+    if let Some(local_entry) = local_hit {
+        let inbox = workspace
+            .join(&local_entry.path)
+            .join(".bwoc")
+            .join("inbox.jsonl");
+        return Ok((Target::LocalInbox { inbox_path: inbox }, local_entry.id));
+    }
+    // Local miss → consult routes.toml.
+    let routes = Routes::load(workspace)?;
+    match routes.resolve_target(lookup_id) {
+        Some(RouteTarget::Local(peer_ws)) => {
+            // A local-FS peer workspace. Load its registry and locate the
+            // recipient there (a stale route → NotFound).
+            let peer_registry = AgentsRegistry::load(peer_ws)?;
+            match peer_registry
+                .agents
+                .iter()
+                .find(|a| a.id == lookup_id)
+                .cloned()
+            {
+                Some(peer_entry) => {
+                    let inbox = peer_ws
+                        .join(&peer_entry.path)
+                        .join(".bwoc")
+                        .join("inbox.jsonl");
+                    Ok((Target::LocalInbox { inbox_path: inbox }, peer_entry.id))
+                }
+                None => Err(SendError::NotFound {
+                    name: orig_to.to_string(),
+                    workspace: workspace.to_path_buf(),
+                }),
+            }
+        }
+        // Remote transports: the peer resolves the recipient on its side, so the
+        // `to` id is the route key (no local registry lookup).
+        Some(RouteTarget::Mqtt { broker, topic }) => {
+            let topic = topic
+                .clone()
+                .unwrap_or_else(|| format!("bwoc/{lookup_id}/inbox"));
+            Ok((
+                Target::Mqtt {
+                    broker: broker.clone(),
+                    topic,
+                },
+                lookup_id.to_string(),
+            ))
+        }
+        Some(RouteTarget::Gateway { url }) => {
+            Ok((Target::Gateway { url: url.clone() }, lookup_id.to_string()))
+        }
+        None => Err(SendError::NotFound {
+            name: orig_to.to_string(),
+            workspace: workspace.to_path_buf(),
+        }),
+    }
+}
+
+/// True when `e` means a *remote peer was unreachable* and the envelope is worth
+/// spooling for a later retry (the peer/broker is offline). Hard errors — a
+/// missing sibling binary, an unsigned gateway sender, local I/O — are not
+/// spool-worthy and surface immediately.
+pub(crate) fn is_spoolable(e: &SendError) -> bool {
+    matches!(
+        e,
+        SendError::GatewayRelay { .. } | SendError::MqttPublish { .. }
+    )
+}
+
+/// Deliver a signed envelope `line` over `target`. The transport dispatch,
+/// factored out of `send` so both the single send and `bwoc outbox flush`
+/// (`redeliver`) share one code path. Does not spool — the caller decides what
+/// to do with an error. `message` is only used for the local tmux wakeup text.
+#[allow(clippy::too_many_arguments)]
+fn deliver(
+    target: Target,
+    line: &str,
+    recipient_id: &str,
+    from: &str,
+    message_id: &str,
+    message: &str,
+    no_wakeup: bool,
+    sender_bwoc_dir: Option<&std::path::Path>,
+) -> Result<Delivered, SendError> {
+    match target {
         Target::LocalInbox { inbox_path } => {
             // Idempotent append: a re-send of the same `messageId` is suppressed
             // rather than stacking a duplicate line (#299).
             let delivery =
-                bwoc_core::inbox::append_envelope_deduped(&inbox_path, &message_id, &line)?;
+                bwoc_core::inbox::append_envelope_deduped(&inbox_path, message_id, line)?;
             let duplicate = delivery == bwoc_core::inbox::Delivery::Duplicate;
 
             // Best-effort tmux wakeup on a *fresh* delivery only (local; a remote
             // peer can't be poked from here, and a duplicate shouldn't re-poke a
             // session). Suppressed via --no-wakeup / BWOC_DISABLE_TMUX_WAKEUP.
-            if !duplicate && !args.no_wakeup && std::env::var("BWOC_DISABLE_TMUX_WAKEUP").is_err() {
-                notify_tmux(&recipient_id, &from, &message_id, &args.message);
+            if !duplicate && !no_wakeup && std::env::var("BWOC_DISABLE_TMUX_WAKEUP").is_err() {
+                notify_tmux(recipient_id, from, message_id, message);
             }
 
-            Delivered::LocalInbox {
+            Ok(Delivered::LocalInbox {
                 inbox_path,
                 duplicate,
-            }
+            })
         }
         Target::Mqtt { broker, topic } => {
             // Publish via the `bwoc-mqtt` sibling binary (dep-quarantine: the CLI
@@ -471,27 +554,24 @@ fn send(args: SendArgs) -> Result<SendReport, SendError> {
                     topic: topic.clone(),
                 });
             }
-            Delivered::Mqtt {
+            Ok(Delivered::Mqtt {
                 broker_display,
                 topic,
-            }
+            })
         }
         Target::Gateway { url } => {
             // Relay via the `bwoc-gateway-send` sibling binary (dep-quarantine:
             // the CLI never links a WebSocket/TLS client). The sender's keypair
             // is the gateway login, so a `user`/unsigned origin cannot reach it.
-            // Require a *loadable* signing key — the keypair is the gateway
-            // login. Checking the file merely exists is not enough: a malformed
-            // `agent.key` would otherwise fail downstream with an opaque relay
-            // error instead of this actionable one.
-            let key_dir = sender_bwoc_dir
-                .as_ref()
-                .ok_or_else(|| SendError::GatewayUnsigned {
-                    recipient: recipient_id.clone(),
-                })?;
+            // Require a *loadable* signing key — checking the file merely exists
+            // is not enough: a malformed `agent.key` would otherwise fail
+            // downstream with an opaque relay error instead of this actionable one.
+            let key_dir = sender_bwoc_dir.ok_or_else(|| SendError::GatewayUnsigned {
+                recipient: recipient_id.to_string(),
+            })?;
             if !matches!(bwoc_signing::load_signing_key(key_dir), Ok(Some(_))) {
                 return Err(SendError::GatewayUnsigned {
-                    recipient: recipient_id.clone(),
+                    recipient: recipient_id.to_string(),
                 });
             }
             let key_path = key_dir.join(bwoc_signing::KEY_FILE);
@@ -505,9 +585,9 @@ fn send(args: SendArgs) -> Result<SendReport, SendError> {
                 .arg("--url")
                 .arg(&url)
                 .arg("--agent-id")
-                .arg(&from)
+                .arg(from)
                 .arg("--to")
-                .arg(&recipient_id)
+                .arg(recipient_id)
                 .arg("--key-file")
                 .arg(&key_path)
                 .stdin(std::process::Stdio::piped())
@@ -532,19 +612,48 @@ fn send(args: SendArgs) -> Result<SendReport, SendError> {
             if !status.success() {
                 return Err(SendError::GatewayRelay { url: url.clone() });
             }
-            Delivered::Gateway { url }
+            Ok(Delivered::Gateway { url })
         }
-    };
+    }
+}
 
-    Ok(SendReport {
-        recipient_id,
-        from,
-        message_id,
-        ts,
-        reply_to: args.reply_to.clone(),
-        message: args.message.clone(),
-        delivered,
-    })
+/// Re-deliver one spooled envelope `line` (used by `bwoc outbox flush`). Parses
+/// the stored envelope for its `to` / `from`, re-resolves the transport, and
+/// replays the line verbatim (same `messageId` + signature → recipient dedup).
+/// No tmux wakeup — flush is a background drain, not an interactive send.
+pub(crate) fn redeliver(
+    workspace: &std::path::Path,
+    registry: &AgentsRegistry,
+    line: &str,
+) -> Result<Delivered, SendError> {
+    let v: serde_json::Value = serde_json::from_str(line)?;
+    let field = |k: &str| {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let to = field("to");
+    let from = field("from");
+    let message_id = field("messageId");
+    let message = field("message");
+    let (target, recipient_id) = resolve_target_for(workspace, registry, &to, &to, false)?;
+    // The sender's signing key dir (gateway login). `user` / unknown sender → None.
+    let sender_bwoc_dir = registry
+        .agents
+        .iter()
+        .find(|a| a.id == from)
+        .map(|a| workspace.join(&a.path).join(".bwoc"));
+    deliver(
+        target,
+        line,
+        &recipient_id,
+        &from,
+        &message_id,
+        &message,
+        true, // no wakeup on a background flush
+        sender_bwoc_dir.as_deref(),
+    )
 }
 
 /// Candidate tmux session names for an `agent-<x>` recipient, **most-specific
@@ -817,27 +926,34 @@ pub fn run_group(args: GroupArgs) -> i32 {
             require_signed: false,
         };
         match send(one) {
-            Ok(report) => {
-                delivered += 1;
-                let (transport, verb) = match &report.delivered {
-                    Delivered::LocalInbox {
-                        duplicate: true, ..
-                    } => ("local", "already delivered"),
-                    Delivered::LocalInbox { .. } => ("local", "delivered"),
-                    Delivered::Mqtt { .. } => ("mqtt", "published"),
-                    Delivered::Gateway { .. } => ("gateway", "relayed"),
-                };
-                println!("  ✓ {id:<28} {transport:<8} {verb}");
-            }
+            Ok(report) => match &report.delivered {
+                // Offline peer → spooled for retry: durable, but "not live" yet.
+                Delivered::Spooled { .. } => {
+                    soft += 1;
+                    println!(
+                        "  • {id:<28} spooled  queued (offline) — `bwoc outbox flush` to retry"
+                    );
+                }
+                other => {
+                    delivered += 1;
+                    let (transport, verb) = match other {
+                        Delivered::LocalInbox {
+                            duplicate: true, ..
+                        } => ("local", "already delivered"),
+                        Delivered::LocalInbox { .. } => ("local", "delivered"),
+                        Delivered::Mqtt { .. } => ("mqtt", "published"),
+                        Delivered::Gateway { .. } => ("gateway", "relayed"),
+                        Delivered::Spooled { .. } => unreachable!("handled above"),
+                    };
+                    println!("  ✓ {id:<28} {transport:<8} {verb}");
+                }
+            },
             Err(e) => {
-                // A relay failure to an offline/unreachable peer is "soft": the
-                // broadcast still succeeded in attempting it, so it's reported
-                // but doesn't fail the run. Everything else is a hard error.
-                let soft_fail = matches!(
-                    &e,
-                    SendError::GatewayRelay { .. } | SendError::MqttPublish { .. }
-                );
-                if soft_fail {
+                // send() spools remote relay failures (→ Ok(Spooled)); a hard
+                // error here is a real failure (local I/O, unknown recipient,
+                // unsigned gateway, missing sibling binary). Reported and counted;
+                // a soft leftover (e.g. an io error while spooling) is tolerated.
+                if is_spoolable(&e) {
                     soft += 1;
                     println!("  • {id:<28} not delivered live — {e}");
                 } else {
@@ -1651,6 +1767,62 @@ mod tests {
         fs::read_to_string(root.join(format!("agents/{agent}/.bwoc/inbox.jsonl")))
             .map(|s| s.lines().count())
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn redeliver_replays_a_spooled_line_to_a_local_inbox() {
+        // `bwoc outbox flush` replays a stored envelope verbatim; a local target
+        // is appended (dedup on repeat). This exercises redeliver's parse →
+        // resolve → deliver without a transport stub.
+        let root = setup_group("redeliver");
+        let reg = AgentsRegistry::load(&root).unwrap();
+        let line = serde_json::json!({
+            "ts": "2026-08-07T00:00:00Z",
+            "messageId": "m-redeliver",
+            "from": "user",
+            "to": "agent-beta",
+            "message": "queued hello",
+        })
+        .to_string();
+
+        let d = redeliver(&root, &reg, &line).unwrap();
+        assert!(matches!(
+            d,
+            Delivered::LocalInbox {
+                duplicate: false,
+                ..
+            }
+        ));
+        let inbox = fs::read_to_string(root.join("agents/agent-beta/.bwoc/inbox.jsonl")).unwrap();
+        assert!(inbox.contains("queued hello") && inbox.contains("m-redeliver"));
+
+        // Idempotent replay → dedup suppresses the second delivery.
+        let d2 = redeliver(&root, &reg, &line).unwrap();
+        assert!(matches!(
+            d2,
+            Delivered::LocalInbox {
+                duplicate: true,
+                ..
+            }
+        ));
+        assert_eq!(inbox_lines(&root, "agent-beta"), 1, "no duplicate line");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn is_spoolable_only_for_remote_relay_failures() {
+        assert!(is_spoolable(&SendError::GatewayRelay {
+            url: "ws://x".into()
+        }));
+        assert!(is_spoolable(&SendError::MqttPublish {
+            broker: "b".into(),
+            topic: "t".into()
+        }));
+        // Hard errors are not spool-worthy.
+        assert!(!is_spoolable(&SendError::GatewayUnsigned {
+            recipient: "agent-x".into()
+        }));
+        assert!(!is_spoolable(&SendError::EmptyMessage));
     }
 
     #[test]
