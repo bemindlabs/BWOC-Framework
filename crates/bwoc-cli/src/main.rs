@@ -1542,22 +1542,37 @@ impl From<RunCliArgs> for run::RunArgs {
 }
 
 #[derive(Args, Debug)]
-#[command(group(clap::ArgGroup::new("body").required(true).args(["message", "file"])))]
-// clap renders the required `body` group ahead of the plain `to` positional,
-// producing a usage line (`<MESSAGE|--file> <TO>`) that contradicts the actual
-// parse order (`to` is positional 1, `message` is positional 2). Pin the usage
-// string to reality so the help text doesn't mislead. (Yoniso Manasikāra —
-// the docs match the behaviour, not clap's default rendering.)
-#[command(override_usage = "bwoc send [OPTIONS] <TO> <MESSAGE|--file <FILE>>")]
+// `body` is non-required at the clap layer because in broadcast mode
+// (`--all` / `--team`) the message text lands in the `to` positional (clap
+// fills positional 1 first). `resolve` enforces "a message is present" for
+// both modes with an actionable error. `body` still keeps message⊕file
+// mutually exclusive.
+#[command(group(clap::ArgGroup::new("body").required(false).args(["message", "file"])))]
+// clap renders the `body` group ahead of the plain `to` positional, producing a
+// usage line that contradicts the actual parse order (`to` is positional 1,
+// `message` is positional 2). Pin the usage string to reality so the help text
+// doesn't mislead. (Yoniso Manasikāra — the docs match the behaviour, not
+// clap's default rendering.)
+#[command(override_usage = "bwoc send [OPTIONS] <TO|--team <TEAM>|--all> <MESSAGE|--file <FILE>>")]
 struct SendArgs {
     /// Recipient agent. Matches by id ("agent-foo") or bare name ("foo").
-    to: String,
+    /// Omit when broadcasting with `--all` / `--team` (the positional then
+    /// carries the message).
+    to: Option<String>,
     /// Message text (quote multi-word). Mutually exclusive with `--file`.
     message: Option<String>,
     /// Source file. The file's full contents (minus trailing newlines) becomes
     /// the message body. Mutually exclusive with `<message>`.
     #[arg(long)]
     file: Option<PathBuf>,
+    /// Broadcast to every member of this Saṅgha team (`.bwoc/teams/<id>.toml`).
+    /// Mutually exclusive with a `<TO>` recipient and with `--all`.
+    #[arg(long)]
+    team: Option<String>,
+    /// Broadcast to every agent registered in the workspace. Mutually exclusive
+    /// with a `<TO>` recipient and with `--team`.
+    #[arg(long)]
+    all: bool,
     /// Sender identity. Default is "user" (human operator). Pass an agent
     /// name ("foo" or "agent-foo") for agent → agent messaging — the
     /// named sender must exist in the workspace registry. The recipient's
@@ -1581,22 +1596,82 @@ struct SendArgs {
     workspace: Option<PathBuf>,
 }
 
+/// A resolved `bwoc send` invocation: one targeted recipient, or a broadcast.
+enum SendMode {
+    One(send::SendArgs),
+    Group(send::GroupArgs),
+}
+
 impl SendArgs {
-    /// Resolve the message body — file content or inline arg. clap's
-    /// ArgGroup already guarantees exactly one is set.
-    fn resolve_message(self) -> Result<send::SendArgs, String> {
+    /// Read `--file` content, trimming trailing newlines and carriage returns (a
+    /// vim/EOF newline shouldn't bloat the JSONL envelope, and a Windows `\r\n`
+    /// must not leave a stray `\r` in the body; explicit content stays preserved).
+    fn read_file_body(path: &std::path::Path) -> Result<String, String> {
+        std::fs::read_to_string(path)
+            .map(|s| s.trim_end_matches(['\n', '\r']).to_string())
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))
+    }
+
+    /// Resolve the recipient(s) and message body into a `SendMode`. Broadcast
+    /// mode (`--all` / `--team`) takes the message from whichever positional
+    /// clap filled (it fills `to` first), since there is no `<TO>` recipient.
+    fn resolve(self) -> Result<SendMode, String> {
+        if self.all && self.team.is_some() {
+            return Err("--all and --team are mutually exclusive".to_string());
+        }
+        let broadcast = self.all || self.team.is_some();
+
+        if broadcast {
+            if self.reply_to.is_some() {
+                return Err("--reply-to has no meaning for a broadcast".to_string());
+            }
+            // The message is the file, else the lone positional (clap put it in
+            // `to`), else the second positional. Two inline positionals with a
+            // broadcast flag is ambiguous — the recipient came from the flag.
+            let body = match (self.file, self.message, self.to) {
+                (Some(p), None, None) => Self::read_file_body(&p)?,
+                (Some(_), _, _) => {
+                    return Err("--file is mutually exclusive with an inline message".to_string());
+                }
+                (None, Some(m), None) => m,
+                (None, None, Some(t)) => t,
+                (None, None, None) => {
+                    return Err(
+                        "broadcast needs a message: `bwoc send --all <MESSAGE>`".to_string()
+                    );
+                }
+                (None, Some(_), Some(_)) => {
+                    return Err(
+                        "a broadcast takes only a message — the recipient comes from --all/--team"
+                            .to_string(),
+                    );
+                }
+            };
+            let recipients = if self.all {
+                send::Recipients::All
+            } else {
+                send::Recipients::Team(self.team.expect("checked by `broadcast`"))
+            };
+            return Ok(SendMode::Group(send::GroupArgs {
+                recipients,
+                message: body,
+                from: self.from,
+                no_wakeup: self.no_wakeup,
+                workspace: self.workspace,
+            }));
+        }
+
+        // Single-recipient mode.
+        let to = self
+            .to
+            .ok_or("recipient required: pass <TO>, or --all / --team to broadcast")?;
         let body = match (self.message, self.file) {
             (Some(m), _) => m,
-            (None, Some(p)) => std::fs::read_to_string(&p)
-                .map_err(|e| format!("failed to read {}: {e}", p.display()))?
-                // Trim trailing newlines (a vim/EOF newline shouldn't bloat
-                // the JSONL envelope; explicit content stays preserved).
-                .trim_end_matches('\n')
-                .to_string(),
-            (None, None) => unreachable!("clap ArgGroup enforces one of (message, file)"),
+            (None, Some(p)) => Self::read_file_body(&p)?,
+            (None, None) => return Err("message required: pass <MESSAGE> or --file".to_string()),
         };
-        Ok(send::SendArgs {
-            to: self.to,
+        Ok(SendMode::One(send::SendArgs {
+            to,
             message: body,
             from: self.from,
             reply_to: self.reply_to,
@@ -1605,7 +1680,7 @@ impl SendArgs {
             kind: None,
             force_peer_route: false,
             require_signed: false,
-        })
+        }))
     }
 }
 
@@ -2656,14 +2731,14 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Send(args)) => {
-            let runtime = match args.resolve_message() {
-                Ok(r) => r,
+            let code = match args.resolve() {
+                Ok(SendMode::One(runtime)) => send::run(runtime),
+                Ok(SendMode::Group(runtime)) => send::run_group(runtime),
                 Err(e) => {
                     eprintln!("bwoc send: {e}");
                     return ExitCode::from(2);
                 }
             };
-            let code = send::run(runtime);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Chat(args)) => {
@@ -3244,4 +3319,126 @@ fn resolve_doc_workspace(explicit: Option<PathBuf>) -> PathBuf {
     }
     // Final fallback: current directory (notes will live relative to cwd).
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod send_resolve_tests {
+    use super::*;
+
+    /// Build a `SendArgs` with everything empty; tests set only the fields they
+    /// exercise so the disambiguation logic is the subject.
+    fn args() -> SendArgs {
+        SendArgs {
+            to: None,
+            message: None,
+            file: None,
+            team: None,
+            all: false,
+            from: None,
+            reply_to: None,
+            no_wakeup: false,
+            workspace: None,
+        }
+    }
+
+    #[test]
+    fn single_recipient_with_message_resolves_to_one() {
+        let a = SendArgs {
+            to: Some("agent-x".into()),
+            message: Some("hello".into()),
+            ..args()
+        };
+        match a.resolve().unwrap() {
+            SendMode::One(s) => {
+                assert_eq!(s.to, "agent-x");
+                assert_eq!(s.message, "hello");
+            }
+            SendMode::Group(_) => panic!("expected single"),
+        }
+    }
+
+    #[test]
+    fn broadcast_all_takes_message_from_the_to_positional() {
+        // `bwoc send --all "hi"` — clap puts "hi" in `to` (positional 1).
+        let a = SendArgs {
+            all: true,
+            to: Some("hi".into()),
+            ..args()
+        };
+        match a.resolve().unwrap() {
+            SendMode::Group(g) => {
+                assert!(matches!(g.recipients, send::Recipients::All));
+                assert_eq!(g.message, "hi");
+            }
+            SendMode::One(_) => panic!("expected group"),
+        }
+    }
+
+    #[test]
+    fn broadcast_team_names_the_team() {
+        let a = SendArgs {
+            team: Some("tianting".into()),
+            to: Some("go".into()),
+            ..args()
+        };
+        match a.resolve().unwrap() {
+            SendMode::Group(g) => match g.recipients {
+                send::Recipients::Team(t) => assert_eq!(t, "tianting"),
+                send::Recipients::All => panic!("expected team"),
+            },
+            SendMode::One(_) => panic!("expected group"),
+        }
+    }
+
+    #[test]
+    fn all_and_team_together_is_error() {
+        let a = SendArgs {
+            all: true,
+            team: Some("t".into()),
+            to: Some("m".into()),
+            ..args()
+        };
+        assert!(a.resolve().is_err());
+    }
+
+    #[test]
+    fn broadcast_without_a_message_is_error() {
+        let a = SendArgs {
+            all: true,
+            ..args()
+        };
+        assert!(a.resolve().is_err());
+    }
+
+    #[test]
+    fn broadcast_with_two_positionals_is_ambiguous_error() {
+        // recipient must come from the flag, not a positional.
+        let a = SendArgs {
+            all: true,
+            to: Some("agent-x".into()),
+            message: Some("hi".into()),
+            ..args()
+        };
+        assert!(a.resolve().is_err());
+    }
+
+    #[test]
+    fn broadcast_rejects_reply_to() {
+        let a = SendArgs {
+            all: true,
+            to: Some("hi".into()),
+            reply_to: Some("msg-1".into()),
+            ..args()
+        };
+        assert!(a.resolve().is_err());
+    }
+
+    #[test]
+    fn single_without_recipient_is_error() {
+        let a = SendArgs {
+            message: Some("hi".into()),
+            ..args()
+        };
+        assert!(a.resolve().is_err());
+    }
 }
