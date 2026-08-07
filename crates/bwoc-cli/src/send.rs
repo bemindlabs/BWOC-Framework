@@ -125,23 +125,114 @@ pub enum SendError {
 
 pub fn run(args: SendArgs) -> i32 {
     match send(args) {
-        Ok(()) => 0,
+        Ok(report) => {
+            print_single(&report);
+            0
+        }
         Err(e) => {
             eprintln!("bwoc send: {e}");
-            match e {
-                SendError::NoWorkspace
-                | SendError::NotFound { .. }
-                | SendError::SenderNotFound { .. }
-                | SendError::SignatureRequired { .. }
-                | SendError::GatewayUnsigned { .. }
-                | SendError::EmptyMessage => 2,
-                _ => 1,
-            }
+            exit_code(&e)
         }
     }
 }
 
-fn send(args: SendArgs) -> Result<(), SendError> {
+/// Map a `SendError` to the process exit code. Input/usage errors are `2`;
+/// everything else (I/O, transport relay failures) is `1`. Shared by the single
+/// `run` and the broadcast `run_group`.
+fn exit_code(e: &SendError) -> i32 {
+    match e {
+        SendError::NoWorkspace
+        | SendError::NotFound { .. }
+        | SendError::SenderNotFound { .. }
+        | SendError::SignatureRequired { .. }
+        | SendError::GatewayUnsigned { .. }
+        | SendError::EmptyMessage => 2,
+        _ => 1,
+    }
+}
+
+/// What a successful `send` did — carries exactly the detail `print_single`
+/// needs to render the per-transport confirmation, and that `run_group` needs to
+/// label each recipient in a broadcast summary.
+#[derive(Debug)]
+pub struct SendReport {
+    pub recipient_id: String,
+    pub from: String,
+    pub message_id: String,
+    pub ts: String,
+    pub reply_to: Option<String>,
+    pub message: String,
+    pub delivered: Delivered,
+}
+
+/// The transport a `send` delivered over, with the display detail for each.
+#[derive(Debug)]
+pub enum Delivered {
+    /// Appended to a local (or local-FS peer) inbox. `duplicate` = the same
+    /// `messageId` was already present and the append was suppressed (#299).
+    LocalInbox {
+        inbox_path: PathBuf,
+        duplicate: bool,
+    },
+    /// Published to an MQTT broker (credentials already redacted for display).
+    Mqtt {
+        broker_display: String,
+        topic: String,
+    },
+    /// Relayed through a `bwoc-gateway` websocket.
+    Gateway { url: String },
+}
+
+/// Print the single-send confirmation block (unchanged wording from when the
+/// prints lived inline in `send`). `run_group` prints its own compact summary
+/// instead, so this is only used by the single `run`.
+fn print_single(r: &SendReport) {
+    let reply_suffix = match r.reply_to.as_deref() {
+        Some(rt) => format!(", reply to {rt}"),
+        None => String::new(),
+    };
+    println!();
+    match &r.delivered {
+        Delivered::LocalInbox {
+            inbox_path,
+            duplicate,
+        } => {
+            if *duplicate {
+                println!(
+                    "Already delivered to {} — duplicate [id {}] suppressed.",
+                    r.recipient_id, r.message_id
+                );
+                println!("  Inbox: {}", inbox_path.display());
+            } else {
+                println!(
+                    "Sent to {} (from {}) [id {}{reply_suffix}]: {}",
+                    r.recipient_id, r.from, r.message_id, r.message,
+                );
+                println!("  Inbox: {} (appended at {})", inbox_path.display(), r.ts);
+            }
+        }
+        Delivered::Mqtt {
+            broker_display,
+            topic,
+        } => {
+            println!(
+                "Published to {} (from {}) [id {}{reply_suffix}]: {}",
+                r.recipient_id, r.from, r.message_id, r.message,
+            );
+            println!("  MQTT: {broker_display} → {topic} (at {})", r.ts);
+        }
+        Delivered::Gateway { url } => {
+            println!(
+                "Relayed to {} (from {}) [id {}{reply_suffix}]: {}",
+                r.recipient_id, r.from, r.message_id, r.message,
+            );
+            println!("  Gateway: {url} (at {})", r.ts);
+        }
+    }
+    println!();
+}
+
+fn send(args: SendArgs) -> Result<SendReport, SendError> {
     if args.message.trim().is_empty() {
         return Err(SendError::EmptyMessage);
     }
@@ -315,41 +406,29 @@ fn send(args: SendArgs) -> Result<(), SendError> {
 
     let line = serde_json::to_string(&serde_json::Value::Object(envelope))?;
 
-    let reply_suffix = match args.reply_to.as_deref() {
-        Some(rt) => format!(", reply to {rt}"),
-        None => String::new(),
-    };
-
-    match target {
+    // Perform the delivery side effect and capture *what* happened as a
+    // `Delivered` value. Printing is the caller's job (`run` for a single send,
+    // `run_group` for a broadcast) so both share one delivery path — see
+    // `print_single`.
+    let delivered = match target {
         Target::LocalInbox { inbox_path } => {
             // Idempotent append: a re-send of the same `messageId` is suppressed
             // rather than stacking a duplicate line (#299).
             let delivery =
                 bwoc_core::inbox::append_envelope_deduped(&inbox_path, &message_id, &line)?;
+            let duplicate = delivery == bwoc_core::inbox::Delivery::Duplicate;
 
-            if delivery == bwoc_core::inbox::Delivery::Duplicate {
-                println!();
-                println!(
-                    "Already delivered to {recipient_id} — duplicate [id {message_id}] suppressed."
-                );
-                println!("  Inbox: {}", inbox_path.display());
-                println!();
-                return Ok(());
-            }
-
-            // Best-effort tmux wakeup (local only; a remote peer can't be poked
-            // from here). Suppressed via --no-wakeup / BWOC_DISABLE_TMUX_WAKEUP.
-            if !args.no_wakeup && std::env::var("BWOC_DISABLE_TMUX_WAKEUP").is_err() {
+            // Best-effort tmux wakeup on a *fresh* delivery only (local; a remote
+            // peer can't be poked from here, and a duplicate shouldn't re-poke a
+            // session). Suppressed via --no-wakeup / BWOC_DISABLE_TMUX_WAKEUP.
+            if !duplicate && !args.no_wakeup && std::env::var("BWOC_DISABLE_TMUX_WAKEUP").is_err() {
                 notify_tmux(&recipient_id, &from, &message_id, &args.message);
             }
 
-            println!();
-            println!(
-                "Sent to {recipient_id} (from {from}) [id {message_id}{reply_suffix}]: {}",
-                args.message,
-            );
-            println!("  Inbox: {} (appended at {ts})", inbox_path.display());
-            println!();
+            Delivered::LocalInbox {
+                inbox_path,
+                duplicate,
+            }
         }
         Target::Mqtt { broker, topic } => {
             // Publish via the `bwoc-mqtt` sibling binary (dep-quarantine: the CLI
@@ -392,13 +471,10 @@ fn send(args: SendArgs) -> Result<(), SendError> {
                     topic: topic.clone(),
                 });
             }
-            println!();
-            println!(
-                "Published to {recipient_id} (from {from}) [id {message_id}{reply_suffix}]: {}",
-                args.message,
-            );
-            println!("  MQTT: {broker_display} → {topic} (at {ts})");
-            println!();
+            Delivered::Mqtt {
+                broker_display,
+                topic,
+            }
         }
         Target::Gateway { url } => {
             // Relay via the `bwoc-gateway-send` sibling binary (dep-quarantine:
@@ -456,16 +532,19 @@ fn send(args: SendArgs) -> Result<(), SendError> {
             if !status.success() {
                 return Err(SendError::GatewayRelay { url: url.clone() });
             }
-            println!();
-            println!(
-                "Relayed to {recipient_id} (from {from}) [id {message_id}{reply_suffix}]: {}",
-                args.message,
-            );
-            println!("  Gateway: {url} (at {ts})");
-            println!();
+            Delivered::Gateway { url }
         }
-    }
-    Ok(())
+    };
+
+    Ok(SendReport {
+        recipient_id,
+        from,
+        message_id,
+        ts,
+        reply_to: args.reply_to.clone(),
+        message: args.message.clone(),
+        delivered,
+    })
 }
 
 /// Candidate tmux session names for an `agent-<x>` recipient, **most-specific
@@ -620,6 +699,142 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
             return None;
         }
     }
+}
+
+/// Which set of agents a broadcast (`bwoc send --all` / `--team`) fans out to.
+pub enum Recipients {
+    /// Every agent registered in the workspace.
+    All,
+    /// The members of a named Saṅgha team (`.bwoc/teams/<id>.toml`).
+    Team(String),
+}
+
+/// Runtime args for a broadcast send. A subset of `SendArgs`: no `--reply-to`
+/// (a fan-out has no single prior envelope), no `kind` / `force_peer_route` /
+/// `require_signed` (those belong to targeted `bwoc peer feedback`).
+pub struct GroupArgs {
+    pub recipients: Recipients,
+    pub message: String,
+    pub from: Option<String>,
+    pub no_wakeup: bool,
+    pub workspace: Option<PathBuf>,
+}
+
+/// Resolve a recipient set and fan the same message out to each, reusing the
+/// single-send path (`send`) per recipient so signing, routing, and transport
+/// stay identical to `bwoc send <one>`. Prints a compact per-recipient status
+/// and a summary; per-recipient delivery failures are labeled but do not fail
+/// the run (mirrors `bwoc ping --all`), so an offline peer never aborts the
+/// broadcast. Only resolution/usage errors (no workspace, unknown team, empty
+/// set) and *hard* per-recipient errors return non-zero.
+pub fn run_group(args: GroupArgs) -> i32 {
+    if args.message.trim().is_empty() {
+        eprintln!("bwoc send: {}", SendError::EmptyMessage);
+        return 2;
+    }
+    let Some(workspace) = resolve_workspace(args.workspace.clone()) else {
+        eprintln!("bwoc send: {}", SendError::NoWorkspace);
+        return 2;
+    };
+    let registry = match AgentsRegistry::load(&workspace) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("bwoc send: {}", SendError::from(e));
+            return 1;
+        }
+    };
+
+    let scope = match &args.recipients {
+        Recipients::All => "workspace".to_string(),
+        Recipients::Team(name) => format!("team '{name}'"),
+    };
+
+    // Resolve the recipient id list.
+    let ids: Vec<String> = match &args.recipients {
+        Recipients::All => registry.agents.iter().map(|a| a.id.clone()).collect(),
+        Recipients::Team(name) => {
+            let path = workspace
+                .join(".bwoc")
+                .join("teams")
+                .join(format!("{name}.toml"));
+            match std::fs::read_to_string(&path) {
+                Ok(s) => match bwoc_core::team::Team::from_toml(&s) {
+                    Ok(team) => team.members,
+                    Err(e) => {
+                        eprintln!("bwoc send: team '{name}': {e}");
+                        return 2;
+                    }
+                },
+                Err(_) => {
+                    eprintln!(
+                        "bwoc send: no team '{name}' in {} (.bwoc/teams/{name}.toml not found)",
+                        workspace.display()
+                    );
+                    return 2;
+                }
+            }
+        }
+    };
+
+    // Never broadcast to the sending agent itself.
+    let sender_id = args.from.as_deref().map(canonicalize);
+    let recipients: Vec<String> = ids
+        .into_iter()
+        .filter(|id| Some(id.as_str()) != sender_id.as_deref())
+        .collect();
+    if recipients.is_empty() {
+        eprintln!("bwoc send: no recipients to broadcast to (empty {scope} set)");
+        return 2;
+    }
+
+    println!("Broadcasting to {} agent(s) ({scope}):", recipients.len());
+    let (mut delivered, mut soft, mut hard) = (0usize, 0usize, 0usize);
+    for id in &recipients {
+        let one = SendArgs {
+            to: id.clone(),
+            message: args.message.clone(),
+            from: args.from.clone(),
+            reply_to: None,
+            no_wakeup: args.no_wakeup,
+            workspace: Some(workspace.clone()),
+            kind: None,
+            force_peer_route: false,
+            require_signed: false,
+        };
+        match send(one) {
+            Ok(report) => {
+                delivered += 1;
+                let (transport, verb) = match &report.delivered {
+                    Delivered::LocalInbox {
+                        duplicate: true, ..
+                    } => ("local", "already delivered"),
+                    Delivered::LocalInbox { .. } => ("local", "delivered"),
+                    Delivered::Mqtt { .. } => ("mqtt", "published"),
+                    Delivered::Gateway { .. } => ("gateway", "relayed"),
+                };
+                println!("  ✓ {id:<28} {transport:<8} {verb}");
+            }
+            Err(e) => {
+                // A relay failure to an offline/unreachable peer is "soft": the
+                // broadcast still succeeded in attempting it, so it's reported
+                // but doesn't fail the run. Everything else is a hard error.
+                let soft_fail = matches!(
+                    &e,
+                    SendError::GatewayRelay { .. } | SendError::MqttPublish { .. }
+                );
+                if soft_fail {
+                    soft += 1;
+                    println!("  • {id:<28} not delivered live — {e}");
+                } else {
+                    hard += 1;
+                    println!("  ✗ {id:<28} {e}");
+                }
+            }
+        }
+    }
+    println!();
+    println!("{delivered} delivered, {soft} not-live (offline/parked), {hard} failed.");
+    if hard > 0 { 1 } else { 0 }
 }
 
 #[cfg(test)]
@@ -1371,5 +1586,133 @@ mod tests {
         assert_eq!(v["message"], "gated ping");
         let _ = fs::remove_dir_all(&local);
         let _ = fs::remove_dir_all(&peer);
+    }
+
+    /// Workspace with `agent-{alpha,beta,gamma}` and a `duo` team of {alpha,beta}.
+    fn setup_group(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("bwoc-grp-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".bwoc/teams")).unwrap();
+        Workspace {
+            workspace: WorkspaceMeta {
+                name: label.to_string(),
+                version: "0.1.0".to_string(),
+                created: "2026-08-07T00:00:00Z".to_string(),
+            },
+            defaults: WorkspaceDefaults::default(),
+        }
+        .save(&root)
+        .unwrap();
+        let mut reg = AgentsRegistry::default();
+        for a in ["alpha", "beta", "gamma"] {
+            fs::create_dir_all(root.join(format!("agents/agent-{a}/.bwoc"))).unwrap();
+            reg.agents.push(AgentEntry {
+                id: format!("agent-{a}"),
+                path: format!("agents/agent-{a}"),
+                backend: "claude".into(),
+                incarnated: "2026-08-07T00:00:00Z".into(),
+                status: "active".into(),
+            });
+        }
+        reg.save(&root).unwrap();
+        fs::write(
+            root.join(".bwoc/teams/duo.toml"),
+            "id = \"duo\"\nmembers = [\"agent-alpha\", \"agent-beta\"]\ncreated_at = \"2026-08-07T00:00:00Z\"\n",
+        )
+        .unwrap();
+        root
+    }
+
+    fn inbox_lines(root: &std::path::Path, agent: &str) -> usize {
+        fs::read_to_string(root.join(format!("agents/{agent}/.bwoc/inbox.jsonl")))
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn broadcast_all_delivers_to_every_agent() {
+        let root = setup_group("all");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::All,
+            message: "update bwoc".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+        });
+        assert_eq!(code, 0);
+        for a in ["agent-alpha", "agent-beta", "agent-gamma"] {
+            assert_eq!(inbox_lines(&root, a), 1, "{a} got the broadcast");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broadcast_team_targets_only_members() {
+        let root = setup_group("team");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::Team("duo".into()),
+            message: "team msg".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+        });
+        assert_eq!(code, 0);
+        assert_eq!(inbox_lines(&root, "agent-alpha"), 1);
+        assert_eq!(inbox_lines(&root, "agent-beta"), 1);
+        assert_eq!(
+            inbox_lines(&root, "agent-gamma"),
+            0,
+            "gamma is not on the team"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broadcast_all_excludes_the_sending_agent() {
+        let root = setup_group("self");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::All,
+            message: "hi".into(),
+            from: Some("alpha".into()), // bare name → canonicalizes to agent-alpha
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+        });
+        assert_eq!(code, 0);
+        assert_eq!(
+            inbox_lines(&root, "agent-alpha"),
+            0,
+            "sender excluded from own broadcast"
+        );
+        assert_eq!(inbox_lines(&root, "agent-beta"), 1);
+        assert_eq!(inbox_lines(&root, "agent-gamma"), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broadcast_unknown_team_is_usage_error() {
+        let root = setup_group("noteam");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::Team("ghost".into()),
+            message: "x".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+        });
+        assert_eq!(code, 2, "unknown team → usage error");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broadcast_empty_message_is_usage_error() {
+        let root = setup_group("empty");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::All,
+            message: "   ".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+        });
+        assert_eq!(code, 2);
+        let _ = fs::remove_dir_all(&root);
     }
 }
