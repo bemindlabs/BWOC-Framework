@@ -228,6 +228,11 @@ agents/*/.bwoc/agent.pid
 agents/*/.bwoc/agent.sock
 agents/*/.bwoc/inbox.cursor
 
+# bwoc outbox — sender-side durable retry queue (messages spooled because a
+# remote peer was offline; drained by `bwoc outbox flush`). Transient per-machine
+# delivery state, not an audit trail, so it is not tracked.
+.bwoc/outbox/
+
 # bwoc inbox messages — uncomment if you'd rather not track them.
 # Most teams DO want them in history (audit trail / replay), so the
 # default is to keep them tracked.

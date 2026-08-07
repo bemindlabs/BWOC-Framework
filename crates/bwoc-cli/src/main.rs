@@ -42,6 +42,7 @@ mod log;
 mod memory;
 mod new;
 mod okr;
+mod outbox_cmd;
 mod peer;
 mod ping;
 mod plugin;
@@ -249,6 +250,10 @@ enum Commands {
     /// `health` runs the Aparihāniya-dhamma 7 signals (read-only, report-only).
     #[command(name = "fleet")]
     Fleet(FleetArgs),
+    /// Sender-side durable retry queue. `bwoc outbox` (or `list`) shows messages
+    /// spooled because a remote peer was offline; `flush` retries delivery.
+    #[command(name = "outbox")]
+    Outbox(OutboxArgs),
     /// Framework skills under `modules/skills/<name>/` — list, show, verify
     /// (read), plus init, install, enable, disable, remove (write).
     /// See `docs/en/SKILLS.en.md`.
@@ -769,6 +774,28 @@ struct FleetArgs {
     /// Subcommand. Absent → the status overview (issue #297).
     #[command(subcommand)]
     command: Option<FleetCommand>,
+}
+
+#[derive(Args, Debug)]
+struct OutboxArgs {
+    /// Subcommand. Absent → `list`.
+    #[command(subcommand)]
+    command: Option<OutboxCommand>,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
+    #[arg(long = "workspace", global = true)]
+    workspace: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum OutboxCommand {
+    /// Show pending messages per peer (the default).
+    List,
+    /// Retry delivery of spooled messages; `--peer` limits it to one recipient.
+    Flush {
+        /// Only flush this recipient's queue (id or bare name). Omit → all peers.
+        #[arg(long)]
+        peer: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -2986,6 +3013,17 @@ fn main() -> ExitCode {
                     print: args.print,
                 }),
             };
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Outbox(args)) => {
+            let cmd = match args.command {
+                None | Some(OutboxCommand::List) => outbox_cmd::OutboxCmd::List,
+                Some(OutboxCommand::Flush { peer }) => outbox_cmd::OutboxCmd::Flush { peer },
+            };
+            let code = outbox_cmd::run(outbox_cmd::OutboxArgs {
+                cmd,
+                workspace: args.workspace,
+            });
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Skill(sub)) => {
