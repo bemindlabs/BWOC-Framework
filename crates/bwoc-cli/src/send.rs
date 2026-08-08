@@ -1876,6 +1876,28 @@ mod tests {
     }
 
     #[test]
+    fn broadcast_dry_run_team_sends_nothing() {
+        let root = setup_group("dryrunteam");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::Team("duo".into()), // members: alpha, beta
+            message: "would send".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+            dry_run: true,
+        });
+        assert_eq!(code, 0);
+        for a in ["agent-alpha", "agent-beta", "agent-gamma"] {
+            assert_eq!(
+                inbox_lines(&root, a),
+                0,
+                "{a} inbox untouched on team dry run"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn broadcast_team_targets_only_members() {
         let root = setup_group("team");
         let code = run_group(GroupArgs {
