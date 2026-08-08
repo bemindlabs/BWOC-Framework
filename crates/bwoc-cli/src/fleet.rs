@@ -718,9 +718,11 @@ fn resolve_workspace(explicit: Option<&Path>) -> Option<PathBuf> {
 //
 // A per-agent status overview — the "which agents are stuck?" view (issue #297).
 // Plain text + `--json`, both non-TTY-friendly (no TUI). For each registered
-// agent it reports backend, registry status, the pending inbox count (via the
-// shared `AgentEntry::inbox_path` resolver), and how long since the inbox last
-// changed (the best available "last seen" without a live daemon probe).
+// agent it reports backend, registry status, real liveness (`online`, via
+// `livecheck::running_pid` — the same pid probe status/dashboard use), the
+// pending inbox count (via the shared `AgentEntry::inbox_path` resolver), and
+// how long since the inbox last changed (LAST-MSG — last message written, not
+// liveness).
 
 pub struct FleetStatusArgs {
     /// Workspace root. Resolution: explicit > BWOC_WORKSPACE env > ancestor walk.
@@ -734,8 +736,12 @@ struct AgentStatus {
     id: String,
     backend: String,
     status: String,
+    /// Real liveness — the agent's daemon is running (pid file + signal-0), via
+    /// `livecheck::running_pid`. Distinct from `status` (registry lifecycle).
+    online: bool,
     pending: usize,
     /// Seconds since the inbox file last changed; `None` when no inbox exists.
+    /// This is "last message written", NOT liveness — see `online`.
     last_seen_secs: Option<u64>,
 }
 
@@ -772,6 +778,7 @@ pub fn status(args: FleetStatusArgs) -> i32 {
                 id: entry.id.clone(),
                 backend: entry.backend.clone(),
                 status: entry.status.clone(),
+                online: crate::livecheck::running_pid(&workspace, entry).is_some(),
                 pending,
                 last_seen_secs,
             }
@@ -861,14 +868,19 @@ fn print_status_table(workspace: &Path, rows: &[AgentStatus]) {
         .unwrap_or(7)
         .max(7);
     println!(
-        "  {:<id_w$}  {:<be_w$}  {:<8}  {:>7}  LAST-SEEN",
-        "AGENT", "BACKEND", "STATUS", "PENDING"
+        "  {:<id_w$}  {:<be_w$}  {:<9}  {:<8}  {:>7}  LAST-MSG",
+        "AGENT", "BACKEND", "ONLINE", "STATUS", "PENDING"
     );
     for r in rows {
         println!(
-            "  {:<id_w$}  {:<be_w$}  {:<8}  {:>7}  {}",
+            "  {:<id_w$}  {:<be_w$}  {:<9}  {:<8}  {:>7}  {}",
             r.id,
             r.backend,
+            if r.online {
+                "● online"
+            } else {
+                "○ offline"
+            },
             r.status,
             r.pending,
             humanize_age(r.last_seen_secs),
@@ -877,23 +889,31 @@ fn print_status_table(workspace: &Path, rows: &[AgentStatus]) {
     println!();
 }
 
-fn emit_status_json(workspace: &Path, rows: &[AgentStatus]) {
+/// Build the `--json` value (pure, so the schema — notably the `online`
+/// liveness field — is unit-testable without capturing stdout).
+fn status_json_value(workspace: &Path, rows: &[AgentStatus]) -> serde_json::Value {
     let agents: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
             serde_json::json!({
                 "agent": r.id,
                 "backend": r.backend,
+                "online": r.online,
                 "status": r.status,
                 "pending": r.pending,
+                // "last message written" age — not liveness (see `online`).
                 "last_seen_secs": r.last_seen_secs,
             })
         })
         .collect();
-    let value = serde_json::json!({
+    serde_json::json!({
         "workspace": workspace.display().to_string(),
         "agents": agents,
-    });
+    })
+}
+
+fn emit_status_json(workspace: &Path, rows: &[AgentStatus]) {
+    let value = status_json_value(workspace, rows);
     // Surface a serialization failure on stderr rather than silently emitting
     // `{}` — consistent with `emit_json` for fleet health, so automation can
     // tell a broken run from an empty fleet.
@@ -909,6 +929,35 @@ fn emit_status_json(workspace: &Path, rows: &[AgentStatus]) {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn status_json_includes_online_liveness_field() {
+        let rows = vec![
+            AgentStatus {
+                id: "agent-a".into(),
+                backend: "claude".into(),
+                online: true,
+                status: "active".into(),
+                pending: 2,
+                last_seen_secs: Some(5),
+            },
+            AgentStatus {
+                id: "agent-b".into(),
+                backend: "ollama".into(),
+                online: false,
+                status: "active".into(),
+                pending: 0,
+                last_seen_secs: None,
+            },
+        ];
+        let v = status_json_value(Path::new("/ws"), &rows);
+        let agents = v["agents"].as_array().unwrap();
+        assert_eq!(agents[0]["online"], serde_json::json!(true));
+        assert_eq!(agents[1]["online"], serde_json::json!(false));
+        // last_seen_secs stays present (last-msg age), distinct from online.
+        assert_eq!(agents[0]["last_seen_secs"], serde_json::json!(5));
+        assert!(agents[1]["last_seen_secs"].is_null());
+    }
 
     // ── MockGitRunner ────────────────────────────────────────────────────────
 
