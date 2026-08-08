@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.8-0] — 2026-08-08 — 2.42.0
+
+### Added
+
+- **`bwoc send --all` / `--team` — broadcast fan-out.** One command sends a message to every workspace agent (`--all`) or a Saṅgha team's members (`--team`), reusing the single-send path per recipient (signing, routing, MQTT/gateway relay). `--from <agent>` excludes that agent from its own broadcast; per-recipient failures are labeled, not fatal (an offline peer is spooled — see below); a compact `N delivered, M not-live, K failed` summary shows who got it (#417).
+- **Durable offline delivery — outbox spool + `bwoc outbox flush`.** A send to an offline remote peer no longer loses the message: the signed envelope is spooled to `<workspace>/.bwoc/outbox/<recipient>.jsonl` (durable, unlike the gateway's in-memory park) and reported as *spooled*. `bwoc outbox list` shows what's pending; `bwoc outbox flush [--peer <id>]` replays each envelope verbatim (same `messageId` + signature → recipient inbox dedup makes retry effectively-once) (#418).
+
+### Fixed
+
+- **`bwoc fleet term` no longer collides when two fleets run at once.** The tmux session defaulted to a fixed `bwoc-fleet`, so a second fleet (different workspace) refused with "already exists". `--session` is now optional; the default is a per-workspace `bwoc-fleet-<slug>-<hash>` (workspace basename + FNV-1a of the canonical path) — different workspaces get different sessions, while re-running in the same workspace attaches the existing fleet instead of refusing (#419).
+
 ## [v2026.8.6-0] — 2026-08-06 — 2.42.0
 
 ### Added
