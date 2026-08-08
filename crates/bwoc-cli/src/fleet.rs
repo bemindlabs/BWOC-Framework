@@ -734,8 +734,12 @@ struct AgentStatus {
     id: String,
     backend: String,
     status: String,
+    /// Real liveness — the agent's daemon is running (pid file + signal-0), via
+    /// `livecheck::running_pid`. Distinct from `status` (registry lifecycle).
+    online: bool,
     pending: usize,
     /// Seconds since the inbox file last changed; `None` when no inbox exists.
+    /// This is "last message written", NOT liveness — see `online`.
     last_seen_secs: Option<u64>,
 }
 
@@ -772,6 +776,7 @@ pub fn status(args: FleetStatusArgs) -> i32 {
                 id: entry.id.clone(),
                 backend: entry.backend.clone(),
                 status: entry.status.clone(),
+                online: crate::livecheck::running_pid(&workspace, entry).is_some(),
                 pending,
                 last_seen_secs,
             }
@@ -861,14 +866,19 @@ fn print_status_table(workspace: &Path, rows: &[AgentStatus]) {
         .unwrap_or(7)
         .max(7);
     println!(
-        "  {:<id_w$}  {:<be_w$}  {:<8}  {:>7}  LAST-SEEN",
-        "AGENT", "BACKEND", "STATUS", "PENDING"
+        "  {:<id_w$}  {:<be_w$}  {:<9}  {:<8}  {:>7}  LAST-MSG",
+        "AGENT", "BACKEND", "ONLINE", "STATUS", "PENDING"
     );
     for r in rows {
         println!(
-            "  {:<id_w$}  {:<be_w$}  {:<8}  {:>7}  {}",
+            "  {:<id_w$}  {:<be_w$}  {:<9}  {:<8}  {:>7}  {}",
             r.id,
             r.backend,
+            if r.online {
+                "● online"
+            } else {
+                "○ offline"
+            },
             r.status,
             r.pending,
             humanize_age(r.last_seen_secs),
@@ -884,8 +894,10 @@ fn emit_status_json(workspace: &Path, rows: &[AgentStatus]) {
             serde_json::json!({
                 "agent": r.id,
                 "backend": r.backend,
+                "online": r.online,
                 "status": r.status,
                 "pending": r.pending,
+                // "last message written" age — not liveness (see `online`).
                 "last_seen_secs": r.last_seen_secs,
             })
         })
