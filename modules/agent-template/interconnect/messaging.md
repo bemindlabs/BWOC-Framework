@@ -232,17 +232,17 @@ The six conditions are not enforced by the framework today; they are **norms** t
 2. `bwoc send --from <agent>` — sender-identity flag in `bwoc-cli`. (This iter.)
 3. Tests + live verification of agent → agent flow with the trust gate. (This iter.)
 4. CHANGELOG + ROADMAP cross-reference. (This iter.)
-5. **Deferred (v2):** signed envelopes, sender-identity proof, cross-workspace messaging, broadcast (`bwoc send --all`).
+5. **Deferred (v2):** signed envelopes, sender-identity proof, cross-workspace *trust*. (Broadcast `--all` / `--team` and durable outbox retry **shipped** — see §CLI Surface.)
 
 ## What This Spec Does NOT Cover
 
 - **Signed envelopes / identity proof.** A workspace-local secret HMAC over the envelope JSON is the obvious v2 path. Today's threat model accepts that a malicious clone could write `from: agent-bob` despite being a different agent — trust verification today still operates against the sender's *manifest*, which is the per-agent file on disk.
 - **Cross-workspace messaging.** Trust is per-workspace ([`trust.md` §What This Spec Does NOT Cover](trust.md)). An envelope addressed to an agent in another workspace is undefined behavior in v1.
-- **Broadcast / fan-out.** `bwoc send --all <message>` is a useful operator surface but not a sender-identity concern. Queued as separate work.
-- **Routing through intermediaries.** All messaging is point-to-point. An agent that wants to relay must explicitly read from its own inbox and re-send.
+- **Routing through intermediaries.** All messaging is point-to-point (a broadcast is a fan-out of point-to-point sends, not a relay). An agent that wants to relay must explicitly read from its own inbox and re-send.
 
 ## Spec Revision History
 
+- **v2 / 2026-08-08:** Broadcast fan-out (`bwoc send --all` / `--team`, #417) and durable offline delivery (outbox spool + `bwoc outbox flush`, #418) shipped and documented in §CLI Surface + §Durable offline delivery.
 - **v1 / 2026-05-23 (initial draft):** Envelope schema + `--from <agent>` CLI surface + Sāraṇīyadhamma 6 mapping to engineering rules. Trust gate integration already operational from trust step 4 shipped earlier today.
 
 ## Cross-References

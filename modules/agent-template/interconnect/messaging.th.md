@@ -85,7 +85,23 @@ bwoc send <to> <message>                          # from=user (default)
 bwoc send <to> <message> --from <agent>           # from=agent-<name>
 bwoc send <to> <message> --reply-to <msg-id>      # ตอบกลับแบบ thread
 bwoc send <to> <message> --no-wakeup              # ข้าม tmux ping
+bwoc send --all <message>                          # broadcast ถึงทุก agent ใน workspace
+bwoc send --team <team> <message>                 # broadcast ถึงสมาชิกทีม Saṅgha
+bwoc outbox [list]                                # ข้อความ durable-retry ที่ค้างอยู่
+bwoc outbox flush [--peer <id>]                   # ส่งซ้ำข้อความที่ spool ไว้
 ```
+
+Broadcast (`--all` / `--team`) ยิงข้อความเดียวกันออกไปหาผู้รับแต่ละคนผ่าน transport ของผู้รับเอง (local inbox / MQTT / gateway) โดยใช้ single-send path ต่อผู้รับ — signing + routing เหมือนกันทุกประการ หมายเหตุ:
+- ผู้รับมาจาก flag ข้อความจึงเป็น positional เดียว: `bwoc send --all "text"` `--all` กับ `--team` ใช้ร่วมกันไม่ได้ และ `--reply-to` ไม่มีความหมายกับ fan-out (ถูกปฏิเสธ)
+- broadcast ที่มี `--from <agent>` จะไม่ส่งหา agent นั้นเอง
+- การส่ง fail รายผู้รับ **ถูก label แต่ไม่ทำให้ทั้ง run ล้ม** (peer ที่ offline จะถูก spool — ดูด้านล่าง) — เหมือน `bwoc ping --all` มีเพียง resolution error (ไม่มี workspace, ไม่รู้จักทีม, set ว่าง) และ hard error รายผู้รับเท่านั้นที่คืนค่า non-zero
+
+### Durable offline delivery (outbox)
+
+`bwoc send` ถึง **remote peer ที่ offline/ติดต่อไม่ได้** (gateway/MQTT relay ล้ม) จะไม่ทำข้อความหาย: envelope ที่ signed แล้วถูก spool ไปที่ `<workspace>/.bwoc/outbox/<recipientId>.jsonl` และรายงานว่า *spooled* (exit 0) ไม่ใช่ล้มเหลว — durable อยู่รอด restart ต่างจาก in-memory park ของ gateway
+
+- **`bwoc outbox`** (หรือ `list`) — จำนวนที่ค้างต่อ peer
+- **`bwoc outbox flush [--peer <id>]`** — ส่งซ้ำ แต่ละ envelope ถูก **replay ตรง ๆ** (messageId + signature เดิม) ดังนั้น inbox dedup ของผู้รับ (`inbox::append_envelope_deduped`) ทำให้ at-least-once retry กลายเป็น **effectively-once** ข้อความที่ส่งสำเร็จถูกลบจาก spool, peer ที่ยัง offline คงค้างไว้รอ flush รอบหน้า, ส่วน hard error (route ค้าง, gateway ไม่ signed) คงบรรทัดไว้และแจ้ง error
 
 กฎ resolution ของ `--from`:
 - รับชื่อ agent (หรือ `agentId` เต็ม) prefix `agent-` เติมให้ถ้าไม่มี — mirror กับ `--to`
@@ -215,17 +231,17 @@ Hook เป็น Claude-specific เพราะ `Stop` event surface เป็
 2. `bwoc send --from <agent>` — flag sender identity ใน `bwoc-cli` (iter นี้)
 3. Tests + live verification ของ flow agent → agent กับ trust gate (iter นี้)
 4. CHANGELOG + ROADMAP cross-reference (iter นี้)
-5. **เลื่อน (v2):** signed envelopes, sender identity proof, cross-workspace messaging, broadcast (`bwoc send --all`)
+5. **เลื่อน (v2):** signed envelopes, sender identity proof, cross-workspace *trust* (broadcast `--all` / `--team` และ durable outbox retry **ship แล้ว** — ดู §CLI Surface)
 
 ## สิ่งที่ Spec นี้ ไม่ ครอบคลุม
 
 - **Signed envelopes / identity proof** Workspace-local secret HMAC ครอบ envelope JSON เป็นแนวทาง v2 ที่ชัดเจน threat model วันนี้ยอมรับว่า clone ที่ประสงค์ร้ายเขียน `from: agent-bob` ได้ทั้งๆ ที่เป็น agent ตัวอื่น — การตรวจ trust วันนี้ทำกับ *manifest* ของผู้ส่งซึ่งเป็นไฟล์ต่อ agent บน disk
 - **Cross-workspace messaging** Trust เป็น per-workspace ([`trust.th.md`](trust.th.md)) — envelope ที่ส่งหา agent ใน workspace อื่นเป็น undefined behavior ใน v1
-- **Broadcast / fan-out** `bwoc send --all <message>` เป็น operator surface ที่มีประโยชน์ แต่ไม่ใช่เรื่อง sender identity — ขึ้น queue แยก
-- **Routing ผ่านตัวกลาง** การส่งทั้งหมดเป็น point-to-point — agent ที่อยาก relay ต้องอ่านจาก inbox ตัวเองแล้วส่งต่อโดยชัดแจ้ง
+- **Routing ผ่านตัวกลาง** การส่งทั้งหมดเป็น point-to-point (broadcast คือ fan-out ของ point-to-point ไม่ใช่ relay) — agent ที่อยาก relay ต้องอ่านจาก inbox ตัวเองแล้วส่งต่อโดยชัดแจ้ง
 
 ## ประวัติการแก้ Spec
 
+- **v2 / 2026-08-08:** Broadcast fan-out (`bwoc send --all` / `--team`, #417) และ durable offline delivery (outbox spool + `bwoc outbox flush`, #418) ship แล้วและ document ใน §CLI Surface + §Durable offline delivery
 - **v1 / 2026-05-23 (ฉบับร่างแรก):** Envelope schema + `--from <agent>` CLI surface + แผนที่ สาราณียธรรม 6 → กฎเชิงวิศวกรรม Trust gate integration ใช้งานได้แล้วจาก trust step 4 ที่ ship ก่อนหน้านี้ในวันเดียวกัน
 
 ## เอกสารอ้างอิง
