@@ -827,6 +827,8 @@ pub struct GroupArgs {
     pub from: Option<String>,
     pub no_wakeup: bool,
     pub workspace: Option<PathBuf>,
+    /// Resolve + print the recipient set without sending anything.
+    pub dry_run: bool,
 }
 
 /// Resolve a recipient set and fan the same message out to each, reusing the
@@ -905,6 +907,17 @@ pub fn run_group(args: GroupArgs) -> i32 {
     if recipients.is_empty() {
         eprintln!("bwoc send: no recipients to broadcast to (empty {scope} set)");
         return 2;
+    }
+
+    if args.dry_run {
+        println!(
+            "Dry run — would broadcast to {} agent(s) ({scope}); nothing sent:",
+            recipients.len()
+        );
+        for id in &recipients {
+            println!("  · {id}");
+        }
+        return 0;
     }
 
     println!("Broadcasting to {} agent(s) ({scope}):", recipients.len());
@@ -1834,10 +1847,52 @@ mod tests {
             from: None,
             no_wakeup: true,
             workspace: Some(root.clone()),
+            dry_run: false,
         });
         assert_eq!(code, 0);
         for a in ["agent-alpha", "agent-beta", "agent-gamma"] {
             assert_eq!(inbox_lines(&root, a), 1, "{a} got the broadcast");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broadcast_dry_run_sends_nothing() {
+        let root = setup_group("dryrun");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::All,
+            message: "would send".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+            dry_run: true,
+        });
+        assert_eq!(code, 0);
+        // Nothing delivered — every inbox stays empty.
+        for a in ["agent-alpha", "agent-beta", "agent-gamma"] {
+            assert_eq!(inbox_lines(&root, a), 0, "{a} inbox untouched on dry run");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broadcast_dry_run_team_sends_nothing() {
+        let root = setup_group("dryrunteam");
+        let code = run_group(GroupArgs {
+            recipients: Recipients::Team("duo".into()), // members: alpha, beta
+            message: "would send".into(),
+            from: None,
+            no_wakeup: true,
+            workspace: Some(root.clone()),
+            dry_run: true,
+        });
+        assert_eq!(code, 0);
+        for a in ["agent-alpha", "agent-beta", "agent-gamma"] {
+            assert_eq!(
+                inbox_lines(&root, a),
+                0,
+                "{a} inbox untouched on team dry run"
+            );
         }
         let _ = fs::remove_dir_all(&root);
     }
@@ -1851,6 +1906,7 @@ mod tests {
             from: None,
             no_wakeup: true,
             workspace: Some(root.clone()),
+            dry_run: false,
         });
         assert_eq!(code, 0);
         assert_eq!(inbox_lines(&root, "agent-alpha"), 1);
@@ -1872,6 +1928,7 @@ mod tests {
             from: Some("alpha".into()), // bare name → canonicalizes to agent-alpha
             no_wakeup: true,
             workspace: Some(root.clone()),
+            dry_run: false,
         });
         assert_eq!(code, 0);
         assert_eq!(
@@ -1893,6 +1950,7 @@ mod tests {
             from: None,
             no_wakeup: true,
             workspace: Some(root.clone()),
+            dry_run: false,
         });
         assert_eq!(code, 2, "unknown team → usage error");
         let _ = fs::remove_dir_all(&root);
@@ -1921,6 +1979,7 @@ mod tests {
             from: None,
             no_wakeup: true,
             workspace: Some(root.clone()),
+            dry_run: false,
         });
         assert_eq!(code, 2, "traversal team name → usage error, no file escape");
         let _ = fs::remove_dir_all(&root);
@@ -1935,6 +1994,7 @@ mod tests {
             from: None,
             no_wakeup: true,
             workspace: Some(root.clone()),
+            dry_run: false,
         });
         assert_eq!(code, 2);
         let _ = fs::remove_dir_all(&root);
