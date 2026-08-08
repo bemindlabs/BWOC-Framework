@@ -25,23 +25,23 @@ class Bwoc < Formula
   # ubuntu-24.04-arm runners.
   on_macos do
     on_arm do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.6-0/bwoc-v2026.8.6-0-aarch64-apple-darwin.tar.gz"
-      sha256 "ae13ec3693f02024b30e9a717dc55120a180d3a7e6f40b5b2a31c56164ef2ac0"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.8-0/bwoc-v2026.8.8-0-aarch64-apple-darwin.tar.gz"
+      sha256 "d4ac9869e7dfbeb93bcef18553e82b74d6f8192e2c117d014663e65546fbd807"
     end
     on_intel do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.6-0/bwoc-v2026.8.6-0-x86_64-apple-darwin.tar.gz"
-      sha256 "1afe3f74b8e95ad534938fc19ee7376578200d43f430840e1cec67cb6a826aea"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.8-0/bwoc-v2026.8.8-0-x86_64-apple-darwin.tar.gz"
+      sha256 "b00723b20cf14823ca1024c49cf701c1389013ff3d3b3a90ab6a99cccd10e21d"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.6-0/bwoc-v2026.8.6-0-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "6d06c72c5fef07d78e8b61efea17ff5a3fbb4813a2cc7bd80d36a6f9605238bd"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.8-0/bwoc-v2026.8.8-0-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "1a01e00ba8a67df90fec6ef63380994c9cd56dff92f1ae254ecd5a4bb080bf14"
     end
     on_intel do
-      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.6-0/bwoc-v2026.8.6-0-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "a0f31ac82d8dce4e85f51070bad2891133315488fbf39f0c08144905ae3c1bad"
+      url "https://github.com/bemindlabs/BWOC-Framework/releases/download/v2026.8.8-0/bwoc-v2026.8.8-0-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "f686baccd46fa653fdcc586ef18e6356e332099aedcb6e69542291e538aa3878"
     end
   end
 
