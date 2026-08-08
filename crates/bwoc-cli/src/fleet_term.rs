@@ -225,6 +225,26 @@ fn fnv1a_24(bytes: &[u8]) -> String {
     format!("{:06x}", h & 0x00ff_ffff)
 }
 
+/// Attach to `session` (or, with `print` / no TTY, just print the attach line).
+fn attach_session(session: &str, print: bool) -> i32 {
+    if print || !std::io::stdout().is_terminal() {
+        println!("Attach with:  tmux attach -t {session}");
+        return 0;
+    }
+    match Command::new("tmux")
+        .args(["attach", "-t", session])
+        .status()
+    {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!(
+                "bwoc fleet term: attach failed: {e} — run `tmux attach -t {session}` manually."
+            );
+            1
+        }
+    }
+}
+
 pub fn run(args: FleetTermArgs) -> i32 {
     let Some(workspace) = resolve_workspace(args.workspace) else {
         eprintln!(
@@ -261,12 +281,20 @@ pub fn run(args: FleetTermArgs) -> i32 {
         return 2;
     }
     if session_exists(&session) {
-        eprintln!(
-            "bwoc fleet term: tmux session '{0}' already exists — attach with `tmux attach -t {0}`, \
-             kill it with `tmux kill-session -t {0}`, or pass a different --session.",
-            session
-        );
-        return 2; // user/input error — consistent with the refusals above
+        // An explicit --session that's taken is a user/input error (they named
+        // it). But the auto-derived per-workspace default already running means
+        // "this fleet is already open" — attach it (idempotent re-run) rather
+        // than refuse.
+        if args.session.is_some() {
+            eprintln!(
+                "bwoc fleet term: tmux session '{0}' already exists — attach with `tmux attach -t {0}`, \
+                 kill it with `tmux kill-session -t {0}`, or pass a different --session.",
+                session
+            );
+            return 2;
+        }
+        println!("Fleet already open for this workspace (session '{session}') — attaching.");
+        return attach_session(&session, args.print);
     }
 
     let bwoc = spawn::bwoc_exe();
@@ -315,23 +343,7 @@ pub fn run(args: FleetTermArgs) -> i32 {
     );
 
     // Attach unless asked not to (or no TTY to attach to).
-    if args.print || !std::io::stdout().is_terminal() {
-        println!("Attach with:  tmux attach -t {}", session);
-        return 0;
-    }
-    match Command::new("tmux")
-        .args(["attach", "-t", &session])
-        .status()
-    {
-        Ok(_) => 0,
-        Err(e) => {
-            eprintln!(
-                "bwoc fleet term: attach failed: {e} — run `tmux attach -t {}` manually.",
-                session
-            );
-            1
-        }
-    }
+    attach_session(&session, args.print)
 }
 
 #[cfg(test)]
