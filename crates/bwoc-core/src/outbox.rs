@@ -20,7 +20,30 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+/// A recipient id is safe to use as a spool filename only if it is a single
+/// normal path segment — no separators, no `..`/`.`, not absolute. Guards the
+/// outbox against path traversal: for a remote (gateway/MQTT) peer the recipient
+/// id is the raw `--to` argument (only `agent-`-prefixed), so a value like
+/// `agent-x/../../evil` must not escape `.bwoc/outbox/`.
+fn is_safe_recipient(id: &str) -> bool {
+    let mut comps = Path::new(id).components();
+    matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
+}
+
+fn reject_unsafe(recipient_id: &str) -> io::Result<()> {
+    if is_safe_recipient(recipient_id) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "unsafe recipient id for outbox: {recipient_id:?} (must be a single path segment)"
+            ),
+        ))
+    }
+}
 
 /// The `.bwoc/outbox/` directory for a workspace.
 pub fn outbox_dir(workspace: &Path) -> PathBuf {
@@ -42,6 +65,7 @@ pub fn spool(
     message_id: &str,
     line: &str,
 ) -> io::Result<bool> {
+    reject_unsafe(recipient_id)?;
     let path = outbox_path(workspace, recipient_id);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -56,12 +80,14 @@ pub fn spool(
 
 /// All pending envelope lines for a recipient (empty if the spool is absent).
 pub fn read_spooled(workspace: &Path, recipient_id: &str) -> io::Result<Vec<String>> {
+    reject_unsafe(recipient_id)?;
     read_lines(&outbox_path(workspace, recipient_id))
 }
 
 /// Overwrite a recipient's spool with `lines`, removing the file when `lines` is
 /// empty (a fully-drained queue leaves no stray file).
 pub fn rewrite(workspace: &Path, recipient_id: &str, lines: &[String]) -> io::Result<()> {
+    reject_unsafe(recipient_id)?;
     let path = outbox_path(workspace, recipient_id);
     if lines.is_empty() {
         return match fs::remove_file(&path) {
@@ -170,6 +196,33 @@ mod tests {
         // Drain fully → file removed.
         rewrite(&root, "agent-b", &[]).unwrap();
         assert!(!outbox_path(&root, "agent-b").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spool_rejects_traversal_recipient_ids() {
+        let root = ws("traversal");
+        // A safe id works.
+        assert!(spool(&root, "agent-b", "m1", &line("m1")).is_ok());
+        // Traversal / separator / .. ids are refused — nothing escapes the outbox.
+        for bad in ["agent-x/../../evil", "../evil", "a/b", "..", "/etc/passwd"] {
+            assert_eq!(
+                spool(&root, bad, "mX", &line("mX")).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "spool must reject {bad:?}"
+            );
+            assert_eq!(
+                read_spooled(&root, bad).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(
+                rewrite(&root, bad, &[line("mX")]).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        // No stray file escaped the outbox dir.
+        assert!(!root.join(".bwoc/evil.jsonl").exists());
+        assert!(!root.join("evil.jsonl").exists());
         let _ = fs::remove_dir_all(&root);
     }
 
