@@ -94,6 +94,7 @@ bwoc outbox flush [--peer <id>]                   # ส่งซ้ำข้อ�
 Broadcast (`--all` / `--team`) ยิงข้อความเดียวกันออกไปหาผู้รับแต่ละคนผ่าน transport ของผู้รับเอง (local inbox / MQTT / gateway) โดยใช้ single-send path ต่อผู้รับ — signing + routing เหมือนกันทุกประการ หมายเหตุ:
 - ผู้รับมาจาก flag ข้อความจึงเป็น positional เดียว: `bwoc send --all "text"` `--all` กับ `--team` ใช้ร่วมกันไม่ได้ และ `--reply-to` ไม่มีความหมายกับ fan-out (ถูกปฏิเสธ)
 - broadcast ที่มี `--from <agent>` จะไม่ส่งหา agent นั้นเอง
+- `--dry-run` (broadcast) resolve + พิมพ์รายชื่อผู้รับโดยไม่ส่งอะไรจริง
 - การส่ง fail รายผู้รับ **ถูก label แต่ไม่ทำให้ทั้ง run ล้ม** (peer ที่ offline จะถูก spool — ดูด้านล่าง) — เหมือน `bwoc ping --all` มีเพียง resolution error (ไม่มี workspace, ไม่รู้จักทีม, set ว่าง) และ hard error รายผู้รับเท่านั้นที่คืนค่า non-zero
 
 ### Durable offline delivery (outbox)

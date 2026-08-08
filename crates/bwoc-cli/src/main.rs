@@ -1619,6 +1619,10 @@ struct SendArgs {
     /// session that didn't ask for an interruption.
     #[arg(long = "no-wakeup")]
     no_wakeup: bool,
+    /// Broadcast only: resolve and print the recipient set without sending
+    /// anything. Ignored for a single-recipient send.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
     /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk > cwd.
     #[arg(long = "workspace")]
     workspace: Option<PathBuf>,
@@ -1686,6 +1690,7 @@ impl SendArgs {
                 from: self.from,
                 no_wakeup: self.no_wakeup,
                 workspace: self.workspace,
+                dry_run: self.dry_run,
             }));
         }
 
@@ -3376,6 +3381,7 @@ mod send_resolve_tests {
             from: None,
             reply_to: None,
             no_wakeup: false,
+            dry_run: false,
             workspace: None,
         }
     }
