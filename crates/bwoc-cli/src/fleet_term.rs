@@ -50,7 +50,9 @@ impl TmuxLayout {
 pub struct FleetTermArgs {
     pub workspace: Option<PathBuf>,
     pub layout: TmuxLayout,
-    pub session: String,
+    /// tmux session name. `None` → a per-workspace default
+    /// (`default_session_name`) so concurrent fleets don't collide.
+    pub session: Option<String>,
     /// Build the session but do not attach — just print the attach command.
     /// Implied when stdout is not a TTY (e.g. a script / the control center).
     pub print: bool,
@@ -175,6 +177,54 @@ fn session_exists(session: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Deterministic, tmux-safe default session name for a fleet, unique per
+/// workspace so two fleets opened at the same time don't collide on a shared
+/// `bwoc-fleet`. Shape: `bwoc-fleet-<slug>-<hash>` where `slug` is the
+/// workspace directory basename and `hash` is an FNV-1a digest of the canonical
+/// path (disambiguates same-named dirs). Deterministic, so re-running in the
+/// same workspace targets the *same* session (attach), not a new one.
+pub(crate) fn default_session_name(workspace: &std::path::Path) -> String {
+    // Canonicalize so the name is stable regardless of the cwd the command ran
+    // from (relative vs absolute path resolving to the same workspace root).
+    let canon = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let slug = canon
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(sanitize_segment)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "ws".to_string());
+    let hash = fnv1a_24(canon.to_string_lossy().as_bytes());
+    format!("bwoc-fleet-{slug}-{hash}")
+}
+
+/// Lower-case, keep `[a-z0-9-_]`, map the rest to `-`, trim stray `-`, cap at 24.
+/// tmux session names must not contain `.` or `:`; this keeps them safe + legible.
+fn sanitize_segment(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    out.truncate(24);
+    out.trim_matches('-').to_string()
+}
+
+/// FNV-1a over `bytes`, folded to the low 24 bits → 6 hex chars. Stable across
+/// runs (fixed constants), so the derived session name is reproducible.
+fn fnv1a_24(bytes: &[u8]) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in bytes {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{:06x}", h & 0x00ff_ffff)
+}
+
 pub fn run(args: FleetTermArgs) -> i32 {
     let Some(workspace) = resolve_workspace(args.workspace) else {
         eprintln!(
@@ -183,6 +233,12 @@ pub fn run(args: FleetTermArgs) -> i32 {
         );
         return 2;
     };
+    // No explicit --session → a per-workspace default so two fleets running at
+    // once (different workspaces) never collide on a shared `bwoc-fleet` name.
+    let session = args
+        .session
+        .clone()
+        .unwrap_or_else(|| default_session_name(&workspace));
     let registry = match AgentsRegistry::load(&workspace) {
         Ok(r) => r,
         Err(e) => {
@@ -204,11 +260,11 @@ pub fn run(args: FleetTermArgs) -> i32 {
         );
         return 2;
     }
-    if session_exists(&args.session) {
+    if session_exists(&session) {
         eprintln!(
             "bwoc fleet term: tmux session '{0}' already exists — attach with `tmux attach -t {0}`, \
              kill it with `tmux kill-session -t {0}`, or pass a different --session.",
-            args.session
+            session
         );
         return 2; // user/input error — consistent with the refusals above
     }
@@ -226,7 +282,7 @@ pub fn run(args: FleetTermArgs) -> i32 {
         })
         .collect();
 
-    for cmd in tmux_fleet_commands(&args.session, &agents, args.layout, &bwoc) {
+    for cmd in tmux_fleet_commands(&session, &agents, args.layout, &bwoc) {
         match Command::new("tmux")
             .args(&cmd)
             .stdout(Stdio::null())
@@ -239,7 +295,7 @@ pub fn run(args: FleetTermArgs) -> i32 {
                     "bwoc fleet term: `tmux {}` exited {s} — the session may be partially built; \
                      `tmux kill-session -t {}` to clear it.",
                     cmd.first().map(String::as_str).unwrap_or("?"),
-                    args.session
+                    session
                 );
                 return 1;
             }
@@ -254,24 +310,24 @@ pub fn run(args: FleetTermArgs) -> i32 {
         "Opened {} agent panes in tmux session '{}' (layout: {}). \
          Cycle layouts live with `<prefix> Space`.",
         agents.len(),
-        args.session,
+        session,
         args.layout.tmux_name()
     );
 
     // Attach unless asked not to (or no TTY to attach to).
     if args.print || !std::io::stdout().is_terminal() {
-        println!("Attach with:  tmux attach -t {}", args.session);
+        println!("Attach with:  tmux attach -t {}", session);
         return 0;
     }
     match Command::new("tmux")
-        .args(["attach", "-t", &args.session])
+        .args(["attach", "-t", &session])
         .status()
     {
         Ok(_) => 0,
         Err(e) => {
             eprintln!(
                 "bwoc fleet term: attach failed: {e} — run `tmux attach -t {}` manually.",
-                args.session
+                session
             );
             1
         }
@@ -371,5 +427,45 @@ mod tests {
         assert_eq!(TmuxLayout::Rows.tmux_name(), "even-vertical");
         assert_eq!(TmuxLayout::MainVertical.tmux_name(), "main-vertical");
         assert_eq!(TmuxLayout::MainHorizontal.tmux_name(), "main-horizontal");
+    }
+
+    #[test]
+    fn sanitize_segment_is_tmux_safe() {
+        // Dots/colons/spaces (tmux-special or ugly) become '-', trimmed + capped.
+        assert_eq!(sanitize_segment("My Fleet.v2"), "my-fleet-v2");
+        assert_eq!(sanitize_segment("bwoc"), "bwoc");
+        assert_eq!(sanitize_segment("--weird--"), "weird");
+        assert_eq!(sanitize_segment(""), "");
+        let long = sanitize_segment(&"a".repeat(50));
+        assert!(long.len() <= 24, "capped: {}", long.len());
+    }
+
+    #[test]
+    fn fnv1a_24_is_deterministic_and_six_hex() {
+        let a = fnv1a_24(b"/Users/x/ws-one");
+        assert_eq!(a, fnv1a_24(b"/Users/x/ws-one"), "stable across calls");
+        assert_ne!(a, fnv1a_24(b"/Users/x/ws-two"), "differs by path");
+        assert_eq!(a.len(), 6);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn default_session_name_is_unique_per_workspace() {
+        let base = std::env::temp_dir().join(format!("bwoc-ftname-{}", std::process::id()));
+        let a = base.join("fleet-a");
+        let b = base.join("fleet-b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+
+        let na = default_session_name(&a);
+        let nb = default_session_name(&b);
+        // Shape + tmux-safety.
+        assert!(na.starts_with("bwoc-fleet-"), "{na}");
+        assert!(!na.contains('.') && !na.contains(':'));
+        // Two different fleets → different sessions (no collision when concurrent).
+        assert_ne!(na, nb);
+        // Deterministic: same workspace re-run → same session (attach, not new).
+        assert_eq!(na, default_session_name(&a));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
