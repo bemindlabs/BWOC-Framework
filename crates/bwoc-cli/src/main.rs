@@ -819,9 +819,10 @@ struct FleetTermArgs {
     /// Cycle layouts live inside tmux with `<prefix> Space`.
     #[arg(long, value_enum, default_value_t = fleet_term::TmuxLayout::Grid)]
     layout: fleet_term::TmuxLayout,
-    /// tmux session name to create.
-    #[arg(long, default_value = "bwoc-fleet")]
-    session: String,
+    /// tmux session name to create. Omit for a per-workspace default
+    /// (`bwoc-fleet-<workspace>-<hash>`) so concurrent fleets don't collide.
+    #[arg(long)]
+    session: Option<String>,
     /// Build the session but don't attach — just print the attach command
     /// (implied when stdout is not a TTY).
     #[arg(long)]
