@@ -52,7 +52,7 @@ Phase 1–3 ให้พื้นฐานทางเทคนิคแก่ w
 
 **Signal:** `bwoc workspace prune --apply` reconcile drift ระหว่าง registry status กับสภาพบน disk. `bwoc doctor` sweep `agent.pid` / `agent.sock` ที่ stale ทั้งคู่จับ agent ที่ *คิด* ว่ายังทำงานอยู่แต่จริงๆ ไม่ใช่ หรือกลับด้าน
 
-**ปฏิบัติ:** ห่อ `bwoc start --all` / `bwoc stop --all` (surface ที่มีอยู่แล้ว) ใน playbook ของ operator หลังหยุด workspace รัน `bwoc doctor --auto` เพื่อล้าง stale-PID / stale-socket / stale-cursor ถ้า `bwoc list` เห็น agent ตัวเดียวยังทำงานในขณะที่ตัวอื่นหยุด — สอบถามก่อนเริ่มงานต่อ
+**ปฏิบัติ:** ห่อ `bwoc start --all` / `bwoc stop --all` (surface ที่มีอยู่แล้ว) ใน playbook ของ operator หลังหยุด workspace รัน `bwoc doctor --auto` เพื่อล้าง stale-PID / stale-socket / stale-cursor ถ้า `bwoc list` เห็น agent ตัวเดียวยังทำงานในขณะที่ตัวอื่นหยุด — สอบถามก่อนเริ่มงานต่อ สำหรับการ "มาพร้อมกัน" แบบ *โต้ตอบ* ใช้ `bwoc fleet term` เปิด tmux หนึ่ง pane ต่อหนึ่ง agent ในเซสชันเดียว (จัดเรียงด้วย `--layout grid|columns|rows|main-vertical|main-horizontal` หรือ `--print` เพื่อพิมพ์คำสั่ง attach โดยไม่ต้อง attach) — เทียบได้กับ `start --all` แต่สำหรับ fleet ที่มีมนุษย์คอยดูแล ชื่อเซสชันเป็นค่าเฉพาะต่อ workspace โดยปริยาย จึงไม่ชนกันเมื่อเปิดหลาย fleet พร้อมกัน
 
 ### 3. ไม่บัญญัติ/ไม่ยกเลิกกติกาตามอำเภอใจ — *appaññattaṃ na paññāpenti*
 
@@ -106,7 +106,7 @@ Phase 1–3 ให้พื้นฐานทางเทคนิคแก่ w
 
 ## สุขภาพ Fleet ที่สังเกตได้
 
-Signal เหล่านี้รวมกันให้มุมมองสุขภาพ fleet แก่ operator. v1 ship เป็น ad-hoc query; v2 อาจรวมเป็น `bwoc fleet health` command เดียว
+Signal เหล่านี้รวมกันให้มุมมองสุขภาพ fleet แก่ operator ตอนนี้ `bwoc fleet health` รวมทั้งเจ็ดข้อไว้ใน sweep แบบอ่านอย่างเดียวคำสั่งเดียวแล้ว ส่วน query รายเงื่อนไขด้านล่างยังมีประโยชน์สำหรับเจาะดูทีละ signal
 
 | ข้อ | Query | การอ่านที่สุขภาพดี |
 |---|---|---|

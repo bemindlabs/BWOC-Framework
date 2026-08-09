@@ -52,7 +52,7 @@ Each row: Pali → traditional gloss → BWOC application → observable signal 
 
 **Signal:** `bwoc workspace prune --apply` reconciles drift between registry status and on-disk state. `bwoc doctor` sweeps `agent.pid` / `agent.sock` for staleness. Together they detect agents that *think* they're running but aren't, or vice versa.
 
-**Practice:** Wrap `bwoc start --all` / `bwoc stop --all` (existing surface) in operator playbooks. After a workspace pause, run `bwoc doctor --auto` to clear stale-PID / stale-socket / stale-cursor artifacts. If a `bwoc list` shows one agent running while the rest are stopped, investigate before resuming work.
+**Practice:** Wrap `bwoc start --all` / `bwoc stop --all` (existing surface) in operator playbooks. After a workspace pause, run `bwoc doctor --auto` to clear stale-PID / stale-socket / stale-cursor artifacts. If a `bwoc list` shows one agent running while the rest are stopped, investigate before resuming work. For *interactive* come-together, `bwoc fleet term` opens one tmux pane per agent in a single session (arrange with `--layout grid|columns|rows|main-vertical|main-horizontal`, or `--print` to emit the attach line without attaching) — the concord equivalent of `start --all` for a human-attended fleet. The session name is per-workspace by default, so concurrent fleets don't collide on one shared session.
 
 ### 3. Process-bound convention change — *appaññattaṃ na paññāpenti*
 
@@ -106,7 +106,7 @@ Each row: Pali → traditional gloss → BWOC application → observable signal 
 
 ## Observable Fleet Health
 
-These signals collectively give an operator a fleet-health view. v1 ships them as ad-hoc queries; v2 may aggregate into a single `bwoc fleet health` command.
+These signals collectively give an operator a fleet-health view. `bwoc fleet health` now aggregates all seven into a single read-only sweep; the per-condition queries below remain useful for drilling into any one signal.
 
 | Condition | Query | Healthy reading |
 |---|---|---|
