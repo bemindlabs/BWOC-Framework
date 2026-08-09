@@ -201,4 +201,43 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn flush_keeps_a_poison_line_and_still_drains_the_good_one() {
+        // A corrupt spool entry (unparseable JSON) must not wedge the flush: the
+        // good line still delivers and drains, the poison line is kept (not lost,
+        // not silently dropped) for an operator to inspect, and the run reports a
+        // non-zero exit so the failure is visible.
+        let root = setup("poison");
+        let good = serde_json::json!({
+            "ts": "2026-08-07T00:00:00Z",
+            "messageId": "ok1",
+            "from": "user",
+            "to": "agent-beta",
+            "message": "good one",
+        })
+        .to_string();
+        // Order matters: poison first, good second — the good line must deliver
+        // even though an earlier entry failed to parse.
+        bwoc_core::outbox::spool(&root, "agent-beta", "bad1", "}{ not json at all").unwrap();
+        bwoc_core::outbox::spool(&root, "agent-beta", "ok1", &good).unwrap();
+
+        let code = flush(&root, None);
+        assert_eq!(code, 1, "a hard (parse) error yields a non-zero exit");
+
+        let inbox =
+            std::fs::read_to_string(root.join("agents/agent-beta/.bwoc/inbox.jsonl")).unwrap();
+        assert!(
+            inbox.contains("good one"),
+            "the parseable line still delivered"
+        );
+
+        let remaining = bwoc_core::outbox::read_spooled(&root, "agent-beta").unwrap();
+        assert_eq!(remaining.len(), 1, "only the poison line is kept");
+        assert!(
+            remaining[0].contains("not json"),
+            "the kept line is the poison entry, not the delivered one"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
