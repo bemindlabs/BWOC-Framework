@@ -448,11 +448,14 @@ fn check_memory_frontmatter(target: &Path, memory_dir: &str, report: &mut AuditR
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
         checked += 1;
-        if let Some(issue) = memory_frontmatter_issue(&content) {
+        // An unreadable memory file is itself a finding — don't silently skip it
+        // (that would let the audit look clean while a file is broken).
+        let issue = match fs::read_to_string(&path) {
+            Ok(content) => memory_frontmatter_issue(&content),
+            Err(e) => Some(format!("unreadable: {e}")),
+        };
+        if let Some(issue) = issue {
             flagged += 1;
             report
                 .warnings
@@ -478,8 +481,16 @@ fn memory_frontmatter_issue(content: &str) -> Option<String> {
         Some(r) => r,
         None => return Some("missing YAML front-matter (opening `---`)".to_string()),
     };
-    let Some(end) = rest.find("\n---") else {
-        return Some("unterminated front-matter (no closing `---`)".to_string());
+    // Closing marker: at the very start of `rest` (empty front-matter `---\n---`)
+    // or on its own line further down. Empty front-matter is "terminated" but has
+    // no keys, so it falls through to the missing-`name` finding below.
+    let end = if rest.starts_with("---") {
+        0
+    } else {
+        match rest.find("\n---") {
+            Some(e) => e,
+            None => return Some("unterminated front-matter (no closing `---`)".to_string()),
+        }
     };
     let front = &rest[..end];
     // Top-level keys: a line with no leading whitespace and a colon.
@@ -4407,6 +4418,13 @@ mod tests {
             memory_frontmatter_issue("---\nname: x\nno closing marker\n")
                 .unwrap()
                 .contains("unterminated")
+        );
+        // Empty front-matter `---\n---` is terminated but keyless → missing name,
+        // not a false "unterminated".
+        assert!(
+            memory_frontmatter_issue("---\n---\nbody")
+                .unwrap()
+                .contains("`name`")
         );
     }
 
