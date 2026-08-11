@@ -1339,11 +1339,21 @@ async fn load_system_prompt(workdir: &std::path::Path) -> String {
 /// Resolve the agent's tier-1 memory directory from the manifest's `memoryPath`
 /// (default `memories/`), relative to the worktree. Honors a configured override
 /// instead of hardcoding `memories/`. A missing/malformed manifest ⇒ the default.
+///
+/// The `memoryPath` is confined to the worktree: an absolute path or one with a
+/// `..` component is rejected (falls back to `memories/`) so a crafted manifest
+/// can't point recall/tools at an out-of-tree file — recall injects the index
+/// into the system prompt, so an escape would be an exfiltration vector.
 fn memory_dir_for(workdir: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, Path};
     let rel = bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
         .ok()
         .map(|m| m.memory_path)
         .filter(|p| !p.trim().is_empty())
+        .filter(|p| {
+            let path = Path::new(p);
+            !path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
+        })
         .unwrap_or_else(|| "memories".to_string());
     workdir.join(rel)
 }
@@ -1423,6 +1433,30 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(memory_dir_for(tmp.path()), tmp.path().join("brain/"));
+    }
+
+    #[tokio::test]
+    async fn memory_dir_for_rejects_escaping_memory_path() {
+        // A crafted `memoryPath` (absolute or `..`) must not point recall/tools
+        // outside the worktree — it falls back to the default `memories/`.
+        for bad in ["../../etc", "/etc", "a/../../b"] {
+            let tmp = TempDir::new().unwrap();
+            tokio::fs::write(
+                tmp.path().join("config.manifest.json"),
+                format!(
+                    r#"{{"agentId":"agent-x","name":"x","agentRole":"r","primaryModel":"m",
+                        "memoryPath":"{bad}","lintCmd":"true","formatCmd":"true",
+                        "testCmd":"true","buildCmd":"true","version":"2.0"}}"#
+                ),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                memory_dir_for(tmp.path()),
+                tmp.path().join("memories"),
+                "escaping memoryPath `{bad}` must fall back to memories/"
+            );
+        }
     }
 
     #[tokio::test]

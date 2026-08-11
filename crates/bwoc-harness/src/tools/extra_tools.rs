@@ -1152,9 +1152,10 @@ impl ToolImpl for MemoryRead {
     }
 
     fn description(&self) -> &'static str {
-        "Read from the agent's tier-1 file-based memory store (`memories/` directory). \
+        "Read from the agent's tier-1 file-based memory store (the configured memory \
+         directory, `memoryPath` — default `memories/`). \
          If `name` is omitted, reads `MEMORY.md` (the index). \
-         Paths are confined to the memories directory."
+         Paths are confined to that directory."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -1163,7 +1164,7 @@ impl ToolImpl for MemoryRead {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Memory file name within the `memories/` directory (e.g. `feedback_over_engineering.md`). Defaults to `MEMORY.md`."
+                    "description": "Memory file name within the memory directory (e.g. `feedback_over_engineering.md`). Defaults to `MEMORY.md`."
                 }
             },
             "required": []
@@ -1217,8 +1218,9 @@ impl ToolImpl for MemoryWrite {
     }
 
     fn description(&self) -> &'static str {
-        "Write to the agent's tier-1 file-based memory store (`memories/` directory). \
-         Creates the file if it does not exist. Confined to the `memories/` directory. \
+        "Write to the agent's tier-1 file-based memory store (the configured memory \
+         directory, `memoryPath` — default `memories/`). \
+         Creates the file if it does not exist. Confined to that directory. \
          `MEMORY.md` is the index (capped at 200 lines by convention — Mattaññutā)."
     }
 
@@ -1290,7 +1292,7 @@ impl ToolImpl for MemoryWrite {
             let lines = content.lines().count();
             if lines > MEMORY_MD_MAX_LINES {
                 msg.push_str(&format!(
-                    " — WARNING: {lines} lines exceeds the {MEMORY_MD_MAX_LINES}-line cap; \
+                    " — WARNING: {lines} lines exceed the {MEMORY_MD_MAX_LINES}-line cap; \
                      prune the index (Mattaññutā)"
                 ));
             }

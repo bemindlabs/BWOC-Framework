@@ -52,10 +52,12 @@ pub struct ToolContext {
     /// [`new`]: ToolContext::new
     /// [`unconfined`]: ToolContext::unconfined
     pub confine: bool,
-    /// Absolute path of the agent's tier-1 memory directory. Defaults to
-    /// `workdir/memories`, but honors the manifest's `memoryPath` when the caller
-    /// sets it via [`with_memory_dir`] — so `memory_read`/`memory_write` follow a
-    /// configured override instead of hardcoding `memories/`.
+    /// The agent's tier-1 memory directory (`memory_read`/`memory_write` operate
+    /// here). Defaults to `workdir/memories`; callers honor the manifest's
+    /// `memoryPath` via [`with_memory_dir`] instead of hardcoding `memories/`.
+    /// Expected to be `workdir`-rooted — the memory tools still run the
+    /// path-confinement check (`starts_with(workdir)`) on every access, so a
+    /// stray relative or escaping value is rejected at use, not trusted here.
     ///
     /// [`with_memory_dir`]: ToolContext::with_memory_dir
     pub memory_dir: PathBuf,
