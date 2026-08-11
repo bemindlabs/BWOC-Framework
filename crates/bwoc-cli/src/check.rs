@@ -413,6 +413,95 @@ fn check_memory_completeness(
             .warnings
             .push("task-log.jsonl missing (append-only task history)".to_string());
     }
+
+    check_memory_frontmatter(target, memory_dir, report);
+}
+
+/// The four memory kinds (SRS FR-7.3 / conventions.md). A memory file's `type`
+/// front-matter must be one of these.
+const MEMORY_TYPES: [&str; 4] = ["user", "feedback", "project", "reference"];
+
+/// Validate the YAML front-matter of individual memory files (SRS FR-7.2): each
+/// SHALL declare `name`, `description`, `type`, `created`, `updated`, and `type`
+/// SHALL be one of [`MEMORY_TYPES`]. Findings are **warnings**, not violations —
+/// memory is agent-authored and seeded over time, so the goal is to remind, not
+/// block (matching the rest of this audit). `README.md` and the `MEMORY.md`
+/// index are exempt.
+fn check_memory_frontmatter(target: &Path, memory_dir: &str, report: &mut AuditReport) {
+    let Ok(entries) = fs::read_dir(target.join(memory_dir)) else {
+        return; // no memory dir — already flagged above
+    };
+    let (mut checked, mut flagged) = (0usize, 0usize);
+    let mut files: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+        .filter(|p| {
+            let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            n != "README.md" && n != "MEMORY.md"
+        })
+        .collect();
+    files.sort(); // deterministic report order
+    for path in files {
+        let fname = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        checked += 1;
+        if let Some(issue) = memory_frontmatter_issue(&content) {
+            flagged += 1;
+            report
+                .warnings
+                .push(format!("{memory_dir}/{fname}: {issue}"));
+        }
+    }
+    if checked > 0 && flagged == 0 {
+        report
+            .passes
+            .push(format!("{checked} memory file(s) have valid front-matter"));
+    }
+}
+
+/// First front-matter problem in a memory file, or `None` when valid. Parses
+/// only top-level `key:` lines of the leading `---` block (enough for the
+/// required-field + `type`-enum check; not a full YAML parser).
+fn memory_frontmatter_issue(content: &str) -> Option<String> {
+    let t = content.trim_start();
+    let rest = match t
+        .strip_prefix("---\n")
+        .or_else(|| t.strip_prefix("---\r\n"))
+    {
+        Some(r) => r,
+        None => return Some("missing YAML front-matter (opening `---`)".to_string()),
+    };
+    let Some(end) = rest.find("\n---") else {
+        return Some("unterminated front-matter (no closing `---`)".to_string());
+    };
+    let front = &rest[..end];
+    // Top-level keys: a line with no leading whitespace and a colon.
+    let kv = |want: &str| -> Option<String> {
+        front.lines().find_map(|l| {
+            if l.starts_with(char::is_whitespace) {
+                return None;
+            }
+            let (k, v) = l.split_once(':')?;
+            (k.trim() == want).then(|| v.trim().trim_matches('"').to_string())
+        })
+    };
+    for req in ["name", "description", "type", "created", "updated"] {
+        if kv(req).is_none() {
+            return Some(format!("front-matter missing `{req}` (SRS FR-7.2)"));
+        }
+    }
+    let ty = kv("type").unwrap_or_default();
+    if !MEMORY_TYPES.contains(&ty.as_str()) {
+        return Some(format!("type `{ty}` not one of {MEMORY_TYPES:?}"));
+    }
+    None
 }
 
 /// Verify the Kalyāṇamitta 7 evidence rules from
@@ -4289,6 +4378,62 @@ mod tests {
             "expected over-cap warning, got: {:?}",
             report.warnings
         );
+    }
+
+    #[test]
+    fn memory_frontmatter_issue_detects_problems() {
+        let valid = "---\nname: x\ndescription: d\ntype: feedback\ncreated: 2026-01-01\nupdated: 2026-01-02\n---\nbody";
+        assert_eq!(memory_frontmatter_issue(valid), None);
+
+        assert!(
+            memory_frontmatter_issue("no front-matter at all")
+                .unwrap()
+                .contains("missing YAML front-matter")
+        );
+        assert!(
+            memory_frontmatter_issue(
+                "---\nname: x\ndescription: d\ntype: feedback\ncreated: 2026-01-01\n---\n"
+            )
+            .unwrap()
+            .contains("`updated`"),
+            "missing required key should be flagged"
+        );
+        assert!(memory_frontmatter_issue(
+            "---\nname: x\ndescription: d\ntype: bogus\ncreated: 2026-01-01\nupdated: 2026-01-02\n---\n"
+        )
+        .unwrap()
+        .contains("not one of"));
+        assert!(
+            memory_frontmatter_issue("---\nname: x\nno closing marker\n")
+                .unwrap()
+                .contains("unterminated")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_warns_on_bad_memory_frontmatter_and_passes_on_good() {
+        let root = write_temp_agent("fmmem", "kappa", "You are agent-kappa.");
+        let mem = root.join("memories");
+        fs::create_dir_all(&mem).unwrap();
+        // One bad (no front-matter), one good.
+        fs::write(mem.join("bad.md"), "just prose, no front-matter").unwrap();
+        fs::write(
+            mem.join("good.md"),
+            "---\nname: good\ndescription: d\ntype: reference\ncreated: 2026-01-01\nupdated: 2026-01-02\n---\nok",
+        )
+        .unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("memories/bad.md") && w.contains("front-matter")),
+            "expected a front-matter warning for bad.md, got: {:?}",
+            report.warnings
+        );
+        // README.md / MEMORY.md are exempt — no warning about them.
+        assert!(!report.warnings.iter().any(|w| w.contains("MEMORY.md:")));
     }
 
     #[cfg(unix)]
