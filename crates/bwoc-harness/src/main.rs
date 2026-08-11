@@ -483,6 +483,19 @@ async fn run() -> HarnessResult<()> {
         println!("  system prompt: loaded ({} chars)", system_prompt.len());
     }
 
+    // ── Tier 1 memory recall ──────────────────────────────────────────────
+    // Load the MEMORY.md index into the system prompt so the agent starts the
+    // session aware of its own curated memory (SRS FR-7.16), honoring the
+    // manifest's `memoryPath`.
+    let memory_dir = memory_dir_for(&workdir);
+    if let Some(block) = tier1_recall_block(&memory_dir).await {
+        println!(
+            "  memory   : Tier 1 MEMORY.md recalled ({} chars)",
+            block.len()
+        );
+        system_prompt.push_str(&block);
+    }
+
     // ── Tier 2 deep memory (HV3-1) ────────────────────────────────────────
     // When the manifest configures `deepMemoryCmd`: wake-up output joins the
     // system prompt, a read-only `memory_search` tool is registered below,
@@ -566,7 +579,8 @@ async fn run() -> HarnessResult<()> {
         ToolContext::unconfined(&workdir)
     } else {
         ToolContext::new(&workdir)
-    };
+    }
+    .with_memory_dir(memory_dir.clone());
 
     // ── Permission policy ─────────────────────────────────────────────────
     // Load from .bwoc/harness-policy.toml relative to the workdir.
@@ -1195,6 +1209,13 @@ async fn run_chat_mode(
     // System prompt (AGENTS.md / CLAUDE.md), same as run().
     let mut system_prompt = load_system_prompt(workdir).await;
 
+    // Tier 1 memory recall — same as run(): MEMORY.md index into the system
+    // prompt, honoring the manifest's `memoryPath`.
+    let memory_dir = memory_dir_for(workdir);
+    if let Some(block) = tier1_recall_block(&memory_dir).await {
+        system_prompt.push_str(&block);
+    }
+
     // Tier 2 deep memory (HV3-1) — same wiring as run(): wake-up into the
     // system prompt, memory_search tool, mine on session end.
     let deep_memory = bwoc_harness::deep_memory::DeepMemoryCmd::from_workdir(workdir);
@@ -1214,7 +1235,8 @@ async fn run_chat_mode(
         ToolContext::unconfined(workdir)
     } else {
         ToolContext::new(workdir)
-    };
+    }
+    .with_memory_dir(memory_dir.clone());
 
     // Permission policy. A `.bwoc/harness-policy.toml` wins; otherwise — unlike
     // the batch path's fail-safe deny — chat defaults to **ask** (reads free,
@@ -1314,6 +1336,41 @@ async fn load_system_prompt(workdir: &std::path::Path) -> String {
     String::new()
 }
 
+/// Resolve the agent's tier-1 memory directory from the manifest's `memoryPath`
+/// (default `memories/`), relative to the worktree. Honors a configured override
+/// instead of hardcoding `memories/`. A missing/malformed manifest ⇒ the default.
+fn memory_dir_for(workdir: &std::path::Path) -> std::path::PathBuf {
+    let rel = bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
+        .ok()
+        .map(|m| m.memory_path)
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| "memories".to_string());
+    workdir.join(rel)
+}
+
+/// Tier-1 boot recall: load the `MEMORY.md` index from `memory_dir` and render a
+/// system-prompt block, or `None` when there's no index. The Tier-1 counterpart
+/// to Tier-2 wake-up — closes the gap where an agent started each session blind
+/// to its own curated memory (SRS FR-7.16). Injects the *index*; individual
+/// memory files stay behind the `memory_read` tool (Mattaññutā — don't bloat the
+/// prompt).
+async fn tier1_recall_block(memory_dir: &std::path::Path) -> Option<String> {
+    let idx = tokio::fs::read_to_string(memory_dir.join("MEMORY.md"))
+        .await
+        .ok()?;
+    let idx = idx.trim();
+    if idx.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n\n# Your saved memory — Tier 1 index (MEMORY.md)\n\n\
+         Consult this before acting. Each entry is a past claim: verify any file, \
+         function, or flag it names against the current code before relying on it \
+         (Yoniso Manasikāra); trust the code over memory on conflict, then update \
+         the memory.\n\n{idx}\n"
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1332,6 +1389,40 @@ mod tests {
         for backend in ["ollama", "openai-compatible", "claude", "anthropic"] {
             assert!(ensure_backend_credentials(backend).is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn tier1_recall_reads_memory_md_index() {
+        let tmp = TempDir::new().unwrap();
+        let mem = tmp.path().join("memories");
+        tokio::fs::create_dir_all(&mem).await.unwrap();
+        // No index yet → no block.
+        assert!(tier1_recall_block(&mem).await.is_none());
+        // Index present → block carries its content + the verify reminder.
+        tokio::fs::write(mem.join("MEMORY.md"), "- [thing](thing.md) — hook")
+            .await
+            .unwrap();
+        let block = tier1_recall_block(&mem).await.unwrap();
+        assert!(block.contains("Tier 1 index"));
+        assert!(block.contains("thing.md"));
+        assert!(block.contains("Yoniso"));
+    }
+
+    #[tokio::test]
+    async fn memory_dir_for_honors_manifest_path_else_defaults() {
+        let tmp = TempDir::new().unwrap();
+        // No manifest → default `memories/`.
+        assert_eq!(memory_dir_for(tmp.path()), tmp.path().join("memories"));
+        // Manifest override → honored.
+        tokio::fs::write(
+            tmp.path().join("config.manifest.json"),
+            r#"{"agentId":"agent-x","name":"x","agentRole":"r","primaryModel":"m",
+                "memoryPath":"brain/","lintCmd":"true","formatCmd":"true",
+                "testCmd":"true","buildCmd":"true","version":"2.0"}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(memory_dir_for(tmp.path()), tmp.path().join("brain/"));
     }
 
     #[tokio::test]

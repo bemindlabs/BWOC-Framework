@@ -1172,8 +1172,9 @@ impl ToolImpl for MemoryRead {
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
         let name = args["name"].as_str().unwrap_or("MEMORY.md");
-        // Memories live in `memories/` under the worktree root.
-        let memories_dir = ctx.workdir.join("memories");
+        // Tier-1 memory lives in the manifest-configured `memoryPath` (default
+        // `<workdir>/memories`) — see ToolContext::memory_dir.
+        let memories_dir = ctx.memory_dir.clone();
         let mem_path = memories_dir.join(name);
 
         // Confinement: must stay inside memories/ which is inside workdir.
@@ -1203,9 +1204,10 @@ impl ToolImpl for MemoryRead {
 /// Write a memory file to the agent's `memories/` directory.
 ///
 /// Creates the file if it does not exist.  All paths are confined to the
-/// memories sub-directory.  The 200-line cap on `MEMORY.md` is a convention
-/// enforced by the AGENTS.md spec — this tool does not hard-enforce it (the
-/// model is informed in the description and in feedback memories).
+/// memory directory (`ToolContext::memory_dir`).  The 200-line cap on
+/// `MEMORY.md` is a convention (Mattaññutā): this tool does not truncate, but it
+/// appends a soft warning to its result when a `MEMORY.md` write exceeds the cap
+/// so the agent prunes.
 pub struct MemoryWrite;
 
 #[async_trait]
@@ -1251,7 +1253,7 @@ impl ToolImpl for MemoryWrite {
                 reason: "missing `content` argument".to_string(),
             })?;
 
-        let memories_dir = ctx.workdir.join("memories");
+        let memories_dir = ctx.memory_dir.clone();
         let mem_path = memories_dir.join(name);
 
         // Confinement check.
@@ -1279,9 +1281,28 @@ impl ToolImpl for MemoryWrite {
                 reason: format!("cannot write memory `{name}`: {e}"),
             })?;
 
-        Ok(format!("memory `{name}` written ({} bytes)", content.len()))
+        // Surface the MEMORY.md 200-line cap (Mattaññutā) as a soft warning in the
+        // tool result so the agent prunes — never truncate (that would silently
+        // lose curated content). The audit (`bwoc check`) warns too; this makes it
+        // visible at write time, where the agent can act on it.
+        let mut msg = format!("memory `{name}` written ({} bytes)", content.len());
+        if name == "MEMORY.md" {
+            let lines = content.lines().count();
+            if lines > MEMORY_MD_MAX_LINES {
+                msg.push_str(&format!(
+                    " — WARNING: {lines} lines exceeds the {MEMORY_MD_MAX_LINES}-line cap; \
+                     prune the index (Mattaññutā)"
+                ));
+            }
+        }
+        Ok(msg)
     }
 }
+
+/// Soft cap on the `MEMORY.md` index (Mattaññutā — right amount). Mirrors
+/// `bwoc check`'s constant. A convention, not a hard limit: `memory_write` warns
+/// past it but still writes (truncating would lose curated content).
+const MEMORY_MD_MAX_LINES: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1935,5 +1956,61 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("task"), "got: {err}");
+    }
+
+    // ── tier-1 memory: honor memory_dir + cap warning ──────────────────────────
+
+    #[tokio::test]
+    async fn memory_tools_honor_configured_memory_dir() {
+        // A manifest `memoryPath` other than `memories/` must be used by both
+        // write and read (previously hardcoded to `memories/`).
+        let tmp = TempDir::new().unwrap();
+        let ctx =
+            ToolContext::new(tmp.path().to_path_buf()).with_memory_dir(tmp.path().join("brain"));
+
+        MemoryWrite
+            .execute(json!({ "name": "note.md", "content": "hi" }), &ctx)
+            .await
+            .unwrap();
+        // Written under the configured dir, not the default `memories/`.
+        assert!(tmp.path().join("brain/note.md").is_file());
+        assert!(!tmp.path().join("memories/note.md").exists());
+
+        let got = MemoryRead
+            .execute(json!({ "name": "note.md" }), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(got, "hi");
+    }
+
+    #[tokio::test]
+    async fn memory_write_warns_over_the_memory_md_cap() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ctx_for(&tmp);
+
+        // Under cap → no warning.
+        let small = "line\n".repeat(10);
+        let msg = MemoryWrite
+            .execute(json!({ "name": "MEMORY.md", "content": small }), &ctx)
+            .await
+            .unwrap();
+        assert!(!msg.contains("WARNING"), "got: {msg}");
+
+        // Over cap → warning, but still written.
+        let big = "line\n".repeat(MEMORY_MD_MAX_LINES + 5);
+        let msg = MemoryWrite
+            .execute(json!({ "name": "MEMORY.md", "content": big }), &ctx)
+            .await
+            .unwrap();
+        assert!(msg.contains("WARNING") && msg.contains("cap"), "got: {msg}");
+        assert!(tmp.path().join("memories/MEMORY.md").is_file());
+
+        // A non-index file over 200 lines is fine (cap is MEMORY.md-only).
+        let big_other = "x\n".repeat(MEMORY_MD_MAX_LINES + 5);
+        let msg = MemoryWrite
+            .execute(json!({ "name": "big.md", "content": big_other }), &ctx)
+            .await
+            .unwrap();
+        assert!(!msg.contains("WARNING"), "got: {msg}");
     }
 }
