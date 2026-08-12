@@ -350,7 +350,7 @@ mod tests {
         }
         let has_devnull = |key: &str| {
             cmd.get_envs().any(|(k, v)| {
-                k == key
+                k == std::ffi::OsStr::new(key)
                     && v.map(|v| v.to_string_lossy() == "/dev/null")
                         .unwrap_or(false)
             })
