@@ -116,9 +116,9 @@ bwoc-agent: task available ← squad/t3: implement the parser
 
 ## Task hooks (ส่งแล้ว)
 
-shell hook ระดับ workspace แบบ optional ทำงานตาม lifecycle ของงาน mirror `TaskCreated` / `TaskClaimed` / `TaskCompleted` ของ Claude Agent Teams hook คือ executable ที่ `<workspace>/.bwoc/hooks/<event>`; ไฟล์ที่ไม่มีหรือไม่ executable เป็น no-op เงียบ (hook เป็น opt-in)
+shell hook ระดับ workspace แบบ optional ทำงานตาม lifecycle ของงาน mirror `TaskCreated` / `TaskClaimed` / `TaskCompleted` ของ Claude Agent Teams hook คือ executable ที่ `<workspace>/.bwoc/hooks/<event>`; ไฟล์ที่ไม่มี — หรือบน Unix ไฟล์ที่มีอยู่แต่ไม่ executable — เป็น no-op เงียบ (hook เป็น opt-in) คอลัมน์ตัวแปรด้านล่างลิสต์ **`BWOC_*` context** ที่แต่ละ event เพิ่มให้; environment เต็มที่ hook เห็นคือ context นั้นบวกกับ safe base ที่ถูก scrub (ดู *Contract*)
 
-| Event — `<workspace>/.bwoc/hooks/…` | ทำงานเมื่อ | Environment ที่ส่งให้ |
+| Event — `<workspace>/.bwoc/hooks/…` | ทำงานเมื่อ | `BWOC_*` context ที่เพิ่ม |
 |---|---|---|
 | `task-created` | `bwoc task add` กำลังจะ persist งาน | `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_TASK_TITLE` |
 | `task-claimed` | `bwoc task claim` กำลังจะ persist การ claim | `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_AGENT`, `BWOC_WORKTREE_BASE` |

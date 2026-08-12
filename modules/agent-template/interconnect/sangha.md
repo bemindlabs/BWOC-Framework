@@ -116,9 +116,9 @@ bwoc-agent: task available ← squad/t3: implement the parser
 
 ## Task hooks (shipped)
 
-Optional workspace-level shell hooks fire on task lifecycle, mirroring Claude Agent Teams' `TaskCreated` / `TaskClaimed` / `TaskCompleted`. A hook is an executable at `<workspace>/.bwoc/hooks/<event>`; a missing or non-executable file is a silent no-op (hooks are opt-in).
+Optional workspace-level shell hooks fire on task lifecycle, mirroring Claude Agent Teams' `TaskCreated` / `TaskClaimed` / `TaskCompleted`. A hook is an executable at `<workspace>/.bwoc/hooks/<event>`; a missing file — or, on Unix, a present-but-non-executable one — is a silent no-op (hooks are opt-in). The env-var columns below list the **`BWOC_*` context** each event adds; the full environment the hook sees is that context plus the scrubbed safe base described under *Contract*.
 
-| Event — `<workspace>/.bwoc/hooks/…` | Fires when | Environment passed |
+| Event — `<workspace>/.bwoc/hooks/…` | Fires when | `BWOC_*` context added |
 |---|---|---|
 | `task-created` | `bwoc task add` is about to persist a task | `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_TASK_TITLE` |
 | `task-claimed` | `bwoc task claim` is about to persist a claim | `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_AGENT`, `BWOC_WORKTREE_BASE` |
