@@ -116,12 +116,15 @@ bwoc-agent: task available ← squad/t3: implement the parser
 
 ## Task hooks (shipped)
 
-Optional workspace-level shell hooks fire on task lifecycle, mirroring Claude Agent Teams' `TaskCreated` / `TaskCompleted`:
+Optional workspace-level shell hooks fire on task lifecycle, mirroring Claude Agent Teams' `TaskCreated` / `TaskClaimed` / `TaskCompleted`. A hook is an executable at `<workspace>/.bwoc/hooks/<event>`; a missing or non-executable file is a silent no-op (hooks are opt-in).
 
-- `<workspace>/.bwoc/hooks/task-created` — runs when `bwoc task add` is about to persist a task.
-- `<workspace>/.bwoc/hooks/task-completed` — runs when `bwoc task complete` is about to persist a completion.
+| Event — `<workspace>/.bwoc/hooks/…` | Fires when | Environment passed |
+|---|---|---|
+| `task-created` | `bwoc task add` is about to persist a task | `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_TASK_TITLE` |
+| `task-claimed` | `bwoc task claim` is about to persist a claim | `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_AGENT`, `BWOC_WORKTREE_BASE` |
+| `task-completed` | `bwoc task complete` is about to persist a completion | `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_AGENT` |
 
-Each hook receives the context as environment variables: `BWOC_TASK_EVENT`, `BWOC_TEAM`, `BWOC_TASK_ID`, `BWOC_TASK_TITLE` (created), `BWOC_AGENT` (completed). A **non-zero exit blocks the operation** — the task file is left unchanged and the hook's first stderr line is surfaced to the operator (exit 2). A missing or non-executable hook is a silent no-op (hooks are opt-in). Use them for quality gates: e.g. a `task-completed` hook that runs `cargo test` and exits non-zero to refuse completion until tests pass.
+**Contract.** A **non-zero exit blocks the operation** — the task file is left unchanged and the hook's first stderr line is surfaced to the operator (exit 2). The hook runs with cwd set to the workspace and a **scrubbed environment**: only a small safe base (`PATH`, `HOME`, …) plus the `BWOC_*` context above — the operator's ambient secrets (tokens, SSH agent, cloud creds) are **not** inherited, so a hook that needs more must read it from a file. The event name is validated to a single kebab segment. Use hooks for quality gates: e.g. a `task-completed` hook that runs `cargo test` and exits non-zero to refuse completion until tests pass.
 
 ## Plan approval — Pavāraṇā (shipped)
 
