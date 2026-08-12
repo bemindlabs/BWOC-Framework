@@ -335,7 +335,51 @@ pub fn audit(target: &Path) -> AuditReport {
     //     evidence is a violation. Skipped silently if no trust block.
     check_trust_evidence(target, &mut report);
 
+    // 13. Hook neutrality — Samānattatā. A behavior wired under `.claude/hooks/`
+    //     runs only on the Claude backend; an author-added one with no neutral
+    //     equivalent silently breaks on Antigravity/Codex/Kimi. The audit used to
+    //     never open `.claude/`, so such a Claude-only behavior passed clean.
+    check_hook_neutrality(target, &mut report);
+
     report
+}
+
+/// Framework-shipped Claude hooks that every incarnation carries from the
+/// template (via `incarnate.sh`). These are known/documented (their non-Claude
+/// equivalents are tracked as deferred in `interconnect/messaging.md`), so they
+/// are exempt — flagging them would warn on every agent and train operators to
+/// ignore the signal. An author-added hook beyond this baseline is the real gap.
+const SHIPPED_CLAUDE_HOOKS: &[&str] = &["inbox-auto-reply.sh"];
+
+/// Warn on **author-added** `.claude/hooks/` scripts (Samānattatā). A hook here
+/// is a Claude-only behavior; unless it has a backend-neutral equivalent it
+/// silently no-ops on other backends. Warnings, not violations — the audit's job
+/// is to surface the neutrality consideration, not block. The framework-shipped
+/// baseline (`SHIPPED_CLAUDE_HOOKS`) is exempt.
+fn check_hook_neutrality(target: &Path, report: &mut AuditReport) {
+    let hooks_dir = target.join(".claude/hooks");
+    let Ok(entries) = fs::read_dir(&hooks_dir) else {
+        return; // no .claude/hooks/ — nothing to check
+    };
+    let mut custom: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .filter(|n| !SHIPPED_CLAUDE_HOOKS.contains(&n.as_str()))
+        .collect();
+    custom.sort();
+    for name in &custom {
+        report.warnings.push(format!(
+            ".claude/hooks/{name}: Claude-specific hook — ensure a backend-neutral \
+             equivalent (Samānattatā) or document it as deferred; it silently \
+             no-ops on non-Claude backends"
+        ));
+    }
+    if custom.is_empty() && hooks_dir.is_dir() {
+        report
+            .passes
+            .push("no author-added Claude-only hooks (.claude/hooks/)".to_string());
+    }
 }
 
 /// Cap on `MEMORY.md` length — Mattaññutā ("right amount"); see the
@@ -4387,6 +4431,33 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("MEMORY.md") && w.contains("cap")),
             "expected over-cap warning, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_neutrality_warns_on_author_added_claude_hook_not_baseline() {
+        let root = write_temp_agent("hookneut", "mu", "You are agent-mu.");
+        let hooks = root.join(".claude/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        // Baseline (framework-shipped) → exempt, no warning.
+        fs::write(hooks.join("inbox-auto-reply.sh"), "#!/bin/sh\n").unwrap();
+        let report = audit(&root);
+        assert!(
+            !report.warnings.iter().any(|w| w.contains(".claude/hooks/")),
+            "baseline hook must not warn: {:?}",
+            report.warnings
+        );
+        // Author-added Claude-only hook → warning.
+        fs::write(hooks.join("on-stop.sh"), "#!/bin/sh\n").unwrap();
+        let report = audit(&root);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains(".claude/hooks/on-stop.sh") && w.contains("Samānattatā")),
+            "author-added hook should warn: {:?}",
             report.warnings
         );
     }
