@@ -52,13 +52,24 @@ pub struct ToolContext {
     /// [`new`]: ToolContext::new
     /// [`unconfined`]: ToolContext::unconfined
     pub confine: bool,
+    /// The agent's tier-1 memory directory (`memory_read`/`memory_write` operate
+    /// here). Defaults to `workdir/memories`; callers honor the manifest's
+    /// `memoryPath` via [`with_memory_dir`] instead of hardcoding `memories/`.
+    /// Expected to be `workdir`-rooted — the memory tools still run the
+    /// path-confinement check (`starts_with(workdir)`) on every access, so a
+    /// stray relative or escaping value is rejected at use, not trusted here.
+    ///
+    /// [`with_memory_dir`]: ToolContext::with_memory_dir
+    pub memory_dir: PathBuf,
 }
 
 impl ToolContext {
     /// A confined context (the path-traversal sandbox) — the safe default.
     pub fn new(workdir: impl Into<PathBuf>) -> Self {
+        let workdir = workdir.into();
         Self {
-            workdir: workdir.into(),
+            memory_dir: workdir.join("memories"),
+            workdir,
             confine: true,
         }
     }
@@ -67,10 +78,20 @@ impl ToolContext {
     /// paths still resolve against `workdir`. The permission policy is the only
     /// remaining gate — use only where every action is `ask`/operator-reviewed.
     pub fn unconfined(workdir: impl Into<PathBuf>) -> Self {
+        let workdir = workdir.into();
         Self {
-            workdir: workdir.into(),
+            memory_dir: workdir.join("memories"),
+            workdir,
             confine: false,
         }
+    }
+
+    /// Override the tier-1 memory directory (from the manifest's `memoryPath`).
+    /// Builder-style so real run paths can honor the configured path while tests
+    /// and eval keep the `workdir/memories` default.
+    pub fn with_memory_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.memory_dir = dir.into();
+        self
     }
 
     /// Resolve `raw` against the workdir, enforcing confinement when enabled.
