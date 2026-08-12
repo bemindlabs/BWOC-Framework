@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.12-0] — 2026-08-12 — 2.42.0
+
+Agent memory (Tier 1) is now actually used, and the hook surface is hardened and documented.
+
+### Added
+
+- **Tier-1 memory recall at boot + `memoryPath` honored.** `bwoc-harness` now loads the agent's `MEMORY.md` index into the system prompt at the start of every run/chat (the Tier-1 counterpart to the existing Tier-2 wake-up, SRS FR-7.16), with a reminder to verify each claim against current code. The memory tools and recall resolve the manifest's `memoryPath` (default `memories/`) instead of hardcoding `memories/`, and `memory_write` warns when a `MEMORY.md` write exceeds the 200-line cap (never truncates) (#428).
+- **`bwoc check` validates memory-file front-matter.** Each memory file must declare `name`/`description`/`type`/`created`/`updated`, and `type` must be one of `user|feedback|project|reference` (SRS FR-7.2). Warnings, not violations (#429).
+- **`bwoc check` flags author-added Claude-only hooks.** A behavior wired under `.claude/hooks/` runs only on Claude; the neutrality audit now warns for any hook beyond the framework-shipped baseline, so a Claude-only behavior no longer passes clean (Samānattatā) (#432).
+- **`bwoc send --dry-run` for broadcasts** — preview the recipient set of `--all` / `--team` without sending (#425).
+
+### Fixed
+
+- **`.bwoc/hooks/` task hooks run with a scrubbed environment (security).** `run_task_hook` no longer inherits the operator's full environment — a planted hook was handed `GITHUB_TOKEN`/`SSH_AUTH_SOCK`/cloud creds. It now reuses `bwoc-core`'s shared env scrub (allowlist + credential strip) plus the `BWOC_*` context, and the event name is validated to a single kebab segment (no traversal) (#430).
+- **Parent-side worktree git hardened against config-RCE.** `worker.rs`'s `git worktree add/remove` — a parent-privilege spawn over a git dir shared with untrusted child turns — now applies the same `-c core.hooksPath=/dev/null …` + `GIT_CONFIG_GLOBAL/SYSTEM=/dev/null` hardening as the diff-read path, closing a C7 planted-`core.fsmonitor`/`hooksPath` bypass (#431).
+- **`bwoc fleet status` shows real pid liveness** — an agent reads *online* only when its daemon pid is actually alive, not from inbox mtime (#424).
+- **Outbox spool guarded against recipient-id path traversal** — a crafted recipient can't escape `.bwoc/outbox/` (#422).
+
+### Docs
+
+- **Full task-hook event catalog** in `interconnect/sangha.md` (+ TH): documents `task-claimed` (was undocumented), the per-event `BWOC_*` schema, and the env-scrub + blocking-veto contract (#433).
+- **`bwoc fleet term` documented** under fleet-governance condition 2; `bwoc fleet health` note corrected to reflect that it ships (#426).
+- **Messaging doc TH parity restored** + stale broadcast "deferred" note dropped (#423).
+
+### Tests
+
+- Regression net: a poison (unparseable) outbox spool line must not wedge `flush` — the good lines still drain and the bad one is kept (#427).
+
 ## [v2026.8.8-0] — 2026-08-08 — 2.42.0
 
 ### Added
