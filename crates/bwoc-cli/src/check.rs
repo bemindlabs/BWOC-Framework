@@ -358,8 +358,17 @@ const SHIPPED_CLAUDE_HOOKS: &[&str] = &["inbox-auto-reply.sh"];
 /// baseline (`SHIPPED_CLAUDE_HOOKS`) is exempt.
 fn check_hook_neutrality(target: &Path, report: &mut AuditReport) {
     let hooks_dir = target.join(".claude/hooks");
-    let Ok(entries) = fs::read_dir(&hooks_dir) else {
-        return; // no .claude/hooks/ — nothing to check
+    let entries = match fs::read_dir(&hooks_dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return, // no dir → nothing to check
+        // A present-but-unreadable dir (permissions, etc.) could hide author-added
+        // hooks from the audit — surface it rather than skip silently.
+        Err(e) => {
+            report
+                .warnings
+                .push(format!(".claude/hooks/ exists but is unreadable: {e}"));
+            return;
+        }
     };
     let mut custom: Vec<String> = entries
         .flatten()
@@ -369,13 +378,14 @@ fn check_hook_neutrality(target: &Path, report: &mut AuditReport) {
         .collect();
     custom.sort();
     for name in &custom {
+        // Single-line message: a `\`-continued literal keeps the indentation as
+        // runs of spaces in the emitted text, so build it with `concat!`-free
+        // plain interpolation on one logical line.
         report.warnings.push(format!(
-            ".claude/hooks/{name}: Claude-specific hook — ensure a backend-neutral \
-             equivalent (Samānattatā) or document it as deferred; it silently \
-             no-ops on non-Claude backends"
+            ".claude/hooks/{name}: Claude-specific hook — ensure a backend-neutral equivalent (Samānattatā) or document it as deferred; it silently no-ops on non-Claude backends"
         ));
     }
-    if custom.is_empty() && hooks_dir.is_dir() {
+    if custom.is_empty() {
         report
             .passes
             .push("no author-added Claude-only hooks (.claude/hooks/)".to_string());
