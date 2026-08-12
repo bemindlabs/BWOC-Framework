@@ -7,12 +7,16 @@ security. This session closes the four highest-ROI, well-scoped gaps.
 
 ## What changed (four focused PRs)
 
-1. **Harden `.bwoc/hooks/` exec (security) — `bwoc-cli/src/sangha.rs`.**
+The gaps ship as **four separate PRs**, one per item below; this file is the
+session log covering all of them. The branch carrying *this* note implements
+item 1 only — items 2–4 land in their own PRs (each cross-references this note).
+
+1. **Harden `.bwoc/hooks/` exec (security) — `bwoc-cli/src/sangha.rs`** *(this PR)*.
    - **G1 (HIGH):** `run_task_hook` no longer inherits the operator's full
      environment (which leaked `GITHUB_TOKEN`/`SSH_AUTH_SOCK`/cloud creds to a
-     planted executable). It now `env_clear()`s and passes only a safe base
-     (PATH/HOME/…) + the `BWOC_*` context — matching the scrub `extra_tools.rs`
-     and `result.rs` already do.
+     planted executable). It now `env_clear()`s and re-applies bwoc-core's shared
+     `env_scrub::scrub_env()` (allowlist + credential strip) + the `BWOC_*`
+     context — the same filter the harness sandbox and audit runner use.
    - **G3 (defense-in-depth):** the `event` name is validated to a single kebab
      segment, so a future caller forwarding agent/user input can't traverse out
      of `.bwoc/hooks/` (`..`/absolute would let `Path::join` escape).

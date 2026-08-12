@@ -383,21 +383,17 @@ fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<
     // (any other error, or ETXTBSY that persists past the retries, still fails).
     // G1: never hand the hook the operator's *full* environment — that would
     // leak ambient secrets (GITHUB_TOKEN, SSH_AUTH_SOCK, cloud creds) to an
-    // executable a workspace/agent can plant. Start from a clean env with only a
-    // safe base, then the BWOC_* task context. Mirrors the env scrub the agent
-    // git tool (`extra_tools.rs`) and parent-git path (`result.rs`) already do.
-    const ENV_ALLOWLIST: &[&str] = &[
-        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "TMPDIR", "SHELL",
-    ];
+    // executable a workspace/agent can plant. Reuse bwoc-core's shared env scrub
+    // (allowlist + credential-pattern strip, case-insensitive so Windows
+    // `Path`/`SystemRoot` survive) — the same filter the harness sandbox and
+    // audit runner use — then layer the BWOC_* task context on top.
+    let scrubbed = bwoc_core::env_scrub::scrub_env();
     let build_cmd = || {
         let mut cmd = std::process::Command::new(&hook);
-        cmd.env_clear();
-        for key in ENV_ALLOWLIST {
-            if let Ok(val) = std::env::var(key) {
-                cmd.env(key, val);
-            }
-        }
-        cmd.envs(env.iter().copied()).current_dir(workspace);
+        cmd.env_clear()
+            .envs(&scrubbed)
+            .envs(env.iter().copied())
+            .current_dir(workspace);
         cmd
     };
     let mut attempt = 0u32;
@@ -890,12 +886,18 @@ mod tests {
         assert!(run_task_hook(tmp.path(), "task-created", &[]).is_ok());
     }
 
+    /// Serializes tests that mutate the process-global environment so they can't
+    /// interleave under parallel `cargo test`.
+    static ENV_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[cfg(unix)]
     #[test]
     fn hook_env_is_scrubbed_of_ambient_secrets() {
         use std::os::unix::fs::PermissionsExt;
         // A secret in the operator env must NOT reach the hook; the BWOC_* context
-        // and a safe base (PATH) must.
+        // and a safe base (PATH) must. Hold the env lock across the set/read/remove
+        // (env mutation is process-global and racy — Copilot).
+        let _env_guard = ENV_MUTATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("BWOC_TEST_SECRET", "leak-me");
         }
