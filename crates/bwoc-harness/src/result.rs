@@ -52,6 +52,20 @@ const GIT_HARDENING: &[&str] = &[
     "core.excludesFile=/dev/null",
 ];
 
+/// Apply the [`GIT_HARDENING`] `-c` config overrides and point global/system git
+/// config at `/dev/null` on `cmd`. Shared by every **parent-privilege** git
+/// spawn (diff-read here, and worktree add/remove in `worker.rs`) so a
+/// child-planted `.git/config` (`core.hooksPath`, `core.fsmonitor`,
+/// `core.sshCommand`, …) can't get code executed when the parent shells out.
+/// Insert after any `-C <dir>` and before the subcommand args.
+pub(crate) fn harden_git(cmd: &mut std::process::Command) {
+    for kv in GIT_HARDENING {
+        cmd.arg("-c").arg(kv);
+    }
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+}
+
 /// Final assistant messages can be long; the envelope keeps a bounded preview
 /// so the lead's log and any downstream reviewer stay readable.
 const SUMMARY_MAX: usize = 600;
@@ -115,18 +129,12 @@ fn parse_numstat(numstat: &str) -> (u32, u32, u32) {
 fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.arg("-C").arg(worktree);
-    for kv in GIT_HARDENING {
-        cmd.arg("-c").arg(kv);
-    }
+    // C7 — `-c` config overrides + global/system config → /dev/null. Two wins:
+    // git never reads `~/.gitconfig` / `/etc/gitconfig` (which the FS jail would
+    // `EACCES`, so a diff/ls-files would otherwise fail), and a malicious global
+    // or repo-local config cannot reintroduce a hook/pager/fsmonitor vector.
+    harden_git(&mut cmd);
     cmd.args(args);
-    // C7 — point global/system config at /dev/null. Two wins: git never reads
-    // `~/.gitconfig` / `/etc/gitconfig` (which the FS jail would `EACCES`, so a
-    // diff/ls-files would otherwise fail), and a malicious global config cannot
-    // reintroduce a hook/pager/fsmonitor vector. The repo-local `.git/config`
-    // (inside the jail's rw set) is still read but is fully overridden by the
-    // `-c` flags above.
-    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null");
 
     // C7 — confine git to the worktree + its git dir. Best-effort: on a kernel
     // without Landlock (or a non-jail platform) the `-c` hardening above still
@@ -322,6 +330,33 @@ mod tests {
     fn parse_numstat_sums_files_and_lines() {
         let s = "3\t1\tsrc/a.rs\n10\t0\tsrc/b.rs\n";
         assert_eq!(parse_numstat(s), (2, 13, 1));
+    }
+
+    #[test]
+    fn harden_git_applies_config_overrides() {
+        let mut cmd = Command::new("git");
+        harden_git(&mut cmd);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for expect in [
+            "core.hooksPath=/dev/null",
+            "core.fsmonitor=false",
+            "core.sshCommand=/bin/false",
+            "core.pager=cat",
+        ] {
+            assert!(args.iter().any(|a| a == expect), "missing -c {expect}");
+        }
+        let has_devnull = |key: &str| {
+            cmd.get_envs().any(|(k, v)| {
+                k == std::ffi::OsStr::new(key)
+                    && v.map(|v| v.to_string_lossy() == "/dev/null")
+                        .unwrap_or(false)
+            })
+        };
+        assert!(has_devnull("GIT_CONFIG_GLOBAL"));
+        assert!(has_devnull("GIT_CONFIG_SYSTEM"));
     }
 
     #[test]

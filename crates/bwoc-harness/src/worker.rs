@@ -264,12 +264,18 @@ pub fn git_worktree_remove(repo_root: &Path, worktree: &Path) -> HarnessResult<(
 }
 
 /// Run `git -C <repo_root> <args…>`, mapping a non-zero exit to an error.
+///
+/// This is a **parent-privilege** git spawn (worktree add/remove), so it applies
+/// the same C7 config hardening as `result.rs::git_output`: a child turn shares
+/// the repo's git common dir, so a planted `core.hooksPath`/`fsmonitor`/
+/// `sshCommand` would otherwise run as the operator when the parent manages
+/// worktrees. `-c` overrides + `GIT_CONFIG_GLOBAL/SYSTEM=/dev/null` neutralize it.
 fn run_git(repo_root: &Path, args: &[&str]) -> HarnessResult<()> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
-        .output()?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(repo_root);
+    crate::result::harden_git(&mut cmd);
+    cmd.args(args);
+    let out = cmd.output()?;
     if out.status.success() {
         Ok(())
     } else {
