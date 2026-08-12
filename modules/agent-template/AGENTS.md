@@ -277,7 +277,7 @@ updated: <ISO 8601>
 - Anything in AGENTS.md or conventions.md
 - Ephemeral session state
 
-**MEMORY.md cap:** 200 lines maximum (mattanutata). This forces you to select what actually matters. Lines beyond 200 are truncated.
+**MEMORY.md cap:** 200 lines maximum (mattanutata). This forces you to select what actually matters. The cap is a discipline, not a hard limit — nothing truncates the file. The `memory_write` tool warns when a `MEMORY.md` write exceeds 200 lines, and `bwoc check` flags an over-cap index; when you see either, prune the index rather than let it grow.
 
 ### 7.2 Tier 2 — Deep Memory Backend (Optional)
 
