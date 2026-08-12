@@ -1351,8 +1351,14 @@ fn memory_dir_for(workdir: &std::path::Path) -> std::path::PathBuf {
         .map(|m| m.memory_path)
         .filter(|p| !p.trim().is_empty())
         .filter(|p| {
-            let path = Path::new(p);
-            !path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
+            // Accept only a pure relative path of Normal segments. This rejects
+            // absolute paths (`Prefix`/`RootDir`), `..` (`ParentDir`), AND a
+            // leading `/` — cross-platform: on Windows `/etc` isn't `is_absolute()`
+            // but its leading `RootDir` still escapes, so a Normal-only check is
+            // the portable guard.
+            Path::new(p)
+                .components()
+                .all(|c| matches!(c, Component::Normal(_)))
         })
         .unwrap_or_else(|| "memories".to_string());
     workdir.join(rel)
