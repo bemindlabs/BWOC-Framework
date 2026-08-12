@@ -344,8 +344,21 @@ pub fn run_team_retire(workspace: Option<PathBuf>, id: String, yes: bool, json: 
 /// Agent Teams' TaskCreated/TaskCompleted semantics): the caller aborts
 /// before persisting, and the hook's stderr is surfaced. Returns
 /// `Ok(())` when the hook passes or is absent; `Err(reason)` when it blocks
-/// or can't be run.
+/// or can't be run. The hook runs with a **scrubbed environment** (a small safe
+/// base + the `BWOC_*` context only) so it never inherits the operator's ambient
+/// secrets, and the `event` name is validated to a single kebab segment.
 fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<(), String> {
+    // Defense-in-depth (the event names callers pass are literals, but guard
+    // against a future caller forwarding agent/user input): the event must be a
+    // single kebab segment so it can't traverse out of `.bwoc/hooks/` — an
+    // absolute or `..` component would let `Path::join` escape the directory.
+    if event.is_empty()
+        || !event
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(format!("invalid hook event name {event:?}"));
+    }
     let hook = workspace.join(".bwoc/hooks").join(event);
     let meta = match std::fs::metadata(&hook) {
         Ok(m) => m,
@@ -368,13 +381,24 @@ fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<
     // races the `execve()`; the kernel clears it within a few ms. A short
     // bounded retry makes that deterministic without masking a genuine failure
     // (any other error, or ETXTBSY that persists past the retries, still fails).
+    // G1: never hand the hook the operator's *full* environment — that would
+    // leak ambient secrets (GITHUB_TOKEN, SSH_AUTH_SOCK, cloud creds) to an
+    // executable a workspace/agent can plant. Reuse bwoc-core's shared env scrub
+    // (allowlist + credential-pattern strip, case-insensitive so Windows
+    // `Path`/`SystemRoot` survive) — the same filter the harness sandbox and
+    // audit runner use — then layer the BWOC_* task context on top.
+    let scrubbed = bwoc_core::env_scrub::scrub_env();
+    let build_cmd = || {
+        let mut cmd = std::process::Command::new(&hook);
+        cmd.env_clear()
+            .envs(&scrubbed)
+            .envs(env.iter().copied())
+            .current_dir(workspace);
+        cmd
+    };
     let mut attempt = 0u32;
     let output = loop {
-        match std::process::Command::new(&hook)
-            .envs(env.iter().copied())
-            .current_dir(workspace)
-            .output()
-        {
+        match build_cmd().output() {
             Ok(o) => break o,
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 5 => {
                 attempt += 1;
@@ -838,6 +862,69 @@ mod tests {
         assert!(err.contains("blocked by task-created hook"), "got: {err}");
         assert!(err.contains("nope"), "stderr surfaced: {err}");
         // `tmp` drops here → dir auto-removed.
+    }
+
+    #[test]
+    fn invalid_hook_event_name_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Traversal / absolute / bad-charset event names never touch the FS.
+        for bad in [
+            "../evil",
+            "a/b",
+            "/etc/x",
+            "Task-Created",
+            "task_created",
+            "",
+        ] {
+            let err = run_task_hook(tmp.path(), bad, &[]).unwrap_err();
+            assert!(
+                err.contains("invalid hook event name"),
+                "event {bad:?} should be rejected, got: {err}"
+            );
+        }
+        // The real kebab events are accepted (no-op when absent).
+        assert!(run_task_hook(tmp.path(), "task-created", &[]).is_ok());
+    }
+
+    /// Serializes tests that mutate the process-global environment so they can't
+    /// interleave under parallel `cargo test`.
+    static ENV_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_env_is_scrubbed_of_ambient_secrets() {
+        use std::os::unix::fs::PermissionsExt;
+        // A secret in the operator env must NOT reach the hook; the BWOC_* context
+        // and a safe base (PATH) must. Hold the env lock across the set/read/remove
+        // (env mutation is process-global and racy — Copilot).
+        let _env_guard = ENV_MUTATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("BWOC_TEST_SECRET", "leak-me");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        let hooks = ws.join(".bwoc/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let log = ws.join("env.log");
+        let log_str = log.to_string_lossy().to_string();
+        let hook = hooks.join("task-created");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\necho \"secret=[${{BWOC_TEST_SECRET:-}}] ctx=[${{BWOC_TASK_ID:-}}] path=[${{PATH:+set}}]\" > {log_str}\nexit 0\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        run_task_hook(&ws, "task-created", &[("BWOC_TASK_ID", "t-1")]).unwrap();
+        let out = std::fs::read_to_string(&log).unwrap();
+        unsafe {
+            std::env::remove_var("BWOC_TEST_SECRET");
+        }
+        assert!(out.contains("secret=[]"), "ambient secret leaked: {out}");
+        assert!(out.contains("ctx=[t-1]"), "BWOC_* context missing: {out}");
+        assert!(out.contains("path=[set]"), "safe base PATH missing: {out}");
     }
 
     /// task-claimed hook fires with the right env vars and blocks on non-zero exit.
