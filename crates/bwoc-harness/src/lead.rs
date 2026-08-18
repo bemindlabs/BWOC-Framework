@@ -307,14 +307,13 @@ pub async fn run_lead(
 // iteration budget). `run_lead` drains once and exits; this re-fires it until
 // one of the terminal conditions holds — so a loop always provably halts.
 
-/// Ticker + budget for [`run_goal_loop`].
+/// Ticker + budget for [`run_goal_loop`] — the shared loop-control primitives.
 pub struct GoalLoopConfig {
-    /// Sleep between fires (the Ticker; L1 uses a fixed interval — cron/adaptive
-    /// come in L2).
-    pub interval: std::time::Duration,
-    /// Hard iteration ceiling (the Budget). `0` = unbounded — safe only because
-    /// DoD/Blocked still terminate; prefer a cap for an unattended loop.
-    pub max_iterations: usize,
+    /// Cadence between fires (floored so a 0 can't spin the loop).
+    pub ticker: bwoc_core::loop_control::Ticker,
+    /// Iteration ceiling so an unattended loop provably halts (DoD/Blocked still
+    /// terminate independently).
+    pub budget: bwoc_core::loop_control::Budget,
 }
 
 /// Where a [`run_goal_loop`] stopped and why.
@@ -422,11 +421,11 @@ pub async fn run_goal_loop(
             }
             GoalStatus::InProgress => {}
         }
-        if loop_cfg.max_iterations != 0 && iterations >= loop_cfg.max_iterations {
+        if loop_cfg.budget.exhausted(iterations) {
             return Ok(GoalLoopOutcome::BudgetExhausted { iterations, total });
         }
         // Ticker: wait before the next fire so a fast-draining loop doesn't spin.
-        tokio::time::sleep(loop_cfg.interval).await;
+        tokio::time::sleep(loop_cfg.ticker.interval()).await;
     }
 }
 
@@ -596,8 +595,8 @@ mod tests {
         let runner = Arc::new(ScriptedRunner { fail_ids: vec![] });
         let cfg = lead_cfg(&repo);
         let loop_cfg = GoalLoopConfig {
-            interval: std::time::Duration::from_millis(0),
-            max_iterations: 5,
+            ticker: bwoc_core::loop_control::Ticker::every_secs(0),
+            budget: bwoc_core::loop_control::Budget::new(5),
         };
         let outcome = run_goal_loop(
             &source,
