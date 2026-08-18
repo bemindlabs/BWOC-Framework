@@ -14,6 +14,7 @@ pub mod identity;
 pub mod inbox;
 pub mod ipc;
 pub mod lifecycle;
+pub mod loop_control;
 pub mod manifest;
 pub mod outbox;
 pub mod routing;

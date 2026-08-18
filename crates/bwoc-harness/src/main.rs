@@ -872,19 +872,15 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
     // Goal-loop mode (L1): re-fire until DoD / blocked / budget instead of a
     // single drain.
     if args.loop_mode {
+        let budget = bwoc_core::loop_control::Budget::new(args.loop_max_iters);
         let loop_cfg = GoalLoopConfig {
-            // Floor at 1 s so `--loop-interval-secs 0` can't spin the loop.
-            interval: std::time::Duration::from_secs(args.loop_interval_secs.max(1)),
-            max_iterations: args.loop_max_iters,
-        };
-        let budget_str = if args.loop_max_iters == 0 {
-            "unbounded".to_string()
-        } else {
-            format!("{} iters", args.loop_max_iters)
+            ticker: bwoc_core::loop_control::Ticker::every_secs(args.loop_interval_secs),
+            budget,
         };
         println!(
-            "  goal-loop: drive tasks → all Completed (ticker {}s, budget {budget_str})",
-            args.loop_interval_secs
+            "  goal-loop: drive tasks → all Completed (ticker {}s, budget {})",
+            args.loop_interval_secs,
+            budget.describe()
         );
         let outcome = run_goal_loop(&source, runner, reviewer, &cfg, &loop_cfg).await?;
         println!("─────────────────────────────────────────────");
