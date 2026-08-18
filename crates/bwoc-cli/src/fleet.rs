@@ -53,6 +53,16 @@ pub struct FleetHealthArgs {
     /// Number of days after which an un-touched agent dir triggers a ⚠ for
     /// condition 1 (regular meetings). Default: 7.
     pub stale_days: u64,
+    /// Goal-loop mode (Loop-Engineering L2): instead of a single scan, re-scan on
+    /// a ticker and run `doctor --auto` on each auto-remediable warn (stale
+    /// PID/socket) until all conditions are green (DoD), a non-auto-remediable
+    /// warn remains (blocked — operator action), or the iteration budget.
+    pub loop_mode: bool,
+    /// Ticker interval (seconds) between fires. Only with `--loop`.
+    pub loop_interval_secs: u64,
+    /// Iteration budget so an unattended loop provably halts. `0` = unbounded
+    /// (DoD/blocked still terminate). Only with `--loop`.
+    pub loop_max_iters: usize,
 }
 
 // ── Result types ─────────────────────────────────────────────────────────────
@@ -117,6 +127,10 @@ pub fn run(args: FleetHealthArgs) -> i32 {
         }
     };
 
+    if args.loop_mode {
+        return run_health_loop(&workspace, &registry, &args);
+    }
+
     let git_runner = ProcessGitRunner;
     let results = evaluate_all(&workspace, &registry, args.stale_days, &git_runner);
 
@@ -128,6 +142,113 @@ pub fn run(args: FleetHealthArgs) -> i32 {
 
     // v1: always exit 0 (report-only, no gating)
     0
+}
+
+// ── Fleet-health goal loop (Loop-Engineering L2) ─────────────────────────────
+//
+// A reconcile loop (k8s-style): drive observed fleet health toward "all green"
+// by re-scanning on a ticker and remediating the one auto-fixable warn class
+// (condition 2 — stale PID/socket → `bwoc doctor --auto`). Terminates on DoD
+// (no warns), Blocked (a warn no auto-fix can clear, or remediation stalled), or
+// the iteration budget — so it always provably halts.
+
+#[derive(Debug, PartialEq, Eq)]
+enum FleetLoopDecision {
+    /// DoD: no warns remain.
+    Done,
+    /// An auto-remediable warn is present and progress is still possible.
+    Remediate,
+    /// Stop and surface to the operator — nothing to auto-fix, or no progress.
+    Blocked(String),
+}
+
+/// Pure gate over the warn condition-numbers this fire, plus the previous fire's
+/// warn count. `2` is the only auto-remediable condition (`doctor --auto`).
+/// Separated out so the DoD/blocked logic is unit-testable without a workspace.
+///
+/// When an auto-remediable warn (2) coexists with non-remediable ones (e.g.
+/// `[2, 4]`), this returns `Remediate`: the loop fixes what it can *first*, and
+/// once condition 2 clears the residual non-remediable warns surface as
+/// `Blocked` on the next fire (a reconcile loop makes progress before reporting
+/// what it can't fix — it never spins, since a stalled remediation also Blocks).
+fn fleet_loop_decide(warn_numbers: &[u8], prev_warn_count: usize) -> FleetLoopDecision {
+    if warn_numbers.is_empty() {
+        return FleetLoopDecision::Done;
+    }
+    if !warn_numbers.contains(&2) {
+        return FleetLoopDecision::Blocked(format!(
+            "{} warn(s) remain, none auto-remediable — operator action needed",
+            warn_numbers.len()
+        ));
+    }
+    // An auto-remediable warn is present but a prior remediation didn't reduce
+    // the warn count → doctor can't clear it; stop rather than spin.
+    if warn_numbers.len() >= prev_warn_count {
+        return FleetLoopDecision::Blocked(format!(
+            "auto-remediation made no progress ({} warn(s) remain)",
+            warn_numbers.len()
+        ));
+    }
+    FleetLoopDecision::Remediate
+}
+
+fn run_health_loop(workspace: &Path, registry: &AgentsRegistry, args: &FleetHealthArgs) -> i32 {
+    let git_runner = ProcessGitRunner;
+    // Floor at 1 s so `--loop-interval-secs 0` can't spin the loop (and hammer
+    // `doctor --auto` with no delay).
+    let interval = std::time::Duration::from_secs(args.loop_interval_secs.max(1));
+    let mut iteration = 0usize;
+    let mut prev_warn_count = usize::MAX;
+    let budget = if args.loop_max_iters == 0 {
+        "unbounded".to_string()
+    } else {
+        format!("{} iters", args.loop_max_iters)
+    };
+    eprintln!(
+        "fleet-health loop: reconcile to all-green (ticker {}s, budget {budget})",
+        args.loop_interval_secs
+    );
+    loop {
+        iteration += 1;
+        let results = evaluate_all(workspace, registry, args.stale_days, &git_runner);
+        let warn_numbers: Vec<u8> = results
+            .iter()
+            .filter(|r| r.status == ConditionStatus::Warn)
+            .map(|r| r.number)
+            .collect();
+
+        match fleet_loop_decide(&warn_numbers, prev_warn_count) {
+            FleetLoopDecision::Done => {
+                println!("fleet-health loop: all conditions green after {iteration} iteration(s).");
+                return 0;
+            }
+            FleetLoopDecision::Blocked(reason) => {
+                eprintln!("fleet-health loop stopped after {iteration} iteration(s) — {reason}:");
+                for r in results.iter().filter(|r| r.status == ConditionStatus::Warn) {
+                    eprintln!("  ⚠ condition {} ({}): {}", r.number, r.name, r.finding);
+                }
+                return 1;
+            }
+            FleetLoopDecision::Remediate => {}
+        }
+
+        prev_warn_count = warn_numbers.len();
+        eprintln!(
+            "fleet-health loop: iteration {iteration} — {} warn(s), running `doctor --auto`…",
+            warn_numbers.len()
+        );
+        let _ = crate::doctor::run(crate::doctor::DoctorArgs {
+            path: Some(workspace.to_path_buf()),
+            auto: true,
+            json: false,
+        });
+
+        if args.loop_max_iters != 0 && iteration >= args.loop_max_iters {
+            eprintln!("fleet-health loop hit its {iteration}-iteration budget before all-green.");
+            return 1;
+        }
+        std::thread::sleep(interval);
+    }
 }
 
 // ── Evaluate all 7 conditions ────────────────────────────────────────────────
@@ -1216,6 +1337,9 @@ mod tests {
             workspace: Some(ws.clone()),
             json: false,
             stale_days: 7,
+            loop_mode: false,
+            loop_interval_secs: 0,
+            loop_max_iters: 0,
         });
         assert_eq!(code, 0, "clean workspace must exit 0");
         let _ = fs::remove_dir_all(&ws);
@@ -1228,9 +1352,47 @@ mod tests {
             workspace: Some(ws.clone()),
             json: true,
             stale_days: 7,
+            loop_mode: false,
+            loop_interval_secs: 0,
+            loop_max_iters: 0,
         });
         assert_eq!(code, 0);
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    // ── Fleet-health loop gate (L2) ──────────────────────────────────────────
+
+    #[test]
+    fn fleet_loop_done_when_no_warns() {
+        assert_eq!(fleet_loop_decide(&[], usize::MAX), FleetLoopDecision::Done);
+    }
+
+    #[test]
+    fn fleet_loop_remediates_a_stale_pid_warn() {
+        // Condition 2 warn present, first fire (prev = MAX) → remediate.
+        assert_eq!(
+            fleet_loop_decide(&[2], usize::MAX),
+            FleetLoopDecision::Remediate
+        );
+    }
+
+    #[test]
+    fn fleet_loop_blocked_when_no_auto_remediable_warn() {
+        // A non-condition-2 warn (e.g. template version lag) can't be auto-fixed.
+        match fleet_loop_decide(&[4], usize::MAX) {
+            FleetLoopDecision::Blocked(r) => assert!(r.contains("none auto-remediable"), "{r}"),
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fleet_loop_blocked_when_remediation_stalls() {
+        // Condition 2 warn persists (count didn't drop from the prior fire) →
+        // doctor can't clear it; stop rather than spin.
+        match fleet_loop_decide(&[2], 1) {
+            FleetLoopDecision::Blocked(r) => assert!(r.contains("no progress"), "{r}"),
+            other => panic!("expected Blocked (stalled), got {other:?}"),
+        }
     }
 
     // ── Condition 3 — git-backed convention drift ────────────────────────────

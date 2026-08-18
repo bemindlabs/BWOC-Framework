@@ -850,6 +850,18 @@ struct FleetHealthArgs {
     /// Days without activity before an agent is considered stale (condition 1).
     #[arg(long = "stale-days", default_value_t = 7)]
     stale_days: u64,
+    /// Goal-loop mode (Loop-Engineering L2): re-scan on a ticker and auto-remediate
+    /// stale PID/socket warns (`doctor --auto`) until all conditions are green, a
+    /// non-remediable warn remains (operator action), or the budget. Reconcile loop.
+    /// Conflicts with `--json` (the loop emits human progress + `doctor` output).
+    #[arg(long = "loop", conflicts_with = "json")]
+    loop_mode: bool,
+    /// Ticker interval (seconds) between fleet-health fires. Only with `--loop`.
+    #[arg(long, default_value_t = 30, requires = "loop_mode")]
+    loop_interval_secs: u64,
+    /// Iteration budget so the loop provably halts. `0` = unbounded. Only with `--loop`.
+    #[arg(long, default_value_t = 20, requires = "loop_mode")]
+    loop_max_iters: usize,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -3011,6 +3023,9 @@ fn main() -> ExitCode {
                     workspace: args.workspace,
                     json: args.json,
                     stale_days: args.stale_days,
+                    loop_mode: args.loop_mode,
+                    loop_interval_secs: args.loop_interval_secs,
+                    loop_max_iters: args.loop_max_iters,
                 }),
                 Some(FleetCommand::Term(args)) => fleet_term::run(fleet_term::FleetTermArgs {
                     workspace: args.workspace,
