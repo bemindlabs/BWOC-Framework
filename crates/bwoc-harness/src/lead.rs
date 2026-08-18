@@ -361,8 +361,23 @@ pub fn evaluate_goal(tasks: &[Task], claimed_this_fire: usize) -> GoalStatus {
             .iter()
             .filter(|t| t.state != TaskState::Completed)
             .count();
+        // A task is *plan-blocked* (HELD) only when plan approval is the actual
+        // blocker — it's already claimed (`InProgress`, ran but couldn't complete),
+        // or it's `Pending` with every dependency satisfied so nothing but the
+        // plan stands in the way. A pending task whose deps aren't done is
+        // dependency-blocked, not awaiting plan — don't mislabel it.
+        let dep_done = |t: &Task| {
+            t.deps.iter().all(|d| {
+                tasks
+                    .iter()
+                    .any(|x| &x.id == d && x.state == TaskState::Completed)
+            })
+        };
         let awaiting_plan = tasks.iter().any(|t| {
-            t.state != TaskState::Completed && t.requires_plan && t.plan_approved != Some(true)
+            t.state != TaskState::Completed
+                && t.requires_plan
+                && t.plan_approved != Some(true)
+                && (t.state == TaskState::InProgress || dep_done(t))
         });
         let reason = if awaiting_plan {
             format!(
@@ -547,10 +562,27 @@ mod tests {
     #[test]
     fn evaluate_goal_blocked_flags_plan_approval_held() {
         let mut t = pending("b");
-        t.requires_plan = true; // awaits plan approval → HELD
+        t.requires_plan = true; // no deps → plan approval is the real blocker → HELD
         match evaluate_goal(&[completed("a"), t], 0) {
             GoalStatus::Blocked(r) => assert!(r.contains("HELD"), "got: {r}"),
             other => panic!("expected Blocked/HELD, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_goal_dep_blocked_task_with_plan_is_not_mislabeled_held() {
+        // `b` requires a plan AND depends on the still-pending `a`. The real
+        // blocker is the dependency, not plan approval — must read as
+        // dependency-blocked, not HELD.
+        let mut b = pending("b");
+        b.requires_plan = true;
+        b.deps = vec!["a".to_string()];
+        match evaluate_goal(&[pending("a"), b], 0) {
+            GoalStatus::Blocked(r) => {
+                assert!(r.contains("dependency-blocked"), "got: {r}");
+                assert!(!r.contains("HELD"), "must not mislabel as HELD: {r}");
+            }
+            other => panic!("expected Blocked/dependency, got {other:?}"),
         }
     }
 
