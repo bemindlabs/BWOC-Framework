@@ -873,7 +873,8 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
     // single drain.
     if args.loop_mode {
         let loop_cfg = GoalLoopConfig {
-            interval: std::time::Duration::from_secs(args.loop_interval_secs),
+            // Floor at 1 s so `--loop-interval-secs 0` can't spin the loop.
+            interval: std::time::Duration::from_secs(args.loop_interval_secs.max(1)),
             max_iterations: args.loop_max_iters,
         };
         let budget_str = if args.loop_max_iters == 0 {

@@ -366,13 +366,14 @@ pub fn evaluate_goal(tasks: &[Task], claimed_this_fire: usize) -> GoalStatus {
         // or it's `Pending` with every dependency satisfied so nothing but the
         // plan stands in the way. A pending task whose deps aren't done is
         // dependency-blocked, not awaiting plan — don't mislabel it.
-        let dep_done = |t: &Task| {
-            t.deps.iter().all(|d| {
-                tasks
-                    .iter()
-                    .any(|x| &x.id == d && x.state == TaskState::Completed)
-            })
-        };
+        // Precompute the completed-id set so the deps check is O(deps), not
+        // O(tasks × deps × tasks).
+        let completed: std::collections::HashSet<&str> = tasks
+            .iter()
+            .filter(|t| t.state == TaskState::Completed)
+            .map(|t| t.id.as_str())
+            .collect();
+        let dep_done = |t: &Task| t.deps.iter().all(|d| completed.contains(d.as_str()));
         let awaiting_plan = tasks.iter().any(|t| {
             t.state != TaskState::Completed
                 && t.requires_plan
