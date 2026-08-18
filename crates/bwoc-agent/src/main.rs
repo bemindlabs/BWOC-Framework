@@ -465,6 +465,11 @@ fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
 /// Load the persisted inbox cursor (byte offset into inbox.jsonl).
 /// Returns None if the file is missing, unreadable, or malformed —
 /// callers treat that as "first run; start at current EOF".
+fn load_cursor(path: &std::path::Path) -> Option<u64> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    raw.trim().parse::<u64>().ok()
+}
+
 /// Resolve the daemon's Saṅgha task-poll cadence from the raw
 /// `BWOC_TASK_POLL_SECS` value. Unset or unparseable → the 2s default; the
 /// shared `Ticker::every_secs` floors the result at 1s so a `0` can't spin the
@@ -473,11 +478,6 @@ fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
 fn task_poll_interval(raw: Option<String>) -> Duration {
     let secs = raw.and_then(|s| s.parse::<u64>().ok()).unwrap_or(2);
     bwoc_core::loop_control::Ticker::every_secs(secs).interval()
-}
-
-fn load_cursor(path: &std::path::Path) -> Option<u64> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    raw.trim().parse::<u64>().ok()
 }
 
 /// Save the inbox cursor. Best-effort — failure logs to stderr but
