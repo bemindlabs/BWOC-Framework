@@ -193,20 +193,18 @@ fn fleet_loop_decide(warn_numbers: &[u8], prev_warn_count: usize) -> FleetLoopDe
 }
 
 fn run_health_loop(workspace: &Path, registry: &AgentsRegistry, args: &FleetHealthArgs) -> i32 {
+    use bwoc_core::loop_control::{Budget, Ticker};
     let git_runner = ProcessGitRunner;
-    // Floor at 1 s so `--loop-interval-secs 0` can't spin the loop (and hammer
-    // `doctor --auto` with no delay).
-    let interval = std::time::Duration::from_secs(args.loop_interval_secs.max(1));
+    // Shared loop-control primitives: the ticker floors a 0 interval so the loop
+    // can't spin, and the budget bounds an unattended loop.
+    let ticker = Ticker::every_secs(args.loop_interval_secs);
+    let budget = Budget::new(args.loop_max_iters);
     let mut iteration = 0usize;
     let mut prev_warn_count = usize::MAX;
-    let budget = if args.loop_max_iters == 0 {
-        "unbounded".to_string()
-    } else {
-        format!("{} iters", args.loop_max_iters)
-    };
     eprintln!(
-        "fleet-health loop: reconcile to all-green (ticker {}s, budget {budget})",
-        args.loop_interval_secs
+        "fleet-health loop: reconcile to all-green (ticker {}s, budget {})",
+        ticker.interval().as_secs(),
+        budget.describe()
     );
     loop {
         iteration += 1;
@@ -243,11 +241,11 @@ fn run_health_loop(workspace: &Path, registry: &AgentsRegistry, args: &FleetHeal
             json: false,
         });
 
-        if args.loop_max_iters != 0 && iteration >= args.loop_max_iters {
+        if budget.exhausted(iteration) {
             eprintln!("fleet-health loop hit its {iteration}-iteration budget before all-green.");
             return 1;
         }
-        std::thread::sleep(interval);
+        std::thread::sleep(ticker.interval());
     }
 }
 
