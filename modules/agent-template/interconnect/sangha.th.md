@@ -108,7 +108,7 @@ bwoc task complete <team> <task> --as <agent>   # เฉพาะผู้ claim
 bwoc-agent: task available ← squad/t3: implement the parser
 ```
 
-"claim ได้" = `pending` ที่ทุก dependency `completed` ในทีมที่เป็นสมาชิก daemon snapshot งานที่เปิดอยู่แล้วตอน startup (ไม่ replay — เหมือน inbox cursor เริ่มที่ EOF) และ poll ที่ cadence 2 วินาที (งานเปลี่ยนไม่บ่อย) inert เมื่อ agent ไม่อยู่ทีมใดหรือไม่มี workspace ดู [`crates/bwoc-agent/src/task_watch.rs`](../../../crates/bwoc-agent/src/task_watch.rs)
+"claim ได้" = `pending` ที่ทุก dependency `completed` ในทีมที่เป็นสมาชิก daemon snapshot งานที่เปิดอยู่แล้วตอน startup (ไม่ replay — เหมือน inbox cursor เริ่มที่ EOF) และ poll ที่ cadence 2 วินาที (งานเปลี่ยนไม่บ่อย) ปรับได้ด้วย `BWOC_TASK_POLL_SECS` (default `2`, floor 1s) — fleet ใหญ่เพิ่มค่าเพื่ออ่าน team file ถี่น้อยลง, ทีมเร็วลดค่าเพื่อ pickup ไวขึ้น inert เมื่อ agent ไม่อยู่ทีมใดหรือไม่มี workspace ดู [`crates/bwoc-agent/src/task_watch.rs`](../../../crates/bwoc-agent/src/task_watch.rs)
 
 **Wakeup แบบ opt-in** (`BWOC_TASK_WAKEUP=1`): เมื่อมี task ที่ claim ได้ใหม่ daemon จะ ping tmux session ของ agent (`agent-<x>` → session `<x>`) ด้วย marker `[bwoc task <team>/<id>] <title>` — กลไก two-step send-keys best-effort เดียวกับ inbox Claude session ที่รัน agent อยู่จะเห็นแล้ว `bwoc task claim` ได้ agent ยังคุมเอง: daemon ไม่ mutate รายการ default ปิด (announce-only)
 

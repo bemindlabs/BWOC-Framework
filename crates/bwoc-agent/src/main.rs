@@ -238,6 +238,10 @@ where
     // rarely.
     let mut task_watch =
         task_watch::TaskWatch::build(&manifest.agent_id, trust_ctx.workspace_root.as_deref());
+    // Task-poll cadence (third consumer of the shared `Ticker` primitive, after
+    // the L1 goal-loop and L2 fleet-health loop). Operator-tunable via
+    // `BWOC_TASK_POLL_SECS`; see `task_poll_interval`.
+    let task_poll_every = task_poll_interval(std::env::var("BWOC_TASK_POLL_SECS").ok());
     if !task_watch.is_inert() {
         let mode = if task_watch.auto_claim_enabled() {
             " (BWOC_AUTO_CLAIM=1 — will claim new tasks + wake the agent)"
@@ -247,11 +251,11 @@ where
             ""
         };
         eprintln!(
-            "bwoc-agent --serve: watching Saṅgha tasks for member '{}'{mode}",
-            manifest.agent_id
+            "bwoc-agent --serve: watching Saṅgha tasks for member '{}' every {}s{mode}",
+            manifest.agent_id,
+            task_poll_every.as_secs()
         );
     }
-    const TASK_POLL_EVERY: Duration = Duration::from_secs(2);
     let mut last_task_poll = Instant::now();
 
     // Connector supervision (chat-connectors PR3): if this agent declares an
@@ -298,7 +302,7 @@ where
                 }
                 // Saṅgha tasks change rarely — poll on a slower cadence than
                 // the 100ms inbox tick to avoid re-reading team files 10×/s.
-                if !task_watch.is_inert() && last_task_poll.elapsed() >= TASK_POLL_EVERY {
+                if !task_watch.is_inert() && last_task_poll.elapsed() >= task_poll_every {
                     task_watch.poll(&mut warm);
                     last_task_poll = Instant::now();
                 }
@@ -464,6 +468,16 @@ fn serve_loop(cwd: &std::path::Path, manifest: &Manifest) -> ExitCode {
 fn load_cursor(path: &std::path::Path) -> Option<u64> {
     let raw = std::fs::read_to_string(path).ok()?;
     raw.trim().parse::<u64>().ok()
+}
+
+/// Resolve the daemon's Saṅgha task-poll cadence from the raw
+/// `BWOC_TASK_POLL_SECS` value. Unset or unparseable → the 2s default; the
+/// shared `Ticker::every_secs` floors the result at 1s so a `0` can't spin the
+/// poll (and hammer team files). Pure (takes the raw string) so it is
+/// unit-testable without touching the process environment.
+fn task_poll_interval(raw: Option<String>) -> Duration {
+    let secs = raw.and_then(|s| s.parse::<u64>().ok()).unwrap_or(2);
+    bwoc_core::loop_control::Ticker::every_secs(secs).interval()
 }
 
 /// Save the inbox cursor. Best-effort — failure logs to stderr but
@@ -771,6 +785,24 @@ mod windows_ipc_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_poll_interval_defaults_and_floors() {
+        // Unset → 2s default.
+        assert_eq!(task_poll_interval(None), Duration::from_secs(2));
+        // Unparseable → default, not a panic.
+        assert_eq!(
+            task_poll_interval(Some("nonsense".into())),
+            Duration::from_secs(2)
+        );
+        // Explicit value honoured.
+        assert_eq!(
+            task_poll_interval(Some("30".into())),
+            Duration::from_secs(30)
+        );
+        // `0` floored to 1s so the poll can't spin.
+        assert_eq!(task_poll_interval(Some("0".into())), Duration::from_secs(1));
+    }
 
     fn sample() -> Manifest {
         Manifest {
