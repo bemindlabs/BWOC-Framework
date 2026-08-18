@@ -203,7 +203,7 @@ fn run_health_loop(workspace: &Path, registry: &AgentsRegistry, args: &FleetHeal
     let mut prev_warn_count = usize::MAX;
     eprintln!(
         "fleet-health loop: reconcile to all-green (ticker {}s, budget {})",
-        args.loop_interval_secs,
+        ticker.interval().as_secs(),
         budget.describe()
     );
     loop {

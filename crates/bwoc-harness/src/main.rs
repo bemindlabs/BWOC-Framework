@@ -879,7 +879,7 @@ async fn run_lead_mode(args: &Args, workdir: &std::path::Path) -> HarnessResult<
         };
         println!(
             "  goal-loop: drive tasks → all Completed (ticker {}s, budget {})",
-            args.loop_interval_secs,
+            loop_cfg.ticker.interval().as_secs(),
             budget.describe()
         );
         let outcome = run_goal_loop(&source, runner, reviewer, &cfg, &loop_cfg).await?;
