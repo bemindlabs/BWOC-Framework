@@ -297,6 +297,123 @@ pub async fn run_lead(
     Ok(summary)
 }
 
+// ---------------------------------------------------------------------------
+// Goal loop (Loop-Engineering L1) — see docs/en/LOOP-ENGINEERING.en.md
+// ---------------------------------------------------------------------------
+//
+// The first goal+ticker loop: wrap the (already-hardened) `run_lead` drain in a
+// Goal (drive the task list to all-`Completed`), a Ticker (re-fire on an
+// interval), and a Gate (stop on DoD, on being blocked/HELD, or on the
+// iteration budget). `run_lead` drains once and exits; this re-fires it until
+// one of the terminal conditions holds — so a loop always provably halts.
+
+/// Ticker + budget for [`run_goal_loop`].
+pub struct GoalLoopConfig {
+    /// Sleep between fires (the Ticker; L1 uses a fixed interval — cron/adaptive
+    /// come in L2).
+    pub interval: std::time::Duration,
+    /// Hard iteration ceiling (the Budget). `0` = unbounded — safe only because
+    /// DoD/Blocked still terminate; prefer a cap for an unattended loop.
+    pub max_iterations: usize,
+}
+
+/// Where a [`run_goal_loop`] stopped and why.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GoalLoopOutcome {
+    /// DoD reached — every task is `Completed`.
+    Done {
+        iterations: usize,
+        total: LeadSummary,
+    },
+    /// No progress possible without help (dependency-blocked, or a task awaits
+    /// plan approval — HELD). The loop stops rather than spin.
+    Blocked {
+        iterations: usize,
+        total: LeadSummary,
+        reason: String,
+    },
+    /// The iteration budget was exhausted before DoD.
+    BudgetExhausted {
+        iterations: usize,
+        total: LeadSummary,
+    },
+}
+
+/// The goal gate, as a pure predicate over the task list after a fire plus how
+/// many that fire claimed. Split out so the DoD/HELD logic is unit-testable
+/// without spawning workers or git worktrees.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GoalStatus {
+    Done,
+    Blocked(String),
+    InProgress,
+}
+
+pub fn evaluate_goal(tasks: &[Task], claimed_this_fire: usize) -> GoalStatus {
+    if tasks.iter().all(|t| t.state == TaskState::Completed) {
+        return GoalStatus::Done;
+    }
+    // Work remains but the fire claimed nothing → nothing is claimable, so the
+    // loop can't advance on its own: a dependency cycle, or a task that awaits
+    // plan approval (HELD), or an in_progress task that can't complete. Stop.
+    if claimed_this_fire == 0 {
+        let remaining = tasks
+            .iter()
+            .filter(|t| t.state != TaskState::Completed)
+            .count();
+        let awaiting_plan = tasks.iter().any(|t| {
+            t.state != TaskState::Completed && t.requires_plan && t.plan_approved != Some(true)
+        });
+        let reason = if awaiting_plan {
+            format!(
+                "{remaining} task(s) not completed; some await plan approval (HELD — needs operator)"
+            )
+        } else {
+            format!("{remaining} task(s) not completed and none claimable (dependency-blocked)")
+        };
+        return GoalStatus::Blocked(reason);
+    }
+    GoalStatus::InProgress
+}
+
+/// Run [`run_lead`] on a ticker until the goal's DoD, a Blocked/HELD gate, or the
+/// iteration budget. Accumulates each fire's [`LeadSummary`] into the outcome.
+pub async fn run_goal_loop(
+    source: &dyn TaskSource,
+    runner: Arc<dyn SpawnRunner>,
+    reviewer: Arc<dyn crate::review::Reviewer>,
+    cfg: &LeadConfig,
+    loop_cfg: &GoalLoopConfig,
+) -> HarnessResult<GoalLoopOutcome> {
+    let mut total = LeadSummary::default();
+    let mut iterations = 0usize;
+    loop {
+        iterations += 1;
+        let s = run_lead(source, runner.clone(), reviewer.clone(), cfg).await?;
+        total.claimed += s.claimed;
+        total.completed += s.completed;
+        total.failed += s.failed;
+        total.rejected += s.rejected;
+
+        match evaluate_goal(&source.list_tasks(), s.claimed) {
+            GoalStatus::Done => return Ok(GoalLoopOutcome::Done { iterations, total }),
+            GoalStatus::Blocked(reason) => {
+                return Ok(GoalLoopOutcome::Blocked {
+                    iterations,
+                    total,
+                    reason,
+                });
+            }
+            GoalStatus::InProgress => {}
+        }
+        if loop_cfg.max_iterations != 0 && iterations >= loop_cfg.max_iterations {
+            return Ok(GoalLoopOutcome::BudgetExhausted { iterations, total });
+        }
+        // Ticker: wait before the next fire so a fast-draining loop doesn't spin.
+        tokio::time::sleep(loop_cfg.interval).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +507,77 @@ mod tests {
             max_seen.load(SeqCst),
             1,
             "capacity 1 must run one at a time"
+        );
+    }
+
+    // ── goal loop (L1) ─────────────────────────────────────────────────────────
+
+    fn completed(id: &str) -> Task {
+        let mut t = pending(id);
+        t.state = TaskState::Completed;
+        t
+    }
+
+    #[test]
+    fn evaluate_goal_done_when_all_completed() {
+        assert_eq!(
+            evaluate_goal(&[completed("a"), completed("b")], 0),
+            GoalStatus::Done
+        );
+    }
+
+    #[test]
+    fn evaluate_goal_in_progress_when_a_fire_claimed_work() {
+        // Work remains and the fire claimed something → keep looping.
+        assert_eq!(
+            evaluate_goal(&[completed("a"), pending("b")], 1),
+            GoalStatus::InProgress
+        );
+    }
+
+    #[test]
+    fn evaluate_goal_blocked_when_no_progress_dependency() {
+        // Nothing claimed, work remains, no plan gate → dependency-blocked.
+        match evaluate_goal(&[completed("a"), pending("b")], 0) {
+            GoalStatus::Blocked(r) => assert!(r.contains("dependency-blocked"), "got: {r}"),
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_goal_blocked_flags_plan_approval_held() {
+        let mut t = pending("b");
+        t.requires_plan = true; // awaits plan approval → HELD
+        match evaluate_goal(&[completed("a"), t], 0) {
+            GoalStatus::Blocked(r) => assert!(r.contains("HELD"), "got: {r}"),
+            other => panic!("expected Blocked/HELD, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn goal_loop_stops_at_dod_when_all_completed() {
+        // A list that is already fully Completed: the first fire claims nothing,
+        // the DoD predicate is met, and the loop stops at iteration 1 (never sleeps).
+        let repo = temp_repo();
+        let source = InMemoryTaskSource::new(vec![completed("a"), completed("b")]);
+        let runner = Arc::new(ScriptedRunner { fail_ids: vec![] });
+        let cfg = lead_cfg(&repo);
+        let loop_cfg = GoalLoopConfig {
+            interval: std::time::Duration::from_millis(0),
+            max_iterations: 5,
+        };
+        let outcome = run_goal_loop(
+            &source,
+            runner,
+            Arc::new(crate::review::AlwaysApprove),
+            &cfg,
+            &loop_cfg,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, GoalLoopOutcome::Done { iterations: 1, .. }),
+            "expected Done at iter 1, got {outcome:?}"
         );
     }
 
