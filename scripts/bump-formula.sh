@@ -54,11 +54,19 @@ targets=(
 # one. The Cargo SemVer (Software-Version) can repeat across CalVer releases (it
 # only advances on `.rs`/`.toml` edits), so keying the formula on it left every
 # release at the same version and `brew upgrade` never saw a new build. Key on
-# the CalVer TAG instead: `v2026.8.12-0` -> `2026.8.12.0` — strip the leading
-# `v`, and turn the `-<patch>` separator into a `.` so it is dotted-numeric and
-# orders monotonically in Homebrew's comparator (incl. same-day re-issues `-1`).
-version="$(printf '%s' "$tag" | sed -E 's/^v//; s/-/./')"
-[ -n "$version" ] || { echo "error: could not derive version from tag '$tag'" >&2; exit 1; }
+# the CalVer TAG instead: `v2026.8.12-0` -> `2026.8.12.0`.
+#
+# Sila/Sacca again: validate the tag shape STRICTLY before deriving, so a
+# malformed tag (missing patch, extra `-`, non-numeric field) fails fast rather
+# than silently yielding a non-dotted-numeric `version` that breaks `brew
+# upgrade` ordering. The release convention is CalVer `vYYYY.M.D-N` — construct
+# the version from the captured numeric groups (strip `v`, `-<patch>` -> `.`) so
+# it is dotted-numeric and orders monotonically (incl. same-day re-issues `-1`).
+if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)$ ]]; then
+  echo "error: tag '$tag' is not CalVer 'vYYYY.M.D-N' — refusing to derive a formula version" >&2
+  exit 1
+fi
+version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
 
 # Owner/repo prefix lives in the formula's existing download URLs — preserve
 # it rather than assume the CI repo is the release host.

@@ -19,6 +19,12 @@ this on #435, which merged with the bug. This fixes it.
 
 ## Decisions
 
+- **Strict tag validation** (Sīla/Sacca): the derivation matches the tag against
+  `^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)$` and builds `version` from the
+  captured groups, failing fast on any malformed shape (missing patch, extra
+  `-`, non-numeric field) rather than letting a loose `sed` silently emit a
+  non-dotted-numeric version that would break `brew upgrade` ordering. Same
+  hard-error posture the script already applies to missing sidecars / bad shas.
 - Kept the `test do` block asserting `bwoc --version` by substring, not by the
   formula `version` — the CLI reports the Cargo SemVer, a deliberately
   different scheme from the CalVer formula version. The existing comment
