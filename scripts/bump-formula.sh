@@ -14,8 +14,10 @@
 #                  4 unix targets the formula consumes.
 #
 # What it rewrites in Formula/bwoc.rb:
-#   - version       <- Cargo.toml [workspace.package].version (the SemVer the
-#                      CLI reports; the tag is CalVer, a different scheme).
+#   - version       <- the CalVer <tag>, normalized to dotted-numeric
+#                      (v2026.8.12-0 -> 2026.8.12.0). Keyed on the tag (not the
+#                      Cargo SemVer the CLI reports) so it is unique per release
+#                      and `brew upgrade` detects each new build (issue #435).
 #   - 4 url lines   <- the new <tag> spliced into each download URL. The
 #                      owner/repo host is read from the formula itself and
 #                      preserved — release URLs need not match the CI repo
@@ -35,10 +37,8 @@ fi
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 formula="$repo_root/Formula/bwoc.rb"
-cargo_toml="$repo_root/Cargo.toml"
 
-[ -f "$formula" ]    || { echo "error: no formula at $formula" >&2; exit 1; }
-[ -f "$cargo_toml" ] || { echo "error: no Cargo.toml at $cargo_toml" >&2; exit 1; }
+[ -f "$formula" ] || { echo "error: no formula at $formula" >&2; exit 1; }
 
 # The 4 unix targets the formula consumes (the Windows .zip is not). Order
 # matches the on_macos/on_linux blocks but the script keys off the target
@@ -50,12 +50,15 @@ targets=(
   x86_64-unknown-linux-gnu
 )
 
-# SemVer for the `version` line. Top-level `^version =` is unique to
-# [workspace.package] (deps declare `name = { version = ... }`), matching
-# scripts/bump-version.sh's extraction.
-version="$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' "$cargo_toml" \
-           | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
-[ -n "$version" ] || { echo "error: could not read workspace version from $cargo_toml" >&2; exit 1; }
+# Homebrew's `version` must be UNIQUE per release so `brew upgrade` detects a new
+# one. The Cargo SemVer (Software-Version) can repeat across CalVer releases (it
+# only advances on `.rs`/`.toml` edits), so keying the formula on it left every
+# release at the same version and `brew upgrade` never saw a new build. Key on
+# the CalVer TAG instead: `v2026.8.12-0` -> `2026.8.12.0` — strip the leading
+# `v`, and turn the `-<patch>` separator into a `.` so it is dotted-numeric and
+# orders monotonically in Homebrew's comparator (incl. same-day re-issues `-1`).
+version="$(printf '%s' "$tag" | sed -E 's/^v//; s/-/./')"
+[ -n "$version" ] || { echo "error: could not derive version from tag '$tag'" >&2; exit 1; }
 
 # Owner/repo prefix lives in the formula's existing download URLs — preserve
 # it rather than assume the CI repo is the release host.
