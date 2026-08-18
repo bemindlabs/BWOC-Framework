@@ -853,7 +853,8 @@ struct FleetHealthArgs {
     /// Goal-loop mode (Loop-Engineering L2): re-scan on a ticker and auto-remediate
     /// stale PID/socket warns (`doctor --auto`) until all conditions are green, a
     /// non-remediable warn remains (operator action), or the budget. Reconcile loop.
-    #[arg(long = "loop")]
+    /// Conflicts with `--json` (the loop emits human progress + `doctor` output).
+    #[arg(long = "loop", conflicts_with = "json")]
     loop_mode: bool,
     /// Ticker interval (seconds) between fleet-health fires. Only with `--loop`.
     #[arg(long, default_value_t = 30, requires = "loop_mode")]

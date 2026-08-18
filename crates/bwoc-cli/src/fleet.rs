@@ -165,6 +165,12 @@ enum FleetLoopDecision {
 /// Pure gate over the warn condition-numbers this fire, plus the previous fire's
 /// warn count. `2` is the only auto-remediable condition (`doctor --auto`).
 /// Separated out so the DoD/blocked logic is unit-testable without a workspace.
+///
+/// When an auto-remediable warn (2) coexists with non-remediable ones (e.g.
+/// `[2, 4]`), this returns `Remediate`: the loop fixes what it can *first*, and
+/// once condition 2 clears the residual non-remediable warns surface as
+/// `Blocked` on the next fire (a reconcile loop makes progress before reporting
+/// what it can't fix — it never spins, since a stalled remediation also Blocks).
 fn fleet_loop_decide(warn_numbers: &[u8], prev_warn_count: usize) -> FleetLoopDecision {
     if warn_numbers.is_empty() {
         return FleetLoopDecision::Done;
@@ -188,7 +194,9 @@ fn fleet_loop_decide(warn_numbers: &[u8], prev_warn_count: usize) -> FleetLoopDe
 
 fn run_health_loop(workspace: &Path, registry: &AgentsRegistry, args: &FleetHealthArgs) -> i32 {
     let git_runner = ProcessGitRunner;
-    let interval = std::time::Duration::from_secs(args.loop_interval_secs);
+    // Floor at 1 s so `--loop-interval-secs 0` can't spin the loop (and hammer
+    // `doctor --auto` with no delay).
+    let interval = std::time::Duration::from_secs(args.loop_interval_secs.max(1));
     let mut iteration = 0usize;
     let mut prev_warn_count = usize::MAX;
     let budget = if args.loop_max_iters == 0 {
