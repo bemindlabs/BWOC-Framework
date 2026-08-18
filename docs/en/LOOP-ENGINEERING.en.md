@@ -14,7 +14,7 @@ A **goal + ticker loop** is an agent (or fleet) that works toward a persistent o
 
 Two things prove the need and the shape:
 
-1. **The retired [Refinement Loop](../../.claude/loop-roadmap.md)** drove the framework's own doc + implementation work for weeks via an external cron × a hand-maintained Markdown checklist × "one coherent unit per fire". It worked, but every element was ad-hoc: opaque out-of-repo cron IDs, three drifting Markdown goal-stores, and an **honor-system** `🔒 HELD` gate that nothing enforced. It ended not by completing but by *supersession* — a human re-pointed it.
+1. **The retired [Refinement Loop](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md)** drove the framework's own doc + implementation work for weeks via an external cron × a hand-maintained Markdown checklist × "one coherent unit per fire". It worked, but every element was ad-hoc: opaque out-of-repo cron IDs, three drifting Markdown goal-stores, and an **honor-system** `🔒 HELD` gate that nothing enforced. It ended not by completing but by *supersession* — a human re-pointed it.
 2. **The native daemon** (`bwoc-agent --serve`) is already a persistent tick loop (`crates/bwoc-agent/src/main.rs:283`), but its only "goals" are *a message arrived* or *a task became claimable*, and every cadence is a hardcoded constant.
 
 Loop engineering closes the gap: it turns the honor-system Markdown pattern into **typed objects and enforced gates**, reusing the battle-tested primitives.
@@ -37,7 +37,7 @@ A `Goal` differs from a Saṅgha `task`: a task has a *state* (`pending → in_p
 
 ### Ticker
 
-What fires the next iteration. A single abstraction over three sources:
+What fires the next iteration. A single abstraction over four sources:
 
 ```
 Ticker =
@@ -106,6 +106,7 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 | **Deliver a recurring digest** | cron | aggregate → render → deliver | one-per-period idempotency |
 | **Delegate a sub-goal to a peer** | poll / A2A push | `message/send` → `tasks/get` until `Completed` | needs the driver loop + join |
 | **Drive an incident to recovery** | alert → tightened cadence | read-only diagnose → notify → verify | dynamic cadence + recovery gate |
+| **Run a research→draft→publish pipeline** | cron | multi-step research (MCP/web) → draft → deliver/commit | staged pipeline state + a review-before-publish gate |
 
 ## Build plan (phased)
 
@@ -122,7 +123,7 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 
 ## Cross-references
 
-- [Refinement Loop (retired)](../../.claude/loop-roadmap.md) — the ad-hoc prototype this layer internalizes.
+- [Refinement Loop (retired)](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) — the ad-hoc prototype this layer internalizes.
 - [`ROADMAP.en.md`](ROADMAP.en.md) — where L1–L3 will be ticketed.
 - [`FLEET-GOVERNANCE.en.md`](FLEET-GOVERNANCE.en.md) — the fleet-health conditions the monitoring loop drives.
 - Saṅgha teams + task queue: [`sangha.md`](../../modules/agent-template/interconnect/sangha.md).

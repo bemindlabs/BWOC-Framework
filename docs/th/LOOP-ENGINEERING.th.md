@@ -1,5 +1,5 @@
 ---
-title: Loop Engineering
+title: Loop Engineering — วิศวกรรม Loop
 parent: ไทย
 nav_order: 8
 ---
@@ -14,7 +14,7 @@ nav_order: 8
 
 สองสิ่งพิสูจน์ทั้งความจำเป็นและรูปร่าง:
 
-1. **[Refinement Loop](../../.claude/loop-roadmap.md) ที่ retire แล้ว** ขับงาน doc + implementation ของเฟรมเวิร์กเองเป็นสัปดาห์ ผ่าน external cron × Markdown checklist ที่ maintain ด้วยมือ × "หนึ่ง coherent unit ต่อ fire" มันทำงานได้ แต่ทุกองค์ประกอบเป็น ad-hoc: cron ID ที่ทึบอยู่นอก repo, goal-store 3 อันที่ drift กัน, และ gate `🔒 HELD` แบบ **honor-system** ที่ไม่มีอะไรบังคับ มันจบไม่ใช่เพราะทำเสร็จ แต่เพราะ *supersession* — มนุษย์ re-point ไปทางอื่น
+1. **[Refinement Loop](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) ที่ retire แล้ว** ขับงาน doc + implementation ของเฟรมเวิร์กเองเป็นสัปดาห์ ผ่าน external cron × Markdown checklist ที่ maintain ด้วยมือ × "หนึ่ง coherent unit ต่อ fire" มันทำงานได้ แต่ทุกองค์ประกอบเป็น ad-hoc: cron ID ที่ทึบอยู่นอก repo, goal-store 3 อันที่ drift กัน, และ gate `🔒 HELD` แบบ **honor-system** ที่ไม่มีอะไรบังคับ มันจบไม่ใช่เพราะทำเสร็จ แต่เพราะ *supersession* — มนุษย์ re-point ไปทางอื่น
 2. **daemon เนทีฟ** (`bwoc-agent --serve`) เป็น persistent tick loop อยู่แล้ว (`crates/bwoc-agent/src/main.rs:283`) แต่ "goal" เดียวที่มีคือ *มีข้อความมา* หรือ *task claim ได้* และทุก cadence เป็นค่าคงที่ hardcoded
 
 Loop engineering ปิดช่องว่าง: เปลี่ยน pattern Markdown honor-system เป็น **typed objects + enforced gates** โดย reuse primitive ที่ผ่านสนามรบมาแล้ว
@@ -37,7 +37,7 @@ Goal {
 
 ### Ticker
 
-สิ่งที่ fire iteration ถัดไป abstraction เดียวครอบ 3 แหล่ง:
+สิ่งที่ fire iteration ถัดไป abstraction เดียวครอบ 4 แหล่ง:
 
 ```
 Ticker =
@@ -106,6 +106,7 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 | **ส่ง recurring digest** | cron | aggregate → render → deliver | idempotency หนึ่งต่อ period |
 | **Delegate sub-goal ให้ peer** | poll / A2A push | `message/send` → `tasks/get` จน `Completed` | ต้องมี driver loop + join |
 | **ดัน incident สู่ recovery** | alert → cadence แคบลง | read-only diagnose → notify → verify | dynamic cadence + recovery gate |
+| **รัน research→draft→publish pipeline** | cron | research หลายขั้น (MCP/web) → draft → deliver/commit | staged pipeline state + review-before-publish gate |
 
 ## แผน build (phased)
 
@@ -122,7 +123,7 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 
 ## เอกสารอ้างอิง
 
-- [Refinement Loop (retired)](../../.claude/loop-roadmap.md) — prototype ad-hoc ที่ layer นี้ internalize
+- [Refinement Loop (retired)](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) — prototype ad-hoc ที่ layer นี้ internalize
 - [`ROADMAP.th.md`](ROADMAP.th.md) — ที่ L1–L3 จะถูก ticket
 - [`FLEET-GOVERNANCE.th.md`](FLEET-GOVERNANCE.th.md) — fleet-health conditions ที่ monitoring loop ขับ
 - Saṅgha teams + task queue: [`sangha.th.md`](../../modules/agent-template/interconnect/sangha.th.md)
