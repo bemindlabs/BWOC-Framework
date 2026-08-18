@@ -319,6 +319,7 @@ The `bwoc` CLI and `bwoc-agent` daemon read and respect the following environmen
 | `BWOC_LANG` | Sets the CLI and daemon UI language. Precedence: `--lang` flag → `BWOC_LANG` → `$LANG` → default `en`. | `en` (English), `th` (Thai) |
 | `BWOC_TEMPLATE` | Sets the custom path to an agent template for incarnation via `bwoc new`. | Directory path containing `agent-template` |
 | `BWOC_TRUST_GATING` | Enables the Kalyāṇamitta-7 trust system (checks manifest, peer trust, and refuses unauthorized inbox envelopes at the daemon). | `1` to enable, otherwise disabled |
+| `BWOC_TASK_POLL_SECS` | How often `bwoc-agent --serve` re-scans team task lists for newly-claimable work. Raise it for a large fleet (fewer file reads), lower it for snappier pickup. | Integer seconds; default `2`, floored at `1` |
 | `BWOC_TASK_WAKEUP` | Opt-in flag for `bwoc-agent --serve` to ping the agent's tmux session when a new claimable task is available. | `1` to enable, otherwise disabled |
 | `BWOC_AUTO_CLAIM` | Opt-in flag for `bwoc-agent --serve` to automatically claim and wake up the agent when a new task becomes claimable. | `1` to enable, otherwise disabled |
 | `BWOC_WARM` | Opt-in flag for `bwoc-agent --serve` to run an auto-claimed task in a resident `bwoc-harness --headless` (warm — no per-task cold-start) instead of tmux-waking a session. Confined (harness) backends only; `requires_plan` tasks fall back to the wake path. | `1` to enable, otherwise disabled |

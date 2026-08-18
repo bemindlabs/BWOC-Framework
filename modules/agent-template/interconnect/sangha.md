@@ -108,7 +108,7 @@ A running `bwoc-agent --serve` watches the shared task lists of every team its a
 bwoc-agent: task available ← squad/t3: implement the parser
 ```
 
-"Claimable" = `pending` with every dependency `completed`, in a member team. The daemon snapshots what's already open at startup (no replay — like the inbox cursor starting at EOF) and polls on a 2-second cadence (tasks change rarely). Inert when the agent is on no team or no workspace resolves. See [`crates/bwoc-agent/src/task_watch.rs`](../../../crates/bwoc-agent/src/task_watch.rs).
+"Claimable" = `pending` with every dependency `completed`, in a member team. The daemon snapshots what's already open at startup (no replay — like the inbox cursor starting at EOF) and polls on a 2-second cadence (tasks change rarely), tunable via `BWOC_TASK_POLL_SECS` (default `2`, floored at 1s) — raise it for a large fleet to re-read team files less often, lower it for snappier pickup. Inert when the agent is on no team or no workspace resolves. See [`crates/bwoc-agent/src/task_watch.rs`](../../../crates/bwoc-agent/src/task_watch.rs).
 
 **Opt-in wakeup** (`BWOC_TASK_WAKEUP=1`): on a newly-claimable task the daemon also pings the agent's tmux session (`agent-<x>` → session `<x>`) with a `[bwoc task <team>/<id>] <title>` marker — the same best-effort two-step send-keys the inbox uses. A live Claude session running the agent sees it and can `bwoc task claim`. The agent stays in control: the daemon does not mutate the list. Default off (announce-only).
 
