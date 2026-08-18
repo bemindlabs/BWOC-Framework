@@ -16,7 +16,7 @@
 class Bwoc < Formula
   desc "BWOC framework — backend-neutral spec + Rust runtime for AI coding agents"
   homepage "https://github.com/bemindlabs/BWOC-Framework"
-  version "2.42.0"
+  version "2026.8.12.0"
   license "MIT"
 
   # Per-platform binary download. release.yml builds 4 unix targets;
