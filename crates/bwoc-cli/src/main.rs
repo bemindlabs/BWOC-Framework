@@ -183,9 +183,9 @@ enum Commands {
     /// `--exec` each tick (exit 0 = OK, non-zero = tripped); alert `--alert
     /// <agent>` once per OK↔TRIP transition. `--loop` runs it continuously.
     Monitor(MonitorArgs),
-    /// Deliver a recurring digest (Loop-Engineering L3): run `--exec` **exactly
-    /// once per `--period`** (durable across restarts) and emit its output to
-    /// stdout or `--out <file>`. `--loop` runs it continuously.
+    /// Deliver a recurring digest (Loop-Engineering L3): run `--exec` **once per
+    /// `--period`** (durable across restarts; one loop per ledger) and emit its
+    /// output to stdout or `--out <file>`. `--loop` runs it continuously.
     Digest(DigestArgs),
     /// Pause an agent — set status = "stopped" without removing files.
     Stop(StopArgs),

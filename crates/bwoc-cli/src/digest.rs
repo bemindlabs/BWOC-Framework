@@ -1,12 +1,19 @@
 //! `bwoc digest` — a recurring digest loop (Loop-Engineering L3).
 //!
-//! Run an operator command **exactly once per period** — durably, across
-//! restarts and overlapping schedules — and deliver its rendered output. The
-//! once-per-period gate is the value a bare cron can't give: cron double-fires,
-//! a restart re-runs, and two overlapping invocations both fire. Here the period
+//! Run an operator command **once per period** — durably, so a restart or the
+//! next poll tick doesn't re-run it — and deliver its rendered output. The
+//! once-per-period gate is the value a bare cron can't give: a restart mid-period
+//! would re-run the job, and a poll-driven loop re-fires every tick. The period
 //! is latched through [`bwoc_core::idempotency::IdempotencyLedger::seen_or_record`]
-//! (the durable dedup half of the L3 primitive), so the digest is delivered once
-//! and only once per bucket.
+//! (the durable dedup half of the L3 primitive), so a single digest loop owning
+//! its ledger delivers each bucket once.
+//!
+//! The latch is a durable check-then-write, **not** a cross-process mutex: two
+//! `bwoc digest` processes racing on the *same* ledger can both observe a bucket
+//! as unseen and both deliver. True concurrency on one ledger is out of scope by
+//! the same rule as the primitive (a loop owns its ledger) — run one loop per
+//! ledger (a distinct `--id`) rather than overlapping invocations; an advisory
+//! lock is a later hardening if that need ever appears.
 //!
 //! ## Delivery + trust (why v1 is stdout/file only)
 //!
@@ -152,8 +159,10 @@ pub fn run(args: DigestArgs) -> i32 {
 /// delivered (or nothing to do), 2 on a command failure.
 fn tick(ledger: &IdempotencyLedger, id: &str, args: &DigestArgs) -> i32 {
     let bucket = period_bucket(args.period, now_secs());
-    // seen_or_record is the durable exactly-once gate: only the FIRST call for a
-    // bucket returns `false` (deliver); everything after returns `true` (skip).
+    // seen_or_record is the durable once-per-bucket gate for this loop's own
+    // ledger: only the FIRST call for a bucket returns `false` (deliver);
+    // everything after returns `true` (skip). It is not a cross-process mutex —
+    // see the module doc for the single-owner scope.
     match ledger.seen_or_record(&bucket) {
         Ok(true) => 0, // already delivered this period
         Err(e) => {

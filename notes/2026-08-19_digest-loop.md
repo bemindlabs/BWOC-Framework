@@ -1,12 +1,15 @@
 # 2026-08-19 — `bwoc digest` (L3 recurring-digest loop)
 
-The second Loop-Engineering L3 product loop: run an operator command **exactly
-once per period** (hourly/daily/weekly) and deliver its rendered output. Reuses
+The second Loop-Engineering L3 product loop: run an operator command **once
+per period** (hourly/daily/weekly) and deliver its rendered output. Reuses
 the Phase-1 `IdempotencyLedger` (#453) — the durable dedup half — as the
-once-per-period gate a bare cron can't give (cron double-fires, a restart
-re-runs, two overlapping invocations both fire). Sibling of `bwoc monitor`
-(#454); the monitoring flagship delivered *scalars*, the digest delivers
-*content*, and that difference drove the trust design below.
+once-per-period gate a bare cron can't give (a restart mid-period would re-run
+the job; a poll-driven loop re-fires every tick). The latch is a durable
+check-then-write for a loop owning its own ledger, **not** a cross-process
+mutex — truly concurrent invocations on the same ledger are out of scope (run
+one loop per `--id`), matching the primitive's stated single-owner scope.
+Sibling of `bwoc monitor` (#454); the monitoring flagship delivered *scalars*,
+the digest delivers *content*, and that difference drove the trust design below.
 
 ## What changed
 
