@@ -410,7 +410,9 @@ pub fn build_command(
             // `--skip-git-repo-check`: an agent directory is not necessarily a
             //   git repo, and codex refuses to start outside one by default.
             // `--color never`: output is captured into `RunResult`, never
-            //   rendered to a TTY — ANSI escapes would corrupt `--json`.
+            //   rendered to a TTY — ANSI escapes would pollute the captured
+            //   `output` (the JSON stays valid, but the embedded text becomes
+            //   noisy for downstream consumers / CI logs).
             // `--sandbox workspace-write`: `codex exec` defaults to read-only,
             //   which cannot complete an edit task. workspace-write bounds
             //   writes to the run cwd — the same jail `resolve_workdir` already
