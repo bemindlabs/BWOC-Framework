@@ -102,8 +102,8 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 |---|---|---|---|
 | **Keep repo(s) green + current** (CI-babysit) | interval / CI webhook | trusted headless turn: bump → build → open PR | productizes the release-PR work |
 | **Resolve an inbound request** | message arrival + follow-ups | warm per-sender turn via `AutoProcessor` | needs a *middle trust tier* (act-as-user) |
-| **Watch a source, alert on trip** | cron / interval | fetch → predicate → `bwoc send` alert | **flagship**: missing piece is just a scheduler |
-| **Deliver a recurring digest** | cron | aggregate → render → deliver | one-per-period idempotency |
+| **Watch a source, alert on trip** | cron / interval | fetch → predicate → `bwoc send` alert | **flagship — shipped** as `bwoc monitor` (`Every` ticker + durable idempotency latch) |
+| **Deliver a recurring digest** | cron | aggregate → render → deliver | one-per-period idempotency (reuses the shipped ledger's `seen_or_record`) |
 | **Delegate a sub-goal to a peer** | poll / A2A push | `message/send` → `tasks/get` until `Completed` | needs the driver loop + join |
 | **Drive an incident to recovery** | alert → tightened cadence | read-only diagnose → notify → verify | dynamic cadence + recovery gate |
 | **Run a research→draft→publish pipeline** | cron | multi-step research (MCP/web) → draft → deliver/commit | staged pipeline state + a review-before-publish gate |
@@ -112,7 +112,7 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 
 1. **Phase L1 — Goal loop over the lead** *(highest ROI, lowest risk)* — **shipped**. `bwoc-harness --lead --loop` wraps the already-hardened `run_lead` in a `Goal + Ticker + Gate`: re-fire on task-list change, DoD = list fully `Completed`, HELD on a `requires_plan` task, budget-bounded so it provably halts. The `Ticker` + `Budget` primitives live in `bwoc-core::loop_control`, and the `bwoc loop` operator console (a ratatui TUI, `crates/bwoc-loop-tui`) starts, monitors, and edits a goal-loop over a team's task list.
 2. **Phase L2 — Ticker-driven fleet loops** — **partially shipped**. `bwoc fleet health --loop` is a reconcile loop that drives the fleet to all-green, and the daemon's Saṅgha task-poll cadence is now operator-tunable (`BWOC_TASK_POLL_SECS`) rather than a hardcoded constant. The `Every` ticker ships; `Cron`/`Adaptive` and the Tier-2-mining loop are deferred until a consumer drives them.
-3. **Phase L3 — Product loops** — **not started** (design-gated). Scheduled monitoring/alerting (the flagship external case), then inbound-service and A2A-delegation loops — these also require a **middle trust tier** (act-as-authenticated-user, between today's trusted-headless and untrusted-read-only) and an **idempotency/dedup** primitive.
+3. **Phase L3 — Product loops** — **flagship shipped; the rest design-gated**. The flagship **scheduled monitoring/alerting** loop ships as `bwoc monitor` (`crates/bwoc-cli/src/monitor.rs`): probe a source on the `Every` ticker and alert once per OK↔TRIP transition through the durable `IdempotencyLedger` (`bwoc-core::idempotency`). It runs in a **trusted wrapper** delivering only a scalar (monitor id + exit code) into the alert, so untrusted probe output never reaches a model — **no trust-model change**. The remaining product loops — inbound-service and A2A-delegation — still require a **middle trust tier** (`Principal::AuthenticatedUser`: act-as-authenticated-user that stays Untrusted, plus an additive `ActAsUser` capability grade) and a shared **Dispatch seam**; those stay deferred until a consumer drives them (tracked in the successor issue).
 
 ## Non-goals & safety
 
@@ -125,6 +125,7 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 
 - [Refinement Loop (retired)](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) — the ad-hoc prototype this layer internalizes.
 - Operator console: [`crates/bwoc-loop-tui`](../../crates/bwoc-loop-tui/src/lib.rs) — `bwoc loop`, the ratatui TUI that starts / monitors / edits an L1 goal-loop over a team.
+- L3 flagship: [`crates/bwoc-cli/src/monitor.rs`](../../crates/bwoc-cli/src/monitor.rs) — `bwoc monitor`, the source-watch / alert-on-transition loop.
 - [`ROADMAP.en.md`](ROADMAP.en.md) — where L1–L3 will be ticketed.
 - [`FLEET-GOVERNANCE.en.md`](FLEET-GOVERNANCE.en.md) — the fleet-health conditions the monitoring loop drives.
 - Saṅgha teams + task queue: [`sangha.md`](../../modules/agent-template/interconnect/sangha.md).
