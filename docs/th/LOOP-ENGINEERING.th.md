@@ -47,7 +47,7 @@ Ticker =
   | Adaptive { base, backoff } # กว้างขึ้นเมื่อ idle, แคบลงเมื่อ active
 ```
 
-แทนที่ `TASK_POLL_EVERY = 2s` และ sleep 100 ms ที่ hardcoded (`crates/bwoc-agent/src/main.rs:254`) **prompt/objective ที่ steer ถูกแนบกับ ticker** เหมือนที่ Refinement Loop แนบ prompt กับแต่ละ cron — การ re-aim loop คือสลับ objective ไม่ใช่สลับกลไก
+generalize สิ่งที่ daemon ทำอยู่แล้วด้วย cadence เดียว: task-poll ถูกยกจากค่าคงที่ hardcoded `TASK_POLL_EVERY = 2s` ไปเป็น `BWOC_TASK_POLL_SECS` ที่ operator ปรับได้ (หนุนด้วย `Ticker::every_secs` ของ `bwoc-core`); Ticker เต็มเพิ่มอีก 3 แหล่งที่เหลือ **prompt/objective ที่ steer ถูกแนบกับ ticker** เหมือนที่ Refinement Loop แนบ prompt กับแต่ละ cron — การ re-aim loop คือสลับ objective ไม่ใช่สลับกลไก
 
 ### Gate
 
