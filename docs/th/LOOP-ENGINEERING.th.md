@@ -102,8 +102,8 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 |---|---|---|---|
 | **คง repo ให้เขียว + ทันสมัย** (CI-babysit) | interval / CI webhook | trusted headless turn: bump → build → open PR | productize งาน release-PR |
 | **Resolve inbound request** | message arrival + follow-ups | warm per-sender turn ผ่าน `AutoProcessor` | ต้องมี *trust tier กลาง* (act-as-user) |
-| **Watch source, alert เมื่อ trip** | cron / interval | fetch → predicate → `bwoc send` alert | **flagship**: ที่ขาดคือ scheduler เดียว |
-| **ส่ง recurring digest** | cron | aggregate → render → deliver | idempotency หนึ่งต่อ period |
+| **Watch source, alert เมื่อ trip** | cron / interval | fetch → predicate → `bwoc send` alert | **flagship — ส่งแล้ว** เป็น `bwoc monitor` (`Every` ticker + durable idempotency latch) |
+| **ส่ง recurring digest** | cron | aggregate → render → deliver | idempotency หนึ่งต่อ period (reuse `seen_or_record` ของ ledger ที่ส่งแล้ว) |
 | **Delegate sub-goal ให้ peer** | poll / A2A push | `message/send` → `tasks/get` จน `Completed` | ต้องมี driver loop + join |
 | **ดัน incident สู่ recovery** | alert → cadence แคบลง | read-only diagnose → notify → verify | dynamic cadence + recovery gate |
 | **รัน research→draft→publish pipeline** | cron | research หลายขั้น (MCP/web) → draft → deliver/commit | staged pipeline state + review-before-publish gate |
@@ -112,7 +112,7 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 
 1. **Phase L1 — Goal loop รอบ lead** *(ROI สูงสุด, risk ต่ำสุด)* — **ส่งแล้ว** `bwoc-harness --lead --loop` ครอบ `run_lead` ที่ hardened แล้วด้วย `Goal + Ticker + Gate`: re-fire เมื่อ task-list เปลี่ยน, DoD = list เป็น `Completed` หมด, HELD เมื่อ task เป็น `requires_plan`, budget-bounded จึงหยุดได้พิสูจน์ได้ primitive `Ticker` + `Budget` อยู่ใน `bwoc-core::loop_control` และ operator console `bwoc loop` (ratatui TUI, `crates/bwoc-loop-tui`) start / monitor / edit goal-loop บน task list ของทีมได้
 2. **Phase L2 — Ticker-driven fleet loops** — **ส่งบางส่วน** `bwoc fleet health --loop` เป็น reconcile loop ที่ขับ fleet สู่ all-green และ cadence task-poll ของ Saṅgha บน daemon ตอนนี้ operator ปรับได้ (`BWOC_TASK_POLL_SECS`) แทนค่าคงที่ hardcoded ticker `Every` ส่งแล้ว; `Cron`/`Adaptive` กับ Tier-2-mining loop เลื่อนไว้จนกว่าจะมี consumer มา drive
-3. **Phase L3 — Product loops** — **ยังไม่เริ่ม** (design-gated) scheduled monitoring/alerting (flagship external case), ตามด้วย inbound-service กับ A2A-delegation loop — พวกนี้ต้องมี **trust tier กลาง** (act-as-authenticated-user ระหว่าง trusted-headless กับ untrusted-read-only วันนี้) และ **idempotency/dedup** primitive
+3. **Phase L3 — Product loops** — **flagship ส่งแล้ว; ที่เหลือ design-gated** flagship **scheduled monitoring/alerting** ส่งเป็น `bwoc monitor` (`crates/bwoc-cli/src/monitor.rs`): probe source บน `Every` ticker แล้ว alert หนึ่งครั้งต่อ transition OK↔TRIP ผ่าน `IdempotencyLedger` แบบ durable (`bwoc-core::idempotency`) รันใน **trusted wrapper** ส่งแค่ scalar (monitor id + exit code) เข้า alert — output ที่ไม่ trust ไม่ถึง model → **ไม่มี trust-model change** ส่วน product loop ที่เหลือ — inbound-service กับ A2A-delegation — ยังต้องมี **trust tier กลาง** — principal *act-as-authenticated-user* ที่เสนอไว้ (ยังเป็น Untrusted) + capability grade *act-as-user* แบบ additive (ทั้งคู่เป็นข้อเสนอเชิงออกแบบ ยังไม่ใช่ identifier ในโค้ดวันนี้) — และ **Dispatch seam** ร่วม; เลื่อนไว้จนกว่าจะมี consumer มา drive (track ใน [#452](https://github.com/bemindlabs/BWOC-Framework/issues/452))
 
 ## Non-goals & safety
 
@@ -125,6 +125,7 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 
 - [Refinement Loop (retired)](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) — prototype ad-hoc ที่ layer นี้ internalize
 - Operator console: [`crates/bwoc-loop-tui`](../../crates/bwoc-loop-tui/src/lib.rs) — `bwoc loop`, ratatui TUI ที่ start / monitor / edit L1 goal-loop บนทีม
+- L3 flagship: [`crates/bwoc-cli/src/monitor.rs`](../../crates/bwoc-cli/src/monitor.rs) — `bwoc monitor`, loop watch-source / alert-on-transition
 - [`ROADMAP.th.md`](ROADMAP.th.md) — ที่ L1–L3 จะถูก ticket
 - [`FLEET-GOVERNANCE.th.md`](FLEET-GOVERNANCE.th.md) — fleet-health conditions ที่ monitoring loop ขับ
 - Saṅgha teams + task queue: [`sangha.th.md`](../../modules/agent-template/interconnect/sangha.th.md)
