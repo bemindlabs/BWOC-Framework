@@ -41,6 +41,7 @@ mod livecheck;
 mod log;
 mod loop_cmd;
 mod memory;
+mod monitor;
 mod new;
 mod okr;
 mod outbox_cmd;
@@ -177,6 +178,10 @@ enum Commands {
     /// Launch the Loop-Engineering control center (L1 goal-loop): watch a team's
     /// task list drive toward Definition-of-Done. TUI; `--team` opens one directly.
     Loop(LoopArgs),
+    /// Watch a source and alert on transition (Loop-Engineering L3). Probe
+    /// `--exec` each tick (exit 0 = OK, non-zero = tripped); alert `--alert
+    /// <agent>` once per OK↔TRIP transition. `--loop` runs it continuously.
+    Monitor(MonitorArgs),
     /// Pause an agent — set status = "stopped" without removing files.
     Stop(StopArgs),
     /// Reactivate a stopped agent — set status = "active".
@@ -1952,6 +1957,48 @@ impl LoopArgs {
 }
 
 #[derive(Args, Debug)]
+struct MonitorArgs {
+    /// The shell command to probe each tick. Exit 0 = OK, non-zero = tripped
+    /// (a spawn failure or signal death also counts as tripped).
+    #[arg(long)]
+    exec: String,
+    /// Fleet member to `bwoc send` on a transition. Omit to log transitions only.
+    #[arg(long)]
+    alert: Option<String>,
+    /// Run continuously; without it, probe once and exit (0 = OK, 1 = tripped).
+    #[arg(long = "loop")]
+    loop_mode: bool,
+    /// Cadence between probes in `--loop` mode (seconds, floored at 1s).
+    #[arg(long = "interval-secs", default_value_t = 60)]
+    interval_secs: u64,
+    /// Iteration budget in `--loop` mode. `0` = unbounded (a monitor is a service
+    /// — stop it with Ctrl-C / a supervisor).
+    #[arg(long = "max-iters", default_value_t = 0)]
+    max_iters: usize,
+    /// Stable monitor id (ledger key + `.bwoc/monitors/<id>.jsonl`). Omit to
+    /// derive it from `--exec` so the monitor keeps its state across restarts.
+    #[arg(long)]
+    id: Option<String>,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+}
+
+impl MonitorArgs {
+    fn into_runtime(self) -> monitor::MonitorArgs {
+        monitor::MonitorArgs {
+            exec: self.exec,
+            alert: self.alert,
+            loop_mode: self.loop_mode,
+            interval_secs: self.interval_secs,
+            max_iters: self.max_iters,
+            id: self.id,
+            workspace: self.workspace,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 struct CompletionArgs {
     /// Target shell. Pipe the output to your shell's completion install path.
     #[arg(value_enum)]
@@ -2802,6 +2849,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Loop(args)) => {
             let code = loop_cmd::run(args.into_runtime());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Monitor(args)) => {
+            let code = monitor::run(args.into_runtime());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Stop(args)) => {
