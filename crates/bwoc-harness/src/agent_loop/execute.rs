@@ -57,7 +57,7 @@ pub(super) async fn execute_tool_calls(
         let policy = config.policy.clone();
         let is_tty = config.is_tty;
         let outcome = tokio::task::spawn_blocking(move || {
-            run_pipeline(&name, &args, &workdir, &policy, is_tty, turn_trust)
+            run_pipeline(&name, &args, &workdir, &policy, is_tty, turn_trust, None)
         })
         .await
         // A panic in the policy task is near-impossible, but fail **closed** if

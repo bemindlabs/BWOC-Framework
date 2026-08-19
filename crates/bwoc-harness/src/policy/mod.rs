@@ -94,8 +94,19 @@ enum Capability {
     /// symlink escapes). `path` is the raw target extracted from the args, or
     /// `None` when the args are missing/malformed (fail-closed → denied).
     WorktreeWrite { path: Option<String> },
+    /// An **act-as-authenticated-user** effect (Loop-Engineering L3 middle tier):
+    /// a narrow, single-tool reply on behalf of a verified sender. Only
+    /// `bwoc_send` is classified here, and only its `to` reply-target is carried
+    /// (`None` when args are missing/malformed → fail-closed → denied). Between
+    /// [`WorktreeWrite`](Capability::WorktreeWrite) and [`Gated`](Capability::Gated)
+    /// in blast radius: still denied on an ordinary Untrusted turn, but *allowable*
+    /// when the turn's pre-validated authenticated actor (a daemon-minted verified
+    /// sender identity — [`crate::session_trust::scan_authenticated_actor`]) matches
+    /// the reply target exactly. Grading here is purely STRUCTURAL — `classify`
+    /// sees only tool name + args, never identity, so it cannot itself grant.
+    ActAsUser { to: Option<String> },
     /// Effectful beyond a confined worktree write — `run_command`, `git` (commit
-    /// / push), `run_gates`, the `bwoc_*` sub-agent / message / task tools, every
+    /// / push), `run_gates`, the other `bwoc_*` sub-agent / task tools, every
     /// MCP tool (network egress), and any unclassified tool. Refused on an
     /// Untrusted turn, always. Covers yudi's gated list: run_command, git push,
     /// PR-create, network egress, and delete outside the worktree.
@@ -126,7 +137,16 @@ fn classify_capability(tool_name: &str, arguments_json: &str) -> Capability {
         "memory_write" => Capability::WorktreeWrite {
             path: arg_str(arguments_json, "name").map(|n| format!("memories/{n}")),
         },
-        // run_command, git, run_gates, bwoc_run/send/task, MCP (mcp__*), and any
+        // The act-as-user tier: `bwoc_send` is the one narrow reply channel a
+        // verified sender may act on. Only the `to` reply-target is inspected
+        // (structural — no identity here); the gate later requires `to` to match
+        // the turn's authenticated actor. Everything policy-bearing about the
+        // send (body/subject) stays free text, and every OTHER bwoc_* tool stays
+        // Gated below.
+        "bwoc_send" => Capability::ActAsUser {
+            to: arg_str(arguments_json, "to"),
+        },
+        // run_command, git, run_gates, bwoc_run/task, MCP (mcp__*), and any
         // tool nobody classified — gated, zero allow-by-omission.
         _ => Capability::Gated,
     }
@@ -192,6 +212,14 @@ impl PolicyOutcome {
 ///   silent `Trusted`. Fail-closed is the caller's job (an empty/derived-only
 ///   turn yields [`TrustLevel::Untrusted`]); see
 ///   [`crate::session_trust::scan_turn_trust`].
+/// - `authenticated_actor` — the id of this turn's **pre-validated** authenticated
+///   sender (L3 middle tier), or `None` when there is none. Like `turn_trust`
+///   this is **required, not optional** (a forgotten thread at a future call site
+///   is a compile error, not a silent `None`) and **pre-computed by the caller**:
+///   it is the `Some(id)` result of [`crate::session_trust::scan_authenticated_actor`]
+///   — a daemon-minted verified identity that survives the per-turn fail-closed
+///   taint re-scan — or `None`. This gate never re-derives identity; it only
+///   checks that a [`Capability::ActAsUser`] reply's `to` matches this id.
 ///
 /// # Returns
 /// [`PolicyOutcome::Proceed`] if all layers approve, or a blocking variant
@@ -203,6 +231,7 @@ pub fn run_pipeline(
     policy: &Policy,
     is_tty: bool,
     turn_trust: TrustLevel,
+    authenticated_actor: Option<&str>,
 ) -> PolicyOutcome {
     // Layer 0: Capability gate (Phase 5 t3, ruling (a)). Runs FIRST and is
     // deny-only — it can refuse, never grant. On an Untrusted turn the tool is
@@ -228,6 +257,30 @@ pub fn run_pipeline(
                     };
                 }
                 // Confined write — fall through to guardrails/permission.
+            }
+            Capability::ActAsUser { to } => {
+                // Act-as-user: allowed ONLY when this turn carries a pre-validated
+                // authenticated actor (a daemon-minted verified sender that
+                // survived the per-turn taint re-scan) AND the reply target is
+                // exactly that actor — a verified sender may reply to itself, and
+                // to no one else. Any mismatch, a missing `to`, or no actor at all
+                // (the common case, incl. every turn today) is denied exactly like
+                // `Gated`. The equality gate — not merely "an actor exists" — is
+                // what stops an act-as-user turn from messaging a THIRD party.
+                let authorized = match (authenticated_actor, to.as_deref()) {
+                    (Some(actor), Some(target)) => actor == target,
+                    _ => false,
+                };
+                if !authorized {
+                    return PolicyOutcome::CapabilityDenied {
+                        tool: tool_name.to_string(),
+                        reason: "act-as-user reply not authorized — it requires a \
+                                 daemon-verified authenticated sender on this turn whose \
+                                 id matches the reply target exactly"
+                            .to_string(),
+                    };
+                }
+                // Authorized act-as-user reply — fall through to guardrails/permission.
             }
             Capability::Gated => {
                 return PolicyOutcome::CapabilityDenied {
@@ -298,6 +351,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Trusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::GuardrailBlocked(_)));
     }
@@ -312,6 +366,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Trusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::GuardrailBlocked(_)));
     }
@@ -329,6 +384,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Untrusted,
+            None,
         );
         assert!(matches!(
             outcome,
@@ -348,6 +404,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Trusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::PermissionDenied(_)));
     }
@@ -364,6 +421,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Trusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::Proceed));
     }
@@ -411,6 +469,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Trusted,
+            None,
         );
         // Guardrail fires first (sudo → bhava_tanha_escalation).
         assert!(matches!(outcome, PolicyOutcome::GuardrailBlocked(_)));
@@ -431,6 +490,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Untrusted,
+            None,
         );
         match outcome {
             PolicyOutcome::CapabilityDenied { tool, .. } => assert_eq!(tool, "run_command"),
@@ -460,6 +520,7 @@ mod tests {
                 &policy,
                 false,
                 TrustLevel::Untrusted,
+                None,
             );
             assert!(
                 matches!(outcome, PolicyOutcome::Proceed),
@@ -496,6 +557,7 @@ mod tests {
                 &policy,
                 false,
                 TrustLevel::Untrusted,
+                None,
             );
             assert!(
                 matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
@@ -517,6 +579,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Untrusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::CapabilityDenied { .. }));
     }
@@ -534,12 +597,98 @@ mod tests {
             ("bwoc_task", r#"{"team": "t", "task": "x"}"#),
             ("mcp__server__some_tool", "{}"),
         ] {
-            let outcome = run_pipeline(tool, args, wt(), &policy, false, TrustLevel::Untrusted);
+            let outcome = run_pipeline(
+                tool,
+                args,
+                wt(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                None,
+            );
             assert!(
                 matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
                 "gated `{tool}` must be capability-denied on an untrusted turn, got {outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn act_as_user_gate_requires_matching_authenticated_actor() {
+        // The ActAsUser arm of the Layer-0 gate (L3 middle tier). On an Untrusted
+        // turn `bwoc_send` is authorized ONLY when the turn carries a pre-validated
+        // authenticated actor whose id equals the reply `to` — a verified sender
+        // may reply to itself and no one else. Every other shape is denied exactly
+        // like `Gated`.
+        let policy = allow_policy();
+        let send = r#"{"to":"peer","message":"hi"}"#;
+
+        // (a) No authenticated actor (the common case, incl. every turn today) → denied.
+        assert!(matches!(
+            run_pipeline(
+                "bwoc_send",
+                send,
+                wt(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                None
+            ),
+            PolicyOutcome::CapabilityDenied { .. }
+        ));
+        // (b) Actor matches the reply target → gate authorizes (past Layer 0 → Proceed).
+        assert!(matches!(
+            run_pipeline(
+                "bwoc_send",
+                send,
+                wt(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                Some("peer")
+            ),
+            PolicyOutcome::Proceed
+        ));
+        // (c) Actor is a DIFFERENT id than the reply target → denied (no messaging a third party).
+        assert!(matches!(
+            run_pipeline(
+                "bwoc_send",
+                send,
+                wt(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                Some("someone-else")
+            ),
+            PolicyOutcome::CapabilityDenied { .. }
+        ));
+        // (d) A `to`-less send (fail-closed target) even with a matching-looking actor → denied.
+        assert!(matches!(
+            run_pipeline(
+                "bwoc_send",
+                "{}",
+                wt(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                Some("peer")
+            ),
+            PolicyOutcome::CapabilityDenied { .. }
+        ));
+        // (e) A TRUSTED turn is a no-op for the gate: bwoc_send proceeds regardless
+        //     of the (absent) actor — ActAsUser only ever gates an Untrusted turn.
+        assert!(matches!(
+            run_pipeline(
+                "bwoc_send",
+                send,
+                wt(),
+                &policy,
+                false,
+                TrustLevel::Trusted,
+                None
+            ),
+            PolicyOutcome::Proceed
+        ));
     }
 
     #[test]
@@ -552,7 +701,15 @@ mod tests {
             ("grep", r#"{"pattern": "x"}"#),
             ("memory_read", "{}"),
         ] {
-            let outcome = run_pipeline(tool, args, wt(), &policy, false, TrustLevel::Untrusted);
+            let outcome = run_pipeline(
+                tool,
+                args,
+                wt(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                None,
+            );
             assert!(
                 matches!(outcome, PolicyOutcome::Proceed),
                 "whitelisted `{tool}` must proceed on an untrusted turn, got {outcome:?}"
@@ -572,6 +729,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Untrusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::CapabilityDenied { .. }));
     }
@@ -588,6 +746,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Trusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::Proceed));
     }
@@ -604,6 +763,7 @@ mod tests {
             &policy,
             false,
             TrustLevel::Trusted,
+            None,
         );
         assert!(matches!(outcome, PolicyOutcome::GuardrailBlocked(_)));
     }
@@ -615,8 +775,9 @@ mod tests {
         // A golden table pinning the classification of every tool the harness
         // knows. Extracting `PURE_READ_TOOLS` and routing PureRead through a
         // membership check must NOT change any verdict: the 4 whitelist strings
-        // stay PureRead, the writes stay WorktreeWrite, everything else stays
-        // Gated. If a future edit shifts any tool's tier, this test fails.
+        // stay PureRead, the writes stay WorktreeWrite, `bwoc_send` is the sole
+        // ActAsUser tool, and everything else stays Gated. If a future edit shifts
+        // any tool's tier, this test fails.
         let pr = Capability::PureRead;
         let gated = Capability::Gated;
         // (tool, args, expected)
@@ -650,7 +811,18 @@ mod tests {
             ("git", r#"{"subcommand":"status"}"#, Capability::Gated),
             ("run_gates", "{}", Capability::Gated),
             ("bwoc_task", r#"{"action":"list"}"#, Capability::Gated),
-            ("bwoc_send", "{}", Capability::Gated),
+            // bwoc_send is the ONE act-as-user tool: it classifies as ActAsUser,
+            // carrying its `to` reply-target (None when absent). Classification is
+            // structural — the tier only *enables* the gate's identity check, it
+            // never grants; bwoc_send with no authenticated actor is still denied.
+            ("bwoc_send", "{}", Capability::ActAsUser { to: None }),
+            (
+                "bwoc_send",
+                r#"{"to":"peer","message":"x"}"#,
+                Capability::ActAsUser {
+                    to: Some("peer".to_string()),
+                },
+            ),
             ("bwoc_run", "{}", Capability::Gated),
             ("mcp__srv__tool", "{}", Capability::Gated),
             ("computer", r#"{"action":"screenshot"}"#, Capability::Gated),
