@@ -123,7 +123,11 @@ Agents self-claim pending tasks. The harness lead drains the list, spawning a
 worker per task in its own git worktree (parallel up to --concurrency). Workers
 leave a structured result envelope; the lead can route a diff to a designated
 reviewer (the team's `reviewer`) before completing — APPROVE completes, REJECT
-re-queues. Teammates can also share a live chat channel (`--team`).",
+re-queues. Teammates can also share a live chat channel (`--team`).
+
+  bwoc loop [--team <id>]           # control-center TUI: watch a team drive to
+                                    # Done; start/stop the goal-loop, add a task,
+                                    # tune ticker/budget, approve/reject a plan",
         th: "\
 team จัดกลุ่ม agent ภายใต้ task list ร่วมกัน (สังฆะ):
 
@@ -136,7 +140,11 @@ agent self-claim งานที่ค้าง lead ของ harness ดึง
 ต่อหนึ่งงานใน git worktree ของตัวเอง (ขนานได้ถึง --concurrency) worker ทิ้ง
 result envelope แบบมีโครงสร้างไว้ lead ส่ง diff ให้ reviewer ที่กำหนด (`reviewer`
 ของทีม) ตรวจก่อน complete ได้ — APPROVE = complete, REJECT = คืนเข้า queue
-เพื่อนร่วมทีมแชร์ chat channel สดได้ด้วย (`--team`)",
+เพื่อนร่วมทีมแชร์ chat channel สดได้ด้วย (`--team`)
+
+  bwoc loop [--team <id>]           # control-center TUI: ดูทีมขับสู่ Done;
+                                    # start/stop goal-loop, เพิ่ม task, ปรับ
+                                    # ticker/budget, approve/reject plan",
     },
     Section {
         name: "harness",
