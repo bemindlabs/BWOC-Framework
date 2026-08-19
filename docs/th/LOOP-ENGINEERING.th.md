@@ -15,7 +15,7 @@ nav_order: 8
 สองสิ่งพิสูจน์ทั้งความจำเป็นและรูปร่าง:
 
 1. **[Refinement Loop](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) ที่ retire แล้ว** ขับงาน doc + implementation ของเฟรมเวิร์กเองเป็นสัปดาห์ ผ่าน external cron × Markdown checklist ที่ maintain ด้วยมือ × "หนึ่ง coherent unit ต่อ fire" มันทำงานได้ แต่ทุกองค์ประกอบเป็น ad-hoc: cron ID ที่ทึบอยู่นอก repo, goal-store 3 อันที่ drift กัน, และ gate `🔒 HELD` แบบ **honor-system** ที่ไม่มีอะไรบังคับ มันจบไม่ใช่เพราะทำเสร็จ แต่เพราะ *supersession* — มนุษย์ re-point ไปทางอื่น
-2. **daemon เนทีฟ** (`bwoc-agent --serve`) เป็น persistent tick loop อยู่แล้ว (`crates/bwoc-agent/src/main.rs:283`) แต่ "goal" เดียวที่มีคือ *มีข้อความมา* หรือ *task claim ได้* และทุก cadence เป็นค่าคงที่ hardcoded
+2. **daemon เนทีฟ** (`bwoc-agent --serve`) เป็น persistent tick loop อยู่แล้ว (`crates/bwoc-agent/src/main.rs`) แต่ "goal" เดียวที่มีคือ *มีข้อความมา* หรือ *task claim ได้* และ cadence เริ่มต้นเป็นค่าคงที่ hardcoded (task-poll ของ Saṅgha ตอนนี้ operator ปรับได้ผ่าน `BWOC_TASK_POLL_SECS` — ก้าวแรก; Ticker แบบ first-class generalize มัน)
 
 Loop engineering ปิดช่องว่าง: เปลี่ยน pattern Markdown honor-system เป็น **typed objects + enforced gates** โดย reuse primitive ที่ผ่านสนามรบมาแล้ว
 
@@ -47,7 +47,7 @@ Ticker =
   | Adaptive { base, backoff } # กว้างขึ้นเมื่อ idle, แคบลงเมื่อ active
 ```
 
-แทนที่ `TASK_POLL_EVERY = 2s` และ sleep 100 ms ที่ hardcoded (`crates/bwoc-agent/src/main.rs:254`) **prompt/objective ที่ steer ถูกแนบกับ ticker** เหมือนที่ Refinement Loop แนบ prompt กับแต่ละ cron — การ re-aim loop คือสลับ objective ไม่ใช่สลับกลไก
+generalize สิ่งที่ daemon ทำอยู่แล้วด้วย cadence เดียว: task-poll ถูกยกจากค่าคงที่ hardcoded `TASK_POLL_EVERY = 2s` ไปเป็น `BWOC_TASK_POLL_SECS` ที่ operator ปรับได้ (หนุนด้วย `Ticker::every_secs` ของ `bwoc-core`); Ticker เต็มเพิ่มอีก 3 แหล่งที่เหลือ **prompt/objective ที่ steer ถูกแนบกับ ticker** เหมือนที่ Refinement Loop แนบ prompt กับแต่ละ cron — การ re-aim loop คือสลับ objective ไม่ใช่สลับกลไก
 
 ### Gate
 
@@ -110,9 +110,9 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 
 ## แผน build (phased)
 
-1. **Phase L1 — Goal loop รอบ lead** *(ROI สูงสุด, risk ต่ำสุด)* ครอบ `run_lead` ที่ hardened แล้วด้วย `Goal + Ticker + Gate`: re-fire เมื่อ task-list เปลี่ยน, DoD = list เป็น `Completed` หมด, HELD เมื่อ task เป็น `requires_plan`, budget = ผลรวม worker budget validate ทั้ง layer บน primitive ที่ทดสอบมากสุด
-2. **Phase L2 — Ticker-driven fleet loops** เพิ่ม ticker `Cron`/`Every`/`Adaptive` บน daemon idle loop แล้ว wire loop health-remediation กับ Tier-2-mining
-3. **Phase L3 — Product loops** scheduled monitoring/alerting (flagship external case), ตามด้วย inbound-service กับ A2A-delegation loop — พวกนี้ต้องมี **trust tier กลาง** (act-as-authenticated-user ระหว่าง trusted-headless กับ untrusted-read-only วันนี้) และ **idempotency/dedup** primitive
+1. **Phase L1 — Goal loop รอบ lead** *(ROI สูงสุด, risk ต่ำสุด)* — **ส่งแล้ว** `bwoc-harness --lead --loop` ครอบ `run_lead` ที่ hardened แล้วด้วย `Goal + Ticker + Gate`: re-fire เมื่อ task-list เปลี่ยน, DoD = list เป็น `Completed` หมด, HELD เมื่อ task เป็น `requires_plan`, budget-bounded จึงหยุดได้พิสูจน์ได้ primitive `Ticker` + `Budget` อยู่ใน `bwoc-core::loop_control` และ operator console `bwoc loop` (ratatui TUI, `crates/bwoc-loop-tui`) start / monitor / edit goal-loop บน task list ของทีมได้
+2. **Phase L2 — Ticker-driven fleet loops** — **ส่งบางส่วน** `bwoc fleet health --loop` เป็น reconcile loop ที่ขับ fleet สู่ all-green และ cadence task-poll ของ Saṅgha บน daemon ตอนนี้ operator ปรับได้ (`BWOC_TASK_POLL_SECS`) แทนค่าคงที่ hardcoded ticker `Every` ส่งแล้ว; `Cron`/`Adaptive` กับ Tier-2-mining loop เลื่อนไว้จนกว่าจะมี consumer มา drive
+3. **Phase L3 — Product loops** — **ยังไม่เริ่ม** (design-gated) scheduled monitoring/alerting (flagship external case), ตามด้วย inbound-service กับ A2A-delegation loop — พวกนี้ต้องมี **trust tier กลาง** (act-as-authenticated-user ระหว่าง trusted-headless กับ untrusted-read-only วันนี้) และ **idempotency/dedup** primitive
 
 ## Non-goals & safety
 
@@ -124,6 +124,7 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 ## เอกสารอ้างอิง
 
 - [Refinement Loop (retired)](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) — prototype ad-hoc ที่ layer นี้ internalize
+- Operator console: [`crates/bwoc-loop-tui`](../../crates/bwoc-loop-tui/src/lib.rs) — `bwoc loop`, ratatui TUI ที่ start / monitor / edit L1 goal-loop บนทีม
 - [`ROADMAP.th.md`](ROADMAP.th.md) — ที่ L1–L3 จะถูก ticket
 - [`FLEET-GOVERNANCE.th.md`](FLEET-GOVERNANCE.th.md) — fleet-health conditions ที่ monitoring loop ขับ
 - Saṅgha teams + task queue: [`sangha.th.md`](../../modules/agent-template/interconnect/sangha.th.md)

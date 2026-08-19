@@ -15,7 +15,7 @@ A **goal + ticker loop** is an agent (or fleet) that works toward a persistent o
 Two things prove the need and the shape:
 
 1. **The retired [Refinement Loop](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md)** drove the framework's own doc + implementation work for weeks via an external cron × a hand-maintained Markdown checklist × "one coherent unit per fire". It worked, but every element was ad-hoc: opaque out-of-repo cron IDs, three drifting Markdown goal-stores, and an **honor-system** `🔒 HELD` gate that nothing enforced. It ended not by completing but by *supersession* — a human re-pointed it.
-2. **The native daemon** (`bwoc-agent --serve`) is already a persistent tick loop (`crates/bwoc-agent/src/main.rs:283`), but its only "goals" are *a message arrived* or *a task became claimable*, and every cadence is a hardcoded constant.
+2. **The native daemon** (`bwoc-agent --serve`) is already a persistent tick loop (`crates/bwoc-agent/src/main.rs`), but its only "goals" are *a message arrived* or *a task became claimable*, and its cadences began as hardcoded constants (the Saṅgha task-poll is now operator-tunable via `BWOC_TASK_POLL_SECS` — a first step; a first-class Ticker generalizes it).
 
 Loop engineering closes the gap: it turns the honor-system Markdown pattern into **typed objects and enforced gates**, reusing the battle-tested primitives.
 
@@ -47,7 +47,7 @@ Ticker =
   | Adaptive { base, backoff } # widen when idle, tighten when active
 ```
 
-This replaces the hardcoded `TASK_POLL_EVERY = 2s` and 100 ms sleep (`crates/bwoc-agent/src/main.rs:254`). The steering **prompt/objective is attached to the ticker**, exactly as the Refinement Loop attached a prompt to each cron — re-aiming the loop means swapping the objective, not the machinery.
+This generalizes what the daemon already does with a single cadence: its task-poll was lifted from a hardcoded `TASK_POLL_EVERY = 2s` to the operator-tunable `BWOC_TASK_POLL_SECS` (backed by `bwoc-core`'s `Ticker::every_secs`); the full Ticker adds the other three sources. The steering **prompt/objective is attached to the ticker**, exactly as the Refinement Loop attached a prompt to each cron — re-aiming the loop means swapping the objective, not the machinery.
 
 ### Gate
 
@@ -110,9 +110,9 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 
 ## Build plan (phased)
 
-1. **Phase L1 — Goal loop over the lead** *(highest ROI, lowest risk)*. Wrap the already-hardened `run_lead` in a `Goal + Ticker + Gate`: re-fire on task-list change, DoD = list fully `Completed`, HELD on a `requires_plan` task, budget = summed worker budgets. Validates the whole layer on the most-tested primitive.
-2. **Phase L2 — Ticker-driven fleet loops**. Add the `Cron`/`Every`/`Adaptive` ticker on the daemon idle loop and wire the health-remediation and Tier-2-mining loops.
-3. **Phase L3 — Product loops**. Scheduled monitoring/alerting (the flagship external case), then inbound-service and A2A-delegation loops — these also require a **middle trust tier** (act-as-authenticated-user, between today's trusted-headless and untrusted-read-only) and an **idempotency/dedup** primitive.
+1. **Phase L1 — Goal loop over the lead** *(highest ROI, lowest risk)* — **shipped**. `bwoc-harness --lead --loop` wraps the already-hardened `run_lead` in a `Goal + Ticker + Gate`: re-fire on task-list change, DoD = list fully `Completed`, HELD on a `requires_plan` task, budget-bounded so it provably halts. The `Ticker` + `Budget` primitives live in `bwoc-core::loop_control`, and the `bwoc loop` operator console (a ratatui TUI, `crates/bwoc-loop-tui`) starts, monitors, and edits a goal-loop over a team's task list.
+2. **Phase L2 — Ticker-driven fleet loops** — **partially shipped**. `bwoc fleet health --loop` is a reconcile loop that drives the fleet to all-green, and the daemon's Saṅgha task-poll cadence is now operator-tunable (`BWOC_TASK_POLL_SECS`) rather than a hardcoded constant. The `Every` ticker ships; `Cron`/`Adaptive` and the Tier-2-mining loop are deferred until a consumer drives them.
+3. **Phase L3 — Product loops** — **not started** (design-gated). Scheduled monitoring/alerting (the flagship external case), then inbound-service and A2A-delegation loops — these also require a **middle trust tier** (act-as-authenticated-user, between today's trusted-headless and untrusted-read-only) and an **idempotency/dedup** primitive.
 
 ## Non-goals & safety
 
@@ -124,6 +124,7 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 ## Cross-references
 
 - [Refinement Loop (retired)](https://github.com/bemindlabs/BWOC-Framework/blob/main/.claude/loop-roadmap.md) — the ad-hoc prototype this layer internalizes.
+- Operator console: [`crates/bwoc-loop-tui`](../../crates/bwoc-loop-tui/src/lib.rs) — `bwoc loop`, the ratatui TUI that starts / monitors / edits an L1 goal-loop over a team.
 - [`ROADMAP.en.md`](ROADMAP.en.md) — where L1–L3 will be ticketed.
 - [`FLEET-GOVERNANCE.en.md`](FLEET-GOVERNANCE.en.md) — the fleet-health conditions the monitoring loop drives.
 - Saṅgha teams + task queue: [`sangha.md`](../../modules/agent-template/interconnect/sangha.md).
