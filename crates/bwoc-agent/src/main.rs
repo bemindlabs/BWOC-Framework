@@ -563,10 +563,13 @@ fn check_inbox_for_new(
             if delivered && autoproc.is_active() {
                 maybe_auto_process(autoproc, trimmed);
             } else if delivered {
-                // rec-3 (#410): a delivered *remote* envelope with auto-process
-                // OFF is announced above but never actioned. Without a hint the
-                // operator can't tell it was dropped rather than handled — emit
-                // one line so the drop is visible and points at the manual paths.
+                // rec-3 (#410): a delivered *remote* envelope reaches here only
+                // when auto-process is INACTIVE — which is broader than the
+                // config flag being off: `is_active()` is also false on missing
+                // binaries, no agent id, or an ambient backend (the #271 refusal).
+                // The envelope was announced above but is never actioned; without
+                // a hint the operator can't tell it was dropped rather than
+                // handled, so emit one line pointing at the manual paths.
                 announce_undispatched(trimmed);
             }
         }
@@ -642,10 +645,14 @@ fn announce_warned(from: &str, missing: &[String]) {
 }
 
 /// One operator-visible hint (rec-3 of #410) when a delivered *remote* envelope
-/// arrives but auto-process is off (`interconnect/gateway.toml auto_process =
-/// true` unset) — so the message is not *silently* dropped after being
-/// announced. Skips `user`-origin and malformed/empty lines, exactly as
-/// `maybe_auto_process` does, since those are not remote messages to answer.
+/// arrives but auto-process is **inactive** — so the message is not *silently*
+/// dropped after being announced. "Inactive" is deliberately broad: it covers
+/// the config flag being off AND the other `AutoProcessor::is_active` failures
+/// (missing binaries, no agent id, an ambient backend / the #271 refusal), the
+/// reasons for which the daemon already prints in its startup posture line — so
+/// the hint states the fact + the manual paths without re-deriving the cause.
+/// Skips `user`-origin and malformed/empty lines, exactly as `maybe_auto_process`
+/// does, since those are not remote messages to answer.
 fn announce_undispatched(line: &str) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
         return;
@@ -656,9 +663,8 @@ fn announce_undispatched(line: &str) {
         return;
     }
     eprintln!(
-        "bwoc-agent: message from '{from}' delivered but auto-process is off — no \
-         automated reply (set `auto_process = true` in interconnect/gateway.toml \
-         to enable); reply manually or capture it with `bwoc task add`"
+        "bwoc-agent: message from '{from}' delivered but auto-process is inactive — \
+         no automated reply. Reply manually or capture it with `bwoc task add`."
     );
 }
 
