@@ -1924,6 +1924,17 @@ struct LoopArgs {
     /// Iteration budget the goal-loop shows / starts with (`0` = unbounded).
     #[arg(long = "max-iters", default_value_t = 20)]
     max_iters: usize,
+    /// Backend for the spawned goal-loop harness (e.g. ollama, openai-compatible,
+    /// openrouter). Omit to use the harness default.
+    #[arg(long)]
+    backend: Option<String>,
+    /// Model id for the spawned goal-loop harness. Omit to use the harness default.
+    #[arg(long)]
+    model: Option<String>,
+    /// OpenAI-compatible endpoint for the spawned goal-loop harness. Omit to use
+    /// the harness default.
+    #[arg(long)]
+    endpoint: Option<String>,
 }
 
 impl LoopArgs {
@@ -1933,6 +1944,9 @@ impl LoopArgs {
             team: self.team,
             ticker_secs: self.interval_secs,
             budget_iters: self.max_iters,
+            backend: self.backend,
+            model: self.model,
+            endpoint: self.endpoint,
         }
     }
 }

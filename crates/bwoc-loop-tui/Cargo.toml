@@ -10,3 +10,9 @@ repository.workspace = true
 bwoc-core = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+
+# Unix only: process-group teardown (kill the lead + its inherited-stdio worker
+# subprocesses as one group, so a stop/quit can't orphan a worker that would
+# hold the capture pipe open and deadlock the reader-thread join).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

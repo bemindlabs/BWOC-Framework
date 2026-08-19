@@ -449,6 +449,7 @@ version = "2.42.0"
 dependencies = [
  "bwoc-core",
  "crossterm",
+ "libc",
  "ratatui",
 ]
 
