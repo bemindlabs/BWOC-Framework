@@ -76,7 +76,7 @@ impl IdempotencyLedger {
 
     /// The current recorded value for `key`, if any (a read that does not mutate).
     pub fn get(&self, key: &str) -> io::Result<Option<String>> {
-        Ok(self.load()?.remove(key))
+        Ok(self.load()?.get(key).cloned())
     }
 
     // ── storage ──
@@ -121,8 +121,16 @@ impl IdempotencyLedger {
             out.push('\n');
         }
         let tmp = tmp_path(&self.path);
-        fs::write(&tmp, out.as_bytes())?;
-        fs::rename(&tmp, &self.path)?;
+        // Clean up the staged temp on any failure so a write/rename error (e.g.
+        // permission, cross-device) can't accumulate `.tmp` litter across runs.
+        if let Err(e) = fs::write(&tmp, out.as_bytes()) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+        if let Err(e) = fs::rename(&tmp, &self.path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
         Ok(())
     }
 }
