@@ -249,6 +249,10 @@ pub(crate) struct LoopRun {
     /// The lead's pid, also its process-group id on Unix (it is spawned as a new
     /// group leader) — used to kill the whole group on teardown.
     pid: u32,
+    /// Whether the child has been reaped (`wait`/`try_wait` returned its status).
+    /// Once reaped, the OS may recycle its pid (== pgid), so we must **never**
+    /// `kill(-pgid)` again — doing so risks signalling an unrelated process group.
+    reaped: bool,
     rx: Receiver<String>,
     /// Reader-thread handles. Deliberately **not joined** on teardown (see
     /// [`LoopRun::drop`]) — dropping the `Vec` detaches them, which is what keeps
@@ -313,6 +317,7 @@ impl LoopRun {
         Ok(Self {
             child,
             pid,
+            reaped: false,
             rx,
             _readers: readers,
             team,
@@ -349,6 +354,10 @@ impl LoopRun {
     /// unreliable liveness signal, so ask the OS directly). Once reaped, records
     /// the exit code, preserving any outcome already parsed from the log.
     pub(crate) fn poll(&mut self) {
+        // Once the child is reaped its pid may be recycled — never touch it again.
+        if self.reaped {
+            return;
+        }
         if !self.is_running() {
             // Already Finished from a parsed summary line, but the code may still
             // be None until the process reaps — top it up once.
@@ -358,6 +367,7 @@ impl LoopRun {
             } = self.status
                 && let Ok(Some(exit)) = self.child.try_wait()
             {
+                self.reaped = true;
                 self.status = RunStatus::Finished {
                     outcome,
                     code: exit.code(),
@@ -368,6 +378,7 @@ impl LoopRun {
         if let Ok(Some(exit)) = self.child.try_wait() {
             // Reaped while still marked Running → no summary line was seen (hard
             // failure). Keep outcome None so the status renders as an error.
+            self.reaped = true;
             self.status = RunStatus::Finished {
                 outcome: None,
                 code: exit.code(),
@@ -397,17 +408,36 @@ impl LoopRun {
         }
     }
 
-    /// Operator-requested stop: kill the whole group and reap the lead.
-    /// Idempotent.
-    pub(crate) fn stop(&mut self) {
+    /// Kill the whole group and reap the lead — but **only if not already
+    /// reaped**. This is the one place a signal is sent, and it is guarded so a
+    /// recycled pid (after `poll` reaped the child) is never signalled. Returns
+    /// the reaped exit code, or `None` when nothing was killed (already reaped)
+    /// or the lead died by signal.
+    fn kill_and_reap(&mut self) -> Option<i32> {
+        if self.reaped {
+            return None;
+        }
         self.kill_tree();
         let code = self.child.wait().ok().and_then(|s| s.code());
-        // Preserve a parsed outcome if the loop had just finished on its own.
-        let outcome = match self.status {
-            RunStatus::Finished { outcome, .. } => outcome,
-            RunStatus::Running => None,
+        self.reaped = true;
+        code
+    }
+
+    /// Operator-requested stop: kill the whole group and reap the lead. Idempotent
+    /// and pid-reuse-safe — a no-op signal-wise if the loop already finished.
+    pub(crate) fn stop(&mut self) {
+        let killed_code = self.kill_and_reap();
+        // Preserve a parsed outcome + any code already recorded (e.g. the loop
+        // finished on its own just before `x`); otherwise take the code from our
+        // own reap. A signal-killed lead has no exit code → renders as "killed".
+        let (outcome, prior_code) = match self.status {
+            RunStatus::Finished { outcome, code } => (outcome, code),
+            RunStatus::Running => (None, None),
         };
-        self.status = RunStatus::Finished { outcome, code };
+        self.status = RunStatus::Finished {
+            outcome,
+            code: prior_code.or(killed_code),
+        };
     }
 
     /// `(text, colour)` for the status header.
@@ -427,14 +457,55 @@ impl Drop for LoopRun {
         // belt-and-suspenders that guarantees teardown can never *block* even if a
         // reader is wedged (e.g. a non-Unix fallback that couldn't group-kill a
         // stray worker). A lingering detached reader is reaped at process exit.
-        self.kill_tree();
-        let _ = self.child.wait();
+        //
+        // `kill_and_reap` is a no-op if `poll` already reaped the child — vital,
+        // since the pid (== pgid) may have been recycled by then.
+        self.kill_and_reap();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real subprocess exercise (Unix): use `/bin/echo` as a stand-in harness —
+    /// it prints the argv and exits 0 immediately. Verifies spawn → drain → poll
+    /// reaps the child, marks `reaped`, and that a subsequent `stop()` is a
+    /// no-op signal-wise (the pid-reuse guard) and doesn't panic.
+    #[cfg(unix)]
+    #[test]
+    fn reaped_guard_holds_after_child_exits() {
+        let spec = LaunchSpec {
+            harness: PathBuf::from("/bin/echo"),
+            tasks_path: PathBuf::from("t.jsonl"),
+            workdir: PathBuf::from("."),
+            interval_secs: 1,
+            max_iters: 0,
+            backend: None,
+            model: None,
+            endpoint: None,
+        };
+        let mut run = LoopRun::spawn(spec, "squad".into()).expect("spawn /bin/echo");
+        // echo exits at once; poll until reaped (bounded so a hang can't wedge CI).
+        for _ in 0..400 {
+            run.drain();
+            run.poll();
+            if !run.is_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!run.is_running(), "echo should have exited");
+        assert!(run.reaped, "poll must mark the child reaped");
+        // The captured output contains the argv we passed (proves the pipe +
+        // reader-thread path works end to end).
+        let joined: String = run.log.tail(100).collect::<Vec<_>>().join(" ");
+        assert!(joined.contains("--lead"), "argv not captured: {joined}");
+        // stop() after reap: pid-reuse guard → no signal, no panic, still Finished.
+        run.stop();
+        assert!(run.reaped);
+        assert!(matches!(run.status, RunStatus::Finished { .. }));
+    }
 
     #[test]
     fn parse_outcome_matches_the_three_summary_shapes() {

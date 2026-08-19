@@ -50,6 +50,12 @@ A find→verify workflow (4 dimensions → refute) confirmed and this PR fixes:
   shape** (prefix + interior markers + tail), not a loose prefix.
 - **Render math (low)** — extracted `log_rows` / `log_line_width` pure helpers
   with saturating math, tested at tiny heights/widths (no underflow/panic).
+- **PID-reuse (post-review, Copilot on the PR)** — `stop()`/`Drop` signalled
+  `kill(-pgid)` off the stored pid unconditionally; after `poll` reaped the child
+  via `try_wait`, the OS can recycle that pid, so a late `x`/quit could SIGKILL an
+  unrelated process group. Fix: a `reaped` flag set on every `try_wait`/`wait`
+  reap, and a single guarded `kill_and_reap` that never signals once reaped.
+  Covered by a real-subprocess Unix test (`/bin/echo`).
 
 ## Decisions
 
