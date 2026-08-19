@@ -79,8 +79,11 @@ impl ApprovalRequest {
 pub struct ApprovalDecision {
     /// True → allow the call; false → deny it.
     pub allow: bool,
-    /// Operator asked to remember this (persisting it is a later slice; for now
-    /// it is treated as a one-shot allow and logged).
+    /// Operator asked to remember this. When `allow && always`, the harness
+    /// records a **session-scoped** grant keyed on `(tool, args)`, so subsequent
+    /// identical calls in the same process skip the prompt (see
+    /// `permission::Policy::session_grants`, #409). In-memory only — never
+    /// written to `harness-policy.toml`; durable rules stay human-authored.
     #[serde(default)]
     pub always: bool,
     /// Who decided (free-form, e.g. the console's user/host) — provenance only.
