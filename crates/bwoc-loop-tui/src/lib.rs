@@ -1,5 +1,5 @@
 //! `bwoc-loop-tui` — the full-screen ratatui **loop control center** behind
-//! `bwoc loop --tui`.
+//! `bwoc loop`.
 //!
 //! Its own crate (not a `bwoc-cli` module) so the loop-engineering TUI can grow
 //! without bloating the CLI and so its ratatui/crossterm surface stays isolated.
@@ -62,7 +62,8 @@ pub struct LoopTuiArgs {
     /// Team to open first. `None` → the first team alphabetically.
     pub team: Option<String>,
     /// Ticker cadence (seconds) shown for the goal-loop and used as the default
-    /// when a run is started in a later slice.
+    /// when a run is started in a later slice. Floored at 1s on construction, so
+    /// a `0` can never become a zero-delay spin when a loop is launched.
     pub ticker_secs: u64,
     /// Iteration budget shown for the goal-loop (`0` = unbounded).
     pub budget_iters: usize,
@@ -72,7 +73,7 @@ pub struct LoopTuiArgs {
 /// the view live without hammering the filesystem.
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Entry point for `bwoc loop --tui`. Returns a process exit code.
+/// Entry point for `bwoc loop`. Returns a process exit code.
 pub fn run(args: LoopTuiArgs) -> i32 {
     let mut app = App::new(args);
     app.reload();
@@ -178,7 +179,9 @@ impl App {
             sel_team: 0,
             tasks: Vec::new(),
             sel_task: 0,
-            ticker_secs: args.ticker_secs,
+            // Floor at 1s so the flag's "floored at 1s" contract holds no matter
+            // the caller — a 0 must never reach a loop launch as a zero delay.
+            ticker_secs: args.ticker_secs.max(1),
             budget_iters: args.budget_iters,
             last_refresh: Instant::now(),
             error: None,
@@ -217,7 +220,11 @@ impl App {
     }
 
     /// Scan `.bwoc/teams/*.toml` for team ids. Silently skips unreadable /
-    /// malformed team files (a broken team never wedges the whole view).
+    /// malformed team files (a broken team never wedges the whole view) and any
+    /// team whose `id` is not a safe single path segment — the id is later joined
+    /// as `.bwoc/teams/<id>/tasks.jsonl`, so a hostile `id` like `../secrets`
+    /// must never escape the teams directory (path-traversal defense; this is a
+    /// security framework).
     fn scan_teams(&self) -> Vec<String> {
         let dir = self.teams_dir();
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -231,6 +238,7 @@ impl App {
             }
             if let Ok(body) = std::fs::read_to_string(&p)
                 && let Ok(t) = Team::from_toml(&body)
+                && is_safe_team_id(&t.id)
             {
                 ids.push(t.id);
             }
@@ -351,9 +359,21 @@ impl App {
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // If either step fails, raw mode is already on — undo it before returning so
+    // the caller's terminal isn't left wedged in raw mode on an init error.
+    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(e);
+    }
     let backend = CrosstermBackend::new(stdout);
-    Terminal::new(backend)
+    match Terminal::new(backend) {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            Err(e)
+        }
+    }
 }
 
 fn restore_terminal() -> io::Result<()> {
@@ -530,7 +550,7 @@ fn draw_detail(f: &mut ratatui::Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("Ticker  ", Style::default().fg(Color::Cyan)),
-            Span::raw(format!("every {}s", app.ticker_secs.max(1))),
+            Span::raw(format!("every {}s", app.ticker_secs)),
         ]),
         Line::from(vec![
             Span::styled("Budget  ", Style::default().fg(Color::Cyan)),
@@ -625,6 +645,21 @@ fn draw_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
         )])
     };
     f.render_widget(Paragraph::new(line).alignment(Alignment::Left), area);
+}
+
+/// True when `id` is safe to use as a single path segment under
+/// `.bwoc/teams/`. The team id is joined into `<teams>/<id>/tasks.jsonl`, so a
+/// value containing a path separator, a `..`/`.` component, a NUL, or an
+/// absolute-path prefix could read outside the teams directory — reject those.
+/// Accepts a non-empty id made only of ASCII alphanumerics, `-`, `_`, and `.`
+/// (the kebab/snake convention), while still forbidding `.`/`..` as the whole
+/// id. Mirrors the same-segment discipline the CLI applies on `bwoc team create`.
+fn is_safe_team_id(id: &str) -> bool {
+    if id.is_empty() || id == "." || id == ".." {
+        return false;
+    }
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 /// Truncate a title to `max` chars, appending `…` when cut.
@@ -739,6 +774,34 @@ mod tests {
     fn truncate_appends_ellipsis() {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("abcdefghij", 5), "abcd…");
+    }
+
+    #[test]
+    fn is_safe_team_id_rejects_traversal_and_separators() {
+        // Safe ids.
+        assert!(is_safe_team_id("squad"));
+        assert!(is_safe_team_id("team-1"));
+        assert!(is_safe_team_id("tian_ting.v2"));
+        // Path-traversal / separators / absolute / control — all rejected.
+        assert!(!is_safe_team_id(""));
+        assert!(!is_safe_team_id("."));
+        assert!(!is_safe_team_id(".."));
+        assert!(!is_safe_team_id("../secrets"));
+        assert!(!is_safe_team_id("a/b"));
+        assert!(!is_safe_team_id("/etc/passwd"));
+        assert!(!is_safe_team_id("a\\b"));
+        assert!(!is_safe_team_id("a\0b"));
+    }
+
+    #[test]
+    fn ticker_secs_floored_at_one_on_construction() {
+        let app = App::new(LoopTuiArgs {
+            workspace: PathBuf::from("/nonexistent"),
+            team: None,
+            ticker_secs: 0, // must floor to 1
+            budget_iters: 0,
+        });
+        assert_eq!(app.ticker_secs, 1);
     }
 
     /// Render one frame into an off-screen backend and assert the key chrome is
