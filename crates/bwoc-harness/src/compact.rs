@@ -638,6 +638,7 @@ mod tests {
             &allow_all,
             false,
             trust.turn_trust(),
+            None,
         );
         assert!(
             matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
