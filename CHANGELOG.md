@@ -29,7 +29,7 @@ The Loop-Engineering layer lands: a goal + ticker loop that drives a Saṅgha te
 
 ### Docs
 
-- **`docs/{en,th}/LOOP-ENGINEERING.md`** — new bilingual spec of the goal + ticker + gate layer, the use-case catalog, and the phased build plan (#436); updated to mark L1 shipped, note the tunable task-poll cadence, and cross-reference the `bwoc loop` operator console (#447).
+- **`docs/en/LOOP-ENGINEERING.en.md` + `docs/th/LOOP-ENGINEERING.th.md`** — new bilingual spec of the goal + ticker + gate layer, the use-case catalog, and the phased build plan (#436); updated to mark L1 shipped, note the tunable task-poll cadence, and cross-reference the `bwoc loop` operator console (#447).
 
 ## [v2026.8.12-0] — 2026-08-12 — 2.42.0
 
