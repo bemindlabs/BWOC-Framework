@@ -344,6 +344,7 @@ name = "bwoc-cli"
 version = "2.42.0"
 dependencies = [
  "bwoc-core",
+ "bwoc-loop-tui",
  "bwoc-signing",
  "bwoc-tui",
  "clap",
@@ -440,6 +441,15 @@ dependencies = [
  "tokio-util",
  "toml 0.8.23",
  "wiremock",
+]
+
+[[package]]
+name = "bwoc-loop-tui"
+version = "2.42.0"
+dependencies = [
+ "bwoc-core",
+ "crossterm",
+ "ratatui",
 ]
 
 [[package]]

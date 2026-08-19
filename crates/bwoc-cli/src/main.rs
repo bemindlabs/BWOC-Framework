@@ -39,6 +39,7 @@ mod init;
 mod jira;
 mod livecheck;
 mod log;
+mod loop_cmd;
 mod memory;
 mod new;
 mod okr;
@@ -173,6 +174,9 @@ enum Commands {
     Completion(CompletionArgs),
     /// Launch the interactive TUI dashboard (agents list with navigation; refresh with `r`).
     Dashboard(DashboardArgs),
+    /// Launch the Loop-Engineering control center (L1 goal-loop): watch a team's
+    /// task list drive toward Definition-of-Done. TUI; `--team` opens one directly.
+    Loop(LoopArgs),
     /// Pause an agent — set status = "stopped" without removing files.
     Stop(StopArgs),
     /// Reactivate a stopped agent — set status = "active".
@@ -1907,6 +1911,33 @@ impl DashboardArgs {
 }
 
 #[derive(Args, Debug)]
+struct LoopArgs {
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+    /// Team to open first (id). Defaults to the first team alphabetically.
+    #[arg(long)]
+    team: Option<String>,
+    /// Ticker cadence in seconds the goal-loop shows / starts with (floored at 1s).
+    #[arg(long = "interval-secs", default_value_t = 5)]
+    interval_secs: u64,
+    /// Iteration budget the goal-loop shows / starts with (`0` = unbounded).
+    #[arg(long = "max-iters", default_value_t = 20)]
+    max_iters: usize,
+}
+
+impl LoopArgs {
+    fn into_runtime(self) -> loop_cmd::LoopArgs {
+        loop_cmd::LoopArgs {
+            workspace: self.workspace,
+            team: self.team,
+            ticker_secs: self.interval_secs,
+            budget_iters: self.max_iters,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 struct CompletionArgs {
     /// Target shell. Pipe the output to your shell's completion install path.
     #[arg(value_enum)]
@@ -2753,6 +2784,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Dashboard(args)) => {
             let code = dashboard::run(args.into_runtime(lang.clone()));
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Loop(args)) => {
+            let code = loop_cmd::run(args.into_runtime());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Stop(args)) => {

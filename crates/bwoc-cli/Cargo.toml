@@ -15,6 +15,7 @@ path = "src/main.rs"
 bwoc-core = { workspace = true }
 bwoc-signing = { workspace = true }
 bwoc-tui = { workspace = true }
+bwoc-loop-tui = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 ratatui = { workspace = true }
