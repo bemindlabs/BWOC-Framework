@@ -10,14 +10,19 @@
 //! |-------------|----------------------------------------------------------|-----------|
 //! | `claude`    | `claude -p "<task>"`                                     | Real       |
 //! | `copilot`   | `copilot -p "<task>" --no-ask-user`                      | Real       |
+//! | `codex`     | `codex exec --skip-git-repo-check --color never --sandbox workspace-write -- "<task>"` | Real |
 //! | `ollama`    | `bwoc-harness --workdir <dir> --task "<task>" --model <model>` | Real |
-//! | `codex`     | `RunError::HeadlessUnsupported`                          | Deferred  |
 //! | `agy`       | `RunError::HeadlessUnsupported`                          | Deferred  |
 //! | `kimi`      | `RunError::HeadlessUnsupported`                          | Deferred  |
 //!
-//! `codex`, `agy`, and `kimi` each have interactive-only or OAuth-gated CLIs
-//! at the time of writing; no confirmed non-interactive exec flag exists, so
-//! we surface `HeadlessUnsupported` rather than fabricate an argument.
+//! `agy` and `kimi` each have interactive-only or OAuth-gated CLIs at the time
+//! of writing; no confirmed non-interactive exec flag exists, so we surface
+//! `HeadlessUnsupported` rather than fabricate an argument.
+//!
+//! Child stdin is `/dev/null` for every backend — a headless run must never
+//! block waiting on an inherited terminal, and vendor CLIs that append piped
+//! stdin to the prompt (`codex exec`) must not absorb whatever the orchestrator
+//! left on the pipe.
 //!
 //! ## Test seam
 //!
@@ -166,6 +171,10 @@ impl CommandRunner for ProcessCommandRunner {
         let mut child = Command::new(program)
             .args(args)
             .current_dir(cwd)
+            // Headless means no console: never let a vendor CLI read the
+            // orchestrator's stdin (codex appends piped stdin to the prompt;
+            // an inherited TTY would simply hang the run).
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -393,9 +402,44 @@ pub fn build_command(
                 ],
             ))
         }
-        Backend::Codex => Err(RunError::HeadlessUnsupported {
-            backend: "codex".to_string(),
-        }),
+        Backend::Codex => {
+            // `codex exec` — Codex CLI's own non-interactive mode ("Run Codex
+            // non-interactively"; approval policy is `never` there, so nothing
+            // can block on a prompt). Verified against codex-cli 0.147.0.
+            //
+            // `--skip-git-repo-check`: an agent directory is not necessarily a
+            //   git repo, and codex refuses to start outside one by default.
+            // `--color never`: output is captured into `RunResult`, never
+            //   rendered to a TTY — ANSI escapes would corrupt `--json`.
+            // `--sandbox workspace-write`: `codex exec` defaults to read-only,
+            //   which cannot complete an edit task. workspace-write bounds
+            //   writes to the run cwd — the same jail `resolve_workdir` already
+            //   enforces. The permissive
+            //   `--dangerously-bypass-approvals-and-sandbox` is deliberately
+            //   NOT passed (same fail-safe posture as copilot's
+            //   `--allow-all-tools`).
+            // `--`: the task is a positional prompt; a task beginning with `-`
+            //   must not be parsed as a flag.
+            //
+            // No `-m <model>`: like the `claude` arm, the vendor CLI resolves
+            // its own model (`$CODEX_HOME/config.toml` + account entitlement).
+            // A manifest `primaryModel` is backend-neutral and may name a model
+            // codex would reject outright — forwarding it turns a working run
+            // into a hard 400.
+            Ok((
+                "codex".to_string(),
+                vec![
+                    "exec".to_string(),
+                    "--skip-git-repo-check".to_string(),
+                    "--color".to_string(),
+                    "never".to_string(),
+                    "--sandbox".to_string(),
+                    "workspace-write".to_string(),
+                    "--".to_string(),
+                    task.to_string(),
+                ],
+            ))
+        }
         Backend::Antigravity => Err(RunError::HeadlessUnsupported {
             backend: "agy".to_string(),
         }),
@@ -751,11 +795,64 @@ mod tests {
     }
 
     #[test]
-    fn codex_returns_headless_unsupported() {
+    fn codex_dispatch_uses_exec_subcommand() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let err =
-            build_command(Backend::Codex, tmp.path(), tmp.path(), "task", "gpt-5").unwrap_err();
-        assert!(matches!(err, RunError::HeadlessUnsupported { ref backend } if backend == "codex"));
+        let (program, args) =
+            build_command(Backend::Codex, tmp.path(), tmp.path(), "task", "gpt-5").unwrap();
+        assert_eq!(program, "codex");
+        assert_eq!(
+            args,
+            [
+                "exec",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "--sandbox",
+                "workspace-write",
+                "--",
+                "task"
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_never_forwards_the_manifest_model() {
+        // A backend-neutral manifest may name a model codex would reject; the
+        // vendor CLI resolves its own model instead.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_program, args) = build_command(
+            Backend::Codex,
+            tmp.path(),
+            tmp.path(),
+            "task",
+            "claude-sonnet-4-6",
+        )
+        .unwrap();
+        assert!(!args.iter().any(|a| a == "-m" || a == "--model"));
+        assert!(!args.iter().any(|a| a.contains("claude-sonnet-4-6")));
+    }
+
+    #[test]
+    fn codex_task_starting_with_dash_stays_positional() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_program, args) =
+            build_command(Backend::Codex, tmp.path(), tmp.path(), "--help me", "gpt-5").unwrap();
+        // `--` must immediately precede the task so clap stops option parsing.
+        let sep = args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(args[sep + 1], "--help me");
+        assert_eq!(sep + 2, args.len());
+    }
+
+    #[test]
+    fn codex_dispatch_refuses_the_bypass_flag() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_program, args) =
+            build_command(Backend::Codex, tmp.path(), tmp.path(), "task", "gpt-5").unwrap();
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "--dangerously-bypass-approvals-and-sandbox")
+        );
     }
 
     #[test]
@@ -950,7 +1047,7 @@ mod tests {
 
     #[test]
     fn headless_unsupported_propagated_from_execute() {
-        let (dir, root, _) = make_workspace("codex", "gpt-5");
+        let (dir, root, _) = make_workspace("kimi", "kimi-k2");
         let _keep = dir;
 
         let runner = MockCommandRunner::ok("irrelevant");

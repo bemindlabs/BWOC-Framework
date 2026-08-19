@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`bwoc run` now supports the `codex` backend headlessly.** Codex CLI grew a documented non-interactive mode (`codex exec`, approval policy `never`), so the `HeadlessUnsupported` deferral no longer holds. Dispatch is `codex exec --skip-git-repo-check --color never --sandbox workspace-write -- "<task>"`: repo-check off because an agent directory need not be a git repo, colour off because output is captured into `RunResult`, and `workspace-write` because `exec` defaults to read-only (which cannot complete an edit task) — bounded to the run cwd, the same jail `resolve_workdir` already enforces. `--dangerously-bypass-approvals-and-sandbox` is deliberately **not** passed, matching the fail-safe posture that keeps `--allow-all-tools` off the copilot path. Like the `claude` arm, no `-m` is forwarded: a backend-neutral manifest `primaryModel` may name a model codex rejects outright (a real `agent-caoguojiu` config pairs `backend = "codex"` with `claude-sonnet-4-6`), so the vendor CLI resolves its own model. `agy` and `kimi` remain deferred.
+
+### Changed
+
+- **`bwoc run` child processes get `/dev/null` on stdin** (all backends). A headless run must never block on an inherited terminal, and vendor CLIs that append piped stdin to the prompt (`codex exec` does) must not absorb whatever the orchestrator left on the pipe.
+
 ## [v2026.8.19-0] — 2026-08-19 — 2.43.0
 
 The Loop-Engineering layer lands: a goal + ticker loop that drives a Saṅgha team toward Definition-of-Done, plus `bwoc loop` — a full operator console for it.
