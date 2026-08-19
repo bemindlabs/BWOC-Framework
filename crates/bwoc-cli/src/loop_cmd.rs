@@ -19,6 +19,12 @@ pub struct LoopArgs {
     pub ticker_secs: u64,
     /// Iteration budget the goal-loop shows / starts with (`0` = unbounded).
     pub budget_iters: usize,
+    /// Backend forwarded to `bwoc-harness --backend` when a loop starts.
+    pub backend: Option<String>,
+    /// Model forwarded to `bwoc-harness --model`.
+    pub model: Option<String>,
+    /// Endpoint forwarded to `bwoc-harness --endpoint`.
+    pub endpoint: Option<String>,
 }
 
 /// Resolve the workspace, then run the loop TUI. Returns a process exit code.
@@ -35,6 +41,9 @@ pub fn run(args: LoopArgs) -> i32 {
         team: args.team,
         ticker_secs: args.ticker_secs,
         budget_iters: args.budget_iters,
+        backend: args.backend,
+        model: args.model,
+        endpoint: args.endpoint,
     })
 }
 

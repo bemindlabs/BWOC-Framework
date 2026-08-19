@@ -6,16 +6,16 @@
 //! Like [`bwoc-tui`] it compile-depends ONLY on `bwoc-core` (the Saṅgha task
 //! model + sibling-binary resolution) — never on `bwoc-cli` or `bwoc-harness`.
 //! The harness that actually *drives* a goal-loop is a runtime subprocess
-//! (spawned in a later slice), not a build dependency — the dep-quarantine that
-//! keeps the `bwoc` side free of the harness runtime graph.
+//! (see [`run`]), not a build dependency — the dep-quarantine that keeps the
+//! `bwoc` side free of the harness runtime graph.
 //!
 //! # What it is
 //!
 //! The operator console for **Loop-Engineering L1** (the Saṅgha goal-loop): pick
-//! a team, watch its shared task list drive toward Definition-of-Done, and (in
-//! later slices) start/stop the loop and edit its ticker / budget / tasks. This
-//! first slice is **observe-only** — it reads team state and renders it; it does
-//! not spawn or mutate anything.
+//! a team, watch its shared task list drive toward Definition-of-Done, and
+//! **start / stop** the loop, streaming the harness's output into a live log
+//! pane. Starting a loop spawns `bwoc-harness --lead --loop` over the selected
+//! team's `tasks.jsonl`; editing the ticker / budget / tasks is a later slice.
 //!
 //! # Layout (one screen, no mouse)
 //!
@@ -33,12 +33,17 @@
 //! ```
 //!
 //! Keys: `↑/↓` (or `j/k`) move the task selection; `Tab` / `Shift-Tab` cycle
-//! teams; `r` refreshes now (state also auto-refreshes on a 2s tick); `q` / `Esc`
-//! / `Ctrl-C` quit and restore the terminal.
+//! teams; `s` starts a goal-loop for the selected team, `x` stops it; `r`
+//! refreshes now (state also auto-refreshes on a 2s tick); `q` / `Esc` /
+//! `Ctrl-C` quit (killing any running loop) and restore the terminal.
+
+mod run;
 
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+use run::{LaunchSpec, LoopRun};
 
 use bwoc_core::team::{self, Task, TaskState, Team};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -67,6 +72,13 @@ pub struct LoopTuiArgs {
     pub ticker_secs: u64,
     /// Iteration budget shown for the goal-loop (`0` = unbounded).
     pub budget_iters: usize,
+    /// Backend forwarded to `bwoc-harness --backend` when a loop starts. `None`
+    /// → the harness default (ollama).
+    pub backend: Option<String>,
+    /// Model forwarded to `bwoc-harness --model`. `None` → harness default.
+    pub model: Option<String>,
+    /// Endpoint forwarded to `bwoc-harness --endpoint`. `None` → harness default.
+    pub endpoint: Option<String>,
 }
 
 /// Auto-refresh cadence — team task lists change rarely, so a slow tick keeps
@@ -169,6 +181,13 @@ struct App {
     error: Option<String>,
     /// Team requested on the command line, honoured on the first load.
     initial_team: Option<String>,
+    /// The running (or just-finished) goal-loop subprocess, if one was started.
+    /// `reload()` never touches this field — only teams/tasks are re-read.
+    run: Option<LoopRun>,
+    /// Backend / model / endpoint forwarded to the harness on start.
+    backend: Option<String>,
+    model: Option<String>,
+    endpoint: Option<String>,
 }
 
 impl App {
@@ -186,6 +205,10 @@ impl App {
             last_refresh: Instant::now(),
             error: None,
             initial_team: args.team,
+            run: None,
+            backend: args.backend,
+            model: args.model,
+            endpoint: args.endpoint,
         }
     }
 
@@ -337,7 +360,18 @@ impl App {
         self.sel_task = self.sel_task.saturating_sub(1);
     }
 
+    /// True while a goal-loop subprocess is live.
+    fn loop_running(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.is_running())
+    }
+
     fn team_next(&mut self) {
+        // A running loop is bound to the team it started on; don't switch the
+        // view out from under it.
+        if self.loop_running() {
+            self.error = Some("stop the loop (x) before switching teams".into());
+            return;
+        }
         if self.teams.len() > 1 {
             self.sel_team = (self.sel_team + 1) % self.teams.len();
             self.sel_task = 0;
@@ -346,10 +380,77 @@ impl App {
     }
 
     fn team_prev(&mut self) {
+        if self.loop_running() {
+            self.error = Some("stop the loop (x) before switching teams".into());
+            return;
+        }
         if self.teams.len() > 1 {
             self.sel_team = (self.sel_team + self.teams.len() - 1) % self.teams.len();
             self.sel_task = 0;
             self.reload_tasks();
+        }
+    }
+
+    // ── goal-loop control (PR2) ──
+
+    /// Start a goal-loop for the selected team: spawn `bwoc-harness --lead
+    /// --loop` over its `tasks.jsonl`, capturing output into the log pane. A
+    /// no-op if one is already running. Failures (harness not found, spawn
+    /// error) surface in the footer rather than crashing the TUI.
+    fn start_loop(&mut self) {
+        if self.loop_running() {
+            return;
+        }
+        let Some(team) = self.current_team().map(|s| s.to_string()) else {
+            self.error = Some("no team selected".into());
+            return;
+        };
+        // Defense in depth: the id came from scan_teams (already gated), but it
+        // is about to cross an exec/path boundary — re-validate.
+        if !is_safe_team_id(&team) {
+            self.error = Some(format!("unsafe team id '{team}' — refusing to launch"));
+            return;
+        }
+        let Some(harness) = bwoc_core::exec::sibling_binary("bwoc-harness") else {
+            self.error = Some(
+                "bwoc-harness not found (looked next to bwoc, in CARGO_BIN_EXE, and on PATH)"
+                    .into(),
+            );
+            return;
+        };
+        let spec = LaunchSpec {
+            harness,
+            tasks_path: self.teams_dir().join(&team).join("tasks.jsonl"),
+            workdir: self.workspace.clone(),
+            interval_secs: self.ticker_secs,
+            max_iters: self.budget_iters,
+            backend: self.backend.clone(),
+            model: self.model.clone(),
+            endpoint: self.endpoint.clone(),
+        };
+        match LoopRun::spawn(spec, team) {
+            Ok(r) => {
+                self.run = Some(r);
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Stop a running goal-loop (kill + reap). The finished run stays visible in
+    /// the log pane until another is started.
+    fn stop_loop(&mut self) {
+        if let Some(r) = &mut self.run {
+            r.stop();
+        }
+    }
+
+    /// Drain output + poll the child for exit — called once per UI tick so the
+    /// log pane and status update on the poll cadence, not only on keypress.
+    fn tick_loop(&mut self) {
+        if let Some(r) = &mut self.run {
+            r.drain();
+            r.poll();
         }
     }
 }
@@ -384,6 +485,11 @@ fn restore_terminal() -> io::Result<()> {
 
 fn event_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
+        // Pull any new harness output + refresh the child's liveness before
+        // drawing, so the log pane and status track the 200ms poll cadence even
+        // when the operator isn't pressing keys.
+        app.tick_loop();
+
         term.draw(|f| draw(f, app))?;
 
         if event::poll(Duration::from_millis(200))?
@@ -399,6 +505,8 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) 
                 (KeyCode::Tab, _) => app.team_next(),
                 (KeyCode::BackTab, _) => app.team_prev(),
                 (KeyCode::Char('r'), KeyModifiers::NONE) => app.reload(),
+                (KeyCode::Char('s'), KeyModifiers::NONE) => app.start_loop(),
+                (KeyCode::Char('x'), KeyModifiers::NONE) => app.stop_loop(),
                 _ => {}
             }
         }
@@ -457,7 +565,52 @@ fn draw_body(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(area);
     draw_tasks(f, app, cols[0]);
-    draw_detail(f, app, cols[1]);
+    // Right column: Goal detail on top, the live loop / log pane below.
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(cols[1]);
+    draw_detail(f, app, right[0]);
+    draw_loop(f, app, right[1]);
+}
+
+/// The loop control / live-log pane: a status header line plus the tail of the
+/// harness's captured output. Idle when no loop has been started this session.
+fn draw_loop(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+    match &app.run {
+        None => {
+            lines.push(Line::from(Span::styled(
+                "idle · press s to start",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        Some(r) => {
+            let (text, color) = r.status_label();
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )));
+            // Fill the remaining rows with the log tail.
+            let room = log_rows(area.height);
+            let width = log_line_width(area.width);
+            if r.log.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "(waiting for output…)",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else {
+                for l in r.log.tail(room) {
+                    lines.push(Line::from(Span::styled(
+                        truncate(l, width),
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
+        }
+    }
+    let para = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Loop "));
+    f.render_widget(para, area);
 }
 
 /// Icon + colour for a task's effective state (pending splits into claimable vs
@@ -639,8 +792,14 @@ fn draw_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Red),
         ))
     } else {
+        // The loop key flips between start and stop depending on run state.
+        let loop_hint = if app.loop_running() {
+            "x stop"
+        } else {
+            "s start"
+        };
         Line::from(vec![Span::styled(
-            " ↑/↓ move · ⇥ team · r refresh · q quit",
+            format!(" ↑/↓ move · ⇥ team · {loop_hint} · r refresh · q quit"),
             Style::default().fg(Color::DarkGray),
         )])
     };
@@ -660,6 +819,21 @@ fn is_safe_team_id(id: &str) -> bool {
     }
     id.chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Number of log rows the loop pane can show: the pane height minus the two
+/// border rows minus the one status-header line. Saturating so a pane too short
+/// to hold anything yields `0` (rather than underflowing) — the tail iterator
+/// then simply renders nothing.
+fn log_rows(area_height: u16) -> usize {
+    (area_height as usize).saturating_sub(2).saturating_sub(1)
+}
+
+/// Width available for a log line inside the pane (minus the two border columns),
+/// floored at a small minimum so `truncate` always has room for at least a few
+/// chars + the ellipsis even in a very narrow pane.
+fn log_line_width(area_width: u16) -> usize {
+    (area_width as usize).saturating_sub(2).max(8)
 }
 
 /// Truncate a title to `max` chars, appending `…` when cut.
@@ -698,6 +872,10 @@ mod tests {
             last_refresh: Instant::now(),
             error: None,
             initial_team: None,
+            run: None,
+            backend: None,
+            model: None,
+            endpoint: None,
         }
     }
 
@@ -777,6 +955,22 @@ mod tests {
     }
 
     #[test]
+    fn log_pane_math_saturates_at_tiny_sizes() {
+        // Heights too small for any log row → 0 (no underflow/panic).
+        assert_eq!(log_rows(0), 0);
+        assert_eq!(log_rows(2), 0); // just the two borders
+        assert_eq!(log_rows(3), 0); // borders + status line, no room
+        assert_eq!(log_rows(4), 1);
+        assert_eq!(log_rows(12), 9);
+        // Widths floor at 8 so truncate always has room.
+        assert_eq!(log_line_width(0), 8);
+        assert_eq!(log_line_width(2), 8);
+        assert_eq!(log_line_width(40), 38);
+        // truncate with the floored width never panics on a long line.
+        let _ = truncate(&"x".repeat(200), log_line_width(0));
+    }
+
+    #[test]
     fn is_safe_team_id_rejects_traversal_and_separators() {
         // Safe ids.
         assert!(is_safe_team_id("squad"));
@@ -800,6 +994,9 @@ mod tests {
             team: None,
             ticker_secs: 0, // must floor to 1
             budget_iters: 0,
+            backend: None,
+            model: None,
+            endpoint: None,
         });
         assert_eq!(app.ticker_secs, 1);
     }
@@ -829,6 +1026,28 @@ mod tests {
         assert!(text.contains("Tasks"), "tasks pane missing");
         assert!(text.contains("Goal"), "goal pane missing");
         assert!(text.contains("In Progress"), "goal status missing");
+        // PR2: the loop pane renders (idle, since no run was started).
+        assert!(text.contains("Loop"), "loop pane missing");
+        assert!(text.contains("idle"), "idle hint missing:\n{text}");
+    }
+
+    #[test]
+    fn footer_hint_shows_start_when_idle() {
+        // No run → footer offers 's start' (loop_running() is false).
+        let app = app_with(vec![task("t1", TaskState::Pending, &[])]);
+        assert!(!app.loop_running());
+    }
+
+    #[test]
+    fn team_switch_blocked_hint_when_no_run_is_noop() {
+        // Guard path is exercised via loop_running(); with no run, switching is
+        // allowed (this documents the guard's default-open behaviour).
+        let mut app = app_with(vec![task("t1", TaskState::Pending, &[])]);
+        app.teams = vec!["a".into(), "b".into()];
+        app.sel_team = 0;
+        app.team_next(); // no run → switches freely
+        assert_eq!(app.sel_team, 1);
+        assert!(app.error.is_none());
     }
 
     /// Flatten a ratatui test buffer into a single string for substring asserts.
