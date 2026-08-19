@@ -12,10 +12,13 @@
 //! # What it is
 //!
 //! The operator console for **Loop-Engineering L1** (the Saṅgha goal-loop): pick
-//! a team, watch its shared task list drive toward Definition-of-Done, and
-//! **start / stop** the loop, streaming the harness's output into a live log
-//! pane. Starting a loop spawns `bwoc-harness --lead --loop` over the selected
-//! team's `tasks.jsonl`; editing the ticker / budget / tasks is a later slice.
+//! a team, watch its shared task list drive toward Definition-of-Done, **start /
+//! stop** the loop (streaming the harness's output into a live log pane), and
+//! **edit** the loop — add a task, adjust the ticker / budget, and approve or
+//! reject a plan-gated task. Starting a loop spawns `bwoc-harness --lead --loop`
+//! over the selected team's `tasks.jsonl`; every edit that touches the task list
+//! shells out to the locked `bwoc task …` CLI path (never a direct file write),
+//! so it serializes safely with a running loop and the daemon.
 //!
 //! # Layout (one screen, no mouse)
 //!
@@ -33,9 +36,13 @@
 //! ```
 //!
 //! Keys: `↑/↓` (or `j/k`) move the task selection; `Tab` / `Shift-Tab` cycle
-//! teams; `s` starts a goal-loop for the selected team, `x` stops it; `r`
-//! refreshes now (state also auto-refreshes on a 2s tick); `q` / `Esc` /
-//! `Ctrl-C` quit (killing any running loop) and restore the terminal.
+//! teams; `s` starts a goal-loop for the selected team, `x` stops it; `a` adds a
+//! task (modal title input; `↵` add, `Esc` cancel); `+` / `-` adjust the ticker
+//! (floored at 1s), `]` / `[` the budget (floored at 1 — `0` = unbounded is set
+//! only via `--max-iters 0`); `y` / `n` approve / reject the selected task's
+//! submitted plan when it awaits review; `r` refreshes
+//! now (state also auto-refreshes on a 2s tick); `q` / `Esc` / `Ctrl-C` quit
+//! (killing any running loop) and restore the terminal.
 
 mod run;
 
@@ -188,6 +195,9 @@ struct App {
     backend: Option<String>,
     model: Option<String>,
     endpoint: Option<String>,
+    /// `Some(buf)` while the operator is typing a new task's title (`a`). `None`
+    /// in normal mode. Drives the modal input overlay + key routing.
+    add_task_input: Option<String>,
 }
 
 impl App {
@@ -209,6 +219,7 @@ impl App {
             backend: args.backend,
             model: args.model,
             endpoint: args.endpoint,
+            add_task_input: None,
         }
     }
 
@@ -369,7 +380,7 @@ impl App {
         // A running loop is bound to the team it started on; don't switch the
         // view out from under it.
         if self.loop_running() {
-            self.error = Some("stop the loop (x) before switching teams".into());
+            self.set_error("stop the loop (x) before switching teams");
             return;
         }
         if self.teams.len() > 1 {
@@ -381,7 +392,7 @@ impl App {
 
     fn team_prev(&mut self) {
         if self.loop_running() {
-            self.error = Some("stop the loop (x) before switching teams".into());
+            self.set_error("stop the loop (x) before switching teams");
             return;
         }
         if self.teams.len() > 1 {
@@ -402,19 +413,18 @@ impl App {
             return;
         }
         let Some(team) = self.current_team().map(|s| s.to_string()) else {
-            self.error = Some("no team selected".into());
+            self.set_error("no team selected");
             return;
         };
         // Defense in depth: the id came from scan_teams (already gated), but it
         // is about to cross an exec/path boundary — re-validate.
         if !is_safe_team_id(&team) {
-            self.error = Some(format!("unsafe team id '{team}' — refusing to launch"));
+            self.set_error(format!("unsafe team id '{team}' — refusing to launch"));
             return;
         }
         let Some(harness) = bwoc_core::exec::sibling_binary("bwoc-harness") else {
-            self.error = Some(
-                "bwoc-harness not found (looked next to bwoc, in CARGO_BIN_EXE, and on PATH)"
-                    .into(),
+            self.set_error(
+                "bwoc-harness not found (looked next to bwoc, in CARGO_BIN_EXE, and on PATH)",
             );
             return;
         };
@@ -433,7 +443,7 @@ impl App {
                 self.run = Some(r);
                 self.error = None;
             }
-            Err(e) => self.error = Some(e),
+            Err(e) => self.set_error(e),
         }
     }
 
@@ -451,6 +461,169 @@ impl App {
         if let Some(r) = &mut self.run {
             r.drain();
             r.poll();
+        }
+    }
+
+    // ── edit actions (PR3) — all writes shell out to the locked `bwoc task`
+    //    CLI path (never a direct tasks.jsonl mutation), so they serialize with a
+    //    running loop / the daemon via the team's tasks.lock. ──
+
+    /// Whether the modal add-task text input is active.
+    fn input_active(&self) -> bool {
+        self.add_task_input.is_some()
+    }
+
+    /// `true` when the selected task is a plan-gated task whose plan is submitted
+    /// and awaiting the lead's verdict — the state in which `y`/`n` apply.
+    fn selected_awaiting_plan(&self) -> bool {
+        self.selected_task()
+            .is_some_and(|t| t.requires_plan && t.plan.is_some() && t.plan_approved.is_none())
+    }
+
+    /// Set a footer error and give it a full auto-refresh window to be seen. The
+    /// 2s auto-refresh calls `reload()`, which clears `self.error`; without
+    /// resetting the timer an edit error set late in a cycle could be wiped before
+    /// the next draw. Resetting `last_refresh` guarantees the message survives to
+    /// be read.
+    fn set_error(&mut self, msg: impl Into<String>) {
+        self.error = Some(msg.into());
+        self.last_refresh = Instant::now();
+    }
+
+    /// Adjust the goal-loop ticker cadence (seconds). Floors at 1s — never 0 (the
+    /// zero-delay-spin guard `App::new`'s `.max(1)` also enforces). Saturating, so
+    /// an extreme CLI-seeded value can't wrap. Applies to the next loop start.
+    fn adjust_ticker(&mut self, delta: i64) {
+        self.ticker_secs = if delta >= 0 {
+            self.ticker_secs.saturating_add(delta as u64)
+        } else {
+            self.ticker_secs.saturating_sub(delta.unsigned_abs())
+        }
+        .max(1);
+    }
+
+    /// Adjust the goal-loop iteration budget. Floors at **1**, not 0: `0` is the
+    /// "unbounded" sentinel, and reaching it by *decrementing* would flip a tight
+    /// cap into no-cap (a semantic reversal). In-TUI edits therefore stay in the
+    /// bounded range `[1, ∞)`; unbounded is set only via the `--max-iters 0` flag.
+    /// Saturating so a near-`usize::MAX` value can't wrap.
+    fn adjust_budget(&mut self, delta: i64) {
+        self.budget_iters = if delta >= 0 {
+            self.budget_iters.saturating_add(delta as usize)
+        } else {
+            self.budget_iters
+                .saturating_sub(delta.unsigned_abs() as usize)
+        }
+        .max(1);
+    }
+
+    /// Begin capturing a new task's title (enters modal input mode).
+    fn begin_add_task(&mut self) {
+        if self.current_team().is_none() {
+            self.set_error("no team selected");
+            return;
+        }
+        self.error = None;
+        self.add_task_input = Some(String::new());
+    }
+
+    fn input_push(&mut self, c: char) {
+        if let Some(buf) = &mut self.add_task_input {
+            buf.push(c);
+        }
+    }
+
+    fn input_backspace(&mut self) {
+        if let Some(buf) = &mut self.add_task_input {
+            buf.pop();
+        }
+    }
+
+    fn input_cancel(&mut self) {
+        self.add_task_input = None;
+    }
+
+    /// Commit the typed title: `bwoc task add <team> <title>`. A blank title just
+    /// cancels. On success the view reloads to show the new task.
+    fn submit_add_task(&mut self) {
+        let Some(buf) = self.add_task_input.take() else {
+            return;
+        };
+        let title = buf.trim().to_string();
+        if title.is_empty() {
+            return; // blank → treat Enter as cancel
+        }
+        let Some(team) = self.current_team().map(|s| s.to_string()) else {
+            self.set_error("no team selected");
+            return;
+        };
+        // team + title are positionals after `--` (see run_bwoc_task), so a
+        // leading-dash title is a literal title, never a flag.
+        self.run_bwoc_task("add", &[&team, &title]);
+    }
+
+    /// Approve the selected task's submitted plan: `bwoc task approve <team>
+    /// <task>` (lead action — no `--as`). No-op unless the task is awaiting review.
+    fn approve_plan(&mut self) {
+        self.review_selected_plan(true);
+    }
+
+    /// Reject the selected task's submitted plan: `bwoc task reject <team> <task>`.
+    fn reject_plan(&mut self) {
+        self.review_selected_plan(false);
+    }
+
+    fn review_selected_plan(&mut self, approve: bool) {
+        if !self.selected_awaiting_plan() {
+            self.set_error("no plan awaiting review on the selected task");
+            return;
+        }
+        let (Some(team), Some(task)) = (
+            self.current_team().map(|s| s.to_string()),
+            self.selected_task().map(|t| t.id.clone()),
+        ) else {
+            return;
+        };
+        let verb = if approve { "approve" } else { "reject" };
+        self.run_bwoc_task(verb, &[&team, &task]);
+    }
+
+    /// Shell out to a sibling `bwoc task <verb> --workspace <ws> -- <positionals…>`
+    /// (a short-lived, locked write) and reload on success. A non-zero exit
+    /// surfaces the child's first stderr line in the footer.
+    ///
+    /// The **`--` end-of-options marker** is load-bearing: every user-controlled
+    /// positional (team id, task title) follows it, so a value with a leading dash
+    /// is always a positional and never misparsed as a flag — closing both the
+    /// silent `--help` no-op and the `--workspace=…` hijack an unseparated argv
+    /// would allow. `bwoc` is resolved as a sibling of the running process (the
+    /// same discipline `start_loop` uses for `bwoc-harness`), keeping the crate
+    /// free of a `bwoc-cli` build dep.
+    fn run_bwoc_task(&mut self, verb: &str, positionals: &[&str]) {
+        let Some(bwoc) = bwoc_core::exec::sibling_binary("bwoc") else {
+            self.set_error("bwoc not found (sibling / CARGO_BIN_EXE / PATH)");
+            return;
+        };
+        let output = std::process::Command::new(bwoc)
+            .arg("task")
+            .arg(verb)
+            .arg("--workspace")
+            .arg(&self.workspace)
+            .arg("--")
+            .args(positionals)
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                self.error = None;
+                self.reload();
+            }
+            Ok(o) => {
+                // Surface the CLI's actionable `bwoc task <verb>: …` message.
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                let first = stderr.trim().lines().next().unwrap_or("command failed");
+                self.set_error(first.to_string());
+            }
+            Err(e) => self.set_error(format!("could not run bwoc: {e}")),
         }
     }
 }
@@ -497,17 +670,43 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) 
                 code, modifiers, ..
             }) = event::read()?
         {
-            match (code, modifiers) {
-                (KeyCode::Char('q'), KeyModifiers::NONE) | (KeyCode::Esc, _) => return Ok(()),
-                (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
-                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => app.task_down(),
-                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => app.task_up(),
-                (KeyCode::Tab, _) => app.team_next(),
-                (KeyCode::BackTab, _) => app.team_prev(),
-                (KeyCode::Char('r'), KeyModifiers::NONE) => app.reload(),
-                (KeyCode::Char('s'), KeyModifiers::NONE) => app.start_loop(),
-                (KeyCode::Char('x'), KeyModifiers::NONE) => app.stop_loop(),
-                _ => {}
+            if app.input_active() {
+                // Modal add-task text input: capture the title, Enter submits,
+                // Esc cancels. Ctrl-C still quits (honouring the global contract
+                // even mid-typing). Only unmodified / shifted chars are text.
+                match (code, modifiers) {
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                    (KeyCode::Esc, _) => app.input_cancel(),
+                    (KeyCode::Enter, _) => app.submit_add_task(),
+                    (KeyCode::Backspace, _) => app.input_backspace(),
+                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        app.input_push(c)
+                    }
+                    _ => {}
+                }
+            } else {
+                match (code, modifiers) {
+                    (KeyCode::Char('q'), KeyModifiers::NONE) | (KeyCode::Esc, _) => return Ok(()),
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                        app.task_down()
+                    }
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => app.task_up(),
+                    (KeyCode::Tab, _) => app.team_next(),
+                    (KeyCode::BackTab, _) => app.team_prev(),
+                    (KeyCode::Char('r'), KeyModifiers::NONE) => app.reload(),
+                    (KeyCode::Char('s'), KeyModifiers::NONE) => app.start_loop(),
+                    (KeyCode::Char('x'), KeyModifiers::NONE) => app.stop_loop(),
+                    // ── PR3 edit keys ──
+                    (KeyCode::Char('a'), KeyModifiers::NONE) => app.begin_add_task(),
+                    (KeyCode::Char('+'), _) => app.adjust_ticker(1),
+                    (KeyCode::Char('-'), _) => app.adjust_ticker(-1),
+                    (KeyCode::Char(']'), _) => app.adjust_budget(1),
+                    (KeyCode::Char('['), _) => app.adjust_budget(-1),
+                    (KeyCode::Char('y'), KeyModifiers::NONE) => app.approve_plan(),
+                    (KeyCode::Char('n'), KeyModifiers::NONE) => app.reject_plan(),
+                    _ => {}
+                }
             }
         }
 
@@ -701,24 +900,31 @@ fn draw_detail(f: &mut ratatui::Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("Ticker  ", Style::default().fg(Color::Cyan)),
-            Span::raw(format!("every {}s", app.ticker_secs)),
-        ]),
-        Line::from(vec![
-            Span::styled("Budget  ", Style::default().fg(Color::Cyan)),
-            Span::raw(if app.budget_iters == 0 {
-                "unbounded (DoD/blocked still halt)".to_string()
-            } else {
-                format!("{} iteration(s)", app.budget_iters)
-            }),
-        ]),
+    ];
+
+    // When a loop is running, the ticker/budget shown are the *next-start* config
+    // (the live loop captured its own values at spawn), so tag them to avoid the
+    // operator reading them as the active cadence.
+    let next_tag = if app.loop_running() { " (next)" } else { "" };
+    lines.push(Line::from(vec![
+        Span::styled("Ticker  ", Style::default().fg(Color::Cyan)),
+        Span::raw(format!("every {}s{next_tag}", app.ticker_secs)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Budget  ", Style::default().fg(Color::Cyan)),
+        Span::raw(if app.budget_iters == 0 {
+            format!("unbounded (DoD/blocked still halt){next_tag}")
+        } else {
+            format!("{} iteration(s){next_tag}", app.budget_iters)
+        }),
+    ]));
+    lines.extend([
         Line::from(""),
         Line::from(Span::styled(
             "── selected ──",
             Style::default().fg(Color::DarkGray),
         )),
-    ];
+    ]);
 
     if let Some(t) = app.selected_task() {
         lines.push(Line::from(vec![
@@ -786,22 +992,51 @@ fn draw_detail(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    // Modal add-task input takes over the footer while active.
+    if let Some(buf) = &app.add_task_input {
+        let line = Line::from(vec![
+            Span::styled(
+                " new task: ",
+                Style::default().fg(Color::Black).bg(Color::Cyan),
+            ),
+            Span::raw(" "),
+            Span::styled(buf.as_str(), Style::default().add_modifier(Modifier::BOLD)),
+            // A block cursor.
+            Span::styled("█", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "   ↵ add · esc cancel",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(line).alignment(Alignment::Left), area);
+        return;
+    }
     let line = if let Some(err) = &app.error {
         Line::from(Span::styled(
             format!(" ⚠ {err}"),
             Style::default().fg(Color::Red),
         ))
     } else {
-        // The loop key flips between start and stop depending on run state.
+        // The loop key flips between start and stop depending on run state; the
+        // plan-review hint only appears when the selected task awaits a verdict.
         let loop_hint = if app.loop_running() {
             "x stop"
         } else {
             "s start"
         };
-        Line::from(vec![Span::styled(
-            format!(" ↑/↓ move · ⇥ team · {loop_hint} · r refresh · q quit"),
+        let mut spans = vec![Span::styled(
+            format!(
+                " ↑/↓ move · ⇥ team · a add · +/- tick · ]/[ budget · {loop_hint} · r · q quit"
+            ),
             Style::default().fg(Color::DarkGray),
-        )])
+        )];
+        if app.selected_awaiting_plan() {
+            spans.push(Span::styled(
+                "  · y approve · n reject",
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+        Line::from(spans)
     };
     f.render_widget(Paragraph::new(line).alignment(Alignment::Left), area);
 }
@@ -815,6 +1050,12 @@ fn draw_footer(f: &mut ratatui::Frame, app: &App, area: Rect) {
 /// id. Mirrors the same-segment discipline the CLI applies on `bwoc team create`.
 fn is_safe_team_id(id: &str) -> bool {
     if id.is_empty() || id == "." || id == ".." {
+        return false;
+    }
+    // Reject a leading dash: even though every user positional is passed after a
+    // `--` end-of-options marker, an id that reads as a flag (`-x`, `--foo`) is a
+    // defense-in-depth hazard at any exec boundary — never treat it as safe.
+    if id.starts_with('-') {
         return false;
     }
     id.chars()
@@ -876,6 +1117,7 @@ mod tests {
             backend: None,
             model: None,
             endpoint: None,
+            add_task_input: None,
         }
     }
 
@@ -985,6 +1227,9 @@ mod tests {
         assert!(!is_safe_team_id("/etc/passwd"));
         assert!(!is_safe_team_id("a\\b"));
         assert!(!is_safe_team_id("a\0b"));
+        // Leading dash rejected (would read as a flag at an exec boundary).
+        assert!(!is_safe_team_id("-x"));
+        assert!(!is_safe_team_id("--workspace"));
     }
 
     #[test]
@@ -1048,6 +1293,135 @@ mod tests {
         app.team_next(); // no run → switches freely
         assert_eq!(app.sel_team, 1);
         assert!(app.error.is_none());
+    }
+
+    // ── PR3: edit actions ──
+
+    /// A plan-gated task whose plan is submitted and awaiting a verdict.
+    fn awaiting_plan_task(id: &str) -> Task {
+        let mut t = task(id, TaskState::InProgress, &[]);
+        t.requires_plan = true;
+        t.plan = Some("do the thing".into());
+        t.plan_approved = None;
+        t
+    }
+
+    #[test]
+    fn adjust_ticker_floors_at_one() {
+        let mut app = app_with(vec![]);
+        app.ticker_secs = 3;
+        app.adjust_ticker(1);
+        assert_eq!(app.ticker_secs, 4);
+        app.adjust_ticker(-10); // would go negative → floor at 1
+        assert_eq!(app.ticker_secs, 1);
+        app.adjust_ticker(-1); // already 1 → stays 1 (never 0)
+        assert_eq!(app.ticker_secs, 1);
+    }
+
+    #[test]
+    fn adjust_budget_floors_at_one_not_the_unbounded_sentinel() {
+        let mut app = app_with(vec![]);
+        app.budget_iters = 2;
+        app.adjust_budget(3);
+        assert_eq!(app.budget_iters, 5);
+        // Decrementing must NOT reach 0 (= unbounded) — that would flip a tight
+        // cap into no-cap. Floors at 1 instead.
+        app.adjust_budget(-99);
+        assert_eq!(app.budget_iters, 1);
+    }
+
+    #[test]
+    fn adjust_saturates_at_extremes_no_wrap() {
+        let mut app = app_with(vec![]);
+        app.ticker_secs = u64::MAX;
+        app.adjust_ticker(1); // saturating_add, must not wrap to 0
+        assert_eq!(app.ticker_secs, u64::MAX);
+        app.budget_iters = usize::MAX;
+        app.adjust_budget(1);
+        assert_eq!(app.budget_iters, usize::MAX);
+    }
+
+    #[test]
+    fn selected_awaiting_plan_predicate() {
+        // Awaiting review → true.
+        let app = app_with(vec![awaiting_plan_task("t1")]);
+        assert!(app.selected_awaiting_plan());
+
+        // requires_plan but already approved → false.
+        let mut approved = awaiting_plan_task("t1");
+        approved.plan_approved = Some(true);
+        assert!(!app_with(vec![approved]).selected_awaiting_plan());
+
+        // requires_plan but no plan submitted yet → false.
+        let mut no_plan = awaiting_plan_task("t1");
+        no_plan.plan = None;
+        assert!(!app_with(vec![no_plan]).selected_awaiting_plan());
+
+        // plain task (no plan gate) → false.
+        assert!(!app_with(vec![task("t1", TaskState::Pending, &[])]).selected_awaiting_plan());
+    }
+
+    #[test]
+    fn review_selected_plan_noops_when_not_awaiting() {
+        // On a plain task, y/n must not shell out — it sets an error instead.
+        let mut app = app_with(vec![task("t1", TaskState::Pending, &[])]);
+        app.approve_plan();
+        assert!(
+            app.error
+                .as_deref()
+                .unwrap()
+                .contains("no plan awaiting review")
+        );
+    }
+
+    #[test]
+    fn set_error_resets_refresh_timer_so_message_survives() {
+        // An edit error must reset last_refresh, else the 2s auto-refresh reload()
+        // could clear it before the operator reads it.
+        let mut app = app_with(vec![]);
+        app.last_refresh = Instant::now() - AUTO_REFRESH_INTERVAL; // stale timer
+        app.set_error("boom");
+        assert!(app.error.is_some());
+        assert!(app.last_refresh.elapsed() < AUTO_REFRESH_INTERVAL);
+    }
+
+    #[test]
+    fn add_task_input_mode_lifecycle() {
+        let mut app = app_with(vec![]);
+        assert!(!app.input_active());
+        app.begin_add_task();
+        assert!(app.input_active());
+        app.input_push('h');
+        app.input_push('i');
+        assert_eq!(app.add_task_input.as_deref(), Some("hi"));
+        app.input_backspace();
+        assert_eq!(app.add_task_input.as_deref(), Some("h"));
+        app.input_cancel();
+        assert!(!app.input_active());
+    }
+
+    #[test]
+    fn submit_blank_title_cancels_without_action() {
+        let mut app = app_with(vec![]);
+        app.begin_add_task();
+        app.input_push(' '); // whitespace-only
+        app.submit_add_task();
+        // Input cleared, no error (blank Enter == cancel), no exec attempted.
+        assert!(!app.input_active());
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn add_task_overlay_renders_in_input_mode() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut app = app_with(vec![task("t1", TaskState::Pending, &[])]);
+        app.begin_add_task();
+        app.input_push('x');
+        let mut term = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let text = buffer_text(term.backend().buffer());
+        assert!(text.contains("new task:"), "input overlay missing:\n{text}");
     }
 
     /// Flatten a ratatui test buffer into a single string for substring asserts.
