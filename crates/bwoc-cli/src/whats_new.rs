@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — `bwoc loop`: a control-center TUI for the Loop-Engineering goal loop — watch a team drive to Done, start/stop the loop, and edit tasks · ticker · budget · plans in place"
+    " — Loop-Engineering L3 product loops: `bwoc monitor` watches a source and alerts once per trip, `bwoc digest` delivers a recurring digest once per period — both durable across restarts"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "**Loop-Engineering L3 — product loops.** `bwoc monitor --exec \"<probe>\" --loop` watches any command and alerts a fleet member **once per OK↔TRIP transition**, and `bwoc digest --exec \"<cmd>\" --period daily` delivers a digest **once per period** — a gate a bare cron can't give (a restart re-runs; a poll loop re-fires every tick). Both ride the new durable `IdempotencyLedger`, and both stay trust-preserving: the monitor sends only a scalar, the digest only to a local sink (2.44.0, #453–#456)",
     "**Loop-Engineering** lands — a goal + ticker loop drives a Saṅgha team to Definition-of-Done: `bwoc-harness --lead --loop` re-fires the lead until Done / Blocked / budget, and **`bwoc loop`** is a full control-center TUI (observe → start/stop with a live log → edit in place: add task, tune ticker/budget, approve/reject a plan) — every write through the locked `bwoc task` path (2.43.0, #437–#447)",
     "`bwoc accounting` gains three domains — `sales` (open invoices + quick-sales list/show/create/convert), `stock` (balance/low/movements + receipt/adjust), and `cashbook` (GL journals list/show/create). Reads are free; every write is financial (GL-posting) and rides the same `writes_enabled` + per-write-confirm gate as `bill`/`expense`. Grounded in the live Accounting Open API (2.42.0)",
     "Two new audit lanes — `audit-iso-iec-ieee-12207` (software life-cycle, 9 criteria) and `audit-ieee-1012` (V&V, 8 criteria, the first IEEE-standalone lane). The `audit` kind now covers every publication shape: ISO, ISO/IEC, ISO/IEC/IEEE, and standalone IEEE (2.41.0)",
     "Resource Protocol live end-to-end — a light host finds a heavy host's free GPU/RAM across the fleet: `bwoc resource advertise` publishes an offer to the `bwoc-gateway` broker and `bwoc resource discover --kind compute --gpu-vram 24000` returns matching live offers, best-fit first (2.40.0, docs/en/RESOURCE-PROTOCOL)",
     "Gated financial writes — `bwoc accounting` fronts the `accounting-api` plugin: `report` reads are free, while `bill create/update` and `expense create` (each posts a document + an auto GL entry on the live books) need `[plugins.accounting-api] writes_enabled = true` AND a per-write confirm (2.38.0, #373)",
-    "Standards, identity & accounting — the `audit` kind now spans ISO / IEC / IEEE (new `audit-iso-iec-ieee-29148` lane), the `soul` skill holds an agent's core, and the `accounting-api` plugin adapts the Bemind Accounting Open API (2.37.0, #367–#369)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

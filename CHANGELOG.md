@@ -6,13 +6,26 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.20-0] — 2026-08-20 — 2.44.0
+
+Loop-Engineering **L3 — product loops**: the layer's first two external loops ship, both built on a new durable idempotency primitive and both deliberately trust-preserving. The middle trust tier that the remaining L3 loops need begins landing, inert-first.
+
 ### Added
+
+- **`bwoc monitor` — the L3 monitoring/alerting flagship.** `bwoc monitor --exec "<probe>" [--alert <agent>] [--loop]` probes a command on the `Every` ticker (exit 0 = OK, non-zero / spawn-fail / signal = TRIP), detects OK↔TRIP transitions, and `bwoc send`s a fleet member **once per transition** — not once per tick. State is durable under `.bwoc/monitors/<id>.jsonl`, so a restart mid-trip doesn't re-alert. **Zero trust-model change**: the alert body carries only trusted scalars (monitor id + exit code); the probe's untrusted stderr is logged locally and never enters the message a model will read (#454).
+- **`bwoc digest` — the L3 recurring-digest loop.** `bwoc digest --exec "<cmd>" [--period hourly|daily|weekly] [--out <file>] [--loop]` runs a command **once per period** and delivers its rendered output — the gate a bare cron can't give (a restart mid-period re-runs the job; a poll-driven loop re-fires every tick). The period is an epoch bucket latched through the ledger. Delivery is to a **local sink only** (stdout or `--out`), never a fleet agent's model-read inbox, so a digest's arbitrary command output can't become an injection channel (#456).
+- **`bwoc-core::idempotency::IdempotencyLedger` — the durable L3 primitive.** A dependency-free key→value ledger persisted as a JSONL sidecar, written atomically (tmp + rename). Two operations: `seen_or_record` (one-shot idempotency — "have I ever acted on this key?", the digest's once-per-period gate) and `latch` (edge-trigger — "did this value just change?", the monitor's once-per-trip gate, which a plain seen-set cannot express) (#453).
+- **Act-as-user capability tier — inert first slice of the L3 middle trust tier.** A new `Capability::ActAsUser` grade between `WorktreeWrite` and `Gated` classifies `bwoc_send`, plus a fail-closed `scan_authenticated_actor` that grants act-as-user authority only when every taint-bearing ingress is one matching verified A2A sender (any foreign taint — a tool output, a second sender, a tainted summary — evaporates it). Authority lives entirely at the **capability** layer: the tier reuses the existing `Principal::A2aSender`, so `trust.rs` is untouched and the monotonic session-trust latch and two-trusted invariant still hold. **Zero production behavior change** — the one call site passes no actor, so `bwoc_send` stays denied on untrusted turns exactly as before; daemon minting lands in a later slice (#457, toward #452).
 
 - **`bwoc run` now supports the `codex` backend headlessly.** Codex CLI grew a documented non-interactive mode (`codex exec`, approval policy `never`), so the `HeadlessUnsupported` deferral no longer holds. Dispatch is `codex exec --skip-git-repo-check --color never --sandbox workspace-write -- "<task>"`: repo-check off because an agent directory need not be a git repo, colour off because output is captured into `RunResult`, and `workspace-write` because `exec` defaults to read-only (which cannot complete an edit task) — bounded to the run cwd, the same jail `resolve_workdir` already enforces. `--dangerously-bypass-approvals-and-sandbox` is deliberately **not** passed, matching the fail-safe posture that keeps `--allow-all-tools` off the copilot path. Like the `claude` arm, no `-m` is forwarded: a backend-neutral manifest `primaryModel` may name a model codex rejects outright (a real `agent-caoguojiu` config pairs `backend = "codex"` with `claude-sonnet-4-6`), so the vendor CLI resolves its own model. `agy` and `kimi` remain deferred.
 
 ### Changed
 
 - **`bwoc run` child processes get `/dev/null` on stdin** (all backends). A headless run must never block on an inherited terminal, and vendor CLIs that append piped stdin to the prompt (`codex exec` does) must not absorb whatever the orchestrator left on the pipe.
+
+### Fixed
+
+- **A delivered-but-undispatched inbound message is now logged** rather than silently dropped from the operator's view: the daemon records when a message was delivered to the inbox but no route consumed it, so a message that lands and then goes nowhere is observable (#451, rec-3 of #410).
 
 ## [v2026.8.19-0] — 2026-08-19 — 2.43.0
 
