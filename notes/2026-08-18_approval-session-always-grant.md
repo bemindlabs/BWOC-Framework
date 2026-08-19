@@ -31,8 +31,13 @@ prompt for the rest of the session.
   over the tool-level and durable-file alternatives.)
 - **Keyed on `(tool, exact args)`, not tool-only.** Clicking "Always" on
   `write_file {path:a}` grants exactly that call, not all `write_file` — tightest
-  blast radius. Args are hashed (`DefaultHasher`) so the set bounds memory and
-  never retains potentially-sensitive full argument strings.
+  blast radius. The key stores the **full argument string, not a hash**: this is
+  a security gate, and even a 64-bit hash admits a collision where a different
+  payload matches an existing grant and skips the prompt. Exact string equality
+  removes that bypass. The set is bounded by the handful of distinct calls an
+  operator explicitly clicked "always" on, and the args are already live in the
+  process, so retaining them adds no new exposure. (Reconciled a Copilot finding
+  that first flagged the hash collision risk.)
 - **Fail-safe preserved.** The grant only ever turns a would-be *ask* into an
   operator-approved *allow*; a `deny` resolved upstream never reaches the
   `Mode::Ask` arm, so it can't be weakened. A poisoned lock reads as "not

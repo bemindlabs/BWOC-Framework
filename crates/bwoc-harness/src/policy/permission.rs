@@ -123,9 +123,17 @@ pub struct Policy {
     pub approval: Option<std::sync::Arc<dyn super::approval::ApprovalChannel>>,
     /// Session-scoped "always allow" grants, recorded when an operator answers an
     /// approval with `always: true` (the console's **Always** button, #409).
-    /// Keyed by `(tool, args-hash)` so a grant covers **exactly** the call the
-    /// operator inspected — a later call differing in tool or arguments still
-    /// re-prompts (tightest blast radius).
+    /// Keyed by the **exact** `(tool, arguments_json)` so a grant covers only the
+    /// call the operator inspected — a later call differing in tool or arguments
+    /// still re-prompts (tightest blast radius).
+    ///
+    /// The key stores the full argument string, **not** a hash: this is a
+    /// security gate, and a hash — even 64-bit — admits a (however unlikely)
+    /// collision where a *different* payload matches an existing grant and skips
+    /// the prompt. Exact string equality removes that bypass entirely. The set
+    /// is bounded by the number of distinct calls an operator explicitly clicked
+    /// "always" on (a handful), and the arguments are already live in this
+    /// process, so retaining them here adds no new exposure.
     ///
     /// **In-memory only, by design.** The grant lives for this process and never
     /// touches `harness-policy.toml`: a confined harness must not rewrite its own
@@ -134,19 +142,15 @@ pub struct Policy {
     /// so a cloned `Policy` (e.g. a spawned worker) sees the same grants within
     /// one session; the grant can only turn a would-be deny into an
     /// operator-approved allow — it never weakens a deny.
-    pub session_grants: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, u64)>>>,
+    pub session_grants:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, String)>>>,
 }
 
 impl Policy {
-    /// Stable per-process key for a session grant: `(tool, hash(args))`. The
-    /// hash bounds memory and avoids retaining potentially-sensitive full args
-    /// in the set. `DefaultHasher` is process-stable, which is all a
-    /// session-scoped grant needs.
-    fn session_grant_key(tool: &str, args: &str) -> (String, u64) {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        args.hash(&mut h);
-        (tool.to_string(), h.finish())
+    /// Exact key for a session grant: `(tool, arguments_json)`. Full-string, not
+    /// hashed — a security gate must not admit hash-collision bypasses.
+    fn session_grant_key(tool: &str, args: &str) -> (String, String) {
+        (tool.to_string(), args.to_string())
     }
 
     /// True when a prior operator "always allow" grant matches this exact
@@ -635,6 +639,20 @@ mod tests {
             2,
             "a grant keyed on (tool, args) must not cover a different args payload"
         );
+    }
+
+    #[test]
+    fn always_grant_key_is_exact_full_args_not_hashed() {
+        // A grant must match ONLY the identical argument string — the key is the
+        // full args, not a hash, so no distinct payload can collide into it.
+        let p = Policy::default();
+        p.record_session_grant("write_file", r#"{"path":"a","body":"x"}"#);
+        assert!(p.session_granted("write_file", r#"{"path":"a","body":"x"}"#));
+        // Any byte difference → not granted (re-prompt).
+        assert!(!p.session_granted("write_file", r#"{"path":"a","body":"y"}"#));
+        assert!(!p.session_granted("write_file", r#"{"path":"a"}"#));
+        // Same args, different tool → not granted.
+        assert!(!p.session_granted("run_command", r#"{"path":"a","body":"x"}"#));
     }
 
     #[test]
