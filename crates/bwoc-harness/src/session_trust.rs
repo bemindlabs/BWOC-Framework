@@ -86,11 +86,9 @@ pub fn scan_turn_trust(history: &[ChatMessage]) -> TrustLevel {
 /// The load-bearing property is that this is set **once, at the daemon, after a
 /// signature actually verified** — it is NOT read from message content or a
 /// persisted principal, so nothing on the message channel can forge it. It is
-/// the sole source of act-as-user authority; the capability gate
-/// ([`crate::policy::run_pipeline`]) grants [`Capability::ActAsUser`] only when
+/// the sole source of act-as-user authority: the capability gate
+/// ([`crate::policy::run_pipeline`]) grants its act-as-user tier only when
 /// [`scan_authenticated_actor`] confirms this identity against the live history.
-///
-/// [`Capability::ActAsUser`]: crate::policy
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedActor {
     /// The verified sender id (equals the `from` of the matching
@@ -128,7 +126,7 @@ pub fn scan_authenticated_actor(
             continue; // trusted / untainted / derived (Assistant) ingress is fine
         }
         match m.principal() {
-            Principal::A2aSender { from, verified } if *verified && *from == actor.id => {
+            Principal::A2aSender { from, verified } if *verified && from == &actor.id => {
                 saw_matching_sender = true;
             }
             // Any other taint-bearing ingress evaporates the grant.
