@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.19-0] — 2026-08-19 — 2.43.0
+
+The Loop-Engineering layer lands: a goal + ticker loop that drives a Saṅgha team toward Definition-of-Done, plus `bwoc loop` — a full operator console for it.
+
+### Added
+
+- **Loop-Engineering L1 — the goal loop.** `bwoc-harness --lead --loop` re-fires the Saṅgha lead until a Definition-of-Done (team task list fully `Completed`), a Blocked state (dependency-blocked, or a HELD `requires_plan` task awaiting the lead), or an iteration budget — a provably-terminating loop built on the most-tested primitive (#437, #438).
+- **`bwoc loop` — the Loop-Engineering control-center TUI** (new crate `bwoc-loop-tui`). Observe a team's task list drive toward DoD; **start / stop** the goal-loop with a live output-log pane; and **edit in place** — add a task, tune the ticker/budget, approve or reject a plan-gated task — every task-list write going through the locked `bwoc task` CLI path so it serialises with a running loop and the daemon (#444, #445, #446).
+- **Fleet-health reconcile loop.** `bwoc fleet health --loop` drives the fleet to all-green: it auto-remediates the stale-PID/socket class via `bwoc doctor --auto` and surfaces the rest, bounded by an iteration budget so it provably halts (#439).
+- **Operator-tunable daemon task-poll cadence** via `BWOC_TASK_POLL_SECS` (default 2s, floored at 1s), replacing the previously hardcoded constant and making the daemon the third consumer of the shared `Ticker` (#442).
+- **Session-scoped "Always allow" approval grants.** Answering a non-TTY approval with **Always** now skips the prompt for identical `(tool, args)` calls for the rest of the session — in-memory only, keyed on the exact arguments (no hash-collision bypass), never written to policy on disk (#443, closes #409).
+
+### Changed
+
+- **Shared `Ticker` + `Budget` primitives** extracted into `bwoc-core::loop_control`, now consumed by the L1 goal-loop, the L2 fleet-health loop, and the daemon task-poll — one bounded-cadence primitive across the fleet (#440).
+
+### Fixed
+
+- **Homebrew formula version keyed on the CalVer tag** (`v2026.8.12-0` → `2026.8.12.0`) instead of the Cargo SemVer, so `brew upgrade` detects every new release; the tag shape is now strictly validated so a malformed tag fails fast rather than emitting a broken version (#441, #435).
+- **Goal-loop HELD labelling** no longer mislabels a dependency-blocked `requires_plan` task as awaiting plan approval; the budget-0 banner and a doc path are corrected (#438).
+
+### Docs
+
+- **`docs/{en,th}/LOOP-ENGINEERING.md`** — new bilingual spec of the goal + ticker + gate layer, the use-case catalog, and the phased build plan (#436); updated to mark L1 shipped, note the tunable task-poll cadence, and cross-reference the `bwoc loop` operator console (#447).
+
 ## [v2026.8.12-0] — 2026-08-12 — 2.42.0
 
 Agent memory (Tier 1) is now actually used, and the hook surface is hardened and documented.
