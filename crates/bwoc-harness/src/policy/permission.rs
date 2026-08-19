@@ -41,6 +41,9 @@
 //!   escalated to a human out-of-band via [`super::approval`] and blocks for the
 //!   verdict.  A timeout / I/O error falls through to the fail-safe below, so the
 //!   channel can only ever turn a would-be deny into an operator-approved allow.
+//!   If the operator answers with **always**, a session-scoped grant keyed on
+//!   `(tool, args)` is recorded so subsequent identical calls skip the prompt
+//!   ([`Policy::session_grants`], #409) — in-memory only, never written to disk.
 //! - **No console**: `ask` falls back to the `default_mode` — which itself
 //!   defaults to `deny` (high-blast-radius tools deny regardless).  This is the
 //!   fail-safe behaviour required by the design note.
@@ -118,6 +121,54 @@ pub struct Policy {
     /// channel can only ever turn a would-be deny into an operator-approved
     /// allow — never weaken a deny (see [`super::approval`]).
     pub approval: Option<std::sync::Arc<dyn super::approval::ApprovalChannel>>,
+    /// Session-scoped "always allow" grants, recorded when an operator answers an
+    /// approval with `always: true` (the console's **Always** button, #409).
+    /// Keyed by `(tool, args-hash)` so a grant covers **exactly** the call the
+    /// operator inspected — a later call differing in tool or arguments still
+    /// re-prompts (tightest blast radius).
+    ///
+    /// **In-memory only, by design.** The grant lives for this process and never
+    /// touches `harness-policy.toml`: a confined harness must not rewrite its own
+    /// policy (self-escalation smell), so durable rules stay human-authored.
+    /// Durable persistence, if wanted, belongs in the console. Shared via `Arc`
+    /// so a cloned `Policy` (e.g. a spawned worker) sees the same grants within
+    /// one session; the grant can only turn a would-be deny into an
+    /// operator-approved allow — it never weakens a deny.
+    pub session_grants: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, u64)>>>,
+}
+
+impl Policy {
+    /// Stable per-process key for a session grant: `(tool, hash(args))`. The
+    /// hash bounds memory and avoids retaining potentially-sensitive full args
+    /// in the set. `DefaultHasher` is process-stable, which is all a
+    /// session-scoped grant needs.
+    fn session_grant_key(tool: &str, args: &str) -> (String, u64) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        args.hash(&mut h);
+        (tool.to_string(), h.finish())
+    }
+
+    /// True when a prior operator "always allow" grant matches this exact
+    /// `(tool, args)`. A poisoned lock reads as "not granted" — fail-safe to
+    /// re-prompting, never open.
+    fn session_granted(&self, tool: &str, args: &str) -> bool {
+        let key = Self::session_grant_key(tool, args);
+        self.session_grants
+            .lock()
+            .map(|g| g.contains(&key))
+            .unwrap_or(false)
+    }
+
+    /// Record an operator "always allow" for this exact `(tool, args)`. A
+    /// poisoned lock silently drops the grant (the next identical call simply
+    /// re-prompts) — never fails open.
+    fn record_session_grant(&self, tool: &str, args: &str) {
+        let key = Self::session_grant_key(tool, args);
+        if let Ok(mut g) = self.session_grants.lock() {
+            g.insert(key);
+        }
+    }
 }
 
 impl Default for Policy {
@@ -128,6 +179,9 @@ impl Default for Policy {
             patterns: Vec::new(),
             agent_id: String::new(),
             approval: None,
+            session_grants: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         }
     }
 }
@@ -350,6 +404,15 @@ fn apply_mode(
         },
 
         Mode::Ask => {
+            // A prior operator "always allow" for this exact (tool, args) skips
+            // the prompt for the rest of the session (#409). Checked ahead of
+            // both the TTY and the console path — this is what makes the
+            // console's "Always" button durable within a session. It only ever
+            // turns a would-be ask into an operator-approved allow; a `deny`
+            // resolved upstream never reaches here, so it can't be weakened.
+            if policy.session_granted(tool_name, arguments_json) {
+                return PermissionDecision::Allow;
+            }
             if is_tty {
                 prompt_operator(tool_name, arguments_json)
             } else if let Some(channel) = &policy.approval {
@@ -369,10 +432,15 @@ fn apply_mode(
                 match channel.request(&req) {
                     Some(d) if d.allow => {
                         if d.always {
+                            // Record a session-scoped grant for this exact
+                            // (tool, args) so subsequent identical calls skip
+                            // the prompt (#409). In-memory only — never written
+                            // to policy on disk.
+                            policy.record_session_grant(tool_name, arguments_json);
                             eprintln!(
                                 "[bwoc-harness] approval: operator allowed `{tool_name}` \
-                                 (always — honoured for this call; persistent rules are a \
-                                 later slice)"
+                                 (always — honoured for this session; not written to \
+                                 harness-policy.toml)"
                             );
                         }
                         PermissionDecision::Allow
@@ -496,6 +564,131 @@ mod tests {
         p.tools.insert("write_file".into(), Mode::Ask);
         p.approval = Some(std::sync::Arc::new(MockChannel(ch)));
         p
+    }
+
+    /// Approval channel that always allows with `always: true` and counts how
+    /// many times it was consulted — used to prove a session grant short-circuits
+    /// the prompt on the next identical call.
+    #[derive(Debug)]
+    struct CountingAlwaysChannel(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::policy::approval::ApprovalChannel for CountingAlwaysChannel {
+        fn request(
+            &self,
+            _req: &crate::policy::approval::ApprovalRequest,
+        ) -> Option<crate::policy::approval::ApprovalDecision> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(crate::policy::approval::ApprovalDecision {
+                allow: true,
+                always: true,
+                by: "test".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn always_grant_skips_prompt_on_repeat_same_args() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut p = Policy::default();
+        p.tools.insert("write_file".into(), Mode::Ask);
+        p.approval = Some(std::sync::Arc::new(CountingAlwaysChannel(calls.clone())));
+        let args = r#"{"path":"a"}"#;
+
+        // First call: consults the channel, operator answers always → Allow.
+        assert_eq!(
+            evaluate(&p, "write_file", args, false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Second identical call: the session grant short-circuits — the channel
+        // is NOT consulted again, but the result is still Allow.
+        assert_eq!(
+            evaluate(&p, "write_file", args, false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "an existing session grant must not re-consult the channel"
+        );
+    }
+
+    #[test]
+    fn always_grant_is_args_specific_and_reprompts_on_different_args() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut p = Policy::default();
+        p.tools.insert("write_file".into(), Mode::Ask);
+        p.approval = Some(std::sync::Arc::new(CountingAlwaysChannel(calls.clone())));
+
+        // Grant recorded for args `a`.
+        assert_eq!(
+            evaluate(&p, "write_file", r#"{"path":"a"}"#, false),
+            PermissionDecision::Allow
+        );
+        // A call with DIFFERENT args does not match the grant → channel again.
+        assert_eq!(
+            evaluate(&p, "write_file", r#"{"path":"b"}"#, false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a grant keyed on (tool, args) must not cover a different args payload"
+        );
+    }
+
+    #[test]
+    fn always_grant_does_not_leak_across_policies() {
+        // A grant lives on its Policy's session store; a fresh Policy (new
+        // session) starts empty and must re-consult the operator.
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mk = || {
+            let mut p = Policy::default();
+            p.tools.insert("write_file".into(), Mode::Ask);
+            p.approval = Some(std::sync::Arc::new(CountingAlwaysChannel(calls.clone())));
+            p
+        };
+        let args = r#"{"path":"a"}"#;
+        assert_eq!(
+            evaluate(&mk(), "write_file", args, false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            evaluate(&mk(), "write_file", args, false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "independent Policy instances (separate sessions) must not share grants"
+        );
+    }
+
+    #[test]
+    fn cloned_policy_shares_session_grant() {
+        // A cloned Policy (e.g. a spawned worker in the same session) shares the
+        // Arc-backed grant store, so a grant taken on one clone is honoured on
+        // the other without re-prompting.
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut p = Policy::default();
+        p.tools.insert("write_file".into(), Mode::Ask);
+        p.approval = Some(std::sync::Arc::new(CountingAlwaysChannel(calls.clone())));
+        let args = r#"{"path":"a"}"#;
+
+        assert_eq!(
+            evaluate(&p, "write_file", args, false),
+            PermissionDecision::Allow
+        );
+        let clone = p.clone();
+        assert_eq!(
+            evaluate(&clone, "write_file", args, false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a cloned Policy shares the session grant store"
+        );
     }
 
     #[test]
