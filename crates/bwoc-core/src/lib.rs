@@ -10,6 +10,7 @@ pub mod doc_kind;
 pub mod env_scrub;
 pub mod error;
 pub mod exec;
+pub mod idempotency;
 pub mod identity;
 pub mod inbox;
 pub mod ipc;
