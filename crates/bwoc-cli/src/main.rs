@@ -21,6 +21,7 @@ mod council;
 mod dashboard;
 mod debase;
 mod deep_memory_cmd;
+mod digest;
 mod doc_cmd;
 mod doctor;
 mod eval;
@@ -182,6 +183,10 @@ enum Commands {
     /// `--exec` each tick (exit 0 = OK, non-zero = tripped); alert `--alert
     /// <agent>` once per OK↔TRIP transition. `--loop` runs it continuously.
     Monitor(MonitorArgs),
+    /// Deliver a recurring digest (Loop-Engineering L3): run `--exec` **exactly
+    /// once per `--period`** (durable across restarts) and emit its output to
+    /// stdout or `--out <file>`. `--loop` runs it continuously.
+    Digest(DigestArgs),
     /// Pause an agent — set status = "stopped" without removing files.
     Stop(StopArgs),
     /// Reactivate a stopped agent — set status = "active".
@@ -1998,6 +2003,60 @@ impl MonitorArgs {
     }
 }
 
+/// clap value-parser for `--period` — rejects an unknown period with a helpful
+/// message instead of silently defaulting.
+fn parse_period(s: &str) -> Result<digest::Period, String> {
+    digest::Period::parse(s)
+        .ok_or_else(|| format!("invalid period '{s}' (use hourly | daily | weekly)"))
+}
+
+#[derive(Args, Debug)]
+struct DigestArgs {
+    /// The command whose output is the digest content (operator-defined).
+    #[arg(long)]
+    exec: String,
+    /// How often to deliver. One of: hourly | daily | weekly.
+    #[arg(long, default_value = "daily", value_parser = parse_period)]
+    period: digest::Period,
+    /// Write the digest to this file (appended) instead of stdout. Either sink is
+    /// local — v1 never delivers into a fleet agent's model-read inbox.
+    #[arg(long = "out")]
+    out: Option<PathBuf>,
+    /// Run continuously; without it, deliver at most once for the current period
+    /// and exit (the cron-driven mode).
+    #[arg(long = "loop")]
+    loop_mode: bool,
+    /// Poll cadence in `--loop` mode (seconds, floored at 1s) — how often to check
+    /// whether a new period has begun.
+    #[arg(long = "interval-secs", default_value_t = 300)]
+    interval_secs: u64,
+    /// Iteration budget in `--loop` mode. `0` = unbounded (a service).
+    #[arg(long = "max-iters", default_value_t = 0)]
+    max_iters: usize,
+    /// Stable digest id (ledger + `.bwoc/digests/<id>.jsonl`). Omit to derive it
+    /// from `--exec` + `--period`.
+    #[arg(long)]
+    id: Option<String>,
+    /// Workspace root. Resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+    #[arg(long = "workspace")]
+    workspace: Option<PathBuf>,
+}
+
+impl DigestArgs {
+    fn into_runtime(self) -> digest::DigestArgs {
+        digest::DigestArgs {
+            exec: self.exec,
+            period: self.period,
+            out: self.out,
+            loop_mode: self.loop_mode,
+            interval_secs: self.interval_secs,
+            max_iters: self.max_iters,
+            id: self.id,
+            workspace: self.workspace,
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 struct CompletionArgs {
     /// Target shell. Pipe the output to your shell's completion install path.
@@ -2853,6 +2912,10 @@ fn main() -> ExitCode {
         }
         Some(Commands::Monitor(args)) => {
             let code = monitor::run(args.into_runtime());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Digest(args)) => {
+            let code = digest::run(args.into_runtime());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Stop(args)) => {
