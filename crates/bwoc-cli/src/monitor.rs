@@ -24,7 +24,11 @@
 //! (durable, per-monitor sidecar under `.bwoc/monitors/`), so:
 //!   - OK→TRIP fires one alert, then stays quiet while still tripped;
 //!   - TRIP→OK fires a recovery alert (only after a real trip);
-//!   - a restart mid-trip does **not** re-alert (the ledger persists the state).
+//!   - a restart mid-trip does not re-alert **as long as the last ledger write
+//!     succeeded**. The write is best-effort (a failure is logged, not fatal), so
+//!     a restart *after* a failed write can re-alert — a duplicate, never a
+//!     missed edge (within a run, transitions are driven by in-process state, so
+//!     a write failure can neither drop nor storm alerts).
 //!
 //! This runs off the daemon accept-thread — it is its own foreground process (or
 //! external-cron one-shot) — so the single-threaded serve loop is a non-issue.
@@ -120,16 +124,32 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
-/// A non-empty single path segment (no separators, `..`, or leading dash) — the
-/// id becomes a filename under `.bwoc/monitors/`.
+/// A non-empty single path segment safe as a filename **on every platform** — the
+/// id becomes `.bwoc/monitors/<id>.jsonl`, and a workspace may be shared across
+/// OSes. Rejects separators, `.`/`..`, a leading dash, a trailing `.`/space
+/// (invalid on Windows), and the Windows reserved device names (`CON`, `NUL`,
+/// `COM1`…) so a monitor can't fail to persist its state on a Windows checkout.
 fn is_safe_id(id: &str) -> bool {
-    !id.is_empty()
-        && id != "."
-        && id != ".."
-        && !id.starts_with('-')
-        && id
+    if id.is_empty()
+        || id == "."
+        || id == ".."
+        || id.starts_with('-')
+        || id.ends_with('.')
+        || id.ends_with(' ')
+        || !id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return false;
+    }
+    // Windows reserved device names, case-insensitive, with or without an
+    // extension (`CON`, `con.txt`, `COM1` …).
+    const RESERVED: &[&str] = &[
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    let stem = id.split('.').next().unwrap_or(id).to_ascii_lowercase();
+    !RESERVED.contains(&stem.as_str())
 }
 
 /// Entry point. Returns a process exit code (one-shot: 0 OK / 1 TRIP; loop: 0 on
@@ -305,9 +325,10 @@ fn shell_command(exec: &str) -> Command {
     c
 }
 
-/// Shell out `bwoc send <agent> -- <msg> --workspace <ws>` (the `--` keeps a
-/// message with a leading dash a positional). Best-effort — a send failure is
-/// logged, never fatal to the monitor.
+/// Shell out `bwoc send --workspace <ws> -- <agent> <msg>` (options first, then
+/// the `--` end-of-options marker so `<agent>`/`<msg>` are always positionals,
+/// even with a leading dash). Best-effort — a send failure is logged, never
+/// fatal to the monitor.
 fn send_alert(bwoc: &Path, agent: &str, msg: &str, workspace: &Path, id: &str) {
     let status = Command::new(bwoc)
         .arg("send")
@@ -364,24 +385,28 @@ mod tests {
 
     #[test]
     fn alert_body_is_scalar_only() {
-        // The delivered body must carry only the id + exit code — never probe
-        // output. A crafted stderr must not be able to appear here (regression
-        // guard for the #271 fix).
-        let trip = alert_body(Alert::Trip, "db", 7);
-        assert!(trip.contains("db") && trip.contains("exit 7"));
-        let recover = alert_body(Alert::Recover, "db", 0);
-        assert!(recover.contains("db") && recover.contains("exit 0"));
-        // No placeholder for untrusted detail exists in the format.
-        assert!(!trip.contains('{') && !recover.contains('{'));
+        // Pin the EXACT delivered body: only the id + exit code, no probe output.
+        // If a change re-interpolated untrusted stderr, these literals would break
+        // (the #271 regression guard).
+        assert_eq!(
+            alert_body(Alert::Trip, "db", 7),
+            "🔴 monitor 'db' TRIPPED (exit 7)"
+        );
+        assert_eq!(
+            alert_body(Alert::Recover, "db", 0),
+            "🟢 monitor 'db' RECOVERED (exit 0)"
+        );
     }
 
     #[test]
     fn fnv1a_is_stable_and_distinct() {
-        // Pinned literal so any future change to the hash (which would orphan a
-        // monitor's ledger across upgrades) trips this test.
-        assert_eq!(fnv1a(b"curl -sf https://x"), fnv1a(b"curl -sf https://x"));
+        // Pin known vectors to EXACT values, so a change to the hash algorithm —
+        // which would orphan every derived-id monitor's ledger across upgrades —
+        // trips this test (self-comparison alone would not catch it).
+        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325); // offset basis
+        assert_eq!(fnv1a(b"bwoc"), 0x11d8_3d9b_ed64_ec28);
+        assert_eq!(fnv1a(b"curl -sf https://x"), 0xfe8a_a4eb_c9b2_a20c);
         assert_ne!(fnv1a(b"a"), fnv1a(b"b"));
-        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325); // FNV-1a offset basis
     }
 
     #[test]
@@ -393,6 +418,17 @@ mod tests {
         assert!(!is_safe_id("-x"));
         assert!(!is_safe_id("a/b"));
         assert!(!is_safe_id("a b"));
+        // Windows-invalid: reserved device names (any case, with/without ext) +
+        // trailing dot/space.
+        assert!(!is_safe_id("CON"));
+        assert!(!is_safe_id("nul"));
+        assert!(!is_safe_id("Com1"));
+        assert!(!is_safe_id("con.txt"));
+        assert!(!is_safe_id("lpt9"));
+        assert!(!is_safe_id("db."));
+        // Not reserved: a device name as a substring is fine.
+        assert!(is_safe_id("console"));
+        assert!(is_safe_id("com10"));
     }
 
     #[test]
@@ -416,6 +452,17 @@ mod tests {
         assert_eq!(probe("exit 3").0, 3);
         // stderr tail is captured.
         let (code, tail) = probe("echo boom >&2; exit 1");
+        assert_eq!(code, 1);
+        assert!(tail.contains("boom"), "stderr tail: {tail}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn probe_reads_exit_code() {
+        // Same contract through `cmd /C` on the Windows CI lane.
+        assert_eq!(probe("exit 0").0, 0);
+        assert_eq!(probe("exit 3").0, 3);
+        let (code, tail) = probe("echo boom 1>&2 & exit 1");
         assert_eq!(code, 1);
         assert!(tail.contains("boom"), "stderr tail: {tail}");
     }

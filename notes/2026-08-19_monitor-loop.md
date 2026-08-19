@@ -13,7 +13,9 @@ trust-model change); consumes the Phase-1 `IdempotencyLedger` (#453).
   and on a transition `bwoc send`s a fleet member. `--loop` runs it as a service
   (max-iters 0 = unbounded, Ctrl-C stops); without `--loop` it probes once and
   exits 0/1 (CI/cron-friendly). State is durable via the ledger under
-  `.bwoc/monitors/<id>.jsonl`, so a restart mid-trip doesn't re-alert.
+  `.bwoc/monitors/<id>.jsonl`, so a restart mid-trip doesn't re-alert *when the
+  last write succeeded* — the write is best-effort, so a restart after a failed
+  write can re-alert (a duplicate, never a missed edge).
 
 ## Grounded in an adversarial review (7 confirmed findings, all fixed pre-PR)
 
