@@ -562,6 +562,12 @@ fn check_inbox_for_new(
             }
             if delivered && autoproc.is_active() {
                 maybe_auto_process(autoproc, trimmed);
+            } else if delivered {
+                // rec-3 (#410): a delivered *remote* envelope with auto-process
+                // OFF is announced above but never actioned. Without a hint the
+                // operator can't tell it was dropped rather than handled — emit
+                // one line so the drop is visible and points at the manual paths.
+                announce_undispatched(trimmed);
             }
         }
         consumed += line.len() as u64;
@@ -633,6 +639,27 @@ fn announce_refused(line: &str, refusal: &trust::Refusal) {
 /// Task (f): daemon emits this line on Warn and does NOT record a refusal.
 fn announce_warned(from: &str, missing: &[String]) {
     eprintln!("bwoc-agent: trust_warn ← {from}: missing={missing:?}");
+}
+
+/// One operator-visible hint (rec-3 of #410) when a delivered *remote* envelope
+/// arrives but auto-process is off (`interconnect/gateway.toml auto_process =
+/// true` unset) — so the message is not *silently* dropped after being
+/// announced. Skips `user`-origin and malformed/empty lines, exactly as
+/// `maybe_auto_process` does, since those are not remote messages to answer.
+fn announce_undispatched(line: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return;
+    };
+    let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("");
+    let message = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+    if from.is_empty() || from == "user" || message.is_empty() {
+        return;
+    }
+    eprintln!(
+        "bwoc-agent: message from '{from}' delivered but auto-process is off — no \
+         automated reply (set `auto_process = true` in interconnect/gateway.toml \
+         to enable); reply manually or capture it with `bwoc task add`"
+    );
 }
 
 /// Print one inbox envelope to stderr in a one-line form. Tries to parse
