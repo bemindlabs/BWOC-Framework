@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.20-1] — 2026-08-20 — 2.44.1
+
+A packaging fix: **`bwoc-harness` now ships in the release archives.** Until this release it was shipped by no install path at all, so any install that wasn't a workspace checkout had a `bwoc` that could not spawn the component running the agentic loop.
+
+### Fixed
+
+- **`bwoc-harness` is included in every release archive and every install path** (#460). `cargo build --release --workspace` already built it in CI, but the packaging step only copied `bwoc` and `bwoc-agent` — and nothing asserted the archive's contents, so it shipped incomplete for many releases. `bwoc chat --tui`, `bwoc eval`, `--headless`, `--lead` and `--task` all failed at spawn on a Homebrew or archive install. Both packaging steps (tar.gz + zip) now copy the harness **and assert all three binaries are present**, failing the build rather than publishing a silently-incomplete archive.
+- **`scripts/install.sh` installs the harness too** — the from-source path had the same gap, installing only `bwoc-cli` and `bwoc-agent`. `--check` and `--uninstall` now cover all three binaries.
+- **`bwoc doctor` no longer suggests `cargo install bwoc-harness`** — no BWOC crate is published to crates.io, so that hint could never work. It now points at `./scripts/install.sh` from a repository clone, and notes that released builds need no toolchain at all.
+- **The workspace `repository` URL was wrong** — `[workspace.package]` pointed at `bmt-bwol-ops/bwoc-framwork` (wrong org *and* a misspelling), which is every crate's published package metadata. Corrected to `bemindlabs/BWOC-Framework`; `bwoc-mqtt`, which never inherited the field at all, now does.
+
+### Added
+
+- **A `README.md` for every crate**, plus a gate (`crates/bwoc-cli/tests/crate_readmes.rs`) asserting each crate has a non-trivial README and declares `readme = "README.md"` in its manifest — without which the file would not ship in `cargo package`. Seven crates had none; three of the four that did described built-out crates as "Phase 1 — scaffold".
+
+### Changed
+
+- **Root `README.md` refreshed** — it had drifted two releases (Latest-release pointer stuck at 2.42.0, crates table listing 7 of 11, and no mention of `bwoc loop` / `monitor` / `digest`).
+
 ## [v2026.8.20-0] — 2026-08-20 — 2.44.0
 
 Loop-Engineering **L3 — product loops**: the layer's first two external loops ship, both built on a new durable idempotency primitive and both deliberately trust-preserving. The middle trust tier that the remaining L3 loops need begins landing, inert-first.
