@@ -1,6 +1,7 @@
 [package]
 name = "bwoc-core"
 description = "Shared types for the BWOC framework — manifest, identity, lifecycle phases (uppāda · ṭhiti · vaya)."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

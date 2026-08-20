@@ -1,6 +1,7 @@
 [package]
 name = "bwoc-a2a"
 description = "A2A (Agent2Agent) protocol interop for BWOC — Agent Card, JSON-RPC message/task handlers, and (later) an axum HTTP listener. Pinned to A2A spec v1.0.0. HTTP/network deps live here, never in bwoc-core (#48)."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

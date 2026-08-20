@@ -1,6 +1,7 @@
 [package]
 name = "bwoc-cli"
 description = "The bwoc CLI — incarnate, check, spawn, and control BWOC agents. Native binary for macOS, Linux, and Windows. Localized output (TH, EN)."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
