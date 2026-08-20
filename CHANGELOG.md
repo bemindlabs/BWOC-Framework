@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.8.20-2] — 2026-08-20 — 2.44.2
+
+**A security release.** Two ways an untrusted turn could escape the trust boundary are closed, both reachable on today's shipped code. Upgrading is recommended for anyone running `bwoc-harness` against a remote or shared model endpoint, or auto-processing inbound agent messages.
+
+### Fixed
+
+- **A provider response can no longer choose its own provenance** — the non-streaming (default) path deserialized the completion straight into a `ChatMessage`, `principal` included, so an endpoint that was hostile, compromised, or merely MITM'd could answer `"principal":{"kind":"self_agent"}` — one of only two **Trusted** principals — and flip the turn to Trusted, making the Layer-0 capability gate a no-op and unlocking `run_command`, `git push` and network egress. It could equally forge a verified sender identity, or a `"role":"system"` that then rode along in every later request. An `ollama` endpoint is plain HTTP by default. A completion is by definition the agent's own model turn, so both role and principal are now stamped as such and whatever the wire claimed is discarded. The streaming path was never affected (it rebuilds the message locally).
+- **An untrusted turn can no longer write its own control plane** — the Layer-0 gate allowed any write that `confine_path` placed inside the worktree, and `<worktree>/.bwoc/` *is* inside the worktree. That reached `harness-policy.toml` (the permission policy itself — rewrite it to allow-all and Layer 2 stops objecting), `peers.toml` (the pinned signing keys a remote sender is verified against), the replay-nonce store, the refusal audit trail, the workspace/agent registry, and `config.manifest.json`. Writes to that state are now refused regardless of confinement — matched both by name and by canonical target, so a symlinked `.bwoc` cannot slip past. Ordinary worktree content writes and trusted turns are unaffected.
+- **Replay defense survives a daemon restart** — the seen-nonce set was memory-only, so restarting the daemon forgot every nonce and a captured, validly-signed envelope could be raced back in within the ±300 s freshness window. Nonces are now persisted to a self-pruning sidecar (`<agent>/.bwoc/replay-nonces.jsonl`, gitignored for new workspaces).
+- **A wire message or persisted file can no longer assert a verified sender identity** — `ChatMessage::ingest` clamps `A2aSender` as well as `SelfAgent`, and checkpoint / chat-session reloads apply the same clamp. Only code that has just verified a signature may stamp that principal.
+
+### Added
+
+- **A release gate for the "Latest release" pointers** — `README.md`, `VERSION.md`, `Cargo.toml` and `Formula/bwoc.rb` are now checked against the topmost `CHANGELOG.md` release, offline. Each of those had silently drifted (the README and `VERSION.md` by two releases; the formula by five in an earlier era). The formula is allowed to trail by exactly one release, since its checksums only exist after the artifacts do.
+
+### Changed
+
+- **`trust::evaluate` reports which signature actually verified** — `TrustOutcome::Pass` carries `verified_from`, set only from the crypto-success branch for a cross-workspace sender. Internal plumbing toward the deferred middle trust tier (#452); nothing consumes it yet.
+
 ## [v2026.8.20-1] — 2026-08-20 — 2.44.1
 
 A packaging fix: **`bwoc-harness` now ships in the release archives.** Until this release it was shipped by no install path at all, so any install that wasn't a workspace checkout had a `bwoc` that could not spawn the component running the agentic loop.
