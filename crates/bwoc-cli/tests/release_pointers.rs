@@ -53,11 +53,19 @@ fn releases() -> Vec<(String, String)> {
         if tag == "Unreleased" {
             continue;
         }
-        // `## [v2026.8.20-1] — 2026-08-20 — 2.44.1`
-        let semver =
-            tail.rsplit('—').next().map(str::trim).filter(|s| {
-                s.split('.').count() == 3 && s.starts_with(|c: char| c.is_ascii_digit())
+        // `## [v2026.8.20-1] — 2026-08-20 — 2.44.1`. Require an EXACT numeric
+        // `MAJOR.MINOR.PATCH`: a loose "3 dot-parts starting with a digit" check
+        // would swallow `2.44.1-beta` or `2.44.1 (hotfix)` and then fail later,
+        // in a comparison whose message points at the wrong thing.
+        let semver = tail.rsplit('—').next().map(str::trim).filter(|s| {
+            let mut parts = s.split('.');
+            let ok = (0..3).all(|_| {
+                parts
+                    .next()
+                    .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
             });
+            ok && parts.next().is_none()
+        });
         match semver {
             Some(v) => out.push((tag.to_string(), v.to_string())),
             // Early entries predate the `— <SemVer>` heading convention (e.g.
@@ -115,9 +123,14 @@ fn readme_and_version_point_at_the_newest_release() {
 fn cargo_version_matches_the_newest_release() {
     let (tag, semver) = newest_release();
     let manifest = read("Cargo.toml");
+    // Bounded to the `[workspace.package]` section — `skip_while` alone would
+    // scan to EOF and happily read a `version = "…"` belonging to some later
+    // table if this one ever lost its own.
     let declared = manifest
         .lines()
         .skip_while(|l| !l.starts_with("[workspace.package]"))
+        .skip(1)
+        .take_while(|l| !l.trim_start().starts_with('['))
         .find_map(|l| l.strip_prefix("version = \""))
         .and_then(|v| v.split('"').next())
         .expect("[workspace.package] declares a version");
@@ -171,11 +184,34 @@ fn the_homebrew_formula_is_at_most_one_release_behind() {
         allowed.get(1).map(|a| a.1.as_str()).unwrap_or("n/a"),
     );
 
-    // Whichever release it claims, its download urls must actually point there —
-    // a version bumped without its urls would install the wrong binaries.
+    // Whichever release it claims, EVERY per-platform download url must point
+    // there. Checking that *some* url mentions the tag would let a single
+    // missed platform through — and a stale url means that platform installs
+    // the wrong binaries, exactly the failure this gate exists to catch.
     let (tag, _) = hit.expect("checked above");
+    let urls: Vec<&str> = formula
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("url \""))
+        .collect();
     assert!(
-        formula.contains(&format!("/download/{tag}/")),
-        "Formula/bwoc.rb says version `{declared}` but its download urls do not point at {tag}"
+        !urls.is_empty(),
+        "Formula/bwoc.rb declares no download urls to check"
+    );
+    let wrong: Vec<&&str> = urls
+        .iter()
+        .filter(|l| !l.contains(&format!("/download/{tag}/")))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "Formula/bwoc.rb says version `{declared}` ({tag}) but {} of its {} download urls \
+         point elsewhere — every platform must be bumped together:\n  {}",
+        wrong.len(),
+        urls.len(),
+        wrong
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n  ")
     );
 }
