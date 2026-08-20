@@ -273,15 +273,42 @@ mod tests {
 
     // ── scan_authenticated_actor (L3 act-as-user gate) ──────────────────────
 
-    /// A verified (or unverified) A2A sender message.
+    /// An A2A sender message.
+    ///
+    /// `verified: true` must go through [`ChatMessage::verified_a2a_sender`] —
+    /// the daemon's post-signature mint path. `ChatMessage::ingest` deliberately
+    /// clamps `A2aSender` to `Unknown`, so building a "verified" sender through
+    /// the wire path is impossible by construction (#452). That asymmetry is the
+    /// forgery control, and these tests exercise both sides of it.
     fn a2a(from: &str, verified: bool) -> ChatMessage {
-        ChatMessage::ingest(
-            Principal::A2aSender {
-                from: from.into(),
-                verified,
-            },
-            "a2a message",
-        )
+        if verified {
+            return ChatMessage::verified_a2a_sender(from, "a2a message");
+        }
+        // The unverified case must reach the scan as a REAL
+        // `A2aSender { verified: false }`, not as the `Unknown` that `ingest`
+        // would clamp it to. Otherwise nothing exercises the `*verified &&`
+        // guard in `scan_authenticated_actor` — deleting that guard would leave
+        // the whole suite green while an *unverified* sender silently unlocked
+        // act-as-user. Round-trip through serde to build it without widening
+        // the production API with a test-only constructor.
+        let json = serde_json::json!({
+            "role": "user",
+            "content": "a2a message",
+            "principal": { "kind": "a2a_sender", "from": from, "verified": false },
+        });
+        let m: ChatMessage = serde_json::from_value(json).expect("valid ChatMessage");
+        assert!(
+            matches!(
+                m.principal(),
+                Principal::A2aSender {
+                    verified: false,
+                    ..
+                }
+            ),
+            "test helper must yield an unverified A2aSender, got {:?}",
+            m.principal()
+        );
+        m
     }
     fn actor(id: &str) -> AuthenticatedActor {
         AuthenticatedActor { id: id.into() }
