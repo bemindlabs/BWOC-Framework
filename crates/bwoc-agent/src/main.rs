@@ -544,10 +544,12 @@ fn check_inbox_for_new(
             // below so the audit log records arrival before the (blocking) turn.
             let delivered = matches!(
                 outcome,
-                trust::TrustOutcome::Pass | trust::TrustOutcome::Warn { .. }
+                trust::TrustOutcome::Pass { .. } | trust::TrustOutcome::Warn { .. }
             );
             match outcome {
-                trust::TrustOutcome::Pass => announce(trimmed),
+                // Slice 3 plumbing only: the minted `verified_from` is not
+                // consumed yet — the daemon-side session actor lands in Slice 4.
+                trust::TrustOutcome::Pass { .. } => announce(trimmed),
                 trust::TrustOutcome::Warn {
                     ref from,
                     ref missing,
