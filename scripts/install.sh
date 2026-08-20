@@ -12,7 +12,7 @@
 #
 # Requires: a Rust toolchain (https://rustup.rs/).
 #
-# Usage (from a clone of bwoc-framwork):
+# Usage (from a clone of bwoc-framework):
 #   ./scripts/install.sh                # install or upgrade in place (--force)
 #   ./scripts/install.sh --check        # report current install state, no build
 #   ./scripts/install.sh --uninstall    # remove all three binaries
