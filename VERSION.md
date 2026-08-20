@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `2.44.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.13.0`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `2.44.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.13.1`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
 **Latest release:** [`v2026.8.19-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.8.19-0) *(2026-08-19 — **2.43.0** — **Loop-Engineering layer**: L1 goal loop (`bwoc-harness --lead --loop`, #437/#438), the **`bwoc loop` control-center TUI** (observe → start/stop + live log → in-TUI edit, #444/#445/#446), L2 fleet-health reconcile loop (#439), shared `Ticker`+`Budget` in `bwoc-core` (#440), tunable daemon task-poll (#442); session-scoped "Always allow" approval grants (#443, closes #409). Prior: `v2026.8.12-0` 2.42.0 — Tier-1 memory recall + agent-hook hardening)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
-**Last-Updated:** `2026-08-19T17:55:38Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-08-20T10:35:55Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
