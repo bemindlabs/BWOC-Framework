@@ -199,7 +199,28 @@ impl TrustContext {
 #[derive(Debug)]
 pub enum TrustOutcome {
     /// Envelope passes; no log entry.
-    Pass,
+    ///
+    /// `verified_from` carries the sender id **only when a signature actually
+    /// verified** — it is the L3 middle tier's identity mint (#452), and the
+    /// sole input from which a daemon may later grant act-as-user authority.
+    ///
+    /// It is a **struct variant on purpose**: `evaluate` has several passing
+    /// paths that never ran crypto at all (signing off + gate inert, a malformed
+    /// line, `from == "user"`, an unenforced mode where an unverifiable
+    /// signature still proceeds). Making the field explicit forces every one of
+    /// them — and any Pass added later — to state `verified_from: None` rather
+    /// than silently inherit an identity. A bare `Pass` is a compile error.
+    ///
+    /// Nothing in the binary reads it yet — deliberately. This slice is
+    /// **plumbing only**: it establishes *where* an identity may legitimately be
+    /// minted and proves the discrimination with tests, while the consumer (the
+    /// daemon-set session actor that unlocks act-as-user) lands in the following
+    /// slice. Landing the mint and its consumer together would put the riskiest
+    /// surface in the same review as the plumbing.
+    Pass {
+        #[allow(dead_code, reason = "consumed by the daemon-minting slice (#452)")]
+        verified_from: Option<String>,
+    },
     /// Envelope passes with a warning. Contains sender id + missing qualities.
     Warn { from: String, missing: Vec<String> },
     /// Envelope is refused. Contains the full `Refusal` record.
@@ -259,11 +280,20 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     // runs even if no `requiredTrust` is declared.
     let signing_off = matches!(ctx.signing_mode, SigningMode::Off);
     if signing_off && ctx.is_inert() {
-        return TrustOutcome::Pass;
+        // Nothing ran: no crypto, no gate. No identity.
+        return TrustOutcome::Pass {
+            verified_from: None,
+        };
     }
     let env: serde_json::Value = match serde_json::from_str(envelope_line) {
         Ok(v) => v,
-        Err(_) => return TrustOutcome::Pass, // malformed → silently skip (v1 behaviour)
+        // Malformed → silently skip (v1 behaviour). Nothing was parsed, let
+        // alone verified.
+        Err(_) => {
+            return TrustOutcome::Pass {
+                verified_from: None,
+            };
+        }
     };
     let from = env
         .get("from")
@@ -271,8 +301,13 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
         .unwrap_or("")
         .to_string();
     if from == "user" {
-        // Spec: user-originated messages always pass regardless of mode.
-        return TrustOutcome::Pass;
+        // Spec: user-originated messages always pass regardless of mode. This
+        // path runs BEFORE any signature check, so it proves nothing — and it is
+        // attacker-selectable (any envelope may claim `from: "user"`), which is
+        // exactly why it must never carry an identity.
+        return TrustOutcome::Pass {
+            verified_from: None,
+        };
     }
     let envelope_ts = env
         .get("ts")
@@ -350,6 +385,11 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     // disables the whole signing/verify layer — handled by the fast-path above
     // (`signing_off && is_inert`), which returns before this code. A local
     // sender follows the configured signing mode.
+    // The L3 identity mint (#452). Set ONLY where crypto actually verified, and
+    // only for a cross-workspace sender — the v1 identity set. Every other
+    // passing path leaves it `None`, so no unproven sender can ever carry one.
+    let mut verified_from: Option<String> = None;
+
     if cross_workspace {
         if env.get("sig").and_then(|v| v.as_str()).is_none() {
             // A signature/identity failure, not a missing-quality one — keep
@@ -363,7 +403,7 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
                 missing: vec![],
             });
         }
-        if let Some(outcome) = verify_signature(
+        match verify_signature(
             true,
             &env,
             &from,
@@ -371,10 +411,15 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
             envelope_offset,
             &sender_manifest,
         ) {
-            return outcome;
+            SignatureCheck::Refused(outcome) => return *outcome,
+            SignatureCheck::Verified => verified_from = Some(from.clone()),
+            SignatureCheck::Unproven => {}
         }
     } else if !signing_off {
-        if let Some(outcome) = verify_signature(
+        // Same-workspace sender. Deliberately does NOT mint: a local agent is a
+        // different trust context from a remote peer, and widening the identity
+        // set is a decision for a later slice, not a side effect of this one.
+        match verify_signature(
             matches!(ctx.signing_mode, SigningMode::Enforce),
             &env,
             &from,
@@ -382,7 +427,8 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
             envelope_offset,
             &sender_manifest,
         ) {
-            return outcome;
+            SignatureCheck::Refused(outcome) => return *outcome,
+            SignatureCheck::Verified | SignatureCheck::Unproven => {}
         }
     }
 
@@ -414,7 +460,8 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     // ── Step 2: Kalyāṇamitta quality gate ──
     if ctx.is_inert() {
         // Signature accepted (or signing off) and no quality requirements.
-        return TrustOutcome::Pass;
+        // Carries the identity only if crypto actually verified above.
+        return TrustOutcome::Pass { verified_from };
     }
     let declared = sender_manifest
         .trust
@@ -429,12 +476,14 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
         .collect();
 
     if missing.is_empty() {
-        return TrustOutcome::Pass;
+        return TrustOutcome::Pass { verified_from };
     }
 
     // Apply the effective mode to the missing-quality case only.
     match ctx.mode {
-        RefusalMode::Off => TrustOutcome::Pass, // shouldn't reach here (is_inert guards Off)
+        // Shouldn't reach here (is_inert guards Off), but keep the identity
+        // faithful rather than inventing or dropping one.
+        RefusalMode::Off => TrustOutcome::Pass { verified_from },
         RefusalMode::Warn => TrustOutcome::Warn { from, missing },
         RefusalMode::Refuse => TrustOutcome::Refuse(Refusal {
             envelope_offset,
@@ -457,6 +506,24 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
 /// - unsigned → `unsigned` (refuse in Enforce).
 ///
 /// In Warn mode the unverifiable-but-not-tampered cases proceed (`None`).
+/// What a signature check concluded.
+///
+/// Replaces an `Option<TrustOutcome>` whose `None` conflated two very different
+/// facts: *"the signature verified"* and *"we proceeded without proving
+/// anything"*. That conflation is the whole reason this type exists — minting an
+/// identity off the latter would hand act-as-user authority to an unverified
+/// sender (#452).
+#[derive(Debug)]
+enum SignatureCheck {
+    /// Crypto ran and passed: this sender's identity is **proven**.
+    Verified,
+    /// Proceed, but nothing was proven — no signature, no pubkey, or an
+    /// unloadable key in a non-enforcing mode. Never an identity.
+    Unproven,
+    /// Refuse, carrying the verdict.
+    Refused(Box<TrustOutcome>),
+}
+
 fn verify_signature(
     enforce: bool,
     env: &serde_json::Value,
@@ -464,15 +531,15 @@ fn verify_signature(
     envelope_ts: &str,
     envelope_offset: u64,
     sender_manifest: &Manifest,
-) -> Option<TrustOutcome> {
+) -> SignatureCheck {
     let refuse = |reason: &'static str| {
-        Some(TrustOutcome::Refuse(Refusal {
+        SignatureCheck::Refused(Box::new(TrustOutcome::Refuse(Refusal {
             envelope_offset,
             envelope_ts: envelope_ts.to_string(),
             envelope_from: from.to_string(),
             reason,
             missing: vec![],
-        }))
+        })))
     };
 
     let sig = env.get("sig").and_then(|v| v.as_str());
@@ -494,17 +561,20 @@ fn verify_signature(
             );
             match bwoc_signing::load_verifying_key(pubkey) {
                 Ok(vk) => match bwoc_signing::verify(&vk, &canonical, sig) {
-                    Ok(()) => None,                    // identity proven → proceed
+                    // THE one place identity is proven. Everything else below
+                    // proceeds without proof and must never mint an identity.
+                    Ok(()) => SignatureCheck::Verified,
                     Err(_) => refuse("bad_signature"), // tampered — refuse in all modes
                 },
                 Err(_) if enforce => refuse("bad_pubkey"),
-                Err(_) => None,
+                // Key unloadable but not enforcing: proceed, prove nothing.
+                Err(_) => SignatureCheck::Unproven,
             }
         }
         (Some(_), None) if enforce => refuse("no_pubkey"),
         (None, _) if enforce => refuse("unsigned"),
-        // Warn / unverifiable-but-not-tampered → proceed.
-        _ => None,
+        // Warn / unverifiable-but-not-tampered → proceed, prove nothing.
+        _ => SignatureCheck::Unproven,
     }
 }
 
@@ -637,8 +707,55 @@ mod tests {
         let ctx = ctx_with(vec!["vatta".into()], RefusalMode::Off, false, None);
         assert!(matches!(
             evaluate(&ctx, agent_line(), 0),
-            TrustOutcome::Pass
+            TrustOutcome::Pass { .. }
         ));
+    }
+
+    /// MINT DISCRIMINATION (#452 Slice 3) — the security core of this slice.
+    ///
+    /// `evaluate` has several passing paths that never ran crypto. If any of
+    /// them minted an identity, a sender that presented no proof at all would
+    /// later be handed act-as-user authority. Every one must yield
+    /// `verified_from: None`; only a signature that actually verified may mint
+    /// (asserted in the cross-workspace signing test).
+    #[test]
+    fn no_unverified_pass_path_ever_mints_an_identity() {
+        let mint = |ctx: &TrustContext, line: &str| match evaluate(ctx, line, 0) {
+            TrustOutcome::Pass { verified_from } => verified_from,
+            other => panic!("expected Pass, got {other:?}"),
+        };
+
+        // (1) Signing off + gate inert — nothing ran at all.
+        let inert = ctx_with(vec![], RefusalMode::Off, false, None);
+        assert_eq!(
+            mint(&inert, agent_line()),
+            None,
+            "inert fast path must not mint"
+        );
+
+        // (2) Malformed envelope — never even parsed.
+        assert_eq!(
+            mint(&inert, "{not json"),
+            None,
+            "a malformed line must not mint"
+        );
+
+        // (3) `from == "user"` — passes BEFORE any signature check, and is
+        //     attacker-selectable: any envelope may simply claim it.
+        let user_line = r#"{"from":"user","to":"agent-me","ts":"t","message":"hi"}"#;
+        assert_eq!(mint(&inert, user_line), None, "from=user must not mint");
+
+        // (4) Same claim, with signing ENFORCED — the `from == "user"`
+        //     short-circuit still precedes verification, so it still proves
+        //     nothing. This is the sharpest case: it looks like the strictest
+        //     posture yet mints nothing.
+        let mut enforced = ctx_with(vec![], RefusalMode::Off, false, None);
+        enforced.signing_mode = SigningMode::Enforce;
+        assert_eq!(
+            mint(&enforced, user_line),
+            None,
+            "from=user must not mint even under Enforce"
+        );
     }
 
     #[test]
@@ -647,7 +764,7 @@ mod tests {
         let ctx = ctx_with(vec![], RefusalMode::Off, true, None);
         assert!(matches!(
             evaluate(&ctx, agent_line(), 0),
-            TrustOutcome::Pass
+            TrustOutcome::Pass { .. }
         ));
     }
 
@@ -737,7 +854,7 @@ mod tests {
         for mode in [RefusalMode::Off, RefusalMode::Warn, RefusalMode::Refuse] {
             let ctx = ctx_with(vec!["vatta".into()], mode, true, None);
             assert!(
-                matches!(evaluate(&ctx, line, 0), TrustOutcome::Pass),
+                matches!(evaluate(&ctx, line, 0), TrustOutcome::Pass { .. }),
                 "user sender must pass with mode {mode:?}"
             );
         }
@@ -750,7 +867,7 @@ mod tests {
         let ctx = ctx_with(vec!["vatta".into()], RefusalMode::Refuse, true, None);
         assert!(matches!(
             evaluate(&ctx, "{not json}", 0),
-            TrustOutcome::Pass
+            TrustOutcome::Pass { .. }
         ));
     }
 
@@ -864,12 +981,15 @@ mod tests {
             "message": body, "nonce": nonce, "sig": sig,
         });
 
-        // Valid signature → proceed (None) in any signing mode.
+        // Valid signature → Verified (identity PROVEN) in any signing mode.
+        // This is the sole branch the L3 identity mint may key on (#452).
         for mode in [SigningMode::Enforce, SigningMode::Warn] {
             assert!(
-                verify_signature(matches!(mode, SigningMode::Enforce), &env, from, ts, 0, &sm)
-                    .is_none(),
-                "valid sig must proceed in {mode:?}"
+                matches!(
+                    verify_signature(matches!(mode, SigningMode::Enforce), &env, from, ts, 0, &sm),
+                    SignatureCheck::Verified
+                ),
+                "valid sig must prove identity in {mode:?}"
             );
         }
 
@@ -878,7 +998,10 @@ mod tests {
         bad["message"] = "tampered".into();
         for mode in [SigningMode::Enforce, SigningMode::Warn] {
             match verify_signature(matches!(mode, SigningMode::Enforce), &bad, from, ts, 0, &sm) {
-                Some(TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "bad_signature"),
+                SignatureCheck::Refused(o) => match *o {
+                    TrustOutcome::Refuse(r) => assert_eq!(r.reason, "bad_signature"),
+                    other => panic!("expected Refuse, got {other:?}"),
+                },
                 other => panic!("tampered must refuse in {mode:?}, got {other:?}"),
             }
         }
@@ -891,12 +1014,21 @@ mod tests {
             "from": "agent-x", "to": "agent-me", "ts": "t", "message": "hi",
         });
         match verify_signature(true, &env, "agent-x", "t", 0, &sm) {
-            Some(TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "unsigned"),
+            SignatureCheck::Refused(o) => match *o {
+                TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unsigned"),
+                other => panic!("expected Refuse, got {other:?}"),
+            },
             other => panic!("expected unsigned refuse, got {other:?}"),
         }
+        // Warn mode proceeds — but proves NOTHING, so it must be `Unproven`,
+        // never `Verified`. Minting an identity here would hand act-as-user
+        // authority to a sender that never presented a signature (#452).
         assert!(
-            verify_signature(false, &env, "agent-x", "t", 0, &sm).is_none(),
-            "warn mode proceeds on unsigned"
+            matches!(
+                verify_signature(false, &env, "agent-x", "t", 0, &sm),
+                SignatureCheck::Unproven
+            ),
+            "warn mode proceeds on unsigned, but proves nothing"
         );
     }
 
@@ -917,6 +1049,72 @@ mod tests {
     }
 
     // ── cross-workspace give-feedback (#20) ─────────────────────────────────
+
+    /// The v1 identity set is **cross-workspace senders only** (#452 Slice 3).
+    ///
+    /// A same-workspace agent whose signature verifies still passes, but must
+    /// NOT mint: a local agent is a different trust context from a remote peer,
+    /// and widening the identity set is a deliberate later decision, not a side
+    /// effect. Without this test, flipping the local branch to mint keeps the
+    /// whole suite green (verified by mutation).
+    #[test]
+    fn a_verified_same_workspace_sender_passes_without_minting() {
+        use std::fs;
+        let ws = tempfile::tempdir().unwrap();
+
+        // A local agent in this workspace's registry, with a published key.
+        let agent_dir = ws.path().join("agents/agent-local");
+        let pubkey = bwoc_signing::generate_keypair(&agent_dir.join(".bwoc"), false).unwrap();
+        let key = bwoc_signing::load_signing_key(&agent_dir.join(".bwoc"))
+            .unwrap()
+            .unwrap();
+        let mut m = sample_manifest();
+        m.trust = Some(TrustBlock {
+            schema_version: 1,
+            declared: TrustDeclared::default(),
+            required_trust: vec![],
+            mode: None,
+            signing_public_key: Some(pubkey),
+        });
+        m.save_to_path(&agent_dir.join("config.manifest.json"))
+            .unwrap();
+        fs::create_dir_all(ws.path().join(".bwoc")).unwrap();
+        fs::write(
+            ws.path().join(".bwoc/agents.toml"),
+            "[[agent]]\nid = \"agent-local\"\npath = \"agents/agent-local\"\n\
+             backend = \"claude\"\nincarnated = \"2026-05-27\"\nstatus = \"active\"\n",
+        )
+        .unwrap();
+
+        let ctx = TrustContext {
+            required: vec![],
+            mode: RefusalMode::Off,
+            agent_dir: ws.path().to_path_buf(),
+            workspace_root: Some(ws.path().to_path_buf()),
+            gating_enabled: false,
+            signing_mode: SigningMode::Enforce,
+            replay: Mutex::new(ReplayGuard::default()),
+        };
+
+        let ts = bwoc_core::time::utc_now_iso8601();
+        let (from, to, mid, body) = ("agent-local", "agent-me", "msg-l", "hello");
+        let nonce = bwoc_signing::new_nonce();
+        let sig = bwoc_signing::sign(
+            &key,
+            &bwoc_signing::canonical_bytes(from, to, &ts, mid, body, &nonce),
+        );
+        let line = format!(
+            r#"{{"from":"{from}","to":"{to}","ts":"{ts}","messageId":"{mid}","message":"{body}","nonce":"{nonce}","sig":"{sig}"}}"#
+        );
+
+        match evaluate(&ctx, &line, 0) {
+            TrustOutcome::Pass { verified_from } => assert_eq!(
+                verified_from, None,
+                "a same-workspace sender must pass WITHOUT minting an identity"
+            ),
+            other => panic!("a valid local signature must pass, got {other:?}"),
+        }
+    }
 
     #[test]
     fn cross_workspace_signed_sender_verifies_via_routes() {
@@ -994,10 +1192,16 @@ mod tests {
         let signed = format!(
             r#"{{"from":"{from}","to":"{to}","ts":"{ts}","messageId":"{mid}","message":"{body}","nonce":"{nonce}","sig":"{sig}","kind":"feedback"}}"#
         );
-        assert!(
-            matches!(evaluate(&ctx, &signed, 0), TrustOutcome::Pass),
-            "a valid cross-workspace signature must pass"
-        );
+        // Passes AND mints the identity — this is the one branch that may
+        // (#452 Slice 3): crypto actually verified, cross-workspace sender.
+        match evaluate(&ctx, &signed, 0) {
+            TrustOutcome::Pass { verified_from } => assert_eq!(
+                verified_from.as_deref(),
+                Some(from),
+                "a signature-verified cross-workspace sender must mint its identity"
+            ),
+            other => panic!("a valid cross-workspace signature must pass, got {other:?}"),
+        }
 
         // (b) unsigned cross-workspace write → refused (read-vs-write split).
         let unsigned = format!(r#"{{"from":"{from}","to":"{to}","ts":"{ts}","message":"{body}"}}"#);
@@ -1095,7 +1299,7 @@ mod tests {
             "hi",
         );
         assert!(
-            matches!(evaluate(&ctx, &line, 0), TrustOutcome::Pass),
+            matches!(evaluate(&ctx, &line, 0), TrustOutcome::Pass { .. }),
             "a pinned peer's valid signature must pass without a workspace"
         );
 
@@ -1163,7 +1367,10 @@ mod tests {
             "m1",
             "hi",
         );
-        assert!(matches!(evaluate(&ctx, &line, 0), TrustOutcome::Pass));
+        assert!(matches!(
+            evaluate(&ctx, &line, 0),
+            TrustOutcome::Pass { .. }
+        ));
     }
 
     fn sample_manifest() -> Manifest {
