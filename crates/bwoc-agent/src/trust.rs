@@ -34,20 +34,203 @@ const REPLAY_WINDOW_SECS: i64 = 300;
 /// Tolerate this much clock skew into the future before rejecting `ts`.
 const FUTURE_SKEW_SECS: i64 = 60;
 
+/// Sidecar under the agent's own `.bwoc/` that makes replay defense outlive a
+/// daemon restart.
+const REPLAY_SIDECAR: &str = "replay-nonces.jsonl";
+
+/// Rewrite the sidecar once this many nonces have been appended since load, so
+/// a long-running daemon's file cannot grow without bound. Compaction re-applies
+/// the freshness window, so what survives is only ever the last few minutes.
+const REPLAY_COMPACT_EVERY: usize = 4096;
+
 /// Receive-side replay defense for **remote** (cross-workspace / gateway)
 /// senders. A relay can re-deliver a validly-signed envelope arbitrarily; the
 /// signature still verifies, so the nonce must be checked. Guards two ways:
 /// a bounded seen-`(from, nonce)` set (rejects duplicates) and a `ts` freshness
-/// window (rejects stale/future envelopes, which also bounds replay across a
-/// daemon restart that clears the in-memory set). The `ts` comparison is
-/// lexicographic on fixed-width ISO-8601 UTC — no date parsing.
+/// window (rejects stale/future envelopes). The `ts` comparison is lexicographic
+/// on fixed-width ISO-8601 UTC — no date parsing.
+///
+/// ## Why it is persisted
+///
+/// The seen-set used to be memory-only, so a **daemon restart forgot every
+/// nonce**. Inside the ±[`REPLAY_WINDOW_SECS`] freshness window that left a real
+/// hole: an attacker holding a captured, validly-signed envelope could restart-
+/// race it back in, and the signature would still verify. That matters more now
+/// that a verified signature *mints an identity* (#452) — a replay would re-mint
+/// it. So recorded nonces are appended to a sidecar and reloaded at startup.
+///
+/// The freshness window does the bounding for free: anything older than the
+/// window is refused by `ts` alone, so only the last few minutes of nonces are
+/// worth keeping. Load filters by the window and rewrites the file with the
+/// survivors; a long run compacts again every [`REPLAY_COMPACT_EVERY`] appends.
+///
+/// Persistence is **best-effort by design**: it is a hardening layered on the
+/// in-memory guard, so an unwritable sidecar degrades to exactly the previous
+/// behaviour rather than refusing traffic (which would turn a full disk into a
+/// denial of service). Failures are reported once, not silently swallowed.
 #[derive(Default)]
 pub struct ReplayGuard {
     seen: HashSet<(String, String)>,
-    order: VecDeque<(String, String)>,
+    /// FIFO of accepted records. Carries `ts` as well as the key, because
+    /// compaction has to rewrite the surviving records faithfully — dropping
+    /// the timestamp would make the sidecar unprunable.
+    order: VecDeque<NonceRecord>,
+    /// Sidecar path. `None` ⇒ in-memory only (tests, or an agent dir we cannot
+    /// write to).
+    sidecar: Option<PathBuf>,
+    /// Appends since the last compaction.
+    appended: usize,
+    /// Set once a sidecar write has failed, so the warning is not repeated on
+    /// every message.
+    write_failed: bool,
+    /// Appends between compactions. An instance field rather than a bare const
+    /// so tests can drive compaction without writing thousands of lines —
+    /// compaction is where a data-losing bug is easiest to introduce (an early
+    /// draft of this code rewrote the file EMPTY, silently forgetting every
+    /// nonce recorded since startup).
+    compact_every: usize,
+}
+
+/// One persisted nonce record. Serialized by hand with `serde_json` rather than
+/// derives, so `bwoc-agent` need not take a `serde` dependency for three fields
+/// (dep-quarantine).
+struct NonceRecord {
+    from: String,
+    nonce: String,
+    ts: String,
+}
+
+impl NonceRecord {
+    fn to_line(&self) -> String {
+        serde_json::json!({ "from": self.from, "nonce": self.nonce, "ts": self.ts }).to_string()
+    }
+
+    /// Parse one sidecar line; `None` for anything malformed or missing a field.
+    fn from_line(line: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        Some(Self {
+            from: get("from")?,
+            nonce: get("nonce")?,
+            ts: get("ts")?,
+        })
+    }
 }
 
 impl ReplayGuard {
+    /// Open the guard backed by `<agent_dir>/.bwoc/replay-nonces.jsonl`,
+    /// seeding it with the still-fresh nonces recorded before the last restart.
+    ///
+    /// Records outside the freshness window are dropped (they are unusable for
+    /// replay anyway) and the file is rewritten with the survivors, so the
+    /// sidecar is self-pruning across restarts.
+    fn persistent(agent_dir: &Path) -> Self {
+        let sidecar = agent_dir.join(".bwoc").join(REPLAY_SIDECAR);
+        let mut guard = Self {
+            sidecar: Some(sidecar.clone()),
+            compact_every: REPLAY_COMPACT_EVERY,
+            ..Self::default()
+        };
+
+        if let Ok(body) = std::fs::read_to_string(&sidecar) {
+            let mut survivors: Vec<NonceRecord> = Vec::new();
+            for line in body.lines().filter(|l| !l.trim().is_empty()) {
+                let Some(rec) = NonceRecord::from_line(line) else {
+                    continue; // a torn or hand-edited line is skipped, not fatal
+                };
+                // Outside the window ⇒ `ts_outside_window` would refuse the
+                // envelope regardless, so the nonce no longer needs remembering.
+                if ts_outside_window(&rec.ts).is_some() {
+                    continue;
+                }
+                let key = (rec.from.clone(), rec.nonce.clone());
+                if guard.seen.insert(key) {
+                    guard.order.push_back(NonceRecord {
+                        from: rec.from.clone(),
+                        nonce: rec.nonce.clone(),
+                        ts: rec.ts.clone(),
+                    });
+                    survivors.push(rec);
+                }
+            }
+            guard.rewrite(&survivors);
+        }
+        guard
+    }
+
+    /// Atomically replace the sidecar with exactly `records` (tmp + rename), so
+    /// a crash mid-compaction cannot leave a truncated file.
+    fn rewrite(&mut self, records: &[NonceRecord]) {
+        let Some(path) = self.sidecar.clone() else {
+            return;
+        };
+        let mut body = String::new();
+        for rec in records {
+            body.push_str(&rec.to_line());
+            body.push('\n');
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let tmp = path.with_extension("jsonl.tmp");
+        if std::fs::write(&tmp, &body).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
+            self.appended = 0;
+        } else {
+            let _ = std::fs::remove_file(&tmp);
+            self.note_write_failure(&path);
+        }
+    }
+
+    /// Append one accepted nonce, compacting when the file has grown enough.
+    fn record(&mut self, rec: NonceRecord) {
+        let Some(path) = self.sidecar.clone() else {
+            return;
+        };
+        if self.compact_every > 0 && self.appended >= self.compact_every {
+            // Rewrite with everything still live and still fresh. Writing an
+            // empty file here would silently forget every nonce recorded since
+            // startup — the exact hole this whole change closes.
+            let live: Vec<NonceRecord> = self
+                .order
+                .iter()
+                .filter(|r| ts_outside_window(&r.ts).is_none())
+                .map(|r| NonceRecord {
+                    from: r.from.clone(),
+                    nonce: r.nonce.clone(),
+                    ts: r.ts.clone(),
+                })
+                .collect();
+            self.rewrite(&live);
+        }
+        let line = rec.to_line();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{line}")
+            });
+        match appended {
+            Ok(()) => self.appended += 1,
+            Err(_) => self.note_write_failure(&path),
+        }
+    }
+
+    fn note_write_failure(&mut self, path: &Path) {
+        if !self.write_failed {
+            self.write_failed = true;
+            eprintln!(
+                "bwoc-agent: cannot persist replay nonces to {} — replay defense \
+                 still applies in-memory, but will not survive a restart.",
+                path.display()
+            );
+        }
+    }
+
     /// `Some(reason)` ⇒ refuse (stale / future / replayed); `None` ⇒ fresh +
     /// novel (and now recorded). An empty `nonce` skips the duplicate check
     /// (only the freshness window applies).
@@ -62,11 +245,23 @@ impl ReplayGuard {
         if self.seen.contains(&key) {
             return Some("replayed");
         }
-        self.seen.insert(key.clone());
-        self.order.push_back(key);
+        self.seen.insert(key);
+        self.order.push_back(NonceRecord {
+            from: from.to_string(),
+            nonce: nonce.to_string(),
+            ts: env_ts.to_string(),
+        });
+        // Persist BEFORE returning "accept": a nonce the caller acts on must
+        // already be on disk, or a crash in between would reopen the very hole
+        // this closes.
+        self.record(NonceRecord {
+            from: from.to_string(),
+            nonce: nonce.to_string(),
+            ts: env_ts.to_string(),
+        });
         if self.order.len() > REPLAY_CAP {
             if let Some(old) = self.order.pop_front() {
-                self.seen.remove(&old);
+                self.seen.remove(&(old.from, old.nonce));
             }
         }
         None
@@ -170,7 +365,9 @@ impl TrustContext {
             gating_enabled,
             signing_mode: SigningMode::from_env(),
             agent_dir: cwd.to_path_buf(),
-            replay: Mutex::new(ReplayGuard::default()),
+            // Durable: reloads still-fresh nonces so a restart cannot be raced
+            // to replay a captured envelope (#452).
+            replay: Mutex::new(ReplayGuard::persistent(cwd)),
         }
     }
 
@@ -961,6 +1158,158 @@ mod tests {
             signing_public_key: Some(pubkey_hex.to_string()),
         });
         m
+    }
+
+    // ---- replay defense survives a daemon restart (#452) ----------------
+
+    /// The hole this closes: the seen-set used to be memory-only, so restarting
+    /// the daemon forgot every nonce and a captured, validly-signed envelope
+    /// could be raced back in inside the freshness window. That matters more now
+    /// that a verified signature mints an identity — a replay would re-mint it.
+    #[test]
+    fn a_recorded_nonce_is_still_rejected_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let ts = bwoc_core::time::utc_now_iso8601();
+
+        // "Run 1" accepts a fresh nonce.
+        let mut first = ReplayGuard::persistent(dir.path());
+        assert_eq!(first.check("agent-peer", "nonce-1", &ts), None);
+        drop(first); // daemon exits
+
+        // "Run 2" is a brand-new guard over the same agent dir — the memory is
+        // gone, but the sidecar is not.
+        let mut second = ReplayGuard::persistent(dir.path());
+        assert_eq!(
+            second.check("agent-peer", "nonce-1", &ts),
+            Some("replayed"),
+            "a nonce recorded before the restart must still be refused"
+        );
+        // A different nonce from the same sender is unaffected.
+        assert_eq!(second.check("agent-peer", "nonce-2", &ts), None);
+    }
+
+    #[test]
+    fn the_sidecar_self_prunes_nonces_outside_the_freshness_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join(".bwoc").join(REPLAY_SIDECAR);
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+
+        // One stale record (far outside the window) and one fresh.
+        let fresh_ts = bwoc_core::time::utc_now_iso8601();
+        std::fs::write(
+            &sidecar,
+            format!(
+                "{}\n{}\n",
+                NonceRecord {
+                    from: "agent-peer".into(),
+                    nonce: "old".into(),
+                    ts: "2000-01-01T00:00:00Z".into(),
+                }
+                .to_line(),
+                NonceRecord {
+                    from: "agent-peer".into(),
+                    nonce: "new".into(),
+                    ts: fresh_ts.clone(),
+                }
+                .to_line(),
+            ),
+        )
+        .unwrap();
+
+        let mut guard = ReplayGuard::persistent(dir.path());
+        // The fresh one is still remembered…
+        assert_eq!(
+            guard.check("agent-peer", "new", &fresh_ts),
+            Some("replayed")
+        );
+        // …and the stale one was dropped from the file on load, because an
+        // envelope that old is refused by `ts` alone.
+        let body = std::fs::read_to_string(&sidecar).unwrap();
+        assert!(
+            !body.contains("\"old\""),
+            "stale nonce must be pruned: {body}"
+        );
+        assert!(body.contains("\"new\""), "fresh nonce must survive: {body}");
+    }
+
+    /// Compaction must rewrite the LIVE set, never an empty file.
+    ///
+    /// An early draft wrote `Vec::new()` there, which silently forgot every
+    /// nonce recorded since startup — reopening the exact hole this change
+    /// closes, and invisibly, because the in-memory guard still worked for the
+    /// rest of that run.
+    #[test]
+    fn compaction_preserves_live_nonces_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let ts = bwoc_core::time::utc_now_iso8601();
+
+        let mut guard = ReplayGuard::persistent(dir.path());
+        guard.compact_every = 2; // compact aggressively so the test is cheap
+        for n in 0..6 {
+            assert_eq!(guard.check("agent-peer", &format!("n{n}"), &ts), None);
+        }
+        drop(guard);
+
+        // After a restart every one of them must still be refused — if
+        // compaction had truncated the file, the early ones would be forgotten.
+        let mut after = ReplayGuard::persistent(dir.path());
+        for n in 0..6 {
+            assert_eq!(
+                after.check("agent-peer", &format!("n{n}"), &ts),
+                Some("replayed"),
+                "nonce n{n} was lost across compaction + restart"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_sidecar_line_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join(".bwoc").join(REPLAY_SIDECAR);
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+        let ts = bwoc_core::time::utc_now_iso8601();
+        std::fs::write(
+            &sidecar,
+            format!(
+                "not json\n{{\"from\":\"x\"}}\n{}\n",
+                NonceRecord {
+                    from: "agent-peer".into(),
+                    nonce: "good".into(),
+                    ts: ts.clone(),
+                }
+                .to_line()
+            ),
+        )
+        .unwrap();
+
+        // A torn write must not wipe the defense for every other nonce.
+        let mut guard = ReplayGuard::persistent(dir.path());
+        assert_eq!(guard.check("agent-peer", "good", &ts), Some("replayed"));
+    }
+
+    #[test]
+    fn an_unwritable_sidecar_degrades_to_in_memory_rather_than_refusing() {
+        // Persistence is a hardening on top of the in-memory guard: if the
+        // sidecar cannot be written, traffic must still flow (a full disk must
+        // not become a denial of service) while the in-memory guard keeps
+        // working within the run.
+        let dir = tempfile::tempdir().unwrap();
+        // `.bwoc` occupied by a FILE, so creating the directory (and thus the
+        // sidecar) cannot succeed.
+        std::fs::write(dir.path().join(".bwoc"), b"not a directory").unwrap();
+
+        let ts = bwoc_core::time::utc_now_iso8601();
+        let mut guard = ReplayGuard::persistent(dir.path());
+        assert_eq!(
+            guard.check("agent-peer", "n1", &ts),
+            None,
+            "must still accept"
+        );
+        assert_eq!(
+            guard.check("agent-peer", "n1", &ts),
+            Some("replayed"),
+            "in-memory defense must still catch the duplicate"
+        );
     }
 
     #[test]
