@@ -184,8 +184,33 @@ impl ReplayGuard {
     /// Append one accepted nonce, compacting when the file has grown enough.
     fn record(&mut self, rec: NonceRecord) {
         let Some(path) = self.sidecar.clone() else {
-            return;
+            return; // persistence disabled or known-broken → in-memory only
         };
+        let line = rec.to_line();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{line}")
+            });
+        match appended {
+            Ok(()) => self.appended += 1,
+            Err(_) => {
+                self.note_write_failure(&path);
+                return;
+            }
+        }
+
+        // Compact AFTER the append, never before: `check` has already pushed
+        // this record into `self.order`, so compacting first would write it in
+        // the rewrite and then append it a second time — a duplicate line every
+        // cycle. Compacting here means the rewritten file already contains
+        // everything, including the record just appended.
         if self.compact_every > 0 && self.appended >= self.compact_every {
             // Rewrite with everything still live and still fresh. Writing an
             // empty file here would silently forget every nonce recorded since
@@ -202,33 +227,24 @@ impl ReplayGuard {
                 .collect();
             self.rewrite(&live);
         }
-        let line = rec.to_line();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let appended = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(f, "{line}")
-            });
-        match appended {
-            Ok(()) => self.appended += 1,
-            Err(_) => self.note_write_failure(&path),
-        }
     }
 
+    /// Give up on persistence for the rest of this run.
+    ///
+    /// Not just a warning latch: `sidecar` is cleared so the guard genuinely
+    /// falls back to in-memory rather than re-attempting a doomed syscall for
+    /// every accepted envelope. A restart retries from scratch.
     fn note_write_failure(&mut self, path: &Path) {
         if !self.write_failed {
             self.write_failed = true;
             eprintln!(
                 "bwoc-agent: cannot persist replay nonces to {} — replay defense \
-                 still applies in-memory, but will not survive a restart.",
+                 still applies in-memory for this run, but will not survive a \
+                 restart. Persistence is disabled until the daemon restarts.",
                 path.display()
             );
         }
+        self.sidecar = None;
     }
 
     /// `Some(reason)` ⇒ refuse (stale / future / replayed); `None` ⇒ fresh +
@@ -1260,6 +1276,60 @@ mod tests {
                 "nonce n{n} was lost across compaction + restart"
             );
         }
+    }
+
+    /// Compaction must not duplicate the record that triggered it.
+    ///
+    /// `check` pushes into `order` before calling `record`, so compacting
+    /// *before* the append would write the record in the rewrite and then append
+    /// it again — one duplicate line per cycle, forever.
+    #[test]
+    fn compaction_does_not_duplicate_the_triggering_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join(".bwoc").join(REPLAY_SIDECAR);
+        let ts = bwoc_core::time::utc_now_iso8601();
+
+        let mut guard = ReplayGuard::persistent(dir.path());
+        guard.compact_every = 2;
+        for n in 0..6 {
+            assert_eq!(guard.check("agent-peer", &format!("n{n}"), &ts), None);
+        }
+
+        let body = std::fs::read_to_string(&sidecar).unwrap();
+        let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            6,
+            "expected exactly one line per nonce, got {}:\n{body}",
+            lines.len()
+        );
+        for n in 0..6 {
+            let needle = format!("\"n{n}\"");
+            assert_eq!(
+                lines.iter().filter(|l| l.contains(&needle)).count(),
+                1,
+                "nonce n{n} appears more than once:\n{body}"
+            );
+        }
+    }
+
+    /// Once persistence is known-broken the guard must stop touching the
+    /// filesystem entirely, rather than retrying a doomed syscall per envelope.
+    #[test]
+    fn a_broken_sidecar_disables_persistence_for_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".bwoc"), b"not a directory").unwrap();
+        let ts = bwoc_core::time::utc_now_iso8601();
+
+        let mut guard = ReplayGuard::persistent(dir.path());
+        assert_eq!(guard.check("agent-peer", "n1", &ts), None);
+        assert!(
+            guard.sidecar.is_none(),
+            "persistence must be switched off after the first write failure"
+        );
+        // …and the in-memory guard keeps working regardless.
+        assert_eq!(guard.check("agent-peer", "n1", &ts), Some("replayed"));
+        assert_eq!(guard.check("agent-peer", "n2", &ts), None);
     }
 
     #[test]
