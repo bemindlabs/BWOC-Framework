@@ -1,6 +1,7 @@
 [package]
 name = "bwoc-signing"
 description = "ed25519 message-signing primitives for BWOC agent identity proof (HV2-4). Lean: crypto + hex only, no async/HTTP — usable from both bwoc-cli (sign) and bwoc-agent (verify) without pulling the harness runtime."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
