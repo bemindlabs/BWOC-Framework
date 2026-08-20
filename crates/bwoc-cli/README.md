@@ -2,73 +2,60 @@
 
 The `bwoc` command-line tool — incarnate, check, spawn, and control [BWOC](../../README.md) agents.
 
-Native single binary for **macOS · Linux · Windows**. Localized output (**TH · EN** shipping at launch; any future language is a folder drop).
+A single native binary (`bwoc`) for **macOS · Linux · Windows**, and the operator surface for the whole framework: 60 top-level subcommands defined in one clap `Commands` enum in `src/main.rs`. It links the sibling crates [`bwoc-core`](../bwoc-core/) (shared types), [`bwoc-signing`](../bwoc-signing/) (used by `send` / `trust`), [`bwoc-tui`](../bwoc-tui/) (used by `chat`), and [`bwoc-loop-tui`](../bwoc-loop-tui/) (used by `loop`). It does **not** link [`bwoc-harness`](../bwoc-harness/) — `bwoc eval` shells out to the `bwoc-harness` binary, keeping provider/network code out of this crate.
+
+Output is localized (**EN · TH**) through Fluent bundles embedded at compile time from `locales/<lang>/cli.ftl`; adding a language is a file drop plus one match arm in `src/i18n.rs`.
+
+## Scope
+
+| Family | Commands |
+|---|---|
+| **Lifecycle** (uppāda → ṭhiti → vaya) | `init` · `new` · `spawn` · `start` · `stop` · `retire` · `set` · `debase` |
+| **Inspect** | `list` · `status` · `info` · `doctor` · `check` · `workspace` · `sessions` · `log` |
+| **Loop-Engineering** | `loop` (L1 goal-loop TUI) · `monitor` (L3, alerts once per OK↔TRIP transition) · `digest` (L3, runs `--exec` once per `--period` via a durable idempotency ledger) |
+| **Messaging** | `send` · `inbox` · `outbox` · `triage` · `receipts` · `chat` · `ping` · `a2a` |
+| **Saṅgha & fleet** | `team` · `task` · `tasks` · `fleet` · `peer` · `trust` · `supervise` · `remote` |
+| **Docs & memory** | `notes` · `retro` · `research` · `doc` · `memory` |
+| **Extensions** | `skill` · `plugin` · `audit` · `resource`, plus the plugin-kind fronts `jira` · `gcloud` · `okr` · `council` · `figma` · `gws` · `accounting` (live verbs exit `4` with no installed plugin of that kind) |
+| **Ergonomics** | `help` · `handbook` · `dashboard` · `completion` · `update` · `report` · `eval` · `run` · `agent` |
+
+Arc phases are named per [`PHILOSOPHY.en.md` §0.1](../../modules/agent-template/docs/en/PHILOSOPHY.en.md). Loop levels are specified in [`LOOP-ENGINEERING.en.md`](../../docs/en/LOOP-ENGINEERING.en.md); extension surfaces in [`SKILLS.en.md`](../../docs/en/SKILLS.en.md) and [`PLUGINS.en.md`](../../docs/en/PLUGINS.en.md).
 
 ## Install
 
-**One command** (from a clone of the framework repo):
-
 ```bash
-./scripts/install.sh
+./scripts/install.sh                          # builds bwoc, bwoc-agent, bwoc-harness
+cargo install --path crates/bwoc-cli --locked # this binary only
 ```
 
-Or equivalently:
-
-```bash
-cargo install --path crates/bwoc-cli --locked
-```
-
-Both install the `bwoc` binary to `~/.cargo/bin/bwoc`. Requires a [Rust toolchain](https://rustup.rs/) on PATH.
+Both land in `~/.cargo/bin/`. Requires a [Rust toolchain](https://rustup.rs/) on PATH.
 
 ## Usage
 
 ```bash
-bwoc --help                          # show command surface + flags
-bwoc --lang th                       # localized output (Thai)
-bwoc --lang en                       # localized output (English)
+bwoc --help                       # full command surface
+bwoc init .                       # create a workspace
+bwoc new tara --template modules/agent-template --target agents/agent-tara
+bwoc check --all                  # backend-neutrality audit
+bwoc loop --team core             # goal-loop control center
+bwoc completion zsh > ~/.zfunc/_bwoc
 ```
 
-### Language selection
+### Workspace resolution
 
-Precedence: `--lang <code>` flag → `BWOC_LANG` env var → `$LANG` env var → `en` fallback.
+Workspace-aware commands take `--workspace <path>`, then `BWOC_WORKSPACE`, then walk ancestors for `.bwoc/workspace.toml`; if none is found they exit `2` with an actionable message. See [`WORKSPACE.en.md`](../../docs/en/WORKSPACE.en.md).
+
+### Language
+
+`--lang <code>` → `BWOC_LANG` → `$LANG` (POSIX values like `th_TH.UTF-8` are parsed) → `en` fallback.
 
 ```bash
-BWOC_LANG=th bwoc                    # via env
-LANG=th_TH.UTF-8 bwoc                # via POSIX locale
+BWOC_LANG=th bwoc list
 ```
-
-## Command surface (Phase 1 v2.0)
-
-| Command | Arc phase | Status |
-|---|---|---|
-| `bwoc init [path]` | uppāda | scaffolding — implementation follows |
-| `bwoc workspace info [path]` | — | scaffolding |
-| `bwoc workspace validate [path]` | — | scaffolding |
-| `bwoc new <name>` | uppāda | scaffolding — implementation follows |
-| `bwoc check [path]` | uppāda | scaffolding — implementation follows |
-| `bwoc spawn <name>` | uppāda → ṭhiti | scaffolding — minimal `exec` follows |
-| `bwoc list` | ṭhiti | Phase 1 v2.0 (lists workspace `agents.toml`) |
-| `bwoc status` / `log` / `send` | ṭhiti | Phase 2 |
-| `bwoc stop` / `retire` | vaya | Phase 2 / 3 |
-
-Arc phases are named per [`PHILOSOPHY.en.md` §0.1](../../modules/agent-template/docs/en/PHILOSOPHY.en.md#01-the-arc--uppāda--ṭhiti--vaya).
-
-## Workspace flag
-
-All operational commands accept `--workspace <path>` (or read `BWOC_WORKSPACE` env), falling back to the nearest ancestor of `cwd` that contains a `.bwoc/` marker, then to `cwd`, then refuse to run. Operational commands **validate the workspace first** and exit `2` with an actionable message if it is incomplete. See [`WORKSPACE.en.md`](../../docs/en/WORKSPACE.en.md).
-
-## Adding a new locale
-
-```bash
-mkdir crates/bwoc-cli/locales/<lang>
-# Copy keys from en/cli.ftl and translate values
-```
-
-No code change required.
 
 ## Status
 
-**Phase 1 v2.0 — scaffold.** The `--lang` flag and locale loader work; command implementations land in follow-up iterations.
+Shipping and in daily use. All the families above are implemented. Two surfaces are still partial: `bwoc a2a serve` binds loopback by default — a non-loopback bind requires a Bearer token (`BWOC_A2A_TOKEN` or `.bwoc/a2a.token`) or an explicit `--allow-unauthenticated`; and `bwoc resource` ships `snapshot` · `gate-check` (local) plus `advertise` · `discover` (via the gateway broker), with `claim` still to land.
 
 ## License
 

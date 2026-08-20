@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Tier 2 deep-memory reference implementation for BWOC — speaks the wake-up | search | mine contract over a local SQLite store with semantic (embedding) recall."
+readme = "README.md"
 
 [[bin]]
 name = "bwoc-deep-memory"
