@@ -47,10 +47,15 @@ class Bwoc < Formula
 
   def install
     # The release tarball expands to a single subdirectory named
-    # `bwoc-v<tag>-<target>/` containing the two binaries plus README/LICENSE/CHANGELOG.
+    # `bwoc-v<tag>-<target>/` containing the three binaries plus README/LICENSE/CHANGELOG.
     # Homebrew chdir's into single-rooted tarballs, so the files are visible at cwd.
     bin.install "bwoc"
     bin.install "bwoc-agent"
+    # `bwoc-harness` runs the agentic loop, and `bwoc` resolves it as a sibling
+    # of itself — installing it into the same `bin` is what makes `bwoc chat
+    # --tui`, `bwoc eval`, `--headless`, `--lead` and `--task` work on a brew
+    # install. Archives carry it from v2026.8.20-1 onward (issue #460).
+    bin.install "bwoc-harness"
     # Ship the docs bundle into the formula's prefix for `brew home`/`brew info`.
     prefix.install "README.md" if File.exist?("README.md")
     prefix.install "LICENSE"   if File.exist?("LICENSE")
@@ -58,10 +63,14 @@ class Bwoc < Formula
   end
 
   test do
-    # Both binaries should respond to --version. The CLI returns the Cargo
+    # All three binaries should respond to --version. The CLI returns the Cargo
     # SemVer (not the CalVer tag), so we assert presence of the major digit
     # instead of pinning to a literal value the formula would have to track.
     assert_match "bwoc", shell_output("#{bin}/bwoc --version 2>&1")
     assert_match "bwoc-agent", shell_output("#{bin}/bwoc-agent --version 2>&1")
+    # Harness included deliberately: its absence was invisible for many
+    # releases (#460) precisely because nothing asserted it. `brew test` now
+    # fails rather than shipping a bwoc that cannot spawn its own loop.
+    assert_match "bwoc-harness", shell_output("#{bin}/bwoc-harness --version 2>&1")
   end
 end
