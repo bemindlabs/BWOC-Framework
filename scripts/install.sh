@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # install.sh — one-command install (or upgrade) of the bwoc toolkit.
 #
-# Builds and installs BOTH binaries to ~/.cargo/bin/:
-#   bwoc        — the CLI (init, new, list, start, stop, status, etc.)
-#   bwoc-agent  — the per-agent daemon (spawned by `bwoc start`)
+# Builds and installs ALL THREE binaries to ~/.cargo/bin/:
+#   bwoc         — the CLI (init, new, list, start, stop, status, etc.)
+#   bwoc-agent   — the per-agent daemon (spawned by `bwoc start`)
+#   bwoc-harness — the agentic loop (spawned for chat --tui / eval / --headless)
 #
 # The agent template is embedded in the `bwoc` binary at compile time,
 # so the installed CLI works from any directory — no on-disk template
@@ -11,13 +12,13 @@
 #
 # Requires: a Rust toolchain (https://rustup.rs/).
 #
-# Usage (from a clone of bwoc-framwork):
+# Usage (from a clone of bwoc-framework):
 #   ./scripts/install.sh                # install or upgrade in place (--force)
 #   ./scripts/install.sh --check        # report current install state, no build
-#   ./scripts/install.sh --uninstall    # remove both binaries
+#   ./scripts/install.sh --uninstall    # remove all three binaries
 #   ./scripts/install.sh --help         # this message
 #
-# Or one-liner from the repo root (CLI only — won't get bwoc-agent):
+# Or one-liner from the repo root (CLI only — won't get bwoc-agent/bwoc-harness):
 #   cargo install --path crates/bwoc-cli --locked --force
 #
 # Related:
@@ -44,6 +45,11 @@ if [ "${1:-}" = "--check" ]; then
   else
     echo "  bwoc-agent: not installed"
   fi
+  if command -v bwoc-harness >/dev/null 2>&1; then
+    echo "  bwoc-harness: $(command -v bwoc-harness) — present"
+  else
+    echo "  bwoc-harness: not installed (chat --tui / eval / --headless will fail)"
+  fi
   case ":$PATH:" in
     *":$HOME/.cargo/bin:"*) echo "  PATH:       \$HOME/.cargo/bin is on PATH ✓" ;;
     *) echo "  PATH:       \$HOME/.cargo/bin is NOT on PATH (binaries hidden)" ;;
@@ -65,6 +71,12 @@ if [ "${1:-}" = "--uninstall" ]; then
     removed=1
   else
     echo "  bwoc-agent: not installed (skipped)"
+  fi
+  if command -v bwoc-harness >/dev/null 2>&1; then
+    cargo uninstall bwoc-harness 2>&1 | sed 's/^/  /' || true
+    removed=1
+  else
+    echo "  bwoc-harness: not installed (skipped)"
   fi
   if [ "$removed" = "0" ]; then
     echo ""
@@ -121,14 +133,21 @@ fi
 echo ""
 
 # 1. The CLI.
-echo "[1/2] cargo install bwoc-cli ..."
+echo "[1/3] cargo install bwoc-cli ..."
 cargo install --path crates/bwoc-cli --locked --force
 
 # 2. The daemon binary — required for `bwoc start`'s daemon spawn,
 # `bwoc-agent --serve`, and the PING/STATUS/STOP IPC protocol.
 echo ""
-echo "[2/2] cargo install bwoc-agent ..."
+echo "[2/3] cargo install bwoc-agent ..."
 cargo install --path crates/bwoc-agent --locked --force
+
+# 3. The harness binary — runs the agentic loop. `bwoc` spawns it by name, so
+# without it `bwoc chat --tui`, `bwoc eval`, `--headless`, `--lead` and `--task`
+# all fail at spawn (issue #460).
+echo ""
+echo "[3/3] cargo install bwoc-harness ..."
+cargo install --path crates/bwoc-harness --locked --force
 
 echo ""
 new_version="$(bwoc --version 2>/dev/null | head -1 || echo 'bwoc (not on PATH)')"
@@ -137,6 +156,11 @@ if command -v bwoc-agent >/dev/null 2>&1; then
   echo "Installed: bwoc-agent (daemon)"
 else
   echo "warning: bwoc-agent installed but not on PATH — see warning above"
+fi
+if command -v bwoc-harness >/dev/null 2>&1; then
+  echo "Installed: bwoc-harness (agentic loop)"
+else
+  echo "warning: bwoc-harness installed but not on PATH — see warning above"
 fi
 echo ""
 echo "Verify with:"

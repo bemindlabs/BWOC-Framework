@@ -363,9 +363,9 @@ Covers macOS Apple Silicon, macOS Intel, Linux aarch64, and Linux x86_64. Window
 ./scripts/install.sh
 ```
 
-Installs both binaries (`bwoc` CLI + `bwoc-agent` daemon) to `~/.cargo/bin/`. The script warns up front if `~/.cargo/bin` isn't on PATH.
+Installs all three binaries (`bwoc` CLI + `bwoc-agent` daemon + `bwoc-harness` agentic loop) to `~/.cargo/bin/`. The script warns up front if `~/.cargo/bin` isn't on PATH.
 
-**CLI-only** (skips the daemon, which is required for `bwoc start` to spawn `bwoc-agent --serve`):
+**CLI-only** (skips the daemon that `bwoc start` spawns as `bwoc-agent --serve`, and the harness behind `bwoc chat --tui` / `bwoc eval` / `--headless`):
 
 ```bash
 cargo install --path crates/bwoc-cli --locked --force

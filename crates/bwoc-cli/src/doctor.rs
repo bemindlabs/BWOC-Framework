@@ -334,8 +334,15 @@ fn check_rust_toolchain_with(which_fn: impl Fn(&str) -> Option<PathBuf>) -> Vec<
         probe_toolchain(
             "cargo",
             &which_fn,
-            "cargo not found on PATH. Required to build BWOC from source \
-             or `cargo install bwoc-harness`. Install: https://rustup.rs",
+            // NOT `cargo install bwoc-harness` — no BWOC crate is published to
+            // crates.io, so that hint 404s (#460). Note `doctor` usually runs
+            // from a release/Homebrew install where no checkout exists, so the
+            // hint must say the script lives in a repo clone rather than imply
+            // it is on hand.
+            "cargo not found on PATH. Only needed to build BWOC from source — \
+             run `./scripts/install.sh` from a clone of the BWOC repository. \
+             Released builds ship prebuilt binaries and need no toolchain. \
+             Install: https://rustup.rs",
         ),
     ]
 }

@@ -12,7 +12,7 @@ nav_order: 7
 
 # Releasing BWOC
 
-> [!abstract] How to cut a release of the bwoc toolkit (`bwoc` CLI + `bwoc-agent` daemon). Releases are tag-driven: pushing a CalVer tag like `v2026.5.22-0` triggers the cross-platform build + GitHub Release upload pipeline.
+> [!abstract] How to cut a release of the bwoc toolkit (`bwoc` CLI + `bwoc-agent` daemon + `bwoc-harness` agentic loop). Releases are tag-driven: pushing a CalVer tag like `v2026.5.22-0` triggers the cross-platform build + GitHub Release upload pipeline.
 
 ## Dual versioning — what to read first
 
@@ -51,7 +51,7 @@ The tag matches the workflow's filter (`v[0-9][0-9][0-9][0-9].*`) and triggers [
    - `aarch64-apple-darwin` (macOS Apple Silicon)
    - `x86_64-apple-darwin` (macOS Intel)
    - `x86_64-pc-windows-msvc`
-2. **Package** each as `bwoc-<tag>-<target>.{tar.gz|zip}` containing `bwoc`, `bwoc-agent`, `README.md`, `LICENSE`, `CHANGELOG.md`.
+2. **Package** each as `bwoc-<tag>-<target>.{tar.gz|zip}` containing `bwoc`, `bwoc-agent`, `bwoc-harness`, `README.md`, `LICENSE`, `CHANGELOG.md`. The packaging step asserts all three binaries are present and fails the build otherwise (#460).
 3. **Sidecar** a `.sha256` next to each archive.
 4. **Auto-create GitHub Release** with notes generated from the commit range since the previous tag.
 5. **Upload** all artifacts. `fail_on_unmatched_files: true` aborts the workflow if any archive is missing — partial releases never ship.

@@ -12,7 +12,7 @@ nav_order: 7
 
 # การปล่อย Release BWOC
 
-> [!abstract] วิธีปล่อยรีลีสของชุดเครื่องมือ bwoc (`bwoc` CLI + `bwoc-agent` daemon) — Release ใช้ tag เป็นตัวกระตุ้น: push tag แบบ CalVer เช่น `v2026.5.22-0` แล้ว pipeline จะ build ทุก platform และ upload ไปยัง GitHub Release โดยอัตโนมัติ
+> [!abstract] วิธีปล่อยรีลีสของชุดเครื่องมือ bwoc (`bwoc` CLI + `bwoc-agent` daemon + `bwoc-harness` agentic loop) — Release ใช้ tag เป็นตัวกระตุ้น: push tag แบบ CalVer เช่น `v2026.5.22-0` แล้ว pipeline จะ build ทุก platform และ upload ไปยัง GitHub Release โดยอัตโนมัติ
 
 ## Dual versioning — ต้องอ่านก่อน
 
@@ -51,7 +51,7 @@ Tag จะตรงกับ filter ของ workflow (`v[0-9][0-9][0-9][0-9].*
    - `aarch64-apple-darwin` (macOS Apple Silicon)
    - `x86_64-apple-darwin` (macOS Intel)
    - `x86_64-pc-windows-msvc`
-2. **Package** แต่ละตัวเป็น `bwoc-<tag>-<target>.{tar.gz|zip}` มี `bwoc`, `bwoc-agent`, `README.md`, `LICENSE`, `CHANGELOG.md`
+2. **Package** แต่ละตัวเป็น `bwoc-<tag>-<target>.{tar.gz|zip}` มี `bwoc`, `bwoc-agent`, `bwoc-harness`, `README.md`, `LICENSE`, `CHANGELOG.md` — ขั้นตอน package จะ assert ว่ามีครบทั้งสาม binary ไม่ครบคือ build fail (#460)
 3. **Sidecar** ไฟล์ `.sha256` ข้าง archive แต่ละตัว
 4. **สร้าง GitHub Release อัตโนมัติ** พร้อม note จาก commit range ตั้งแต่ tag ก่อนหน้า
 5. **Upload** artifact ทั้งหมด — `fail_on_unmatched_files: true` ทำให้ workflow ล้มเหลวถ้ามี archive ขาด — release ที่ไม่ครบไม่ปล่อย
