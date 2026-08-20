@@ -403,11 +403,24 @@ where
 
 /// Load a persisted conversation (the non-system messages) from `path`. Returns
 /// empty on any error — a missing or corrupt session simply starts fresh.
+///
+/// Reloaded principals are clamped exactly as a checkpoint's are (#452). This
+/// file matters *more* than a checkpoint, not less: it lives at
+/// `<workdir>/.bwoc/chat-session.json`, **inside the agent's own writable
+/// worktree**, so the agent's `write_file` tool can reach it under
+/// `Capability::WorktreeWrite` — whereas the run checkpoint normally sits
+/// outside. Without the clamp, one confined worktree write could plant an
+/// `A2aSender { verified: true }` that a later turn reads back as a genuine
+/// verified identity.
 fn load_session(path: &std::path::Path) -> Vec<ChatMessage> {
-    std::fs::read_to_string(path)
+    let mut history: Vec<ChatMessage> = std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for m in &mut history {
+        m.clamp_asserted_identity();
+    }
+    history
 }
 
 /// Persist the conversation (everything after the system prompt) to `path`,

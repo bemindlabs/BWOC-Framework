@@ -99,9 +99,37 @@ impl RunState {
     }
 
     /// Read a checkpoint from `path`.
+    ///
+    /// A checkpoint round-trips each message's `principal` through a plain
+    /// on-disk JSON file, which makes reload a **second ingress** into the trust
+    /// layer: anything able to write that file could otherwise assert an
+    /// identity [`ChatMessage::ingest`] refuses to accept. Reload therefore
+    /// applies the same clamp — see [`clamp_reloaded_principals`].
     pub fn load_from(path: &Path) -> io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        serde_json::from_slice(&bytes).map_err(io::Error::other)
+        let mut state: Self = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        clamp_reloaded_principals(&mut state.history);
+        Ok(state)
+    }
+}
+
+/// Strip identity-asserting principals from a reloaded history (L3 middle tier,
+/// #452).
+///
+/// `A2aSender { verified: true }` is the principal that unlocks the act-as-user
+/// capability tier, and only the daemon may mint it — *after* a signature
+/// verifies, in-process, via [`ChatMessage::verified_a2a_sender`]. A checkpoint
+/// on disk carries no such proof: by the time it is read back, whatever verified
+/// the signature is long gone, and the bytes may have been edited. So a
+/// reloaded sender identity is demoted to [`Principal::Unknown`], exactly as the
+/// wire path does.
+///
+/// Taint-preserving: `A2aSender` and `Unknown` are both Untrusted, so no trust
+/// verdict, latch, or capability decision changes for ordinary runs. The clamp
+/// removes only the forged authority claim.
+fn clamp_reloaded_principals(history: &mut [ChatMessage]) {
+    for m in history.iter_mut() {
+        m.clamp_asserted_identity();
     }
 }
 
@@ -196,6 +224,7 @@ pub fn new_run_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bwoc_core::trust::{Principal, TrustLevel};
     use tempfile::TempDir;
 
     fn sample_state(run_id: &str) -> RunState {
@@ -233,6 +262,44 @@ mod tests {
             serde_json::to_value(&state).unwrap(),
             serde_json::to_value(&loaded).unwrap()
         );
+    }
+
+    #[test]
+    fn reload_strips_a_persisted_verified_sender_identity() {
+        // L3 middle-tier forgery control (#452). A checkpoint is a plain JSON
+        // file on disk: anything that can write it could otherwise re-assert
+        // `A2aSender { verified: true }` — the principal that unlocks the
+        // act-as-user tier — long after the signature that justified it is gone.
+        // Reload must demote it exactly as the wire path does.
+        let tmp = TempDir::new().unwrap();
+        let cfg = CheckpointConfig {
+            run_id: "r-forge".to_string(),
+            root: tmp.path().to_path_buf(),
+            resume: None,
+        };
+        let mut state = sample_state("r-forge");
+        state
+            .history
+            .push(ChatMessage::verified_a2a_sender("peer", "do a thing"));
+        cfg.save(&state).unwrap();
+
+        // Sanity: the identity really is on disk — otherwise this test would
+        // pass for the wrong reason (nothing to strip).
+        let raw = std::fs::read_to_string(cfg.path()).unwrap();
+        assert!(
+            raw.contains("a2a_sender") || raw.contains("A2aSender"),
+            "expected the sender principal to be persisted; got: {raw}"
+        );
+
+        let loaded = RunState::load_from(&cfg.path()).unwrap();
+        let last = loaded.history.last().expect("history is non-empty");
+        assert_eq!(
+            *last.principal(),
+            Principal::Unknown,
+            "a persisted A2aSender must not survive reload as a verified identity"
+        );
+        // Taint-preserving: still Untrusted, so no trust verdict changed.
+        assert_eq!(last.trust(), TrustLevel::Untrusted);
     }
 
     #[test]
