@@ -19,7 +19,7 @@ version = "2.44.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/bmt-bwol-ops/bwoc-framwork"
+repository = "https://github.com/bemindlabs/BWOC-Framework"
 
 [workspace.dependencies]
 bwoc-core = { path = "crates/bwoc-core" }
