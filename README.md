@@ -191,13 +191,17 @@ The framework is a Rust workspace of focused crates, plus companion apps that bu
 
 | Crate | Kind | What it does |
 | --- | --- | --- |
-| [`bwoc-core`](crates/bwoc-core) | lib | Shared types — manifest, workspace/agent registry, identity, lifecycle, `chat_proto`, env-scrub, sibling-binary resolution. **Lean + dep-quarantined**: everything depends on it; it depends on almost nothing. |
-| [`bwoc-cli`](crates/bwoc-cli) | bin `bwoc` | The operator CLI — `init` · `new` · `list` · `spawn` · `chat` (`--tui`) · `run` · `start`/`stop`/`supervise` · `dashboard` · `check` · `audit` · `send` · `task` · `team`. |
-| [`bwoc-agent`](crates/bwoc-agent) | bin `bwoc-agent` | The per-agent daemon (`--serve`) — Unix control socket (PING/STATUS/STOP), inbox, and Saṅgha task-watch. |
-| [`bwoc-harness`](crates/bwoc-harness) | bin `bwoc-harness` | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set, guardrails → permission → sandbox pipeline (with `--unrestricted` to lift the workdir path sandbox), OpenTelemetry, Saṅgha lead/worker, checkpoint/resume, MCP client, and the interactive `--chat` session (streaming, persistent memory, live permission modes). |
-| [`bwoc-tui`](crates/bwoc-tui) | lib | The ratatui chat client behind `bwoc chat --tui` — renders the `chat_proto` stream from `bwoc-harness --chat`. |
+| [`bwoc-core`](crates/bwoc-core) | lib | Shared types — manifest, workspace/agent registry, identity, lifecycle, trust labeling, `chat_proto`, idempotency ledger, loop control, env-scrub, sibling-binary resolution. **Lean + dep-quarantined**: every crate except `bwoc-signing` and `bwoc-deep-memory` depends on it, so it in turn depends on almost nothing (`serde`, `serde_json`, `toml`, `thiserror`). |
+| [`bwoc-cli`](crates/bwoc-cli) | bin `bwoc` | The operator CLI — `init` · `new` · `list` · `spawn` · `chat` (`--tui`) · `run` · `start`/`stop`/`supervise` · `dashboard` · `loop` · `monitor` · `digest` · `check` · `audit` · `send` · `task` · `team`. |
+| [`bwoc-agent`](crates/bwoc-agent) | bin `bwoc-agent` | The per-agent daemon (`--serve`) — Unix control socket (PING/STATUS/STOP), inbox polling + auto-process, and Saṅgha task-watch. |
+| [`bwoc-harness`](crates/bwoc-harness) | bin + lib | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set, capability gate → guardrails → permission → sandbox pipeline (with `--unrestricted` to lift the workdir path sandbox), OpenTelemetry, Saṅgha lead/worker (`--lead --loop`), checkpoint/resume, MCP client, and the interactive `--chat` session (streaming, persistent memory, live permission modes). |
+| [`bwoc-tui`](crates/bwoc-tui) | lib | The ratatui chat client behind `bwoc chat --tui`, plus the multi-agent fleet view (`--fleet`) — renders the `chat_proto` stream from `bwoc-harness --chat`. |
+| [`bwoc-loop-tui`](crates/bwoc-loop-tui) | lib | The `bwoc loop` control center — watch a team's task list drive toward Definition-of-Done, start/stop the goal-loop, and edit tasks · ticker · budget · plan approvals in place. |
 | [`bwoc-signing`](crates/bwoc-signing) | lib | ed25519 signing primitives for the trust layer. |
-| [`bwoc-a2a`](crates/bwoc-a2a) | lib | Agent-to-agent transport — signed envelopes + cross-workspace identity. |
+| [`bwoc-a2a`](crates/bwoc-a2a) | bin + lib | Agent-to-agent transport (A2A protocol) — signed envelopes, agent cards, JSON-RPC serve/client, cross-workspace identity. |
+| [`bwoc-connect`](crates/bwoc-connect) | bin + lib | Chat connectors bridging external platforms into an agent's inbox. Dependency-heavy by design, so it stays out-of-process — [`bwoc-agent`](crates/bwoc-agent) supervises it as a subprocess. |
+| [`bwoc-mqtt`](crates/bwoc-mqtt) | bin + lib | MQTT transport for inter-workspace routing — publish an envelope to a broker, or `serve` (subscribe → deliver into `inbox.jsonl`). |
+| [`bwoc-deep-memory`](crates/bwoc-deep-memory) | bin + lib | Tier-2 deep memory — mine past sessions into durable recall, searchable from an agent's turn. Deliberately out-of-process: it talks over a CLI contract and does **not** depend on `bwoc-core`. |
 
 ### Companion apps (separate repos)
 
@@ -466,7 +470,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 **Current phase:** Phase 6 — _paññā_ (harness eval & cross-platform hardening) — **in progress**. Phases 1–5 DoD met and signed off: Phase 1 end-to-end **uppāda** for one backend; Phase 2 _ṭhiti operations_ (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard); Phase 3 the cross-workspace interconnect mesh (view · learn · give-feedback) + Kalyāṇamitta-7 trust; Phase 4 fleet governance; Phase 5 _saṃvara_ trust-boundary & sandbox hardening. The self-hosted **`bwoc-harness`** runtime provides a full agentic run loop plus an interactive **`--chat`** session with token streaming, persistent cross-restart memory, live permission modes, and full-machine file editing. Per-phase detail is in [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md).
 
-**Latest release:** [`v2026.7.25-4`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.7.25-4) (2.42.0) — cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. See [`CHANGELOG.md`](CHANGELOG.md) for the per-release history and [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) for binaries.
+**Latest release:** [`v2026.8.20-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.8.20-0) (2.44.0) — cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. See [`CHANGELOG.md`](CHANGELOG.md) for the per-release history and [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) for binaries.
 
 | Area                                                            | Status                                                         |
 | --------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -478,6 +482,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 | `bwoc-agent` runtime (Rust; `--serve` daemon on Unix)           | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 ✓ · Phase 5 ✓ · plugin-cycle ✓**          |
 | Reference agents (`agent-pi`, `agent-oracle`)                   | **Phase 3 ✓ (incarnated + personalized + `bwoc check` clean)** |
 | Fleet dashboard (`bwoc dashboard` TUI)                          | **Phase 2 ✓**                                                  |
+| Loop engineering (goal + ticker + gate)                         | **L1 ✓** (`bwoc-harness --lead --loop` + the `bwoc loop` TUI) · **L2 partial** (`bwoc fleet health --loop`; `Cron`/`Adaptive` deferred) · **L3 ✓ for the product loops** (`bwoc monitor`, `bwoc digest`) — see [`LOOP-ENGINEERING.en.md`](docs/en/LOOP-ENGINEERING.en.md) |
 | `bwoc-harness` self-hosted runtime + interactive `--chat`       | **Phase 5 ✓ (_saṃvara_ sandbox hardening) · Phase 6 ⋯ (_paññā_ harness eval + cross-platform hardening, in progress) — agentic loop, streaming, memory, permission modes** |
 
 For the full phase-by-phase plan with completed / in-progress / remaining items, see [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md) (Thai: [`docs/th/ROADMAP.th.md`](docs/th/ROADMAP.th.md)).
