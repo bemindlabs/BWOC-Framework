@@ -52,8 +52,8 @@ class Bwoc < Formula
     bin.install "bwoc"
     bin.install "bwoc-agent"
     # `bwoc-harness` runs the agentic loop, and `bwoc` resolves it as a sibling
-    # of itself — installing it into the same `bin` is what makes `bwoc chat
-    # --tui`, `bwoc eval`, `--headless`, `--lead` and `--task` work on a brew
+    # of itself — installing it into the same `bin` is what makes the harness
+    # paths (chat --tui, eval, --headless, --lead, --task) work on a brew
     # install. Archives carry it from v2026.8.20-1 onward (issue #460).
     bin.install "bwoc-harness"
     # Ship the docs bundle into the formula's prefix for `brew home`/`brew info`.
@@ -63,9 +63,10 @@ class Bwoc < Formula
   end
 
   test do
-    # All three binaries should respond to --version. The CLI returns the Cargo
-    # SemVer (not the CalVer tag), so we assert presence of the major digit
-    # instead of pinning to a literal value the formula would have to track.
+    # All three binaries should respond to --version. Each prints the Cargo
+    # SemVer, not the CalVer tag this formula's `version` carries, so assert
+    # only that the binary names itself — pinning a literal version here would
+    # mean editing the test on every release.
     assert_match "bwoc", shell_output("#{bin}/bwoc --version 2>&1")
     assert_match "bwoc-agent", shell_output("#{bin}/bwoc-agent --version 2>&1")
     # Harness included deliberately: its absence was invisible for many
