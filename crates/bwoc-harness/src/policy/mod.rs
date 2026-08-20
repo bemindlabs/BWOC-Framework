@@ -113,6 +113,59 @@ enum Capability {
     Gated,
 }
 
+/// Is `resolved` (an already worktree-confined path) part of the agent's
+/// **control plane** — the state that decides what the agent may do, rather
+/// than the content it works on?
+///
+/// Confinement alone was not enough. `<worktree>/.bwoc/` sits *inside* the
+/// worktree, so an untrusted turn's `write_file` passed `confine_path` and could
+/// rewrite the very machinery constraining it:
+///
+/// - **`harness-policy.toml`** — the permission policy itself. Rewrite it to
+///   allow-all and Layer 2 stops objecting.
+/// - **`peers.toml`** — the pinned signing keys a remote sender's signature is
+///   verified against. Plant a key and you can mint a "verified" peer.
+/// - **`replay-nonces.jsonl`** — the replay defense. Truncate it and captured
+///   envelopes replay.
+/// - **`inbox.refusals.jsonl`** — the refusal audit trail. Rewrite it and the
+///   record of what was blocked is gone.
+/// - **`workspace.toml` / `agents.toml` / `interconnect/`** — registry and
+///   routing: who exists and who may be reached.
+///
+/// `config.manifest.json` is the same class one level up: it declares the
+/// agent's own backend, model and trust posture.
+///
+/// The harness's own writes to `.bwoc/` (the chat-session file) go through
+/// `std::fs` directly, not through a tool, so this denies nothing legitimate —
+/// no tool has any business writing there.
+///
+/// Checked on the **resolved** path, so `memories/../.bwoc/peers.toml`,
+/// `./.bwoc/x`, and symlink games are all caught by the same test.
+fn is_control_plane(resolved: &std::path::Path, worktree_root: &std::path::Path) -> bool {
+    if resolved
+        .file_name()
+        .is_some_and(|f| f == "config.manifest.json")
+    {
+        return true;
+    }
+    // `confine_path` resolves against a CANONICALIZED root, so strip against the
+    // same thing. Comparing to the raw root silently fails wherever
+    // canonicalization rewrites the prefix (macOS `/var` → `/private/var`,
+    // Windows verbatim `\\?\`) — which would make this rule a no-op on exactly
+    // the platforms it has to hold. That is not hypothetical: the first draft
+    // did compare to the raw root and its test failed on macOS.
+    let root = std::fs::canonicalize(worktree_root).unwrap_or_else(|_| worktree_root.to_path_buf());
+    match resolved.strip_prefix(&root) {
+        Ok(rel) => rel.components().any(|c| c.as_os_str() == ".bwoc"),
+        // Prefix comparison failed unexpectedly. Fail CLOSED: the path is
+        // already known to be inside the worktree (`confine_path` returned
+        // `Ok`), so treating any `.bwoc` component as control plane only risks
+        // over-blocking a worktree nested under a `.bwoc` directory — far better
+        // than under-blocking the files that decide what the agent may do.
+        Err(_) => resolved.components().any(|c| c.as_os_str() == ".bwoc"),
+    }
+}
+
 /// Classify `tool_name` into its capability tier, extracting the confinement
 /// target for worktree-confined writes from `arguments_json`.
 fn classify_capability(tool_name: &str, arguments_json: &str) -> Capability {
@@ -245,18 +298,27 @@ pub fn run_pipeline(
         match classify_capability(tool_name, arguments_json) {
             Capability::PureRead => {} // always allowed — fall through
             Capability::WorktreeWrite { path } => {
-                let confined = path
+                let resolved = path
                     .as_deref()
-                    .is_some_and(|p| crate::sandbox::confine_path(p, worktree_root).is_ok());
-                if !confined {
+                    .and_then(|p| crate::sandbox::confine_path(p, worktree_root).ok());
+                let Some(resolved) = resolved else {
                     return PolicyOutcome::CapabilityDenied {
                         tool: tool_name.to_string(),
                         reason: "write target escapes the worktree — an untrusted turn \
                                  may write only inside its own worktree"
                             .to_string(),
                     };
+                };
+                if is_control_plane(&resolved, worktree_root) {
+                    return PolicyOutcome::CapabilityDenied {
+                        tool: tool_name.to_string(),
+                        reason: "write target is agent control-plane state — an untrusted \
+                                 turn may write worktree *content*, never the files that \
+                                 decide what it is allowed to do"
+                            .to_string(),
+                    };
                 }
-                // Confined write — fall through to guardrails/permission.
+                // Confined content write — fall through to guardrails/permission.
             }
             Capability::ActAsUser { to } => {
                 // Act-as-user: allowed ONLY when this turn carries a pre-validated
@@ -611,6 +673,91 @@ mod tests {
                 "gated `{tool}` must be capability-denied on an untrusted turn, got {outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn untrusted_turn_cannot_write_its_own_control_plane() {
+        // Confinement alone was not enough: `<worktree>/.bwoc/` is INSIDE the
+        // worktree, so these writes passed `confine_path` and an untrusted turn
+        // could rewrite the machinery constraining it — including the permission
+        // policy itself. Layer 2 happened to stop it in the shipped
+        // configurations; Layer 0 should not have been offering it at all.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = allow_policy(); // the permissive case this must survive
+        for target in [
+            ".bwoc/harness-policy.toml",  // the permission policy itself
+            ".bwoc/peers.toml",           // pinned signature keys
+            ".bwoc/replay-nonces.jsonl",  // replay defense
+            ".bwoc/inbox.refusals.jsonl", // refusal audit trail
+            ".bwoc/workspace.toml",
+            ".bwoc/interconnect/routes.toml",
+            "config.manifest.json", // backend / model / trust posture
+            // Resolved-path check, so traversal dressed as a content path is
+            // caught by the same rule rather than needing its own case.
+            "src/../.bwoc/peers.toml",
+            "./.bwoc/peers.toml",
+        ] {
+            let args = format!(r#"{{"path": "{target}", "content": "pwned"}}"#);
+            let outcome = run_pipeline(
+                "write_file",
+                &args,
+                dir.path(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                None,
+            );
+            assert!(
+                matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+                "`{target}` is control-plane state and must be denied on an \
+                 untrusted turn, got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn untrusted_turn_still_writes_ordinary_worktree_content() {
+        // The control-plane rule must not swallow the tier it lives in: ordinary
+        // confined writes are exactly what `WorktreeWrite` exists to allow.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = allow_policy();
+        for target in [
+            "src/main.rs",
+            "notes/today.md",
+            "memories/recall.md",
+            "a.bwoc.txt",
+        ] {
+            let args = format!(r#"{{"path": "{target}", "content": "ok"}}"#);
+            let outcome = run_pipeline(
+                "write_file",
+                &args,
+                dir.path(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                None,
+            );
+            assert!(
+                matches!(outcome, PolicyOutcome::Proceed),
+                "ordinary content write `{target}` must still proceed, got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trusted_turn_is_unaffected_by_the_control_plane_rule() {
+        // Layer 0 is scoped to untrusted turns; the operator keeps their reach.
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = run_pipeline(
+            "write_file",
+            r#"{"path": ".bwoc/peers.toml", "content": "x"}"#,
+            dir.path(),
+            &allow_policy(),
+            false,
+            TrustLevel::Trusted,
+            None,
+        );
+        assert!(matches!(outcome, PolicyOutcome::Proceed));
     }
 
     #[test]
