@@ -1,6 +1,7 @@
 [package]
 name = "bwoc-harness"
 description = "BWOC self-hosted agentic harness — OpenAI-compatible provider, agentic loop, core tools, P3 task queue + telemetry + tool-auth."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

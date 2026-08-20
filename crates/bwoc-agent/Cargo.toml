@@ -1,6 +1,7 @@
 [package]
 name = "bwoc-agent"
 description = "Minimal runtime that ships with each incarnated BWOC agent. Phase 1 v2.0 DoD: prints liveness from config.manifest.json."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
