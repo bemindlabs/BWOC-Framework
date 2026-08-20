@@ -228,6 +228,11 @@ agents/*/.bwoc/agent.pid
 agents/*/.bwoc/agent.sock
 agents/*/.bwoc/inbox.cursor
 
+# Receive-side replay nonces — per-machine delivery state letting the daemon
+# keep refusing a replayed envelope across a restart. Self-pruning (only the
+# last few minutes are kept) and meaningless on another machine.
+agents/*/.bwoc/replay-nonces.jsonl
+
 # bwoc outbox — sender-side durable retry queue (messages spooled because a
 # remote peer was offline; drained by `bwoc outbox flush`). Transient per-machine
 # delivery state, not an audit trail, so it is not tracked.
