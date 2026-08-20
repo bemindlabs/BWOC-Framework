@@ -117,9 +117,19 @@ jobs:
           tag="${GITHUB_REF##refs/tags/}"
           name="bwoc-${tag}-${{ matrix.target }}"
           mkdir "$name"
-          cp target/${{ matrix.target }}/release/bwoc       "$name/"
-          cp target/${{ matrix.target }}/release/bwoc-agent "$name/"
-          cp README.md LICENSE CHANGELOG.md                 "$name/" 2>/dev/null || true
+          # All THREE binaries. `bwoc-harness` runs the agentic loop and `bwoc`
+          # spawns it by name (next to itself → CARGO_BIN_EXE → PATH), so an
+          # archive without it yields an install whose `chat --tui`, `eval`,
+          # `--headless`, `--lead` and `--task` paths all fail at spawn (#460).
+          cp target/${{ matrix.target }}/release/bwoc         "$name/"
+          cp target/${{ matrix.target }}/release/bwoc-agent   "$name/"
+          cp target/${{ matrix.target }}/release/bwoc-harness "$name/"
+          cp README.md LICENSE CHANGELOG.md                   "$name/" 2>/dev/null || true
+          # Assert before publishing: #460 shipped silently for many releases
+          # because packaging was never checked. Fail loudly instead.
+          for b in bwoc bwoc-agent bwoc-harness; do
+            test -f "$name/$b" || { echo "::error::$b missing from $name"; exit 1; }
+          done
           tar -czf "dist/${name}.tar.gz" "$name"
           shasum -a 256 "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
 
@@ -131,9 +141,14 @@ jobs:
           $name = "bwoc-$tag-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           New-Item -ItemType Directory -Force -Path $name | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/bwoc.exe"       -Destination "$name/"
-          Copy-Item "target/${{ matrix.target }}/release/bwoc-agent.exe" -Destination "$name/"
+          # All THREE binaries — see the tar.gz step for why the harness must ship (#460).
+          Copy-Item "target/${{ matrix.target }}/release/bwoc.exe"         -Destination "$name/"
+          Copy-Item "target/${{ matrix.target }}/release/bwoc-agent.exe"   -Destination "$name/"
+          Copy-Item "target/${{ matrix.target }}/release/bwoc-harness.exe" -Destination "$name/"
           Copy-Item README.md, LICENSE, CHANGELOG.md -Destination "$name/" -ErrorAction SilentlyContinue
+          foreach ($b in @('bwoc.exe','bwoc-agent.exe','bwoc-harness.exe')) {
+            if (-not (Test-Path "$name/$b")) { Write-Error "::error::$b missing from $name"; exit 1 }
+          }
           Compress-Archive -Path "$name" -DestinationPath "dist/$name.zip"
           $h = (Get-FileHash -Algorithm SHA256 "dist/$name.zip").Hash.ToLower()
           "$h  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
