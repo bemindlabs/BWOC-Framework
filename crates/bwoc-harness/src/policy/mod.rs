@@ -139,31 +139,55 @@ enum Capability {
 /// `std::fs` directly, not through a tool, so this denies nothing legitimate —
 /// no tool has any business writing there.
 ///
-/// Checked on the **resolved** path, so `memories/../.bwoc/peers.toml`,
-/// `./.bwoc/x`, and symlink games are all caught by the same test.
+/// Two complementary tests, because neither alone is sufficient:
+/// a **name scan** on the resolved path (catching `memories/../.bwoc/peers.toml`
+/// and `./.bwoc/x`, which normalize into the same components), and an
+/// **identity check** against the canonical targets of `<worktree>/.bwoc` and
+/// `config.manifest.json` — needed because `confine_path` follows symlinks, so a
+/// symlinked `.bwoc` resolves to a path with no `.bwoc` component at all.
 fn is_control_plane(resolved: &std::path::Path, worktree_root: &std::path::Path) -> bool {
-    if resolved
-        .file_name()
-        .is_some_and(|f| f == "config.manifest.json")
-    {
-        return true;
-    }
+    let canon = |p: std::path::PathBuf| std::fs::canonicalize(&p).unwrap_or(p);
+    let root = canon(worktree_root.to_path_buf());
+
+    // (1) Component / filename scan against the canonicalized root.
+    //
     // `confine_path` resolves against a CANONICALIZED root, so strip against the
     // same thing. Comparing to the raw root silently fails wherever
-    // canonicalization rewrites the prefix (macOS `/var` → `/private/var`,
+    // canonicalization rewrites the prefix (macOS `/var` -> `/private/var`,
     // Windows verbatim `\\?\`) — which would make this rule a no-op on exactly
-    // the platforms it has to hold. That is not hypothetical: the first draft
-    // did compare to the raw root and its test failed on macOS.
-    let root = std::fs::canonicalize(worktree_root).unwrap_or_else(|_| worktree_root.to_path_buf());
-    match resolved.strip_prefix(&root) {
-        Ok(rel) => rel.components().any(|c| c.as_os_str() == ".bwoc"),
+    // the platforms it has to hold. Not hypothetical: the first draft compared
+    // to the raw root and its test failed on macOS.
+    let by_name = match resolved.strip_prefix(&root) {
+        Ok(rel) => {
+            rel.components().any(|c| c.as_os_str() == ".bwoc")
+                || rel.file_name().is_some_and(|f| f == "config.manifest.json")
+        }
         // Prefix comparison failed unexpectedly. Fail CLOSED: the path is
         // already known to be inside the worktree (`confine_path` returned
         // `Ok`), so treating any `.bwoc` component as control plane only risks
         // over-blocking a worktree nested under a `.bwoc` directory — far better
         // than under-blocking the files that decide what the agent may do.
         Err(_) => resolved.components().any(|c| c.as_os_str() == ".bwoc"),
+    };
+    if by_name {
+        return true;
     }
+
+    // (2) Identity check against the canonical TARGETS.
+    //
+    // A name scan alone is not enough, because `confine_path` canonicalizes
+    // existing ancestors and therefore FOLLOWS symlinks: if `<worktree>/.bwoc`
+    // is a symlink to `<worktree>/realdir`, a write to `.bwoc/peers.toml`
+    // resolves to `<worktree>/realdir/peers.toml` — the very same file, with the
+    // `.bwoc` component gone. Verified: before this arm, that write returned
+    // `Proceed`. Comparing against the canonical target closes it, whichever
+    // name the caller used to get there.
+    let bwoc_target = canon(root.join(".bwoc"));
+    if resolved.starts_with(&bwoc_target) {
+        return true;
+    }
+    let manifest_target = canon(root.join("config.manifest.json"));
+    resolved == manifest_target
 }
 
 /// Classify `tool_name` into its capability tier, extracting the confinement
@@ -711,6 +735,38 @@ mod tests {
                 matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
                 "`{target}` is control-plane state and must be denied on an \
                  untrusted turn, got {outcome:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_control_plane_directory_is_still_denied() {
+        // `confine_path` canonicalizes existing ancestors, so it FOLLOWS
+        // symlinks: with `<worktree>/.bwoc` symlinked to `<worktree>/realdir`,
+        // a write to `.bwoc/peers.toml` resolves to `realdir/peers.toml` — the
+        // same file, with the `.bwoc` component gone. A name scan alone missed
+        // it (probed before the fix: the write returned `Proceed`), which is why
+        // the rule also compares against the canonical target.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("realdir")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("realdir"), dir.path().join(".bwoc")).unwrap();
+
+        for target in [".bwoc/peers.toml", "realdir/peers.toml"] {
+            let args = format!(r#"{{"path": "{target}", "content": "pwned"}}"#);
+            let outcome = run_pipeline(
+                "write_file",
+                &args,
+                dir.path(),
+                &allow_policy(),
+                false,
+                TrustLevel::Untrusted,
+                None,
+            );
+            assert!(
+                matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+                "`{target}` reaches the control plane through a symlink and must be \
+                 denied, got {outcome:?}"
             );
         }
     }

@@ -52,12 +52,31 @@ Now: strip against the canonicalized root, and on any unexpected prefix mismatch
 **fail closed** (treat any `.bwoc` component as control plane) rather than
 silently under-blocking.
 
+## A second bypass, found in review
+
+Copilot caught that the first fix was **name-based only**, while `confine_path`
+canonicalizes existing ancestors and therefore **follows symlinks**. With
+`<worktree>/.bwoc` symlinked to `<worktree>/realdir`, a write to
+`.bwoc/peers.toml` resolves to `realdir/peers.toml` — the same file, with the
+`.bwoc` component gone. Probed before fixing: that write returned **`Proceed`**.
+
+It also correctly flagged that the docstring's claim about catching "symlink
+games" was **false** — a security comment asserting a property the code did not
+have.
+
+The rule now applies two complementary tests: the name scan (for
+`memories/../.bwoc/x` style traversal, which normalizes into the same
+components) **and** an identity check against the canonical targets of
+`<worktree>/.bwoc` and `config.manifest.json`, which holds whichever name the
+caller used to get there.
+
 ## Mutation-proved
 
 | Mutation | Result |
 |---|---|
 | remove the control-plane check (the shipped state) | **red** — "`.bwoc/harness-policy.toml` … must be denied … got Proceed" |
 | compare against the raw, non-canonicalized root | **red** |
+| drop the canonical-target identity check (name scan only) | **red** — the symlinked `.bwoc` write returns `Proceed` |
 
 Plus two guard tests so the rule cannot over-reach: ordinary content writes
 (`src/main.rs`, `memories/recall.md`, and the near-miss `a.bwoc.txt`) still
@@ -83,7 +102,7 @@ present-day hardening and leaves the switch off.
 
 ## Status
 
-512 harness tests pass; `clippy --all-targets --features test-redteam -D warnings`
+513 harness tests pass; `clippy --all-targets --features test-redteam -D warnings`
 clean.
 
 ## Related
