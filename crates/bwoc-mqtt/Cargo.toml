@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "MQTT transport for BWOC inter-workspace routing — publish an envelope to a broker, or serve (subscribe → deliver into inbox.jsonl)."
 
 [[bin]]
