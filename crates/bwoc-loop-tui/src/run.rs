@@ -497,9 +497,28 @@ mod tests {
         }
         assert!(!run.is_running(), "echo should have exited");
         assert!(run.reaped, "poll must mark the child reaped");
+
         // The captured output contains the argv we passed (proves the pipe +
         // reader-thread path works end to end).
-        let joined: String = run.log.tail(100).collect::<Vec<_>>().join(" ");
+        //
+        // Reaping the child and having its output land in `log` are INDEPENDENT
+        // events: the loop above breaks on the `poll()` that observes the exit,
+        // but its last `drain()` ran *before* that poll, so anything the reader
+        // thread delivers in between is still in flight. On a fast machine the
+        // loop spins enough times to pick it up; on a loaded CI runner the child
+        // can exit before the first poll while the reader thread has not been
+        // scheduled at all — which is exactly how this test flaked on `main`
+        // (`argv not captured:` with an empty tail). So drain until the output
+        // actually arrives, bounded so a genuine regression still fails fast.
+        let mut joined = String::new();
+        for _ in 0..400 {
+            run.drain();
+            joined = run.log.tail(100).collect::<Vec<_>>().join(" ");
+            if joined.contains("--lead") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(joined.contains("--lead"), "argv not captured: {joined}");
         // stop() after reap: pid-reuse guard → no signal, no panic, still Finished.
         run.stop();
