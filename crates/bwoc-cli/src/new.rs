@@ -1467,7 +1467,7 @@ mod tests {
     // support deferred to Phase 2, see create_symlinks).
     #[cfg(unix)]
     #[test]
-    fn create_symlinks_covers_all_seven_backends() {
+    fn create_symlinks_covers_all_eight_backends() {
         // Every backend that ships as a symlink in modules/agent-template/
         // must be force-created by incarnation — otherwise COPILOT.md /
         // OPENAI.md silently fall through (the bug this guards).
@@ -1486,6 +1486,7 @@ mod tests {
             "KIMI.md",
             "OLLAMA.md",
             "COPILOT.md",
+            "GROK.md",
             "OPENAI.md",
         ] {
             let p = target.join(backend);
@@ -1497,7 +1498,7 @@ mod tests {
             );
             assert!(created.iter().any(|s| s.starts_with(backend)));
         }
-        assert_eq!(created.len(), 7);
+        assert_eq!(created.len(), 8);
     }
 
     #[test]
