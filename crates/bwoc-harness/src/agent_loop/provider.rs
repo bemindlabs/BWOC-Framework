@@ -24,6 +24,12 @@ pub(super) const BACKOFF_BASE_MS: u64 = 200;
 /// Maximum backoff cap in milliseconds (≈ 3 seconds).
 pub(super) const MAX_BACKOFF_MS: u64 = 3_200;
 
+/// Upper clamp for a server-supplied `Retry-After` hint (≈ 4× `MAX_BACKOFF_MS`,
+/// ~13 s). A cooperative rate-limiter's hint is honoured as-is; a hostile or
+/// misconfigured endpoint cannot use an enormous `Retry-After` to stall the run
+/// past this bound (#479).
+pub(super) const RETRY_AFTER_MAX_MS: u64 = MAX_BACKOFF_MS * 4;
+
 /// Unified provider call helper that handles both stream and non-stream paths,
 /// returning `(ChatMessage, Option<Usage>)`.
 async fn call_provider_once(
@@ -75,7 +81,7 @@ pub(crate) async fn call_with_retry_v2(
             Ok(result) => return Ok(result),
             Err(e) if e.is_transient() && attempt < MAX_TRANSIENT_RETRIES => {
                 attempt += 1;
-                let delay = backoff_ms(attempt);
+                let delay = retry_delay_ms(e.retry_after(), attempt);
                 eprintln!(
                     "[bwoc-harness] transient error on `{model}` (attempt {attempt}/{MAX_TRANSIENT_RETRIES}): {e}. \
                      Retrying in {delay}ms…"
@@ -95,11 +101,45 @@ pub(super) fn backoff_ms(attempt: u32) -> u64 {
     raw.min(MAX_BACKOFF_MS)
 }
 
+/// Decide how long to wait before the next retry.
+///
+/// Prefers the server's own `Retry-After` hint (clamped to `RETRY_AFTER_MAX_MS`
+/// so a hostile endpoint cannot park the run), and otherwise falls back to the
+/// bounded exponential backoff for this attempt (#479).
+pub(super) fn retry_delay_ms(retry_after: Option<std::time::Duration>, attempt: u32) -> u64 {
+    match retry_after {
+        Some(d) => (d.as_millis() as u64).min(RETRY_AFTER_MAX_MS),
+        None => backoff_ms(attempt),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::{ChatCompletion, Tool};
     use bwoc_core::trust::{Principal, TrustLevel};
+    use std::time::Duration;
+
+    #[test]
+    fn retry_delay_prefers_server_hint() {
+        // A cooperative Retry-After (2s) is honoured verbatim, overriding the
+        // ~200ms first-attempt backoff.
+        let d = retry_delay_ms(Some(Duration::from_secs(2)), 1);
+        assert_eq!(d, 2_000);
+    }
+
+    #[test]
+    fn retry_delay_clamps_hostile_hint() {
+        // An enormous Retry-After cannot park the run past the clamp.
+        let d = retry_delay_ms(Some(Duration::from_secs(86_400)), 1);
+        assert_eq!(d, RETRY_AFTER_MAX_MS);
+    }
+
+    #[test]
+    fn retry_delay_falls_back_to_backoff() {
+        // No hint → the existing bounded exponential backoff for this attempt.
+        assert_eq!(retry_delay_ms(None, 2), backoff_ms(2));
+    }
 
     /// A provider that answers with a completion whose `principal` was chosen by
     /// the "endpoint" — i.e. by the wire, not by us.

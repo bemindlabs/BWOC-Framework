@@ -1345,9 +1345,7 @@ mod tests {
     async fn transient_error_retried_then_succeeds() {
         // call_with_retry_v2: one transient failure then success.
         let provider = Arc::new(MockProvider::with_errors(vec![
-            Err(HarnessError::TransientProvider(
-                "connection reset".to_string(),
-            )),
+            Err(HarnessError::transient("connection reset")),
             Ok(make_final_response("ok after retry")),
         ]));
 
@@ -1379,11 +1377,7 @@ mod tests {
     async fn transient_errors_exhausted_returns_last_error() {
         // More transient errors than MAX_TRANSIENT_RETRIES → should fail.
         let mut responses: Vec<Result<ChatCompletion, HarnessError>> = (0..=MAX_TRANSIENT_RETRIES)
-            .map(|_| {
-                Err(HarnessError::TransientProvider(
-                    "server overloaded".to_string(),
-                ))
-            })
+            .map(|_| Err(HarnessError::transient("server overloaded")))
             .collect();
         // Add one success that should NOT be reached.
         responses.push(Ok(make_final_response("unreachable")));
@@ -1397,7 +1391,7 @@ mod tests {
             "should fail after exhausting retries: {result:?}"
         );
         assert!(
-            matches!(result, Err(HarnessError::TransientProvider(_))),
+            matches!(result, Err(HarnessError::TransientProvider { .. })),
             "should return the last transient error: {result:?}"
         );
     }
