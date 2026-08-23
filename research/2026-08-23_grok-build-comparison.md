@@ -1,13 +1,9 @@
----
-title: What BWOC can learn from xAI Grok Build
-date: 2026-08-23
-kind: research
-sources:
-  - https://github.com/xai-org/grok-build (Apache-2.0)
-method: two adversarial workflows — a 6-subsystem comparison and a 12-crate deep read — against BWOC's real source
----
+# 2026-08-23 — What BWOC can learn from xAI Grok Build
 
-# What BWOC can learn from xAI Grok Build
+## Sources (Sutamayā)
+
+- https://github.com/xai-org/grok-build (Apache-2.0)
+- Method: two adversarial workflows — a 6-subsystem comparison and a 12-crate deep read — against BWOC's real source
 
 ## TL;DR
 
