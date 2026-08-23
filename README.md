@@ -356,10 +356,14 @@ BWOC is designed to be extremely lightweight, localized, and resilient. To clari
 
 ```bash
 brew tap bemindlabs/bwoc https://github.com/bemindlabs/BWOC-Framework
+brew trust bemindlabs/bwoc   # Homebrew 6.x+ refuses formulae from untrusted third-party taps
 brew install bwoc
 ```
 
-Covers macOS Apple Silicon, macOS Intel, Linux aarch64, and Linux x86_64. Windows users: grab the `.zip` from [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) directly. Each release tag refreshes the formula's SHA256s.
+Installs all three binaries (`bwoc`, `bwoc-agent`, `bwoc-harness`) and covers macOS Apple Silicon, macOS Intel, Linux aarch64, and Linux x86_64. Windows users: grab the `.zip` from [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) directly. Each release tag refreshes the formula's SHA256s.
+
+> [!note]
+> `brew trust` is needed from **Homebrew 6.x** onward, which refuses third-party formulae by default (`Refusing to load formula … from untrusted tap`). Older Homebrew has no such subcommand — skip that line if `brew --version` reports 5.x or earlier.
 
 **From source** (one command, requires a [Rust toolchain](https://rustup.rs/) on PATH):
 
