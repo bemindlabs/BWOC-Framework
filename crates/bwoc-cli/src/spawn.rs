@@ -44,6 +44,7 @@ use crate::sessions::{SessionMarker, remove_marker, write_marker};
 /// - `"codex"` → `Codex`
 /// - `"kimi"` → `Kimi`
 /// - `"copilot"` → `Copilot`
+/// - `"grok"` → `Grok`
 /// - `"ollama"` → `Ollama`
 /// - `"openai-compatible"` → `OpenAiCompatible`
 /// - `"openrouter"` → `OpenRouter`
@@ -59,6 +60,11 @@ pub enum Backend {
     /// without a backend-named file. Spawn execs it interactively; `bwoc run`
     /// uses its programmatic mode (`copilot -p … --no-ask-user`).
     Copilot,
+    /// xAI's Grok Build CLI (`grok`). Agentic vendor CLI; reads `AGENTS.md`
+    /// natively for project instructions, so the agent's source of truth works
+    /// without a backend-named file (same as Copilot). Spawn execs it
+    /// interactively; `bwoc run` uses its headless mode (`grok -p …`).
+    Grok,
     /// Self-hosted Ollama.  Execs the `bwoc-harness` sibling binary with the
     /// default endpoint `http://localhost:11434/v1`, or with `baseUrl` from
     /// `config.manifest.json` when that field is present.
@@ -98,6 +104,7 @@ pub const BACKEND_ENTRY_FILES: &[&str] = &[
     "KIMI.md",
     "OLLAMA.md",
     "COPILOT.md",
+    "GROK.md",
     "OPENAI.md",
 ];
 
@@ -114,6 +121,7 @@ impl Backend {
             Backend::Codex => Some("codex"),
             Backend::Kimi => Some("kimi"),
             Backend::Copilot => Some("copilot"),
+            Backend::Grok => Some("grok"),
             Backend::Ollama
             | Backend::OpenAiCompatible
             | Backend::OpenRouter
@@ -129,6 +137,7 @@ impl Backend {
             Backend::Codex => "codex",
             Backend::Kimi => "kimi",
             Backend::Copilot => "copilot",
+            Backend::Grok => "grok",
             Backend::Ollama => "ollama",
             Backend::OpenAiCompatible => "openai-compatible",
             Backend::OpenRouter => "openrouter",
@@ -163,7 +172,7 @@ impl Backend {
     /// `reasoningEffort` from the manifest itself.
     pub fn vendor_effort_args(self, effort: &str) -> Vec<String> {
         match self {
-            Backend::Claude => vec!["--effort".to_string(), effort.to_string()],
+            Backend::Claude | Backend::Grok => vec!["--effort".to_string(), effort.to_string()],
             Backend::Codex => vec!["-c".to_string(), format!("model_reasoning_effort={effort}")],
             Backend::Antigravity
             | Backend::Kimi
@@ -211,6 +220,9 @@ impl Backend {
                 "gpt-5.5",
                 "gpt-5.5-codex",
             ],
+            // xAI Grok Build. Its own model slugs; free-text input is always
+            // accepted, so this is a convenience list, not a whitelist.
+            Backend::Grok => &["grok-4.5", "grok-code-fast-1", "grok-build"],
             Backend::Ollama => &[
                 "qwen2.5-coder:7b",
                 "qwen2.5-coder:14b",
