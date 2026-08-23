@@ -104,7 +104,8 @@ pub struct Manifest {
     /// Which spawn backend this agent uses.
     ///
     /// Accepted values: `"claude"` | `"agy"` | `"codex"` | `"kimi"` |
-    /// `"ollama"` | `"openai-compatible"` | `"openrouter"` | `"cli"`
+    /// `"copilot"` | `"grok"` | `"ollama"` | `"openai-compatible"` |
+    /// `"openrouter"` | `"litellm"` | `"cli"`
     /// (subscription-authenticated local vendor CLI; see `cliCmd`).
     ///
     /// Required for `openai-compatible`; optional/ignored for vendor backends

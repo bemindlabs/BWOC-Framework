@@ -11,6 +11,7 @@
 //! | `claude`    | `claude -p "<task>"`                                     | Real       |
 //! | `copilot`   | `copilot -p "<task>" --no-ask-user`                      | Real       |
 //! | `codex`     | `codex exec --skip-git-repo-check --color never --sandbox workspace-write -- "<task>"` | Real |
+//! | `grok`      | `grok --sandbox workspace [--effort <lvl>] -p "<task>"`  | Real       |
 //! | `ollama`    | `bwoc-harness --workdir <dir> --task "<task>" --model <model>` | Real |
 //! | `agy`       | `RunError::HeadlessUnsupported`                          | Deferred  |
 //! | `kimi`      | `RunError::HeadlessUnsupported`                          | Deferred  |
@@ -442,6 +443,40 @@ pub fn build_command(
                 ],
             ))
         }
+        Backend::Grok => {
+            // `grok -p "<task>"` — Grok Build's headless mode ("runs Grok
+            // non-interactively … executes it with full tool access and returns
+            // the result"). Unlike `codex exec` it does NOT default to read-only
+            // and does NOT block on approvals, so no bypass flag is needed for it
+            // to complete.
+            //
+            // `--sandbox workspace`: precisely because headless defaults to
+            //   *full* tool access, bound it. The `workspace` profile confines
+            //   filesystem/network to the run cwd — the same jail
+            //   `resolve_workdir` already enforces — mirroring the codex arm's
+            //   `--sandbox workspace-write`. The permissive `--yolo` /
+            //   `--permission-mode bypassPermissions` are deliberately NOT passed
+            //   (same fail-safe posture as codex's dangerous-bypass and copilot's
+            //   `--allow-all-tools`).
+            // `--effort <level>` (reasoningEffort): forwarded like the claude arm
+            //   when the manifest sets it; grok accepts `--effort` in headless.
+            // No `-m <model>`: like the claude/codex arms, the vendor CLI resolves
+            //   its own model — a backend-neutral manifest `primaryModel` may name
+            //   a model grok would reject, turning a working run into a hard error.
+            let mut args = vec!["--sandbox".to_string(), "workspace".to_string()];
+            let manifest_path = config_dir.join("config.manifest.json");
+            if let Ok(m) = Manifest::load_from_path(&manifest_path) {
+                if let Some(effort) = m.reasoning_effort {
+                    args.push("--effort".to_string());
+                    args.push(effort);
+                }
+            }
+            // `-p` last with the task as its value, so a task beginning with `-`
+            // is consumed as the prompt rather than parsed as a flag.
+            args.push("-p".to_string());
+            args.push(task.to_string());
+            Ok(("grok".to_string(), args))
+        }
         Backend::Antigravity => Err(RunError::HeadlessUnsupported {
             backend: "agy".to_string(),
         }),
@@ -568,6 +603,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "codex" => Some(Backend::Codex),
         "kimi" => Some(Backend::Kimi),
         "copilot" => Some(Backend::Copilot),
+        "grok" => Some(Backend::Grok),
         "ollama" => Some(Backend::Ollama),
         "openai-compatible" => Some(Backend::OpenAiCompatible),
         "openrouter" => Some(Backend::OpenRouter),
@@ -794,6 +830,42 @@ mod tests {
         assert_eq!(program, "claude");
         // Effort flag sits between -p and the positional task.
         assert_eq!(args, ["-p", "--effort", "max", "do it"]);
+    }
+
+    #[test]
+    fn grok_dispatch_is_bounded_headless_without_bypass() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (program, args) =
+            build_command(Backend::Grok, tmp.path(), tmp.path(), "task", "grok-4.5").unwrap();
+        assert_eq!(program, "grok");
+        // Bounded (--sandbox workspace, like codex's workspace-write), the task
+        // carried as `-p`'s value LAST so a leading-dash task is not a flag, and
+        // NO --yolo / --permission-mode bypassPermissions (fail-safe posture).
+        assert_eq!(args, ["--sandbox", "workspace", "-p", "task"]);
+        assert!(!args.iter().any(|a| a == "--yolo"));
+        assert!(!args.iter().any(|a| a == "-m" || a == "--model"));
+    }
+
+    #[test]
+    fn grok_dispatch_forwards_reasoning_effort_when_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Seed a manifest with reasoningEffort so the arm forwards --effort.
+        let (dir, root, agent_dir) = make_workspace("grok", "grok-4.5");
+        let manifest = agent_dir.join("config.manifest.json");
+        let body = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            body.trim_end().trim_end_matches('}').to_string() + ", \"reasoningEffort\": \"high\" }",
+        )
+        .unwrap();
+        let (_program, args) =
+            build_command(Backend::Grok, &agent_dir, &root, "do it", "grok-4.5").unwrap();
+        assert_eq!(
+            args,
+            ["--sandbox", "workspace", "--effort", "high", "-p", "do it"]
+        );
+        drop(dir);
+        drop(tmp);
     }
 
     #[test]
