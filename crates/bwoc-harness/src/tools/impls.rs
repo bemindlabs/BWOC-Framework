@@ -20,7 +20,10 @@ impl ToolImpl for ReadFile {
     }
 
     fn description(&self) -> &'static str {
-        "Read the contents of a file at the given path. The path is relative to the working directory."
+        "Read the contents of a file at the given path (relative to the working \
+         directory). Optional `offset` (1-based start line) and `limit` (max \
+         lines) return only that line window of the file — use them to page \
+         through a large file instead of pulling the whole content into one result."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -30,6 +33,16 @@ impl ToolImpl for ReadFile {
                 "path": {
                     "type": "string",
                     "description": "Path to the file to read (relative to working directory)."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "1-based line number to start reading from. Omit to start at the top."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of lines to return from `offset`. Omit to read to end."
                 }
             },
             "required": ["path"]
@@ -46,12 +59,42 @@ impl ToolImpl for ReadFile {
 
         let path = ctx.resolve_path(raw)?;
 
-        tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|e| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: format!("cannot read `{}`: {e}", path.display()),
-            })
+        let content =
+            tokio::fs::read_to_string(&path)
+                .await
+                .map_err(|e| HarnessError::ToolExecution {
+                    tool: self.name().to_string(),
+                    reason: format!("cannot read `{}`: {e}", path.display()),
+                })?;
+
+        // Optional line-window. `offset` is 1-based (line 1 = first line);
+        // `limit` caps the count. Absent → whole file, unchanged behaviour. A
+        // per-tool cap still applies at the dispatch seam, but a targeted slice
+        // is cheaper and lets the model page through a large file deliberately.
+        let offset = args["offset"].as_u64().map(|n| n.max(1));
+        let limit = args["limit"].as_u64();
+        if offset.is_none() && limit.is_none() {
+            return Ok(content);
+        }
+
+        let start = offset.unwrap_or(1) as usize - 1;
+        let total = content.lines().count();
+        let mut lines = content.lines().skip(start);
+        let selected: Vec<&str> = match limit {
+            Some(n) => lines.by_ref().take(n as usize).collect(),
+            None => lines.by_ref().collect(),
+        };
+        let end = (start + selected.len()).min(total);
+        let mut out = selected.join("\n");
+        if start >= total {
+            out = format!(
+                "[bwoc: offset {} is past end of file ({total} lines)]",
+                start + 1
+            );
+        } else if start > 0 || end < total {
+            out = format!("[bwoc: lines {}-{end} of {total}]\n{out}", start + 1);
+        }
+        Ok(out)
     }
 }
 
@@ -318,6 +361,50 @@ mod tests {
             let args = json!({ "path": "hello.txt" });
             let content = reader.execute(args, &ctx).await.unwrap();
             assert_eq!(content, "สวัสดี");
+        });
+    }
+
+    #[test]
+    fn read_file_offset_limit_window() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let tmp = TempDir::new().unwrap();
+            let ctx = ctx_for_tmp(&tmp);
+            let writer = WriteFile;
+            writer
+                .execute(
+                    json!({ "path": "n.txt", "content": "l1\nl2\nl3\nl4\nl5" }),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            let reader = ReadFile;
+
+            // A middle window (lines 2-3).
+            let out = reader
+                .execute(json!({ "path": "n.txt", "offset": 2, "limit": 2 }), &ctx)
+                .await
+                .unwrap();
+            assert!(out.contains("lines 2-3 of 5"), "header: {out}");
+            assert!(out.contains("l2\nl3"), "window body: {out}");
+            assert!(
+                !out.contains("l1") && !out.contains("l4"),
+                "only the slice: {out}"
+            );
+
+            // No offset/limit → whole file, unchanged (no header).
+            let full = reader
+                .execute(json!({ "path": "n.txt" }), &ctx)
+                .await
+                .unwrap();
+            assert_eq!(full, "l1\nl2\nl3\nl4\nl5");
+
+            // Offset past EOF → a clear notice, not an empty string.
+            let past = reader
+                .execute(json!({ "path": "n.txt", "offset": 99 }), &ctx)
+                .await
+                .unwrap();
+            assert!(past.contains("past end of file"), "{past}");
         });
     }
 
