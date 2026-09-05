@@ -42,8 +42,11 @@ pub enum VerbError {
 pub struct MineReport {
     /// Files that produced at least one chunk.
     pub files: usize,
-    /// Chunks embedded and inserted.
+    /// Chunks embedded and newly inserted.
     pub stored: usize,
+    /// Chunks skipped as duplicates of an existing `(source, text)` — the count
+    /// that used to grow the store linearly on every session resume (#482).
+    pub skipped: usize,
     /// Secrets scrubbed out of chunk text before embedding (across all chunks).
     pub redacted: usize,
 }
@@ -64,6 +67,7 @@ pub fn mine(
         return Ok(MineReport {
             files: 0,
             stored: 0,
+            skipped: 0,
             redacted: 0,
         });
     }
@@ -90,16 +94,22 @@ pub fn mine(
         .into());
     }
 
+    let model = embedder.model_id();
     let mut sources = std::collections::HashSet::new();
     let mut stored = 0;
+    let mut skipped = 0;
     for (chunk, vec) in chunks.iter().zip(vectors.iter()) {
-        store.insert(&chunk.source, &chunk.text, mode, ts, vec)?;
-        sources.insert(chunk.source.clone());
-        stored += 1;
+        if store.insert(&chunk.source, &chunk.text, mode, ts, vec, model)? {
+            sources.insert(chunk.source.clone());
+            stored += 1;
+        } else {
+            skipped += 1;
+        }
     }
     Ok(MineReport {
         files: sources.len(),
         stored,
+        skipped,
         redacted,
     })
 }
@@ -112,7 +122,7 @@ pub fn search(
     limit: usize,
 ) -> Result<Vec<Memory>, VerbError> {
     let q = embedder.embed_one(query)?;
-    Ok(store.search(&q, limit)?)
+    Ok(store.search(&q, limit, embedder.model_id())?)
 }
 
 /// `wake-up`: the `limit` most recent memories, for session-start injection.
@@ -197,14 +207,35 @@ mod tests {
     }
 
     #[test]
+    fn re_mining_the_same_path_dedups() {
+        // #482: mining the same session twice must not grow the store; the
+        // second run reports every chunk as skipped.
+        let dir = std::env::temp_dir().join(format!("bwoc-remine-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s.md"), "a durable fact worth remembering").unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let emb = StubEmbedder::new(32);
+
+        let first = mine(&store, &emb, &dir, "convos", 1000).unwrap();
+        let before = store.count().unwrap();
+        assert!(first.stored > 0 && first.skipped == 0);
+
+        let second = mine(&store, &emb, &dir, "convos", 2000).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(second.stored, 0, "re-mine stores nothing new");
+        assert_eq!(second.skipped, first.stored, "re-mine skips what it saw");
+        assert_eq!(store.count().unwrap(), before, "store did not grow");
+    }
+
+    #[test]
     fn wake_up_returns_recent_first() {
         let store = Store::open_in_memory().unwrap();
         let emb = StubEmbedder::new(16);
         store
-            .insert("a", "old", "m", 10, &emb.embed_one("old").unwrap())
+            .insert("a", "old", "m", 10, &emb.embed_one("old").unwrap(), "")
             .unwrap();
         store
-            .insert("b", "new", "m", 20, &emb.embed_one("new").unwrap())
+            .insert("b", "new", "m", 20, &emb.embed_one("new").unwrap(), "")
             .unwrap();
         let woken = wake_up(&store, 5).unwrap();
         assert_eq!(woken[0].text, "new");
@@ -223,6 +254,7 @@ mod tests {
             MineReport {
                 files: 0,
                 stored: 0,
+                skipped: 0,
                 redacted: 0,
             }
         );
