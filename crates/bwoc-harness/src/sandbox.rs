@@ -551,38 +551,47 @@ pub fn scan_args(cmd: &str) -> Result<(), ArgScanViolation> {
         });
     }
 
-    // ── sudo / su / doas (defence-in-depth) ──────────────────────────────────
-    let binary = tokens
-        .iter()
-        .find(|t| !t.contains('='))
-        .copied()
-        .unwrap_or("");
-    let bin_name = Path::new(binary)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(binary);
-    if matches!(bin_name, "sudo" | "su" | "doas") {
-        return Err(ArgScanViolation {
-            pattern: "privilege_escalation",
-            reason: format!("`{bin_name}` is blocked by sandbox arg scan."),
-        });
-    }
-
-    // ── git push --force / -f (defence-in-depth) ────────────────────────────
-    let is_git = bin_name == "git";
-    let is_push = tokens.get(1).copied().unwrap_or("") == "push";
-    if is_git && is_push {
-        let has_force = tokens.iter().any(|t| {
-            *t == "--force"
-                || *t == "--force-with-lease"
-                || *t == "--force-if-includes"
-                || (t.starts_with('-') && !t.starts_with("--") && t.contains('f'))
-        });
-        if has_force {
+    // ── sudo / su / doas + git push --force (defence-in-depth) ────────────────
+    // Peel each shell-operator segment with the same normalizer the guardrail
+    // layer uses, so a wrapped escalation (`env sudo …`, `timeout 5 sudo …`) or
+    // a wrapped force-push is caught here too and the two layers cannot drift
+    // (#483). A segment `argv::peel` cannot resolve (`FailClosed`) is left to the
+    // authoritative fail-closed guardrail that runs ahead of execution; here we
+    // act only on what we can positively resolve.
+    for segment in crate::policy::guardrails::split_shell_segments(cmd) {
+        let crate::policy::argv::Peel::Ready(argv) = crate::policy::argv::peel(segment) else {
+            continue;
+        };
+        let Some(binary) = argv.first() else {
+            continue;
+        };
+        let bin_name = Path::new(binary)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(binary);
+        if matches!(bin_name, "sudo" | "su" | "doas") {
             return Err(ArgScanViolation {
-                pattern: "force_push",
-                reason: "`git push --force` is blocked by sandbox arg scan.".to_string(),
+                pattern: "privilege_escalation",
+                reason: format!("`{bin_name}` is blocked by sandbox arg scan."),
             });
+        }
+
+        let is_git = bin_name == "git";
+        let is_push = argv.get(1).map(String::as_str).unwrap_or("") == "push";
+        if is_git && is_push {
+            let has_force = argv.iter().any(|t| {
+                let t = t.as_str();
+                t == "--force"
+                    || t == "--force-with-lease"
+                    || t == "--force-if-includes"
+                    || (t.starts_with('-') && !t.starts_with("--") && t.contains('f'))
+            });
+            if has_force {
+                return Err(ArgScanViolation {
+                    pattern: "force_push",
+                    reason: "`git push --force` is blocked by sandbox arg scan.".to_string(),
+                });
+            }
         }
     }
 
