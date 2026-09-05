@@ -9,11 +9,18 @@ pub enum HarnessError {
     #[error("provider error: {0}")]
     Provider(String),
 
-    /// Transient provider error — network connectivity, 5xx, or timeout.
-    /// These are safe to retry with exponential backoff.
-    /// Non-transient errors (4xx, model-not-found) use other variants.
-    #[error("transient provider error (retryable): {0}")]
-    TransientProvider(String),
+    /// Transient provider error — network connectivity, 5xx, 429/408, or
+    /// timeout. These are safe to retry with exponential backoff.
+    /// Non-transient errors (other 4xx, model-not-found) use other variants.
+    ///
+    /// `retry_after` carries the server's own `Retry-After` hint when present
+    /// (a 429 usually ships one); the retry loop prefers it over its computed
+    /// backoff, clamped so a hostile endpoint cannot park the run.
+    #[error("transient provider error (retryable): {msg}")]
+    TransientProvider {
+        msg: String,
+        retry_after: Option<std::time::Duration>,
+    },
 
     /// The requested model was not found at the endpoint (HTTP 404 or absent
     /// from the models list).  The spike confirmed Ollama returns 404 for
@@ -100,13 +107,45 @@ pub enum HarnessError {
 }
 
 impl HarnessError {
+    /// Construct a transient provider error with no server retry hint — the
+    /// common case (network failure, timeout, a 5xx without a `Retry-After`).
+    /// Keeps the ~dozen call sites terse now that the variant carries a second
+    /// field.
+    pub fn transient(msg: impl Into<String>) -> Self {
+        HarnessError::TransientProvider {
+            msg: msg.into(),
+            retry_after: None,
+        }
+    }
+
+    /// Construct a transient provider error carrying the server's own
+    /// `Retry-After` hint (parsed from the HTTP response).
+    pub fn transient_after(
+        msg: impl Into<String>,
+        retry_after: Option<std::time::Duration>,
+    ) -> Self {
+        HarnessError::TransientProvider {
+            msg: msg.into(),
+            retry_after,
+        }
+    }
+
     /// Returns `true` if this error is transient and safe to retry.
     ///
-    /// Transient: network failures, 5xx responses, request timeouts.
-    /// Non-transient: 4xx, model-not-found, malformed tool calls, I/O errors
-    /// from the harness itself, path escapes.
+    /// Transient: network failures, 5xx / 429 / 408 responses, request
+    /// timeouts. Non-transient: other 4xx, model-not-found, malformed tool
+    /// calls, I/O errors from the harness itself, path escapes.
     pub fn is_transient(&self) -> bool {
-        matches!(self, HarnessError::TransientProvider(_))
+        matches!(self, HarnessError::TransientProvider { .. })
+    }
+
+    /// The server's `Retry-After` hint, if this is a transient error that
+    /// carried one. The retry loop prefers this over its computed backoff.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            HarnessError::TransientProvider { retry_after, .. } => *retry_after,
+            _ => None,
+        }
     }
 }
 
