@@ -22,7 +22,8 @@ impl ToolImpl for ReadFile {
     fn description(&self) -> &'static str {
         "Read the contents of a file at the given path (relative to the working \
          directory). Optional `offset` (1-based start line) and `limit` (max \
-         lines) read a slice of a large file instead of the whole thing."
+         lines) return only that line window of the file — use them to page \
+         through a large file instead of pulling the whole content into one result."
     }
 
     fn parameters_schema(&self) -> Value {

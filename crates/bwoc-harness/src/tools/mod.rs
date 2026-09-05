@@ -159,23 +159,31 @@ fn normalize_path(p: &Path) -> PathBuf {
 /// the IPC frame (#478).
 pub const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
 
-/// Clamp tool output to [`MAX_TOOL_OUTPUT_BYTES`], truncating on a UTF-8 **char
-/// boundary** and appending an *actionable* notice.
+/// Reserve, within [`MAX_TOOL_OUTPUT_BYTES`], for the truncation notice — so the
+/// *final* returned string (kept content **plus** notice) stays within the
+/// budget rather than overshooting it by the notice length. The notice is ~180
+/// bytes plus a few digits; 256 is a safe ceiling.
+const TRUNCATION_NOTICE_RESERVE: usize = 256;
+
+/// Clamp tool output so the returned string is at most [`MAX_TOOL_OUTPUT_BYTES`],
+/// truncating on a UTF-8 **char boundary** and appending an *actionable* notice.
 ///
-/// Never a silent cut: a truncated read that looks complete is how an agent
-/// writes an edit against content it never saw. The notice names the next move
-/// (`read_file` with `offset`/`limit`; a tighter `grep`) rather than just
-/// reporting a loss. A naive byte slice would panic once `sandbox`/providers run
-/// the text through `from_utf8_lossy`, hence the boundary walk.
+/// The notice counts against the budget (via [`TRUNCATION_NOTICE_RESERVE`]), so
+/// the total never exceeds the cap. Never a silent cut: a truncated read that
+/// looks complete is how an agent writes an edit against content it never saw.
+/// The notice names the next move (`read_file` with `offset`/`limit`; a tighter
+/// `grep`). A naive byte slice would panic once `sandbox`/providers run the text
+/// through `from_utf8_lossy`, hence the boundary walk.
 pub fn clamp_tool_output(content: String) -> String {
     if content.len() <= MAX_TOOL_OUTPUT_BYTES {
         return content;
     }
-    let mut n = MAX_TOOL_OUTPUT_BYTES;
+    let total = content.len();
+    let budget = MAX_TOOL_OUTPUT_BYTES.saturating_sub(TRUNCATION_NOTICE_RESERVE);
+    let mut n = budget;
     while n > 0 && !content.is_char_boundary(n) {
         n -= 1;
     }
-    let total = content.len();
     let kept = &content[..n];
     format!(
         "{kept}\n\n[bwoc: tool output truncated — showed {n} of {total} bytes \
@@ -267,6 +275,18 @@ mod tests {
             "must announce the cut: {out:.80}"
         );
         assert!(out.contains("offset"), "must name the next move");
+    }
+
+    #[test]
+    fn clamp_total_stays_within_budget() {
+        // The notice counts against the cap: kept + notice must not exceed it.
+        let big = "a".repeat(MAX_TOOL_OUTPUT_BYTES * 2);
+        let out = clamp_tool_output(big);
+        assert!(
+            out.len() <= MAX_TOOL_OUTPUT_BYTES,
+            "clamped output {} exceeds the budget {MAX_TOOL_OUTPUT_BYTES}",
+            out.len()
+        );
     }
 
     #[test]

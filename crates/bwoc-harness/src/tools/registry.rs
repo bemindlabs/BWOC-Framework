@@ -145,19 +145,19 @@ pub async fn dispatch_rich(
         }
     };
 
-    match tool.execute_rich(args, ctx).await {
-        Ok(mut output) => {
-            // Clamp once, here — the single seam every tool (and every MCP tool)
-            // passes through, so none can flood the context. Images are untouched
-            // (bounded elsewhere); only the text budget applies (#478).
-            output.content = super::clamp_tool_output(output.content);
-            output
-        }
+    let mut output = match tool.execute_rich(args, ctx).await {
+        Ok(output) => output,
         Err(HarnessError::PathEscape(p)) => super::ToolOutput::text(format!(
             "error: path `{p}` is outside the allowed working directory"
         )),
         Err(e) => super::ToolOutput::text(format!("error: {e}")),
-    }
+    };
+    // Clamp once, here — the single seam every tool (and every MCP tool) passes
+    // through, so none can flood the context. Applied to ALL paths, including
+    // error text (a bad-JSON error echoes `arguments_json`, which is unbounded).
+    // Images are untouched (bounded elsewhere); only the text budget applies (#478).
+    output.content = super::clamp_tool_output(output.content);
+    output
 }
 
 #[cfg(test)]
