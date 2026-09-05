@@ -165,6 +165,9 @@ pub fn run(args: TuiArgs) -> i32 {
         }
     };
 
+    // Restore the terminal even if the event loop below panics (#481).
+    let _terminal_guard = TerminalGuard;
+
     let mut app = App::new(args.agent_id, &args.backend_name);
     let result = event_loop(&mut term, &mut app, &rx, stdin);
 
@@ -434,6 +437,20 @@ fn restore_terminal() -> io::Result<()> {
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
     Ok(())
+}
+
+/// RAII guard: restores the terminal (leave raw mode + alt screen) on drop,
+/// including while the stack **unwinds through a panic**. Without it, a panic in
+/// the event loop stranded the operator's terminal in raw mode + alternate
+/// screen (the explicit happy-path `restore_terminal()` never ran). BWOC uses
+/// default unwind panics — no `panic = "abort"` — so destructors run and no
+/// signal handler is needed (#481). Construct it right after `setup_terminal()`.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = restore_terminal();
+    }
 }
 
 /// Serialize a [`ChatInput`] and write it as one line to the child's stdin.
@@ -1057,6 +1074,9 @@ pub fn run_fleet(args: FleetArgs) -> i32 {
             return 1;
         }
     };
+    // Restore the terminal even if the event loop below panics (#481).
+    let _terminal_guard = TerminalGuard;
+
     let mut fleet = Fleet::new(agents, cfg);
     let result = fleet_event_loop(&mut term, &mut fleet);
     if let Err(e) = restore_terminal() {

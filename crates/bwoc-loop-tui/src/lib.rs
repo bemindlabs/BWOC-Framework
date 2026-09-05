@@ -112,6 +112,8 @@ pub fn run(args: LoopTuiArgs) -> i32 {
             return 1;
         }
     };
+    // Restore the terminal even if the event loop below panics (#481).
+    let _terminal_guard = TerminalGuard;
     let loop_result = event_loop(&mut term, &mut app);
     // Always restore the terminal, even if the loop errored.
     let restore_result = restore_terminal();
@@ -654,6 +656,18 @@ fn restore_terminal() -> io::Result<()> {
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
     Ok(())
+}
+
+/// RAII guard: restores the terminal on drop, including while unwinding through
+/// a panic in the event loop — otherwise a panic strands the terminal in raw
+/// mode + alt screen. Default unwind panics run destructors, so no signal
+/// handler is needed (#481).
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = restore_terminal();
+    }
 }
 
 fn event_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
