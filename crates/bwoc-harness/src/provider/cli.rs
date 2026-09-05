@@ -159,7 +159,7 @@ impl CliClient {
             Err(_) => {
                 // `collect` (which borrowed `child`) is dropped; kill + reap.
                 let _ = child.kill().await; // SIGKILL + await reaps the zombie
-                return Err(HarnessError::TransientProvider(format!(
+                return Err(HarnessError::transient(format!(
                     "cli backend: `{}` exceeded {}s for one turn (killed)",
                     self.cmd,
                     CLI_TURN_TIMEOUT.as_secs()
