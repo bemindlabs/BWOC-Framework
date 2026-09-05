@@ -376,6 +376,12 @@ where
                         }
                     }
                     let mut interjection: Option<(String, bwoc_core::trust::Principal)> = None;
+                    // Mark where this turn's messages begin, so the team broadcast
+                    // below only considers a reply produced *this* turn — an
+                    // interjection-aborted turn adds no new assistant message, and
+                    // scanning all of `history` would re-broadcast the previous
+                    // turn's reply (#480 review).
+                    let turn_start = history.len();
                     run_turn(
                         &*provider,
                         &registry,
@@ -395,9 +401,10 @@ where
                     // results) so the next launch resumes with full context.
                     save_session(&session_path, &history);
                     // Team chat (HV3-3a): broadcast this agent's reply to the
-                    // shared log so teammates see it on their next turn.
+                    // shared log so teammates see it on their next turn — only a
+                    // reply from THIS turn (see `turn_start`).
                     if let Some(log) = &config.team_chat_log {
-                        if let Some(reply) = last_assistant_text(&history) {
+                        if let Some(reply) = last_assistant_text(&history[turn_start..]) {
                             append_team_message(log, &config.agent, &reply);
                         }
                     }
@@ -1502,6 +1509,50 @@ mod tests {
             |e| matches!(e, ChatEvent::ToolResult { ok, output, .. } if !*ok && output.contains("DENIED"))
         ));
         assert!(!tmp.path().join("x.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn interjection_aborted_turn_does_not_rebroadcast_prior_reply() {
+        // #480 review: a turn aborted by an operator interjection produces no new
+        // assistant message, so the team broadcast must not re-send the PREVIOUS
+        // turn's reply.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let team_log = tmp.path().join("team.jsonl");
+        let mut policy = allow_all();
+        policy.tools.insert("write_file".to_string(), Mode::Ask);
+        let cfg = ChatConfig {
+            team_chat_log: Some(team_log.clone()),
+            ..config(policy)
+        };
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"hi\"}\n",
+            "{\"type\":\"user\",\"text\":\"do X\"}\n",
+            "{\"type\":\"user\",\"text\":\"stop, do this instead\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let provider = Arc::new(MockProvider::new(vec![
+            final_response("first reply"),
+            tool_call_response("write_file", r#"{"path":"x.txt","content":"hi"}"#),
+            final_response("second reply"),
+        ]));
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        drive(provider, registry, ctx, cfg, lines, &mut out)
+            .await
+            .unwrap();
+
+        let log = std::fs::read_to_string(&team_log).unwrap_or_default();
+        let first_count = log.matches("first reply").count();
+        assert_eq!(
+            first_count, 1,
+            "prior reply must be broadcast once, not re-sent: {log}"
+        );
+        assert!(
+            log.contains("second reply"),
+            "the replayed turn's reply is broadcast: {log}"
+        );
     }
 
     #[tokio::test]
