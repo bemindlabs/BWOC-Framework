@@ -95,9 +95,14 @@ pub(crate) async fn call_with_retry_v2(
 
 /// Compute bounded exponential backoff.
 ///
-/// attempt 1 → 200ms, 2 → 400ms, 3 → 800ms, 4 → 1600ms … capped at 3200ms.
+/// The loop calls this with `attempt` starting at 1, so attempt 1 is the base
+/// delay: 1 → 200ms, 2 → 400ms, 3 → 800ms, 4 → 1600ms, 5 → 3200ms … capped at
+/// `MAX_BACKOFF_MS`. The shift is `attempt - 1` so the first retry waits the
+/// base, not double it (the earlier `1 << attempt` was off by one — first retry
+/// waited 400ms while the docs promised 200ms).
 pub(super) fn backoff_ms(attempt: u32) -> u64 {
-    let raw = BACKOFF_BASE_MS.saturating_mul(1u64 << attempt.min(10));
+    let shift = attempt.saturating_sub(1).min(10);
+    let raw = BACKOFF_BASE_MS.saturating_mul(1u64 << shift);
     raw.min(MAX_BACKOFF_MS)
 }
 
@@ -119,6 +124,18 @@ mod tests {
     use crate::provider::{ChatCompletion, Tool};
     use bwoc_core::trust::{Principal, TrustLevel};
     use std::time::Duration;
+
+    #[test]
+    fn backoff_matches_documented_schedule() {
+        // Pin the exact schedule the doc comment promises — attempt 1 is the
+        // base delay, not double it (guards the off-by-one Copilot caught).
+        assert_eq!(backoff_ms(1), 200);
+        assert_eq!(backoff_ms(2), 400);
+        assert_eq!(backoff_ms(3), 800);
+        assert_eq!(backoff_ms(4), 1_600);
+        assert_eq!(backoff_ms(5), MAX_BACKOFF_MS); // 3200, capped
+        assert_eq!(backoff_ms(50), MAX_BACKOFF_MS); // stays capped, no overflow
+    }
 
     #[test]
     fn retry_delay_prefers_server_hint() {
