@@ -28,6 +28,8 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use super::argv;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -121,26 +123,52 @@ fn check_destruction(
 
     // The verbatim command runs via `sh -c`, so a chained segment like the
     // second half of `true && rm -rf ~` executes too. Apply the first-token
-    // check to EACH shell-operator segment, not just the whole string.
+    // check to EACH shell-operator segment, not just the whole string. Each
+    // segment is first normalized by `argv::peel`, which strips transparent
+    // wrappers (`env`/`timeout`/…) and unwraps `sh -c '<literal>'` so a
+    // destructive command hidden one layer down cannot walk past the check —
+    // failing closed if it cannot see what runs (#483).
     for segment in split_shell_segments(cmd) {
-        check_destruction_segment(segment, worktree_root)?;
+        match argv::peel(segment) {
+            argv::Peel::Ready(tokens) => {
+                let refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+                check_destruction_argv(&refs, worktree_root)?;
+            }
+            argv::Peel::FailClosed => {
+                return Err(unparseable_violation(segment, "sila_panatatipata"));
+            }
+        }
     }
     Ok(())
 }
 
-/// Run the destruction first-token check against a single shell segment.
-fn check_destruction_segment(cmd: &str, worktree_root: &Path) -> Result<(), GuardrailViolation> {
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+/// The fail-closed guardrail violation: `argv::peel` could not determine what a
+/// command actually invokes (an unmodelled wrapper flag, a stdin-fed runner, a
+/// non-literal `sh -c`, unbalanced quotes). If we cannot see it, we do not
+/// certify it (#483). `rule` is the caller's own precept so the block is tagged
+/// for the check that raised it (destruction vs escalation), not always the
+/// former.
+fn unparseable_violation(segment: &str, rule: &'static str) -> GuardrailViolation {
+    GuardrailViolation {
+        rule,
+        reason: format!(
+            "cannot determine what `{segment}` actually invokes (an unmodelled \
+             command wrapper, a stdin-fed runner like `xargs`, or a non-literal \
+             `sh -c`). This guardrail fails closed rather than certify a command \
+             it cannot see."
+        ),
+    }
+}
+
+/// Run the destruction first-token check against a single **peeled** argv
+/// (wrappers already stripped by `argv::peel`, so `tokens[0]` is the real
+/// binary).
+fn check_destruction_argv(tokens: &[&str], worktree_root: &Path) -> Result<(), GuardrailViolation> {
     if tokens.is_empty() {
         return Ok(());
     }
 
-    // Strip leading env assignments (VAR=val cmd ...) and resolve the binary.
-    let binary = tokens
-        .iter()
-        .find(|t| !t.contains('='))
-        .copied()
-        .unwrap_or("");
+    let binary = tokens.first().copied().unwrap_or("");
 
     // ── `rm` with a recursive flag ───────────────────────────────────────────
     if binary == "rm" || binary.ends_with("/rm") {
@@ -461,21 +489,26 @@ fn check_privilege_escalation(
     };
 
     // A chained segment (e.g. `foo || sudo rm -rf /`) also reaches `sh -c`;
-    // check the first token of every shell-operator segment.
+    // check the first token of every shell-operator segment, after peeling
+    // wrappers so `env sudo …` / `timeout 5 sudo …` cannot slip past (#483).
     for segment in split_shell_segments(cmd) {
-        check_privilege_escalation_segment(segment)?;
+        match argv::peel(segment) {
+            argv::Peel::Ready(tokens) => {
+                let refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+                check_privilege_escalation_argv(&refs)?;
+            }
+            argv::Peel::FailClosed => {
+                return Err(unparseable_violation(segment, "bhava_tanha_escalation"));
+            }
+        }
     }
     Ok(())
 }
 
-/// Run the privilege-escalation first-token check against a single shell segment.
-fn check_privilege_escalation_segment(cmd: &str) -> Result<(), GuardrailViolation> {
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
-    let binary = tokens
-        .iter()
-        .find(|t| !t.contains('='))
-        .copied()
-        .unwrap_or("");
+/// Run the privilege-escalation first-token check against a single **peeled**
+/// argv (`tokens[0]` is the real binary).
+fn check_privilege_escalation_argv(tokens: &[&str]) -> Result<(), GuardrailViolation> {
+    let binary = tokens.first().copied().unwrap_or("");
 
     if matches!(binary, "sudo" | "su" | "doas") || binary.ends_with("/sudo") {
         return Err(GuardrailViolation {
@@ -564,7 +597,7 @@ fn content_contains_secret(content: &str, pattern: &str) -> bool {
 /// still slip a destructive command past the first-token checks. Closing that
 /// fully would require a real shell parser, which is out of scope here; the OS
 /// sandbox + path-allowlist (sandbox.rs) remain the backstop.
-fn split_shell_segments(cmd: &str) -> Vec<&str> {
+pub(crate) fn split_shell_segments(cmd: &str) -> Vec<&str> {
     // Operators are all ASCII, so compare bytes directly and never index into
     // the middle of a multibyte char. (A previous version sliced `&cmd[i..i+2]`
     // to peek, which panics when `i+2` lands mid-char on non-ASCII input — a
@@ -688,6 +721,64 @@ mod tests {
         let cmd = r#"{"command": "rm -rf ."}"#;
         let err = check("run_command", cmd, &wt()).unwrap_err();
         assert_eq!(err.rule, "sila_panatatipata");
+    }
+
+    // ── #483: destructive commands hidden behind a wrapper are still blocked ──
+
+    #[test]
+    fn blocks_wrapped_destruction_bypasses() {
+        // The five documented bypass strings: each executes a destructive `rm`
+        // but the naive first-token check saw the wrapper and waved it through.
+        for cmd in [
+            r#"{"command": "env rm -rf /"}"#,
+            r#"{"command": "command rm -rf /"}"#,
+            r#"{"command": "timeout 5 rm -rf /"}"#,
+            r#"{"command": "xargs rm -rf"}"#,
+            r#"{"command": "sh -c 'rm -rf /'"}"#,
+        ] {
+            let err = check("run_command", cmd, &wt()).expect_err(cmd);
+            assert_eq!(err.rule, "sila_panatatipata", "{cmd}");
+        }
+    }
+
+    #[test]
+    fn blocks_wrapped_privilege_escalation() {
+        // `sudo` reached through a wrapper is escalation all the same.
+        for cmd in [
+            r#"{"command": "env sudo rm x"}"#,
+            r#"{"command": "timeout 5 sudo sh"}"#,
+        ] {
+            let err = check("run_command", cmd, &wt()).expect_err(cmd);
+            // Destruction runs first and fails closed for the unparseable/
+            // wrapped cases; either the destruction or the escalation rule is a
+            // correct block. What matters is that it is blocked, not waved through.
+            assert!(
+                err.rule == "bhava_tanha_escalation" || err.rule == "sila_panatatipata",
+                "{cmd} blocked with rule {}",
+                err.rule
+            );
+        }
+    }
+
+    #[test]
+    fn plain_safe_wrapped_command_still_allowed() {
+        // Peeling must not over-block an ordinary wrapped build command.
+        assert!(
+            check(
+                "run_command",
+                r#"{"command": "timeout 60 cargo test"}"#,
+                &wt()
+            )
+            .is_ok()
+        );
+        assert!(
+            check(
+                "run_command",
+                r#"{"command": "env FOO=bar cargo build"}"#,
+                &wt()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
