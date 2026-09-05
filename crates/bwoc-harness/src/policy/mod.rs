@@ -45,6 +45,7 @@
 //! sandbox stub (macOS / Linux pluggable trait, v1 is worktree+allowlist).
 
 pub mod approval;
+pub(crate) mod argv;
 pub mod guardrails;
 pub mod permission;
 
