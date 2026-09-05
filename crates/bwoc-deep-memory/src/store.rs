@@ -100,27 +100,47 @@ impl Store {
             )?;
         }
 
-        // Collapse any duplicates a pre-#482 store already accumulated (the same
-        // `chat-session.json` was re-mined every resume), keeping the earliest
-        // row per (source, text), THEN enforce uniqueness so `INSERT OR IGNORE`
-        // makes re-mining idempotent from here on.
-        conn.execute_batch(
-            "DELETE FROM memories
-               WHERE id NOT IN (SELECT MIN(id) FROM memories GROUP BY source, text);
-             CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_source_text
-               ON memories(source, text);",
-        )?;
+        // One-time migration: collapse any duplicates a pre-#482 store already
+        // accumulated (the same `chat-session.json` was re-mined every resume),
+        // then enforce uniqueness so `INSERT OR IGNORE` makes re-mining
+        // idempotent. Uniqueness is on `(source, text, embed_model)` — NOT just
+        // `(source, text)` — so switching to a new embedding model re-embeds and
+        // stores fresh rows under the new model instead of being ignored (and
+        // then filtered out at search, which would make those memories vanish).
+        // The full-table dedup scan runs only until the index exists, so a large
+        // migrated store doesn't pay it on every open.
+        let index_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+                ["idx_memories_source_text_model"],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !index_exists {
+            conn.execute_batch(
+                "DELETE FROM memories
+                   WHERE id NOT IN (
+                     SELECT MIN(id) FROM memories GROUP BY source, text, embed_model
+                   );
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_source_text_model
+                   ON memories(source, text, embed_model);",
+            )?;
+        }
 
         Ok(Self { conn })
     }
 
     /// Insert one memory, stamped with the embedding model that produced the
     /// vector. Returns `true` if a row was written, `false` if it was a
-    /// duplicate `(source, text)` and skipped — so callers can count dedups.
+    /// duplicate `(source, text, embed_model)` and skipped — so callers can count
+    /// dedups.
     ///
-    /// `INSERT OR IGNORE` against the `(source, text)` unique index makes
-    /// re-mining the same session idempotent (#482): a resumed session re-mines
-    /// `chat-session.json`, and without this the store grew linearly per resume.
+    /// `INSERT OR IGNORE` against the `(source, text, embed_model)` unique index
+    /// makes re-mining the same session with the same model idempotent (#482) —
+    /// a resumed session re-mines `chat-session.json`, and without this the store
+    /// grew linearly per resume — while a **model switch** still re-embeds and
+    /// stores fresh rows (the model is part of the key), so recall never silently
+    /// disappears after changing `--embed-model`.
     pub fn insert(
         &self,
         source: &str,
@@ -451,6 +471,34 @@ mod tests {
         // A different text at the same source is a distinct row.
         assert!(
             s.insert("sess.json", "bye", "m", 3, &[0.0, 1.0], "")
+                .unwrap()
+        );
+        assert_eq!(s.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn model_switch_re_embeds_instead_of_vanishing() {
+        // #491: after switching embed_model, re-mining the same (source, text)
+        // must store a fresh row under the new model — not be ignored and then
+        // filtered out of search, which would make the memory disappear.
+        let s = Store::open_in_memory().unwrap();
+        assert!(
+            s.insert("sess", "fact", "m", 1, &[1.0, 0.0], "old")
+                .unwrap()
+        );
+        // Same (source, text) but a NEW model → a distinct row, not a skip.
+        assert!(
+            s.insert("sess", "fact", "m", 2, &[0.0, 1.0], "new")
+                .unwrap()
+        );
+        assert_eq!(s.count().unwrap(), 2);
+        // A search on the new model still finds the memory.
+        let hits = s.search(&[0.0, 1.0], 10, "new").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].text, "fact");
+        // Re-mining again with the new model is idempotent.
+        assert!(
+            !s.insert("sess", "fact", "m", 3, &[0.0, 1.0], "new")
                 .unwrap()
         );
         assert_eq!(s.count().unwrap(), 2);

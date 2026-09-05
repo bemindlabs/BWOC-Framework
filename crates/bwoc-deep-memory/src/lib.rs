@@ -40,7 +40,8 @@ pub enum VerbError {
 /// Outcome of a `mine` run — how many chunks were embedded and stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MineReport {
-    /// Files that produced at least one chunk.
+    /// Files that produced at least one **newly-stored** chunk (a file whose
+    /// every chunk was a duplicate contributes 0 — see `skipped`).
     pub files: usize,
     /// Chunks embedded and newly inserted.
     pub stored: usize,
