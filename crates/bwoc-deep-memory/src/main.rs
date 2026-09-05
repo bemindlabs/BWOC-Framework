@@ -146,6 +146,12 @@ fn main() -> ExitCode {
                         report.files,
                         db.display()
                     );
+                    if report.skipped > 0 {
+                        println!(
+                            "skipped {} duplicate chunk(s) already stored",
+                            report.skipped
+                        );
+                    }
                     if report.redacted > 0 {
                         println!("redacted {} secret(s) before storing", report.redacted);
                     }
