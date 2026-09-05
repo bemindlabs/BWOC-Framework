@@ -134,7 +134,9 @@ fn check_destruction(
                 let refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
                 check_destruction_argv(&refs, worktree_root)?;
             }
-            argv::Peel::FailClosed => return Err(unparseable_violation(segment)),
+            argv::Peel::FailClosed => {
+                return Err(unparseable_violation(segment, "sila_panatatipata"));
+            }
         }
     }
     Ok(())
@@ -143,15 +145,17 @@ fn check_destruction(
 /// The fail-closed guardrail violation: `argv::peel` could not determine what a
 /// command actually invokes (an unmodelled wrapper flag, a stdin-fed runner, a
 /// non-literal `sh -c`, unbalanced quotes). If we cannot see it, we do not
-/// certify it (#483).
-fn unparseable_violation(segment: &str) -> GuardrailViolation {
+/// certify it (#483). `rule` is the caller's own precept so the block is tagged
+/// for the check that raised it (destruction vs escalation), not always the
+/// former.
+fn unparseable_violation(segment: &str, rule: &'static str) -> GuardrailViolation {
     GuardrailViolation {
-        rule: "sila_panatatipata",
+        rule,
         reason: format!(
             "cannot determine what `{segment}` actually invokes (an unmodelled \
              command wrapper, a stdin-fed runner like `xargs`, or a non-literal \
-             `sh -c`). The destruction guardrail fails closed rather than certify \
-             a command it cannot see."
+             `sh -c`). This guardrail fails closed rather than certify a command \
+             it cannot see."
         ),
     }
 }
@@ -493,7 +497,9 @@ fn check_privilege_escalation(
                 let refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
                 check_privilege_escalation_argv(&refs)?;
             }
-            argv::Peel::FailClosed => return Err(unparseable_violation(segment)),
+            argv::Peel::FailClosed => {
+                return Err(unparseable_violation(segment, "bhava_tanha_escalation"));
+            }
         }
     }
     Ok(())

@@ -28,6 +28,17 @@
 //! trading a rare over-block for never silently under-blocking. The same
 //! normalizer is wired into `check_destruction`, `check_privilege_escalation`,
 //! and `sandbox::scan_args` so the three cannot drift.
+//!
+//! **Scope of the contract.** `peel` reasons about the command *string* the
+//! model emitted. It does **not** read a script *file* (`sh build.sh`) or a
+//! *stdin* stream (`… | sh`): guardrails are pure/no-I/O by design, so those
+//! contents are simply not visible here, and failing closed on every
+//! script-file invocation would block ordinary `bash build.sh` for no gain. For
+//! those, `peel` resolves the shell itself as the effective binary (the caller
+//! sees `sh`, blocks nothing extra) and the **OS sandbox** — the worktree path
+//! allowlist plus Landlock/seccomp in `sandbox.rs` — is the backstop that
+//! confines what the script can actually do. What `peel` *can* see in the
+//! string (wrappers, a `-c` literal) it certifies or fails closed on.
 
 /// The result of reducing a shell segment to its effective argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +151,12 @@ fn peel_shell(words: &[&str], depth: usize) -> Peel {
     // The effective-binary-is-the-shell fallback, used whenever this isn't a
     // recognisable `<shell> -c <literal>` (a script file, an interactive shell):
     // nothing destructive is statically visible in the shell token itself.
+    // A script-file or interactive/stdin shell: its *contents* are out of a
+    // pure/no-I/O guardrail's reach (see the module docs). Resolve the shell
+    // itself as the effective binary — this adds no new bypass over the prior
+    // behaviour, and the OS sandbox (path allowlist + Landlock/seccomp) confines
+    // what the script does. We only *unwrap* the one form we can read: `-c
+    // '<literal>'`.
     let as_shell = || Peel::Ready(words.iter().map(|s| s.to_string()).collect());
 
     match words.get(1) {
