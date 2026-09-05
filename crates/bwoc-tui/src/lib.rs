@@ -166,14 +166,17 @@ pub fn run(args: TuiArgs) -> i32 {
     };
 
     // Restore the terminal even if the event loop below panics (#481).
-    let _terminal_guard = TerminalGuard;
+    let mut terminal_guard = TerminalGuard::new();
 
     let mut app = App::new(args.agent_id, &args.backend_name);
     let result = event_loop(&mut term, &mut app, &rx, stdin);
 
+    // Explicit restore on the happy path; disarm the guard so it doesn't restore
+    // a second time (the guard remains armed only for the panic path).
     if let Err(e) = restore_terminal() {
         eprintln!("bwoc chat --tui: warning — failed to restore terminal: {e}");
     }
+    terminal_guard.disarm();
 
     // The Quit/EOF path already asked the child to exit; reap it so we don't
     // leave a zombie, killing it if it ignored Quit.
@@ -445,11 +448,30 @@ fn restore_terminal() -> io::Result<()> {
 /// screen (the explicit happy-path `restore_terminal()` never ran). BWOC uses
 /// default unwind panics — no `panic = "abort"` — so destructors run and no
 /// signal handler is needed (#481). Construct it right after `setup_terminal()`.
-struct TerminalGuard;
+///
+/// [`disarm`](TerminalGuard::disarm) it after a successful explicit restore so
+/// the happy path restores exactly once (the guard is purely the panic-path net,
+/// not a second restore relying on idempotency).
+struct TerminalGuard {
+    armed: bool,
+}
+
+impl TerminalGuard {
+    fn new() -> Self {
+        Self { armed: true }
+    }
+
+    /// Cancel the guard's restore — call after the explicit happy-path restore.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = restore_terminal();
+        if self.armed {
+            let _ = restore_terminal();
+        }
     }
 }
 
@@ -1075,13 +1097,14 @@ pub fn run_fleet(args: FleetArgs) -> i32 {
         }
     };
     // Restore the terminal even if the event loop below panics (#481).
-    let _terminal_guard = TerminalGuard;
+    let mut terminal_guard = TerminalGuard::new();
 
     let mut fleet = Fleet::new(agents, cfg);
     let result = fleet_event_loop(&mut term, &mut fleet);
     if let Err(e) = restore_terminal() {
         eprintln!("bwoc chat --tui: warning — failed to restore terminal: {e}");
     }
+    terminal_guard.disarm();
     // Dropping `fleet` drops each Session → Quit + kill + reap every child.
     drop(fleet);
     match result {

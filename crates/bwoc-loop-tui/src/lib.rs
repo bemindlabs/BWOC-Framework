@@ -113,10 +113,12 @@ pub fn run(args: LoopTuiArgs) -> i32 {
         }
     };
     // Restore the terminal even if the event loop below panics (#481).
-    let _terminal_guard = TerminalGuard;
+    let mut terminal_guard = TerminalGuard::new();
     let loop_result = event_loop(&mut term, &mut app);
-    // Always restore the terminal, even if the loop errored.
+    // Always restore the terminal, even if the loop errored; disarm the guard so
+    // the happy path restores exactly once (it stays armed for the panic path).
     let restore_result = restore_terminal();
+    terminal_guard.disarm();
     if let Err(e) = loop_result {
         eprintln!("bwoc loop: terminal error: {e}");
         return 1;
@@ -661,12 +663,27 @@ fn restore_terminal() -> io::Result<()> {
 /// RAII guard: restores the terminal on drop, including while unwinding through
 /// a panic in the event loop — otherwise a panic strands the terminal in raw
 /// mode + alt screen. Default unwind panics run destructors, so no signal
-/// handler is needed (#481).
-struct TerminalGuard;
+/// handler is needed (#481). [`disarm`](TerminalGuard::disarm) it after a
+/// successful explicit restore so the happy path restores exactly once.
+struct TerminalGuard {
+    armed: bool,
+}
+
+impl TerminalGuard {
+    fn new() -> Self {
+        Self { armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = restore_terminal();
+        if self.armed {
+            let _ = restore_terminal();
+        }
     }
 }
 
