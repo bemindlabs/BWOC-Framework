@@ -146,7 +146,13 @@ pub async fn dispatch_rich(
     };
 
     match tool.execute_rich(args, ctx).await {
-        Ok(output) => output,
+        Ok(mut output) => {
+            // Clamp once, here — the single seam every tool (and every MCP tool)
+            // passes through, so none can flood the context. Images are untouched
+            // (bounded elsewhere); only the text budget applies (#478).
+            output.content = super::clamp_tool_output(output.content);
+            output
+        }
         Err(HarnessError::PathEscape(p)) => super::ToolOutput::text(format!(
             "error: path `{p}` is outside the allowed working directory"
         )),

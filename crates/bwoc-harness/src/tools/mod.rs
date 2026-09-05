@@ -147,6 +147,44 @@ fn normalize_path(p: &Path) -> PathBuf {
 // Tool trait
 // ---------------------------------------------------------------------------
 
+/// Maximum bytes of tool-output **text** fed back to the model in one result.
+///
+/// A side-effect-free read (`read_file`, `grep`) is permitted on an Untrusted
+/// turn precisely because it's cheap — so unbounded output is a context/cost DoS
+/// the Layer-0 capability gate deliberately allows. The only prior cap in the
+/// tool path was `grep`'s match count; a whole-file `read_file` or a chatty
+/// `run_command` had none. Clamp once at the dispatch seam (see
+/// [`clamp_tool_output`]) so every tool — and every MCP tool — inherits the
+/// budget; on unix that seam runs inside the isolated child, so it also bounds
+/// the IPC frame (#478).
+pub const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// Clamp tool output to [`MAX_TOOL_OUTPUT_BYTES`], truncating on a UTF-8 **char
+/// boundary** and appending an *actionable* notice.
+///
+/// Never a silent cut: a truncated read that looks complete is how an agent
+/// writes an edit against content it never saw. The notice names the next move
+/// (`read_file` with `offset`/`limit`; a tighter `grep`) rather than just
+/// reporting a loss. A naive byte slice would panic once `sandbox`/providers run
+/// the text through `from_utf8_lossy`, hence the boundary walk.
+pub fn clamp_tool_output(content: String) -> String {
+    if content.len() <= MAX_TOOL_OUTPUT_BYTES {
+        return content;
+    }
+    let mut n = MAX_TOOL_OUTPUT_BYTES;
+    while n > 0 && !content.is_char_boundary(n) {
+        n -= 1;
+    }
+    let total = content.len();
+    let kept = &content[..n];
+    format!(
+        "{kept}\n\n[bwoc: tool output truncated — showed {n} of {total} bytes \
+         (limit {MAX_TOOL_OUTPUT_BYTES}). Narrow the request: read a file with \
+         `read_file` using `offset`/`limit`, or find a match with `grep` using a \
+         tighter pattern or a narrower path.]"
+    )
+}
+
 /// A tool's result: the text fed back to the model, plus any multimodal images
 /// (e.g. a screenshot) to attach to the `tool_result` message. The common case
 /// is text-only ([`ToolOutput::text`]); only visual tools populate `images`.
@@ -211,6 +249,34 @@ mod tests {
         let ctx = ctx(tmp.path());
         let p = ctx.resolve_path("src/main.rs").unwrap();
         assert_eq!(p, tmp.path().join("src/main.rs"));
+    }
+
+    #[test]
+    fn clamp_leaves_small_output_untouched() {
+        let s = "small output".to_string();
+        assert_eq!(clamp_tool_output(s.clone()), s);
+    }
+
+    #[test]
+    fn clamp_truncates_and_appends_actionable_notice() {
+        let big = "a".repeat(MAX_TOOL_OUTPUT_BYTES * 2);
+        let out = clamp_tool_output(big);
+        assert!(out.len() < MAX_TOOL_OUTPUT_BYTES * 2, "must shrink");
+        assert!(
+            out.contains("truncated"),
+            "must announce the cut: {out:.80}"
+        );
+        assert!(out.contains("offset"), "must name the next move");
+    }
+
+    #[test]
+    fn clamp_never_splits_a_multibyte_char() {
+        // A wall of 3-byte chars whose length lands the cut mid-char must not
+        // panic and must stay valid UTF-8 (sandbox/providers run from_utf8_lossy).
+        let big = "あ".repeat(MAX_TOOL_OUTPUT_BYTES); // 3 bytes each
+        let out = clamp_tool_output(big);
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        assert!(out.contains("truncated"));
     }
 
     #[test]
