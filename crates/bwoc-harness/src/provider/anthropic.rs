@@ -317,26 +317,32 @@ impl ProviderClient for AnthropicClient {
         // parse) with a per-call deadline — see COMPLETE_TIMEOUT. A stall
         // surfaces as TransientProvider so the existing retry/backoff path sees
         // it instead of the turn hanging forever.
-        let call = async {
-            let resp = req.json(&body).send().await.map_err(|e| {
-                HarnessError::TransientProvider(format!("HTTP request failed: {e}"))
-            })?;
+        let call =
+            async {
+                let resp =
+                    req.json(&body).send().await.map_err(|e| {
+                        HarnessError::transient(format!("HTTP request failed: {e}"))
+                    })?;
 
-            let status = resp.status();
-            if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                return Err(super::client::classify_http_error(status.as_u16(), &text));
-            }
+                let status = resp.status();
+                if !status.is_success() {
+                    let retry_after = super::client::parse_retry_after(resp.headers());
+                    let text = resp.text().await.unwrap_or_default();
+                    return Err(super::client::classify_http_error(
+                        status.as_u16(),
+                        &text,
+                        retry_after,
+                    ));
+                }
 
-            let data: Value = resp
-                .json()
-                .await
-                .map_err(|e| HarnessError::Provider(format!("Failed to parse response: {e}")))?;
-            Ok(parse_completion(&data))
-        };
+                let data: Value = resp.json().await.map_err(|e| {
+                    HarnessError::Provider(format!("Failed to parse response: {e}"))
+                })?;
+                Ok(parse_completion(&data))
+            };
         match tokio::time::timeout(COMPLETE_TIMEOUT, call).await {
             Ok(res) => res,
-            Err(_) => Err(HarnessError::TransientProvider(format!(
+            Err(_) => Err(HarnessError::transient(format!(
                 "Anthropic completion timed out after {}s",
                 COMPLETE_TIMEOUT.as_secs()
             ))),
@@ -373,15 +379,21 @@ impl ProviderClient for AnthropicClient {
         if let Some(b) = beta {
             req = req.header("anthropic-beta", b);
         }
-        let resp =
-            req.json(&body).send().await.map_err(|e| {
-                HarnessError::TransientProvider(format!("HTTP request failed: {e}"))
-            })?;
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| HarnessError::transient(format!("HTTP request failed: {e}")))?;
 
         let status = resp.status();
         if !status.is_success() {
+            let retry_after = super::client::parse_retry_after(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            return Err(super::client::classify_http_error(status.as_u16(), &text));
+            return Err(super::client::classify_http_error(
+                status.as_u16(),
+                &text,
+                retry_after,
+            ));
         }
 
         // Anthropic's SSE is a stateful event protocol (input tokens arrive at

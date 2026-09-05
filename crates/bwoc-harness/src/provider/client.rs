@@ -7,9 +7,11 @@
 //!
 //! HTTP errors are split into two buckets:
 //!
-//! - **Transient** (retry-safe): connection errors, 5xx responses, request
-//!   timeouts.  Callers with exponential-backoff retry loops use
-//!   [`HarnessError::is_transient`] to gate retries.
+//! - **Transient** (retry-safe): connection errors, 5xx responses, 429 (rate
+//!   limit) and 408 (request timeout), request timeouts.  Callers with
+//!   exponential-backoff retry loops use [`HarnessError::is_transient`] to gate
+//!   retries, and honour a server `Retry-After` hint when the response carried
+//!   one.
 //! - **Fatal** (fail-fast): 404 (`ModelNotFound`), other 4xx, JSON parse
 //!   failures.  Retrying these is pointless and misleading.
 //!
@@ -318,16 +320,18 @@ impl ProviderClient for OllamaClient {
             .auth(self.client.post(self.completions_url()).json(&body))
             .send()
             .await
-            .map_err(|e| HarnessError::TransientProvider(format!("HTTP request failed: {e}")))?;
+            .map_err(|e| HarnessError::transient(format!("HTTP request failed: {e}")))?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(HarnessError::ModelNotFound(model.to_string()));
         }
         if !status.is_success() {
+            // Grab the Retry-After hint before `.text()` consumes `resp`.
+            let retry_after = parse_retry_after(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            // 5xx = transient; 4xx = fatal.
-            return Err(classify_http_error(status.as_u16(), &text));
+            // 5xx / 429 / 408 = transient; other 4xx = fatal.
+            return Err(classify_http_error(status.as_u16(), &text, retry_after));
         }
 
         resp.json::<ChatCompletion>()
@@ -358,15 +362,16 @@ impl ProviderClient for OllamaClient {
             .auth(self.client.post(self.completions_url()).json(&body))
             .send()
             .await
-            .map_err(|e| HarnessError::TransientProvider(format!("HTTP request failed: {e}")))?;
+            .map_err(|e| HarnessError::transient(format!("HTTP request failed: {e}")))?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(HarnessError::ModelNotFound(model.to_string()));
         }
         if !status.is_success() {
+            let retry_after = parse_retry_after(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            return Err(classify_http_error(status.as_u16(), &text));
+            return Err(classify_http_error(status.as_u16(), &text, retry_after));
         }
 
         // Parse SSE: each line starting with "data: " is a JSON chunk.
@@ -649,25 +654,101 @@ fn build_request_body(
 // HTTP error classification helper
 // ---------------------------------------------------------------------------
 
-/// Classify an HTTP error as transient (5xx) or fatal (4xx).
+/// Classify an HTTP error as transient (retryable) or fatal.
 ///
 /// - **5xx** — server-side error, may be transient: retry with backoff.
-/// - **4xx** (non-404) — client-side error (bad request, auth failure, rate
-///   limit exceeded with no retry-after, etc.) — fail fast.
+/// - **429** (Too Many Requests) / **408** (Request Timeout) — the two
+///   retryable 4xx: a rate limit or a timeout clears on its own, and the
+///   existing backoff loop is exactly the right shape to absorb them. A 429
+///   usually ships a `Retry-After`; `retry_after` threads it through so the
+///   loop can honour the server's own hint (#479).
+/// - **other 4xx** (non-404) — client-side error (bad request, auth failure) —
+///   fail fast.
 ///
 /// 404 is handled before this function is called and maps to
 /// [`HarnessError::ModelNotFound`].
-pub(crate) fn classify_http_error(status: u16, body: &str) -> HarnessError {
-    if status >= 500 {
-        HarnessError::TransientProvider(format!("HTTP {status}: {body}"))
+pub(crate) fn classify_http_error(
+    status: u16,
+    body: &str,
+    retry_after: Option<std::time::Duration>,
+) -> HarnessError {
+    if status >= 500 || status == 429 || status == 408 {
+        HarnessError::transient_after(format!("HTTP {status}: {body}"), retry_after)
     } else {
         HarnessError::Provider(format!("HTTP {status}: {body}"))
     }
 }
 
+/// Parse a `Retry-After` response header into a delay.
+///
+/// The header is either delta-seconds (an integer, what every rate-limiter
+/// emits in practice) or an HTTP-date (rare for 429s). We honour the integer
+/// form and ignore the date form — a missing/unparseable hint just falls back
+/// to the loop's computed backoff, which is safe. The value is clamped by the
+/// caller, so a hostile endpoint cannot use it to park the run.
+pub(crate) fn parse_retry_after(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<std::time::Duration> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: u64 = raw.trim().parse().ok()?;
+    Some(std::time::Duration::from_secs(secs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_429_and_408_are_transient() {
+        // The two retryable 4xx: rate limit and request timeout (#479).
+        for status in [429u16, 408, 500, 503] {
+            assert!(
+                classify_http_error(status, "busy", None).is_transient(),
+                "HTTP {status} must be transient"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_other_4xx_stays_fatal() {
+        for status in [400u16, 401, 403, 422] {
+            assert!(
+                !classify_http_error(status, "nope", None).is_transient(),
+                "HTTP {status} must be fatal"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_threads_retry_after() {
+        let err = classify_http_error(429, "slow down", Some(std::time::Duration::from_secs(5)));
+        assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(5)));
+        // A fatal error never carries a retry hint.
+        assert_eq!(classify_http_error(401, "no", None).retry_after(), None);
+    }
+
+    #[test]
+    fn parse_retry_after_reads_delta_seconds() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(reqwest::header::RETRY_AFTER, "3".parse().unwrap());
+        assert_eq!(
+            parse_retry_after(&h),
+            Some(std::time::Duration::from_secs(3))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_ignores_http_date_and_garbage() {
+        // The HTTP-date form (rare for 429s) and any non-integer fall back to
+        // None → the loop uses its own backoff.
+        for v in ["Wed, 21 Oct 2026 07:28:00 GMT", "soon", ""] {
+            let mut h = reqwest::header::HeaderMap::new();
+            h.insert(reqwest::header::RETRY_AFTER, v.parse().unwrap());
+            assert_eq!(parse_retry_after(&h), None, "{v:?} must not parse");
+        }
+        // A wholly absent header is also None.
+        assert_eq!(parse_retry_after(&reqwest::header::HeaderMap::new()), None);
+    }
 
     #[test]
     fn request_body_omits_reasoning_effort_by_default() {
