@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
-- **A byte budget on tool output** (#478) — there was no cap anywhere in the tool path, so a whole-file `read_file` or chatty `run_command` was an unbounded context/cost DoS that Layer 0 permits on an untrusted turn. Output is clamped once at the dispatch seam (covering every tool and every MCP tool) to 64 KiB with an *actionable* truncation notice, and `read_file` gains `offset` / `limit` to page a large file deliberately.
+- **A byte budget on tool output** (#488) — there was no cap anywhere in the tool path, so a whole-file `read_file` or chatty `run_command` was an unbounded context/cost DoS that Layer 0 permits on an untrusted turn. Output is clamped once at the dispatch seam (covering every tool and every MCP tool) to 64 KiB with an *actionable* truncation notice, and `read_file` gains `offset` / `limit` to page a large file deliberately.
 
 ## [v2026.8.20-2] — 2026-08-20 — 2.44.2
 
