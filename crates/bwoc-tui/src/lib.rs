@@ -1861,4 +1861,113 @@ mod tests {
         // A non-scroll key is not consumed.
         assert!(!app.scroll_key(KeyCode::Enter));
     }
+
+    // ── End-to-end render pipeline ────────────────────────────────────────────
+    //
+    // These drive the WHOLE render path the operator sees — a chat_proto JSON
+    // line off the wire is deserialized with the *same* `serde_json::from_str::
+    // <ChatEvent>` the reader thread uses, applied to a real `App`, and painted
+    // by the real `draw_frame` onto a ratatui `TestBackend`. The only pieces not
+    // exercised are the OS subprocess and the TTY (non-deterministic by nature);
+    // everything from wire bytes to rendered cells is real.
+
+    /// Flatten a rendered `TestBackend` frame into text (one line per row) so a
+    /// test can assert on what the operator would actually see.
+    fn rendered_text(
+        term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        w: u16,
+        h: u16,
+    ) -> String {
+        let buf = term.backend().buffer();
+        let mut out = String::new();
+        for y in 0..h {
+            for x in 0..w {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Apply a slice of raw chat_proto lines to `app`, deserializing each exactly
+    /// as the reader thread does (unparseable lines dropped, never fatal).
+    fn feed_wire(app: &mut App, lines: &[&str]) {
+        for line in lines {
+            if let Ok(ev) = serde_json::from_str::<ChatEvent>(line) {
+                app.apply(ev);
+            }
+        }
+    }
+
+    #[test]
+    fn e2e_renders_full_conversation_frame_from_wire() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new("agent-pi".into(), "ollama");
+        feed_wire(
+            &mut app,
+            &[
+                r#"{"type":"ready","agent":"agent-pi","model":"llama3","backend":"ollama","tools":["read_file"]}"#,
+                r#"you: read x.txt"#, // a human banner line — must be dropped, not fatal
+                r#"{"type":"token","text":"Hello "}"#,
+                r#"{"type":"token","text":"there"}"#,
+                r#"{"type":"message","text":"Hello there"}"#,
+                r#"{"type":"tool_call","id":"c1","name":"read_file","args":"{\"path\":\"x.txt\"}"}"#,
+                r#"{"type":"tool_result","id":"c1","name":"read_file","ok":true,"output":"secret"}"#,
+                r#"{"type":"turn_end","prompt_tokens":10,"completion_tokens":5}"#,
+            ],
+        );
+        // Operator has typed the next question but not sent it yet.
+        app.input.push_str("what does it say?");
+
+        let (w, h) = (80u16, 24u16);
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+        term.draw(|f| draw_frame(f, &app)).expect("draw");
+        let screen = rendered_text(&term, w, h);
+
+        // Status line: agent, model, backend.
+        assert!(screen.contains("agent-pi"), "status agent:\n{screen}");
+        assert!(screen.contains("llama3"), "status model:\n{screen}");
+        // Assistant reply flushed to the transcript.
+        assert!(screen.contains("Hello there"), "assistant line:\n{screen}");
+        // Tool call + result rendered inline (name visible).
+        assert!(screen.contains("read_file"), "tool line:\n{screen}");
+        // Input box shows the operator's in-flight text after the `>` prompt.
+        assert!(
+            screen.contains("what does it say?"),
+            "input echo:\n{screen}"
+        );
+        // The unparseable banner line never reached the transcript.
+        assert!(
+            !screen.contains("you: read x.txt"),
+            "banner must be dropped:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn e2e_permission_prompt_renders_in_input_box() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new("agent-pi".into(), "ollama");
+        feed_wire(
+            &mut app,
+            &[
+                r#"{"type":"ready","agent":"agent-pi","model":"llama3","backend":"ollama","tools":[]}"#,
+                r#"{"type":"permission_request","id":"p1","tool":"write_file","detail":"x.txt"}"#,
+            ],
+        );
+
+        let (w, h) = (80u16, 24u16);
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+        term.draw(|f| draw_frame(f, &app)).expect("draw");
+        let screen = rendered_text(&term, w, h);
+
+        // The pending permission takes over the input box border/title.
+        assert!(screen.contains("permission:"), "prompt title:\n{screen}");
+        assert!(screen.contains("write_file"), "prompt tool:\n{screen}");
+        assert!(
+            screen.contains("[a]llow") && screen.contains("[d]eny"),
+            "prompt actions:\n{screen}"
+        );
+    }
 }
