@@ -104,15 +104,33 @@ jobs:
       - name: ṭhiti — run a headless task against the ollama backend
         run: |
           cd "$RUNNER_TEMP/ws"
-          bwoc run agent-ci-ollama \
-            --task "Reply with exactly one word: pong" \
-            --timeout 180 \
-            --json | tee "$RUNNER_TEMP/run.json"
-          code=$(jq -r '.exit_code' "$RUNNER_TEMP/run.json")
-          out=$(jq -r '.output' "$RUNNER_TEMP/run.json")
-          test "$code" = "0" || { echo "agent exit_code=$code"; exit 1; }
-          test -n "$out" || { echo "agent produced no output"; exit 1; }
-          echo "ollama backend produced: $out"
+          # Ollama's model runner (llama-server) occasionally segfaults on load —
+          # an upstream flake, unrelated to BWOC (the harness already retries the
+          # HTTP call, but a crashed llama-server stays down for that request
+          # cycle, so all in-run retries hit the same corpse). Retry the whole run
+          # up to 3× with a fresh model load between attempts; fail only if EVERY
+          # attempt crashes, so a persistent segfault is still caught while a
+          # one-off flake is absorbed (observed once in ~15 runs: #494-era push).
+          attempts=3
+          code=1
+          out=""
+          for i in $(seq 1 "$attempts"); do
+            bwoc run agent-ci-ollama \
+              --task "Reply with exactly one word: pong" \
+              --timeout 180 \
+              --json | tee "$RUNNER_TEMP/run.json" || true
+            code=$(jq -r '.exit_code // 1' "$RUNNER_TEMP/run.json" 2>/dev/null || echo 1)
+            out=$(jq -r '.output // ""' "$RUNNER_TEMP/run.json" 2>/dev/null || echo "")
+            if [ "$code" = "0" ] && [ -n "$out" ]; then
+              echo "ollama backend produced: $out"
+              exit 0
+            fi
+            echo "::warning::ollama ṭhiti attempt $i/$attempts failed (exit_code=$code) — likely a llama-server segfault; reloading the model and retrying"
+            ollama stop "$OLLAMA_MODEL" 2>/dev/null || true
+            sleep 3
+          done
+          echo "::error::ollama ṭhiti failed after $attempts attempts (last exit_code=$code) — persistent, not a one-off flake"
+          exit 1
 
       - name: Ollama log (on failure)
         if: failure()
