@@ -42,6 +42,7 @@ mod livecheck;
 mod log;
 mod loop_cmd;
 mod memory;
+mod migrate;
 mod monitor;
 mod new;
 mod okr;
@@ -113,6 +114,36 @@ enum Commands {
         /// Emit JSON to stdout instead of the human-readable report.
         #[arg(long)]
         json: bool,
+    },
+    /// Bring on-disk artifacts up to the current schema (anicca). Reads what
+    /// 2.x wrote, writes what 3.x reads; support for the older revision ends in
+    /// BWOC 4.0. Splices in place — comments and unmodeled keys survive.
+    Migrate {
+        /// Workspace root or agent directory to migrate. Defaults to the
+        /// current directory. Mutually exclusive with `--all`.
+        #[arg(conflicts_with = "all")]
+        path: Option<PathBuf>,
+        /// Migrate the workspace plus every agent registered in it.
+        #[arg(long)]
+        all: bool,
+        /// Workspace root (only used with `--all`). Defaults follow standard
+        /// resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+        /// Report what would change without writing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Emit JSON to stdout instead of the human-readable report. Requires
+        /// `--yes`, since it writes without prompting.
+        #[arg(long)]
+        json: bool,
+        /// Proceed without confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Do not keep a copy of the originals under
+        /// `<root>/.bwoc/migrate-backup/`.
+        #[arg(long = "no-backup")]
+        no_backup: bool,
     },
     /// Incarnate a new agent from the template (uppāda).
     New(Box<NewArgs>),
@@ -2783,6 +2814,26 @@ fn main() -> ExitCode {
                 let target = path.unwrap_or_else(|| PathBuf::from("."));
                 check::run(&target, &lang, json)
             };
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Migrate {
+            path,
+            all,
+            workspace,
+            dry_run,
+            json,
+            yes,
+            no_backup,
+        }) => {
+            let code = migrate::run(migrate::MigrateArgs {
+                path,
+                all,
+                workspace,
+                dry_run,
+                json,
+                yes,
+                no_backup,
+            });
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::New(args)) => {
