@@ -3,7 +3,7 @@ name        = "jira-cloud-rest"
 kind        = "jira"
 version     = "0.1.1"
 description = "Jira Cloud REST v3 integration adapter — project-scoped JQL reads plus gated status transitions for bidirectional scrum sync."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "jira.sh"
 
 # [config.schema] — validates the operator's workspace.toml [plugins.jira-cloud-rest] block.

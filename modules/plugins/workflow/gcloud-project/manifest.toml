@@ -3,7 +3,7 @@ name        = "gcloud-project"
 kind        = "workflow"
 version     = "0.1.0"
 description = "Google Cloud (gcloud) project-context adapter — list / show / set-default for the local gcloud config; sources credential helpers from the sibling gcloud-auth plugin."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gcloud.sh"
 
 # [config.schema] intentionally omitted.

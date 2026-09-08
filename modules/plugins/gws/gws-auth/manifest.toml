@@ -3,7 +3,7 @@ name        = "gws-auth"
 kind        = "gws"
 version     = "0.1.0"
 description = "Google Workspace OAuth2 credential foundation — surfaces token presence, granted scopes, account, and expiry without ever reading or printing the token value, and exports the Bearer-auth + rate-limit + refresh helpers sibling gws-* plugins source."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 
 # [config.schema] intentionally omitted.

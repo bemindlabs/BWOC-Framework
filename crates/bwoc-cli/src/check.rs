@@ -5062,7 +5062,7 @@ name        = "memory-tier2-noop"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "No-op Tier 2 memory backend that forwards to Tier 1."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bwoc-plugin-memory-tier2-noop"
 "#,
         );
@@ -5178,7 +5178,7 @@ name        = "weird-kind"
 kind        = "frobnicator"
 version     = "0.1.0"
 description = "Plugin with unknown kind."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -5207,7 +5207,7 @@ name        = "iso-29110"
 kind        = "audit"
 version     = "0.1.0"
 description = "ISO/IEC 29110 compliance audit."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bwoc-plugin-iso-29110"
 "#,
         );
@@ -5242,7 +5242,7 @@ name        = "jira-cloud-rest"
 kind        = "jira"
 version     = "0.1.0"
 description = "Jira Cloud REST v3 integration adapter."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "jira.sh"
 "#,
         );
@@ -5272,7 +5272,7 @@ name        = "council-sangha-7"
 kind        = "council"
 version     = "0.1.0"
 description = "Aparihaniya-dhamma 7 consensus council."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "protocol.sh"
 
 [council]
@@ -5306,7 +5306,7 @@ name        = "figma-rest"
 kind        = "figma"
 version     = "0.1.0"
 description = "Read-mostly Figma REST adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "figma.sh"
 
 [config.schema]
@@ -5359,7 +5359,7 @@ name        = "figma-rest"
 kind        = "figma"
 version     = "0.1.0"
 description = "Read-mostly Figma REST adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "figma.sh"
 "#;
 
@@ -5627,7 +5627,7 @@ name        = "gws-auth"
 kind        = "gws"
 version     = "0.1.0"
 description = "Google Workspace OAuth2 credential foundation."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 "#;
 
@@ -5641,7 +5641,7 @@ name        = "{name}"
 kind        = "gws"
 version     = "0.1.0"
 description = "Read-mostly Google Workspace adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 "#
         )
@@ -5680,7 +5680,7 @@ name        = "gws-drive"
 kind        = "gws"
 version     = "0.1.0"
 description = "Read-mostly Google Drive adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 "#,
         );
@@ -6085,7 +6085,7 @@ name        = "jira-cloud-rest"
 kind        = "jira"
 version     = "0.1.0"
 description = "Jira Cloud REST v3 integration adapter."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "jira.sh"
 "#;
 
@@ -6258,7 +6258,7 @@ name        = "kimi-bridge"
 kind        = "llm-backend"
 version     = "0.1.0"
 description = "Bridge to the kimi backend (vendor name allowed here only)."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -6284,7 +6284,7 @@ name        = "neutral-name"
 kind        = "llm-backend"
 version     = "0.1.0"
 description = "A plugin."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "claude-cli-wrapper"
 "#,
         );
@@ -6339,7 +6339,7 @@ name        = "{name}"
 kind        = "workflow"
 version     = "0.1.0"
 description = "Path-traversal guard test."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "{entry}"
 "#
             ),
@@ -6446,7 +6446,7 @@ name        = "audit-iso-ref"
 kind        = "audit"
 version     = "0.1.0"
 description = "Reference audit plugin used in tests."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "audit.sh"
 "#;
 
@@ -7169,7 +7169,7 @@ name        = "memory-tier2-noop"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind — evidence-kind checks must not fire."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -7207,7 +7207,7 @@ name        = "memory-tier2-noop"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -7535,7 +7535,7 @@ name        = "gcloud-auth"
 kind        = "workflow"
 version     = "0.1.0"
 description = "gcloud credential-state adapter."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gcloud.sh"
 "#;
 
@@ -7662,7 +7662,7 @@ name        = "gcloud-compute"
 kind        = "workflow"
 version     = "0.1.0"
 description = "gcloud Compute Engine instance-lifecycle adapter."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gcloud.sh"
 "#;
 
@@ -7862,7 +7862,7 @@ name        = "workspace-okrs"
 kind        = "okr"
 version     = "0.1.0"
 description = "Reference okr plugin tracking Objectives + Key Results."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "okr.sh"
 "#;
 
@@ -8177,7 +8177,7 @@ name        = "council-sangha-7"
 kind        = "council"
 version     = "0.1.0"
 description = "Aparihaniya-dhamma 7 consensus council reference plugin."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "protocol.sh"
 
 [council]

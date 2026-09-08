@@ -3,7 +3,7 @@ name        = "gws-drive"
 kind        = "gws"
 version     = "0.1.0"
 description = "Reference gws plugin — read-mostly Google Drive adapter: lists files (files.list) and reads a single file's metadata (files.get), each projected into the normative Drive file shape. Never writes back to Drive. Sources the OAuth credential helpers from the sibling gws-auth foundation; requires the drive.readonly scope."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 
 # [config.schema] intentionally omitted.

@@ -990,7 +990,7 @@ mod tests {
             dir.join("manifest.toml"),
             format!(
                 "[plugin]\nname = \"{name}\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
-                 description = \"track the things\"\ncompat = \">=2.5.0\"\nentry = \"okr.sh\"\n"
+                 description = \"track the things\"\ncompat = \">=3.0.0, <4.0.0\"\nentry = \"okr.sh\"\n"
             ),
         )
         .unwrap();

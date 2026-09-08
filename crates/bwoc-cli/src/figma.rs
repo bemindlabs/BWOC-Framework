@@ -1291,7 +1291,7 @@ mod tests {
             dir.join("manifest.toml"),
             format!(
                 "[plugin]\nname = \"{name}\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
-                 description = \"figma adapter\"\ncompat = \">=2.10.0\"\nentry = \"figma.sh\"\n"
+                 description = \"figma adapter\"\ncompat = \">=3.0.0, <4.0.0\"\nentry = \"figma.sh\"\n"
             ),
         )
         .unwrap();

@@ -307,7 +307,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bwoc-a2a"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-agent"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "bwoc-core",
  "bwoc-signing",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-cli"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "bwoc-core",
  "bwoc-loop-tui",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-connect"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-core"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-deep-memory"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "clap",
  "regex",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-harness"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "async-trait",
  "bwoc-core",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-loop-tui"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "bwoc-core",
  "crossterm",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-mqtt"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "bwoc-core",
  "clap",
@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-signing"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "bwoc-tui"
-version = "2.44.2"
+version = "3.0.0"
 dependencies = [
  "bwoc-core",
  "crossterm",
