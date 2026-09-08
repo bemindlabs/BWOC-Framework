@@ -6,7 +6,7 @@
 **Document-Version:** `1.13.2`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
 **Latest release:** [`v2026.8.20-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.8.20-2) *(2026-08-20 — **2.44.2** — **security release**: a provider response can no longer choose its own provenance (a hostile / compromised / MITM'd endpoint could return `principal: self_agent` — a TRUSTED principal — and neuter the Layer-0 capability gate), and an untrusted turn can no longer write its own control plane (`.bwoc/harness-policy.toml`, `peers.toml`, replay nonces, the refusal audit trail, `config.manifest.json`). Also: replay defense survives a daemon restart, wire/persisted messages cannot assert a verified sender identity, and a gate now pins every "Latest release" pointer to CHANGELOG. Prior: `v2026.8.20-1` 2.44.1 — `bwoc-harness` ships in every release archive (#460); `v2026.8.20-0` 2.44.0 — Loop-Engineering L3 product loops)*
-**Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v2.0
+**Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v3.0
 **Last-Updated:** `2026-08-20T16:20:43Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
@@ -66,7 +66,7 @@ Same-day reissues bump the patch number: `v2026.5.22-0`, `v2026.5.22-1`. CalVer 
 | **MINOR** | New capability that does not break existing agents — new CLI command, new optional manifest field, new specification section. |
 | **PATCH** | Backward-compatible fix or clarification — auto-bumped by the hook on edits made on `main` (feature branches skip the bump to avoid cross-PR version conflicts). |
 
-Pre-1.0 (`0.x.y`) on the Cargo side means the public Rust API is not yet stable. Crates.io publish is targeted for the `1.0.0` Cargo milestone; the CalVer release scheme on Git tags is independent of that.
+The public Rust API is **not** a stable surface and the crates are **not** published to crates.io — `bwoc` ships as binaries (GitHub Releases + Homebrew). The MAJOR component tracks the on-disk and CLI contracts above, not the Rust API; the CalVer release scheme on Git tags is independent of both. (The earlier note here targeted a crates.io publish at the `1.0.0` Cargo milestone — the workspace passed that point without publishing, so the plan, not the version, is what changed.)
 
 ### Cutting a release (maintainer recipe)
 

@@ -10,6 +10,12 @@ use std::path::Path;
 use crate::i18n;
 
 /// Result of a single audit run. Each finding is a human-readable line.
+/// The specification version an agent declares once migrated to 3.x. Mirrors
+/// `VERSION.md` §Specification and `modules/agent-template/AGENTS.md`.
+const SPEC_VERSION_CURRENT: &str = "3.0";
+/// What a 2.x agent declares. Readable through 3.x; a violation in 4.0.
+const SPEC_VERSION_LEGACY: &str = "2.0";
+
 pub struct AuditReport {
     pub target: String,
     pub passes: Vec<String>,
@@ -72,6 +78,46 @@ const RUNTIME_PLACEHOLDERS: &[&str] = &["{{taskId}}"];
 pub enum AuditMode {
     Template,
     Incarnation,
+}
+
+/// Audit the specification version an agent declares — the `version` key in
+/// `config.manifest.json`, mirrored by the `| **Version** |` row in its
+/// `AGENTS.md`.
+///
+/// Through 2.x this key was written and never read, so an agent could claim any
+/// specification it liked. 3.0 reads it, but reads it *gently*: an agent still
+/// on 2.0 is a **warning**, not a violation. `check` exits non-zero on
+/// violations, and turning every existing fleet red the day an operator
+/// upgrades would be hostile when the fix is one command. It becomes a
+/// violation in 4.0, when 2.0 support goes away.
+fn audit_spec_version(
+    report: &mut AuditReport,
+    manifest: Option<&serde_json::Value>,
+    target: &Path,
+) {
+    let Some(declared) = manifest
+        .and_then(|m| m.get("version"))
+        .and_then(|v| v.as_str())
+    else {
+        // A manifest with no `version` at all is covered by the JSON/required-
+        // field audits above; nothing to add here.
+        return;
+    };
+
+    match declared {
+        SPEC_VERSION_CURRENT => report
+            .passes
+            .push(format!("specification version {SPEC_VERSION_CURRENT}")),
+        SPEC_VERSION_LEGACY => report.warnings.push(format!(
+            "specification version {SPEC_VERSION_LEGACY} — support ends in BWOC 4.0; \
+             run `bwoc migrate {}`",
+            target.display()
+        )),
+        other => report.violations.push(format!(
+            "specification version {other} is not one this bwoc knows \
+             (expected {SPEC_VERSION_CURRENT}, or {SPEC_VERSION_LEGACY} pending migration)"
+        )),
+    }
 }
 
 /// Decide audit mode from a parsed `config.manifest.json` value.
@@ -196,6 +242,8 @@ pub fn audit(target: &Path) -> AuditReport {
             .warnings
             .push("config.manifest.json missing (recommended for cloning readiness)".to_string());
     }
+    audit_spec_version(&mut report, manifest_value.as_ref(), target);
+
     let mode = detect_mode(manifest_value.as_ref());
 
     // Content-based checks on AGENTS.md
@@ -4288,6 +4336,67 @@ fn find_workspace_root_local() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec_report(version: Option<&str>) -> AuditReport {
+        let mut report = AuditReport {
+            target: "/ws/agents/agent-a".to_string(),
+            passes: Vec::new(),
+            warnings: Vec::new(),
+            violations: Vec::new(),
+        };
+        let manifest = version.map(|v| serde_json::json!({ "agentId": "agent-a", "version": v }));
+        audit_spec_version(
+            &mut report,
+            manifest.as_ref(),
+            Path::new("/ws/agents/agent-a"),
+        );
+        report
+    }
+
+    #[test]
+    fn current_spec_version_passes() {
+        let r = spec_report(Some("3.0"));
+        assert_eq!(r.violations.len(), 0);
+        assert_eq!(r.warnings.len(), 0);
+        assert!(r.passes.iter().any(|p| p.contains("3.0")));
+    }
+
+    #[test]
+    fn legacy_spec_version_warns_and_points_at_migrate() {
+        // Not a violation: `check` exits non-zero on violations, and turning
+        // every existing fleet red on upgrade day — when the fix is one
+        // command — would be hostile. This becomes a violation in 4.0.
+        let r = spec_report(Some("2.0"));
+        assert_eq!(r.violations.len(), 0, "{:?}", r.violations);
+        assert_eq!(r.warnings.len(), 1);
+        assert!(r.warnings[0].contains("bwoc migrate"), "{:?}", r.warnings);
+        assert!(r.warnings[0].contains("4.0"), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn an_unknown_spec_version_is_a_violation() {
+        let r = spec_report(Some("9.9"));
+        assert_eq!(r.warnings.len(), 0);
+        assert_eq!(r.violations.len(), 1, "{:?}", r.violations);
+    }
+
+    #[test]
+    fn a_manifest_without_a_version_key_adds_nothing_here() {
+        // Covered by the JSON / required-field audits; this one stays quiet
+        // rather than double-reporting.
+        let mut report = AuditReport {
+            target: "/ws".to_string(),
+            passes: Vec::new(),
+            warnings: Vec::new(),
+            violations: Vec::new(),
+        };
+        let manifest = serde_json::json!({ "agentId": "agent-a" });
+        audit_spec_version(&mut report, Some(&manifest), Path::new("/ws"));
+        assert!(report.passes.is_empty() && report.warnings.is_empty());
+        assert!(report.violations.is_empty());
+
+        assert!(spec_report(None).passes.is_empty());
+    }
 
     #[test]
     fn wikilink_detection() {

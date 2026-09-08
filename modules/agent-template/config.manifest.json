@@ -1,6 +1,6 @@
 {
   "agentId": "agent-{{name}}",
-  "version": "2.0",
+  "version": "3.0",
   "requiredConfig": {
     "name":           { "type": "string",   "description": "Agent name (kebab-case)", "required": true },
     "agentId":        { "type": "string",   "description": "Derived from name: agent-{name}", "required": true },

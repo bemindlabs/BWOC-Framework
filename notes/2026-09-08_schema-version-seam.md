@@ -79,11 +79,33 @@ later slices.
   `schema_version` last in `AgentsRegistry` would have broken `save` at runtime,
   not at compile time — `agents_toml_marker_precedes_the_array_of_tables` pins it.
 
+## Follow-up in this series — specification 3.0
+
+Landed after `bwoc migrate` (`notes/2026-09-08_bwoc-migrate.md`), in that order
+deliberately: nothing should declare v3 before the tool that explains v3 exists.
+
+- `modules/agent-template/AGENTS.md` and `config.manifest.json` now declare
+  **3.0** — bumped by running `bwoc migrate` on the template rather than by hand,
+  which dogfoods the command on the artifact every future agent is cloned from.
+- **`bwoc check` reads the version it used to only write.** `audit_spec_version`
+  makes `3.0` a pass, `2.0` a **warning** naming `bwoc migrate`, and anything
+  else a violation. Warning, not violation, because `check` exits non-zero on
+  violations and turning every existing fleet red the day an operator upgrades
+  would be hostile when the fix is one command. It becomes a violation in 4.0.
+- `VERSION.md` — `Specification: AGENTS.md v3.0`, and the stale line targeting a
+  crates.io publish at the Cargo `1.0.0` milestone is replaced by what is
+  actually true: the crates are unpublished, the Rust API is not a stable
+  surface, and MAJOR tracks the on-disk and CLI contracts.
+
+The per-document `| **Version** |` rows in `PRD` / `SRS` / `PHILOSOPHY` are
+deliberately left at 2.0 — `VERSION.md` says those track each document's own
+specification and are bumped intentionally, and those documents did not change.
+
 ## Status / deferred
 
-Not yet done, in later slices: `bwoc migrate`; the `config.manifest.json` /
-`AGENTS.md` spec bump to 3.0; `bwoc check` + `doctor` reporting a legacy artifact;
-the one-shot deprecation notice; `[plugin].compat` enforcement.
+Not yet done, in later slices: `bwoc doctor` reporting legacy artifacts; the
+one-shot deprecation notice; `[plugin].compat` enforcement; the compatibility +
+migration docs (EN/TH); the version bump and release cut.
 
 Two findings from the design pass that change later slices, recorded here so they
 are not rediscovered:
