@@ -30,7 +30,7 @@ still caught, while a one-off flake is absorbed.
 - **Not `continue-on-error`.** That would blind the job to a genuine
   ollama-backend regression; a bounded retry keeps the signal.
 - Parse the run's `.exit_code` / `.output` from the JSON envelope each attempt
-  (as before), guarded with `// ` defaults so a crash that emits no JSON still
+  (as before), guarded with `//` defaults so a crash that emits no JSON still
   fails cleanly rather than erroring in `jq`.
 
 ## Status

@@ -110,7 +110,9 @@ jobs:
           # cycle, so all in-run retries hit the same corpse). Retry the whole run
           # up to 3× with a fresh model load between attempts; fail only if EVERY
           # attempt crashes, so a persistent segfault is still caught while a
-          # one-off flake is absorbed (observed once in ~15 runs: #494-era push).
+          # one-off flake is absorbed (observed once in ~15 runs: run
+          # 34013793048→34030942134 era, the failing push run 34030942134 on
+          # 2026-09-06 — segfault serving qwen2.5:0.5b).
           attempts=3
           code=1
           out=""
@@ -129,6 +131,12 @@ jobs:
             ollama stop "$OLLAMA_MODEL" 2>/dev/null || true
             sleep 3
           done
+          # Surface the last run's JSON so a persistent failure can be triaged
+          # (still a llama-server segfault vs. a real BWOC regression) without
+          # re-running — the `Ollama log` step below adds the serve log too.
+          echo "::group::last run.json (persistent failure)"
+          cat "$RUNNER_TEMP/run.json" 2>/dev/null || echo "(no run.json — bwoc run emitted nothing)"
+          echo "::endgroup::"
           echo "::error::ollama ṭhiti failed after $attempts attempts (last exit_code=$code) — persistent, not a one-off flake"
           exit 1
 
