@@ -1642,6 +1642,33 @@ pub fn audit_plugin_manifest(plugin_dir: &Path) -> AuditReport {
         }
     }
 
+    // `[plugin].compat` is a semver range of framework versions, and
+    // `PLUGINS.en.md` §Validation has always specified that it must parse.
+    // A mismatch is a WARNING here, not a violation: `bwoc check` exits
+    // non-zero on violations, and a plugin that has simply not been re-declared
+    // for this major is a thing to fix, not a broken workspace. The *runtime*
+    // resolvers refuse it — that is where "refuses to load" belongs.
+    if let Some(compat) = plugin_table.get("compat").and_then(|v| v.as_str()) {
+        match crate::util::check_plugin_compat(compat, crate::util::FRAMEWORK_VERSION) {
+            Ok(()) => {
+                report
+                    .passes
+                    .push(format!("[plugin].compat {compat} matches this framework"));
+                if crate::util::compat_range_is_unbounded(compat) {
+                    report.warnings.push(format!(
+                        "[plugin].compat {compat} has no upper bound — it will keep claiming \
+                         compatibility with majors that break this plugin; declare a ceiling \
+                         (e.g. \">=X.0.0, <Y.0.0\")"
+                    ));
+                }
+            }
+            Err(e) if e.contains("not a valid semver range") => report.violations.push(e),
+            Err(e) => report.warnings.push(format!(
+                "{e} — this plugin will not load until it is re-declared"
+            )),
+        }
+    }
+
     // Name matches directory basename.
     let dir_name = plugin_dir
         .file_name()
@@ -5044,6 +5071,99 @@ entry       = "bwoc-plugin-memory-tier2-noop"
             report.violations.is_empty(),
             "expected reference plugin manifest to pass, got: {:?}",
             report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    fn plugin_manifest_with_compat(label: &str, compat: &str) -> std::path::PathBuf {
+        write_plugin_manifest(
+            label,
+            "compat-probe",
+            &format!(
+                r#"[plugin]
+name        = "compat-probe"
+kind        = "memory-backend"
+version     = "0.1.0"
+description = "Probe manifest for the compat gate (kind chosen to avoid the audit-kind criteria.toml requirement)."
+compat      = "{compat}"
+entry       = "bwoc-plugin-compat-probe"
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_compat_mismatch_is_a_warning_not_a_violation() {
+        // `check` exits non-zero on violations. A plugin that simply has not
+        // been re-declared for this major is a thing to fix, not a broken
+        // workspace — the refusal belongs in the resolvers that run it.
+        let dir = plugin_manifest_with_compat("compat-mismatch", ">=99.0.0");
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "mismatch must not be a violation: {:?}",
+            report.violations
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.contains("will not load")),
+            "{:?}",
+            report.warnings
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn an_unparseable_compat_range_is_a_violation() {
+        // PLUGINS.en.md §Validation has always specified this gate.
+        let dir = plugin_manifest_with_compat("compat-garbage", "definitely not semver");
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.contains("not a valid semver range")),
+            "{:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn an_open_ended_compat_range_is_flagged() {
+        // It matches today, so it is not a refusal — but a range with no
+        // ceiling keeps claiming compatibility with majors that break the
+        // plugin, which is the failure the field exists to prevent.
+        let dir = plugin_manifest_with_compat(
+            "compat-open",
+            &format!(">={}", crate::util::FRAMEWORK_VERSION),
+        );
+        let report = audit_plugin_manifest(&dir);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("no upper bound")),
+            "{:?}",
+            report.warnings
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_bounded_range_covering_this_build_passes_clean() {
+        let major = crate::util::FRAMEWORK_VERSION
+            .split('.')
+            .next()
+            .and_then(|m| m.parse::<u64>().ok())
+            .expect("framework major");
+        let dir = plugin_manifest_with_compat(
+            "compat-bounded",
+            &format!(">={major}.0.0, <{}.0.0", major + 1),
+        );
+        let report = audit_plugin_manifest(&dir);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("upper bound")),
+            "{:?}",
+            report.warnings
         );
         let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
     }

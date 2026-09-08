@@ -719,6 +719,11 @@ struct PluginSection {
     name: String,
     kind: String,
     entry: String,
+    /// Resolved against the framework version before the plugin is used.
+    /// `#[serde(default)]` so a manifest missing it yields an explicit refusal
+    /// rather than an opaque TOML parse error.
+    #[serde(default)]
+    compat: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -783,6 +788,16 @@ fn discover_plugin(root: &Path, name: &str) -> Result<Option<GwsPlugin>, String>
                 parsed.plugin.kind,
                 PLUGIN_KIND
             ));
+        }
+        // The plugin exists and is the right kind, but declares a framework
+        // range this build is outside. `PLUGINS.en.md` has always specified
+        // that the framework refuses to load on a compat mismatch; this is
+        // where that refusal lives. Surface it — silently degrading to "not
+        // installed" would hide a plugin the operator believes is active.
+        if let Err(e) =
+            crate::util::check_plugin_compat(&parsed.plugin.compat, crate::util::FRAMEWORK_VERSION)
+        {
+            return Err(format!("{}: {e}", manifest.display()));
         }
         return Ok(Some(GwsPlugin {
             name: parsed.plugin.name,

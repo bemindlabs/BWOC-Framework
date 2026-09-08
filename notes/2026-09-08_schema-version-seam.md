@@ -127,3 +127,51 @@ are not rediscovered:
 
 - `crates/bwoc-core/src/schema.rs` — the seam, and the rationale in its module doc.
 - `VERSION.md` §Cargo SemVer bump rules — the MAJOR trigger this release is built on.
+
+## Follow-up in this series — `[plugin].compat` becomes real
+
+`PLUGINS.en.md` has said since 2.5 that the framework "refuses to start ... on a
+`[plugin] compat` mismatch" and that `bwoc check` gates the range as parseable.
+Neither was true: `plugin.rs` parsed the field, printed it, and nothing else ever
+read it.
+
+- **`util::check_plugin_compat` + `FRAMEWORK_VERSION`** — one resolver shared by
+  the static check and every runtime path, the same single-source-of-truth
+  pattern `validate_plugin_entry` established so the two cannot drift. `semver`
+  becomes a direct `bwoc-cli` dep; it was already in the lock file transitively,
+  so the sweep cost one line of `Cargo.lock`. **Not** in `bwoc-core` — the
+  quarantine holds trivially, core has no plugin code.
+- **Runtime resolvers refuse**: `accounting`, `council`, `figma`, `gcloud`,
+  `gws`, `okr`, `jira`, and `audit`. Refuse, not skip — a resolver that returned
+  "not installed" for a plugin sitting on disk sends the operator looking in the
+  wrong place. Each resolver's `PluginSection` gained `compat` with
+  `#[serde(default)]`, so a manifest missing the field yields an explicit
+  refusal rather than an opaque TOML parse error.
+- **`bwoc plugin show` annotates rather than refuses** — a listing should show an
+  incompatible plugin, marked `WILL NOT LOAD`, not hide it.
+- **`bwoc check` grades three ways**: unparseable range → violation (the gate the
+  spec always specified); mismatch → warning; open-ended range → warning.
+
+### The bounded-range decision
+
+Ranges must now declare an upper bound: `>=3.0.0, <4.0.0`, not `>=3.0.0`.
+
+Enforcing an open-ended range would have been theatre. Every in-tree manifest
+says `>=2.x`, and under semver a bare `>=` comparator has no ceiling — so all 29
+already match 3.0.0, 4.0.0 and everything after. Turning enforcement on without
+changing the convention would have gated exactly nothing, and the field would
+have stayed decorative through the very major it exists to police. The cost —
+re-declaring `compat` at each major — is the feature: it is the plugin author
+asserting the plugin was reviewed against the new contracts.
+
+The 29 in-tree manifests are **deliberately still at `>=2.x`** at this point in
+the series: `>=3.0.0, <4.0.0` does not match the current build (2.44.x), so
+sweeping them before the version bump would break every plugin on an
+intermediate `main`. The sweep lands with the release cut.
+
+### Bugs surfaced
+
+`crates/bwoc-cli/tests/accounting_cli.rs` wrote a stub `manifest.toml` with no
+`compat` field at all — a required field since 2.5, undetected because nothing
+read it. Its replacement derives a bounded range from the running build's major
+so the fixture survives future bumps instead of pinning a range that goes stale.
