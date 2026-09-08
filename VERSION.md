@@ -4,7 +4,7 @@
 
 **Software-Version:** `2.44.2`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.13.2`   *(canonical here — bumped on `.md` edits)*
-**Phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening), **t29–t31 done; t32 parked** *(t29 macOS network-egress parity in sandbox SBPL, t30 `cli` ambient-backend trust tier, t31a agent_loop decomposition, t31b eval ambient-backend guard; t32 deep-memory sqlite-vec/governance deferred as premature — see `reports/retro/t32-deep-memory-design.md`)*. Prior **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) **DoD met — fully signed off** *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant; Phase 3 vaya + Phase 4 fleet-governance also met)*
+**Phase:** Phase 7 — *anicca* (versioned change & the compatibility contract), **in progress** — producing 3.0. Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** *(t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature — see `reports/retro/t32-deep-memory-design.md`)*. **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant)*; Phase 3 vaya + Phase 4 fleet-governance also met
 **Latest release:** [`v2026.8.20-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.8.20-2) *(2026-08-20 — **2.44.2** — **security release**: a provider response can no longer choose its own provenance (a hostile / compromised / MITM'd endpoint could return `principal: self_agent` — a TRUSTED principal — and neuter the Layer-0 capability gate), and an untrusted turn can no longer write its own control plane (`.bwoc/harness-policy.toml`, `peers.toml`, replay nonces, the refusal audit trail, `config.manifest.json`). Also: replay defense survives a daemon restart, wire/persisted messages cannot assert a verified sender identity, and a gate now pins every "Latest release" pointer to CHANGELOG. Prior: `v2026.8.20-1` 2.44.1 — `bwoc-harness` ships in every release archive (#460); `v2026.8.20-0` 2.44.0 — Loop-Engineering L3 product loops)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v3.0
 **Last-Updated:** `2026-08-20T16:20:43Z`   *(UTC, ISO 8601 — stamped on every edit)*
@@ -96,6 +96,7 @@ Same-day reissue? `v2026.5.22-1`, `v2026.5.22-2`, etc.
 | Phase 4 | Reference agents, fleet dashboard. |
 | Phase 5 | **saṃvara** — trust-boundary & sandbox hardening (re-exec isolation, Landlock/seccomp FS+network jail, capability gate). |
 | Phase 6 | **paññā** — harness eval framework + cross-platform sandbox hardening. |
+| Phase 7 | **anicca** — versioned change & the compatibility contract. Schema markers on every framework-owned artifact, `bwoc migrate`, an enforced specification version, and a written support window. DoD: BWOC can break its own contracts without breaking an installation silently. |
 
 See the [README Status table](README.md#status) for current phase progress.
 
