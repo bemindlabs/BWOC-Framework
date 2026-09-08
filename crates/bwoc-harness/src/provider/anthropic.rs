@@ -289,6 +289,10 @@ impl AnthropicClient {
 
 #[async_trait]
 impl ProviderClient for AnthropicClient {
+    fn provider_name(&self) -> String {
+        "anthropic".to_string()
+    }
+
     async fn complete(
         &self,
         messages: Vec<ChatMessage>,

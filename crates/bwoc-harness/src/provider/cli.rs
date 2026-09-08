@@ -247,6 +247,32 @@ impl CliClient {
 
 #[async_trait]
 impl ProviderClient for CliClient {
+    /// Map the wrapped vendor CLI to the provider actually serving the tokens.
+    /// `claude` is Anthropic's CLI, `codex` is OpenAI's, and so on — reporting
+    /// the CLI's own name would describe the transport, not the provider. An
+    /// unrecognised command falls through to the command itself: a custom value
+    /// in an open enum is honest, `openai` would not be.
+    fn provider_name(&self) -> String {
+        // Match the executable, not a path or arguments.
+        let cmd = self
+            .cmd
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&self.cmd)
+            .to_ascii_lowercase();
+        match cmd.as_str() {
+            "claude" => "anthropic",
+            "codex" => "openai",
+            "gemini" | "antigravity" | "agy" => "gcp.gemini",
+            "grok" => "x_ai",
+            "kimi" => "moonshot",
+            "copilot" => "github.copilot",
+            "ollama" => "ollama",
+            other => other,
+        }
+        .to_string()
+    }
+
     async fn complete(
         &self,
         messages: Vec<ChatMessage>,
@@ -561,5 +587,26 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn cli_provider_name_maps_the_vendor_not_the_transport() {
+        // `claude` is Anthropic's CLI, `codex` is OpenAI's — reporting the
+        // command name would describe how the tokens were fetched, not who
+        // served them.
+        assert_eq!(CliClient::new("claude").provider_name(), "anthropic");
+        assert_eq!(CliClient::new("codex").provider_name(), "openai");
+        assert_eq!(CliClient::new("gemini").provider_name(), "gcp.gemini");
+        assert_eq!(CliClient::new("grok").provider_name(), "x_ai");
+        // Resolved from a path, and case-insensitively.
+        assert_eq!(
+            CliClient::new("/usr/local/bin/Claude").provider_name(),
+            "anthropic"
+        );
+        // Unrecognised: a custom open-enum value beats a wrong well-known one.
+        assert_eq!(
+            CliClient::new("some-vendor-cli").provider_name(),
+            "some-vendor-cli"
+        );
     }
 }

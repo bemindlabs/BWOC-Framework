@@ -59,6 +59,22 @@ pub trait ProviderClient: Send + Sync {
     /// Returns `Ok(())` if found, `Err(HarnessError::ModelNotFound)` otherwise.
     async fn validate_model(&self, model: &str) -> Result<(), HarnessError>;
 
+    /// The value this client should report as `gen_ai.provider.name` in
+    /// telemetry (OTel GenAI semantic conventions).
+    ///
+    /// The attribute is an **open enum**: well-known values (`anthropic`,
+    /// `openai`, `gcp.gemini`, `x_ai`, …) are preferred where one applies, and a
+    /// custom value is legitimate where none does. What is not legitimate is
+    /// naming a provider the request did not go to — the harness reported
+    /// `openai` for every backend until this method existed, which made the
+    /// attribute worse than absent on the Anthropic and vendor-CLI paths.
+    ///
+    /// The default is `openai_compatible`: honest for any future client that
+    /// speaks the OpenAI wire shape to an endpoint whose operator is unknown.
+    fn provider_name(&self) -> String {
+        "openai_compatible".to_string()
+    }
+
     /// Query the provider for the context-window size of `model`.
     ///
     /// Best-effort: network or parse failures return `None` rather than
@@ -364,6 +380,22 @@ impl OllamaClient {
 
 #[async_trait]
 impl ProviderClient for OllamaClient {
+    /// Derived from the endpoint, because this one client serves every
+    /// OpenAI-compatible backend: a local Ollama, api.openai.com, or a proxy
+    /// in front of something else entirely. Only the first two can be named
+    /// with confidence; anything else stays `openai_compatible` rather than
+    /// claiming a vendor from a URL.
+    fn provider_name(&self) -> String {
+        let url = self.base_url.to_ascii_lowercase();
+        if url.contains("api.openai.com") {
+            "openai".to_string()
+        } else if url.contains("ollama") || url.contains("localhost") || url.contains("127.0.0.1") {
+            "ollama".to_string()
+        } else {
+            "openai_compatible".to_string()
+        }
+    }
+
     async fn complete(
         &self,
         messages: Vec<ChatMessage>,
@@ -1176,6 +1208,31 @@ mod tests {
 
         // Construction itself stays infallible.
         let _ = OllamaClient::new(DEFAULT_ENDPOINT);
+    }
+
+    #[test]
+    fn provider_name_is_derived_from_the_endpoint_not_assumed() {
+        // The attribute must name where the tokens came from. Before this
+        // existed the harness reported `openai` for every backend, which made
+        // it worse than absent on the Anthropic and vendor-CLI paths.
+        assert_eq!(
+            OllamaClient::new("https://api.openai.com/v1").provider_name(),
+            "openai"
+        );
+        assert_eq!(
+            OllamaClient::new("http://localhost:11434/v1").provider_name(),
+            "ollama"
+        );
+        assert_eq!(
+            OllamaClient::new("http://127.0.0.1:11434/v1").provider_name(),
+            "ollama"
+        );
+        // A proxy or gateway: we know the wire shape, not the operator. A
+        // custom open-enum value is honest; guessing a vendor from a URL is not.
+        assert_eq!(
+            OllamaClient::new("https://llm.internal.example/v1").provider_name(),
+            "openai_compatible"
+        );
     }
 }
 

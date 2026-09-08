@@ -164,7 +164,7 @@ crates/bwoc-harness/src/
 | **Peer-review gate** | เมื่อใช้ `--lead --reviewer <agent>` (หรือ field `reviewer` ของทีม) diff ของ worker ที่สำเร็จจะถูกส่งให้ reviewer agent (รัน `bwoc-harness` ใน worktree) ตรวจก่อน complete: APPROVE → complete; REJECT → คืน task เข้า queue พร้อมเก็บ worktree + feedback เป็น fail-safe — spawn/timeout/verdict อ่านไม่ได้ = reject; self-review ถูกข้าม | สังฆะ + กัลยาณมิตร | P3 |
 | **Team chat broadcast** | session แบบ `--chat --team-chat <path>` ใช้ `chat.jsonl` แบบ append-only ร่วมกันของทีม: ข้อความจากเพื่อนร่วมทีมที่โพสต์ตั้งแต่ turn ก่อนถูก inject เป็น system note "Team conversation" ก่อนแต่ละ turn แล้ว append คำตอบของ agent ต่อท้ายหลัง turn เรียกใช้ผ่าน `bwoc chat <agent> --tui --team <id>` (ตรวจ membership); ข้อความเพื่อนร่วมทีมยังถูกแสดงใน TUI เป็นบรรทัด `📢` ผ่าน event `TeamMessage` เป็น opt-in — ไม่มี flag = session เดี่ยว; agent ไม่เห็นข้อความของตัวเอง echo กลับ | สังฆะ + กัลยาณมิตร | P3 |
 | **Streaming** | SSE token stream จาก model สะสม `content` และ `tool_calls` fragment เป็น `ChatMessage` เดียว เชื่อมใน `agent_loop.rs` ด้วย `stream=true` | สัมมาวาจา (speech โปร่งใส) | P1 |
-| **Telemetry** | `TurnMetrics` per-turn (tokens in/out, latency, tool-call count, denial count, gate pass/fail, context tokens) append ไปที่ `session-metrics.jsonl` per session additive กับ schema `AGENTS.md §8b` — reader เดิมที่ไม่รู้จัก key `"harness"` ก็ ignore ได้อย่างปลอดภัย OTEL export optional ผ่าน `--features otel` | สติปัฏฐาน 4 | P3 |
+| **Telemetry** | `TurnMetrics` per-turn (tokens in/out, latency, tool-call count, denial count, gate pass/fail, context tokens) append ไปที่ `session-metrics.jsonl` per session additive กับ schema `AGENTS.md §8b` — reader เดิมที่ไม่รู้จัก key `"harness"` ก็ ignore ได้อย่างปลอดภัย OTel export **ติดมากับ binary ที่ปล่อย** และเงียบอยู่จนกว่าจะตั้ง `OTEL_EXPORTER_OTLP_ENDPOINT` ชื่อ span ตาม GenAI semantic conventions (`invoke_agent <agent>` → `chat <model>` → `execute_tool <tool>`) และ `gen_ai.provider.name` มาจาก provider client ตัวจริง ไม่ใช่การเดา ดู [§OpenTelemetry](#opentelemetry) | สติปัฏฐาน 4 | P3 |
 | **Eval framework** | offline fixture runner `task.toml` (prompt + rubric) + `seed/` (initial repo state) + `expected/` (expected outputs) rubric: `file_contains`, `file_matches` (exact bytes), `gates_must_pass` ทุก test ใช้ mock provider — ไม่ต้อง live model หรือ network ใน CI ป้อน retrospective triggers ของ Paññā 3 ใน `session-metrics` | ปัญญา 3 + ภาวนา 4 | P4 |
 
 ---
@@ -389,6 +389,54 @@ Responses API คือขั้นถัดไปสำหรับ control rea
 และระบุ completion criteria ให้ชัดเจน
 
 ---
+
+## OpenTelemetry
+
+Harness ส่ง OTLP trace หนึ่งชุดต่อหนึ่ง session ที่จบแล้ว มันถูกคอมไพล์ติดมากับ binary
+ที่ปล่อย และ **เงียบสนิทจนกว่าจะชี้ไปที่ collector**:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317   # OTLP/gRPC
+bwoc run <agent> --task "..."
+```
+
+ถ้าไม่ตั้งตัวแปรนี้ `export_otel_span` จะ return ก่อนสร้าง exporter — ไม่มีการต่อ
+connection และฟีเจอร์นี้ไม่มีต้นทุนเลย เป็นรูปแบบ opt-in เดียวกับที่ VS Code Copilot
+และ Claude Code ใช้
+
+### รูปของ span
+
+ชื่อ span ตามคำแนะนำ `{operation} {target}` ของ GenAI semantic conventions เพื่อให้
+trace ของ BWOC วางซ้อนกับ trace ที่ backend ของตัวเองส่งได้ แทนที่จะอยู่ใน namespace
+ส่วนตัว:
+
+```
+invoke_agent agent-oracle          gen_ai.operation.name=invoke_agent
+│                                  gen_ai.provider.name=<provider ตัวจริง>
+│                                  gen_ai.agent.name, gen_ai.usage.*
+├── chat claude-opus-4-7           gen_ai.operation.name=chat
+│   │                              gen_ai.request.model, gen_ai.usage.*
+│   └── execute_tool read_file     gen_ai.operation.name=execute_tool
+│                                  gen_ai.tool.name
+└── chat claude-opus-4-7
+```
+
+`gen_ai.provider.name` มาจาก `ProviderClient::provider_name()` ของ client ตัวจริง
+ไม่ใช่จาก config — attribute นี้ต้องบอกว่า token มาจาก endpoint ไหนจริง ๆ `claude`
+map เป็น `anthropic`, `codex` เป็น `openai` ส่วน endpoint ทรง OpenAI ที่ไม่ใช่ทั้ง
+api.openai.com และ Ollama ในเครื่อง จะรายงาน `openai_compatible` แทนที่จะยืมชื่อ
+vendor มาจาก URL
+
+### ข้อจำกัดที่ต้องบอกตรง ๆ
+
+- **span ถูก replay ตอนจบ session** ไม่ได้ stream สด ช่วงเวลาของแต่ละ turn ถูกสร้าง
+  ย้อนกลับจาก `latency_ms` นับถอยหลังจากตอนจบ ฉะนั้นลำดับและระยะเวลาสัมพัทธ์ถูกต้อง
+  แต่ timestamp สัมบูรณ์เป็นค่าประมาณ
+- **tool span กินยาวทั้ง turn** — harness บันทึกว่า tool ไหนถูกเรียก ไม่ได้บันทึกเวลา
+  รายตัว ฉะนั้น tool span ตอบว่า "turn นี้รันอะไรบ้าง" ไม่ได้ตอบว่า "tool นี้ใช้เวลาเท่าไร"
+- **conventions ยังไม่นิ่ง** — GenAI semconv แยกออกเป็น repo ของตัวเองที่ semconv
+  v1.42.0 และยังอยู่สถานะ Development ชื่อ attribute อาจเปลี่ยน ชื่อ span แก้ได้ถูก
+  ซึ่งเป็นส่วนหนึ่งของเหตุผลที่งานนี้เป็นตัวเลือกที่ความเสี่ยงต่ำ
 
 ## การออกแบบ Dep-Quarantine
 
