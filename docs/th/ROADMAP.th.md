@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ที่ active:** Phase 6 — *ปัญญา (paññā)* (eval ของ harness + เสริมความแข็งแรงข้ามแพลตฟอร์ม) — **กำลังดำเนินการ** t29 (network-egress parity บน macOS ใน sandbox SBPL), t30 (trust tier ของ ambient backend `cli` — ปฏิเสธ autoprocess ที่ไม่เชื่อถือ) และ t31 (แยก agent_loop เป็นโมดูล + eval guard สำหรับ ambient backend) ship แล้ว; t32 (deep-memory sqlite-vec / governance) จอดไว้เพราะยังเร็วเกินไป (ดู `reports/retro/t32-deep-memory-design.md`) ก่อนหน้านี้ **Phase 5 — *การแยกตัวของ turn-executor*** (เสริมความแข็งแรงให้ self-hosted harness) — **ลงนามครบถ้วนแล้ว (t11 merge แล้ว)** t1–t7a ship แล้ว (re-exec process isolation, `setrlimit`, Landlock FS jail + กัน ptrace) t8 รั้วกั้นมาตรการที่เลื่อน (gate ด้านความซื่อตรง) **t11 — การกักกัน network egress (seccomp + no-fd invariant, Linux, fail-closed)** t9 (เพดาน process ต่อ turn ด้วย cgroup `pids.max`) ก็ลงแล้วเช่นกัน — เป็น best-effort บังคับใช้เมื่อมี delegated cgroup v2 subtree และ degrade เป็น `RLIMIT_NPROC` floor เมื่อไม่มี; **ไม่มี ticket การกักกันของ Phase 5 เหลือค้างเลื่อนแล้ว** Phase ก่อนหน้า: Phase 3 *วยะ + Interconnect* DoD บรรลุ (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` ship แล้ว) Phase 4 spec fleet-governance ลงแล้ว DoD ของ Phase 1 v2.0 และ Phase 2 บรรลุแล้ว **BWOC 2.0** release เป็น `v2026.5.23-2`
+**Phase ที่ active:** Phase 7 — *อนิจจา (anicca)* (การเปลี่ยนแปลงที่มีเวอร์ชัน และ contract ความเข้ากันได้) — **กำลังทำ** เพื่อผลิต **3.0**: ทุก artifact ที่เฟรมเวิร์กเป็นเจ้าของประกาศ schema ของตัวเอง, `bwoc migrate` พา installation เดินหน้าโดยไม่ทำคอมเมนต์หรือ key ที่ไม่ได้ model ไว้หาย, specification 3.0 ถูก validate จริงไม่ใช่แค่เขียนไว้ และ `[plugin].compat` ถูกบังคับใช้ด้วย range ที่มีขอบบน ตัว contract อยู่ที่ [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md) ก่อนหน้า **Phase 6 — *ปัญญา (paññā)*** (eval ของ harness + เสริมความแข็งแรงข้ามแพลตฟอร์ม) **ถึง DoD แล้ว** (t29–t31 ส่งมอบ; t32 deep-memory sqlite-vec พักไว้เพราะยังเร็วเกินไป ลำดับการรื้อฟื้นบันทึกไว้ใน `reports/retro/t32-deep-memory-design.md`) **Phase 5 — *สังวร (saṃvara)*** (trust-boundary + sandbox hardening) sign off ครบ; Phase 3 *วยะ (vaya)* + Phase 4 fleet-governance ถึง DoD; Phase 1 v2.0 และ Phase 2 ถึง DoD **BWOC 2.0** ปล่อยเป็น `v2026.5.23-2`
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -200,6 +200,59 @@ degrade เป็น `RLIMIT_NPROC` floor best-effort เมื่อไม่�
 
 ---
 
+## Phase 6 — *paññā* (harness eval + cross-platform hardening)
+
+**Definition of done:** harness ต้อง *วัดได้* ไม่ใช่แค่ *เชื่อได้* — eval fixture ให้คะแนน
+backend ได้อย่างทำซ้ำได้ — และเรื่องการกักกันของ Phase 5 ยังยืนอยู่บนระบบปฏิบัติการมากกว่าหนึ่งตัว
+
+### ส่งมอบใน Phase 6
+
+| Ticket | รายการ | สถานะ |
+|---|---|---|
+| t29 | macOS network-egress parity ใน sandbox SBPL | ✓ |
+| t30 | trust tier ของ ambient backend `cli` — ปฏิเสธ autoprocess ที่ไม่น่าเชื่อถือ | ✓ |
+| t31a | แยกโครงสร้าง `agent_loop` | ✓ |
+| t31b | eval ambient-backend guard | ✓ |
+| t32 | deep-memory sqlite-vec / governance | **พักไว้เพราะยังเร็วเกินไป** — ดู [`reports/retro/t32-deep-memory-design.md`](../../reports/retro/t32-deep-memory-design.md) |
+
+**Phase 6 ถึง DoD แล้ว** t32 ไม่ใช่ช่องโหว่ของมัน: การสำรวจสรุปว่า ANN recall ยังไม่จำเป็น
+กับ workload จริงใด ๆ และโน้ตบันทึกลำดับการรื้อฟื้นไว้ (redaction ตอน `mine` → retention/TTL
+→ `sqlite-vec`) งานจึงถูกเลื่อน ไม่ใช่ถูกทำหาย — Mattaññutā
+
+---
+
+## Phase 7 — *anicca* (การเปลี่ยนแปลงที่มีเวอร์ชัน และ contract ความเข้ากันได้)
+
+**Definition of done:** BWOC เปลี่ยน contract บนดิสก์และ CLI ของตัวเองได้โดยไม่ทำให้
+installation พังแบบเงียบ ๆ — ทุก format บอกได้ว่า revision ไหนเขียนมัน มีคำสั่งเดียว
+ที่พา installation เดินหน้า และสิ่งที่โครงการจะทำพัง/ไม่ทำพังถูกเขียนไว้
+
+Phase ที่ผลิต **3.0** — major release แรกที่เกิดจาก breakage จริง ไม่ใช่จากการตัดสินใจเรื่องเลขเวอร์ชัน
+
+| รายการ | สถานะ |
+|---|---|
+| `schema_version` บนทุก artifact ที่เฟรมเวิร์กเป็นเจ้าของ; ไม่มี = schema 2 | ✓ |
+| ไฟล์ control-plane fail closed เมื่อเจอ schema ใหม่กว่า (`harness-policy.toml`, `peers.toml`) | ✓ |
+| `bwoc migrate` — splice ในที่ รักษาคอมเมนต์และ key ที่ไม่ได้ model ไว้ สำรองไว้ใต้ `.bwoc/` | ✓ |
+| Specification 3.0 และ `bwoc check` ที่ validate มันจริง | ✓ |
+| `[plugin].compat` ถูกบังคับใช้ range มีขอบบน | ✓ |
+| [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md) — public surface, หน้าต่างการรองรับ, deprecation | ✓ |
+| [`MIGRATION.th.md`](MIGRATION.th.md) — เส้นทางของผู้ดูแลจาก 2.x | ✓ |
+| ประกาศเวอร์ชันที่รองรับใน [`SECURITY.md`](../../SECURITY.md) | ✓ |
+
+### สิ่งที่ตั้งใจไม่เอาเข้า 3.0
+
+แต่ละข้อถูกเลื่อนพร้อมเหตุผล ไม่ได้ถูกลืม:
+
+- **ACP adapter** ([#485](https://github.com/bemindlabs/BWOC-Framework/issues/485)) — รอ demand; ประตูคือมีผู้ใช้ editor จริงมาขอ
+- **`Dispatch` seam ร่วม** ([#452](https://github.com/bemindlabs/BWOC-Framework/issues/452)) — จะคุ้มค่าเมื่อมี consumer ที่สามจริง ๆ ไม่ใช่ก่อนหน้านั้น
+- **HV3-4 / HV3-5 / HV3-6 (`agy`, `kimi`)** — เป็น feature ซึ่ง feature ไม่ทำให้ release เป็น major และการดึง 3.0 ไว้รอมันจะทำให้ contract ที่พร้อมแล้วต้องรอ
+- **การลด CLI surface** — 60 subcommand ระดับบนและ `check.rs` 8.4k บรรทัดเป็นหนี้จริง แต่เป็น breaking change คนละชนิดที่มีรัศมีผลกระทบคนละแบบ จองไว้ให้ 4.0
+- **Code signing** (Apple notarization / Windows Authenticode) — ติดที่ผู้ดูแลต้องจัดหา certificate ไม่ใช่ติดที่โค้ด ยังอยู่ใน [`RELEASING.th.md`](RELEASING.th.md)
+- **publish ขึ้น crates.io** — Rust API ตั้งใจไม่ให้เป็น public surface ดู [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md#อะไรคือ-public-surface)
+
+---
+
 ## ข้ามทุก Phase
 
 - **Bilingual parity** — เอกสารสเปกทุกฉบับมี EN canonical + TH (และภาษาอื่น ๆ ในอนาคต); hook bilingual-reminder gate สิ่งนี้
@@ -218,6 +271,7 @@ degrade เป็น `RLIMIT_NPROC` floor best-effort เมื่อไม่�
 ## ดูเพิ่ม
 
 - [`VERSION.md`](../../VERSION.md) — version ปัจจุบันและ SemVer policy
+- [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md) — public surface, หน้าต่างการรองรับ, deprecation
 - [`VISION.th.md`](../../VISION.th.md) — success criteria ที่ 1 ปีและ 3 ปี
 - [`CHANGELOG.md`](../../CHANGELOG.md) — อะไร ship แล้ว เมื่อไหร่
 - [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md) — ส่วนประกอบทำงานร่วมกันอย่างไร

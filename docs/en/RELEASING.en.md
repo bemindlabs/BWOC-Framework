@@ -74,11 +74,39 @@ CalVer tags **always** contain `-<patch>`, so the workflow can't auto-detect pre
 
 In practice you rarely need this — same-day patch bumps cover most "release something quickly" cases without the prerelease label.
 
+## Cutting a major
+
+A MAJOR release is not a bigger tag — it is a set of promises coming due. Before
+the version bump, everything below has to be true; `VERSION.md` §Cargo SemVer
+bump rules defines what makes a release major in the first place.
+
+1. **Every breaking change is named** in `CHANGELOG.md` under the release, with
+   what replaces it.
+2. **The migration path exists and is tested.** `bwoc migrate` covers every
+   changed on-disk format, `crates/bwoc-cli/tests/migrate_roundtrip.rs` proves it
+   round-trips without losing unmodeled keys, and `docs/{en,th}/MIGRATION-<X.0>.*`
+   walks an operator through it.
+3. **The previous schema still reads.** One major of overlap
+   ([`COMPATIBILITY.en.md`](COMPATIBILITY.en.md#the-support-window)) — the new
+   binary reads the old artifacts, warns, and names the migration command.
+4. **Deprecations promised for this major are actually removed**, and warnings
+   promised for the *next* one are in place.
+5. **Plugin `compat` ranges are re-declared** to the new major across
+   `modules/**/manifest.toml` — bounded above. Do this in the same commit as the
+   version bump: a bounded range for a version that has not landed yet refuses
+   every plugin on an intermediate `main`.
+6. **The pointers agree.** `crates/bwoc-cli/tests/release_pointers.rs` gates
+   `Cargo.toml`, `README.md`, `VERSION.md` and `Formula/bwoc.rb` against the top
+   CHANGELOG entry, and `whats_new.rs` fails unless a `HIGHLIGHTS` bullet cites
+   the new MAJOR.MINOR. All of it lands in one commit or CI is red in between.
+7. **`VERSION.md` §Specification** matches the `| **Version** |` row in
+   `modules/agent-template/AGENTS.md`.
+
 ## What's NOT in the pipeline yet
 
 - **Code signing** — Apple notarization (macOS) and Windows Authenticode are not configured. Binaries ship unsigned with SHA-256 checksums; users see "untrusted developer" prompts on first launch. Adding signing requires the maintainer to provision certs and store keys in GitHub Actions secrets.
 - **Linux musl** — `aarch64-unknown-linux-gnu` ships; `x86_64-unknown-linux-musl` (and `aarch64-unknown-linux-musl`) can be added when there's user demand for distros without glibc (Alpine, distroless containers).
-- **Homebrew formula / Scoop manifest / cargo binstall metadata** — distribution-system integrations live in their own ecosystems.
+- **Scoop manifest / cargo binstall metadata** — distribution-system integrations live in their own ecosystems. (Homebrew is no longer on this list: `release.yml` has a `bump-formula` job that opens a formula-bump branch after every tag, and `Formula/bwoc.rb` ships `bwoc`, `bwoc-agent` and `bwoc-harness`.)
 
 ## Rolling back
 
@@ -96,4 +124,5 @@ CalVer's monotonic ordering keeps the rollback simple: the highest patch suffix 
 - [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) — the per-commit gate that should be green before tagging.
 - [`CHANGELOG.md`](../../CHANGELOG.md) — what to update before tagging.
 - [`VERSION.md`](../../VERSION.md) — current version, dual-namespace policy, manual-bump rules.
+- [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md) — what a release may break, and the support window.
 - [`ROADMAP.en.md`](ROADMAP.en.md) — phases (does not determine version).

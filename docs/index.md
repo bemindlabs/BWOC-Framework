@@ -20,6 +20,8 @@ Pali terms are section names; the content is technical. No religious interpretat
 - [Naming](en/NAMING.en.md) — the 12-category `*.md` naming standard
 - [Glossary](en/GLOSSARY.en.md) — Pali term lookup
 - [Roadmap](en/ROADMAP.en.md) — phase-by-phase plan
+- [Compatibility](en/COMPATIBILITY.en.md) — what a release may break, and the support window
+- [Migration](en/MIGRATION.en.md) — moving an installation across a major
 - [Threat Model](en/THREAT-MODEL.en.md) — the turn-executor trust boundary (Phase 5)
 - [FAQ](en/FAQ.en.md) — newcomer questions
 
@@ -31,6 +33,8 @@ Pali terms are section names; the content is technical. No religious interpretat
 - [การตั้งชื่อ](th/NAMING.th.md)
 - [อภิธานศัพท์](th/GLOSSARY.th.md)
 - [แผนพัฒนา](th/ROADMAP.th.md)
+- [ความเข้ากันได้](th/COMPATIBILITY.th.md)
+- [การย้ายเวอร์ชัน](th/MIGRATION.th.md)
 - [แบบจำลองภัยคุกคาม](th/THREAT-MODEL.th.md)
 - [คำถามที่พบบ่อย](th/FAQ.th.md)
 
