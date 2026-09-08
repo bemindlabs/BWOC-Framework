@@ -154,6 +154,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("agents/agent-beta/.bwoc")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: label.to_string(),
                 version: "0.1.0".to_string(),

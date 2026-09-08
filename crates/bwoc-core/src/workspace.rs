@@ -10,9 +10,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::schema::SchemaVersion;
+
 /// Top-level structure of `.bwoc/workspace.toml`.
+///
+/// `schema_version` is declared first because TOML serialization requires every
+/// scalar key to precede the first table — moving it below `workspace` makes
+/// [`Workspace::save`] fail at runtime, not at compile time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Workspace {
+    /// Absent in anything 2.x wrote ⇒ [`SchemaVersion::LEGACY`]. See
+    /// [`crate::schema`] for the seam.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
     pub workspace: WorkspaceMeta,
     #[serde(default)]
     pub defaults: WorkspaceDefaults,
@@ -50,8 +60,14 @@ fn default_agents_dir() -> String {
 }
 
 /// Top-level structure of `.bwoc/agents.toml`.
+///
+/// Field order matters for the same reason it does on [`Workspace`]: the
+/// scalar marker must precede the `[[agent]]` array of tables.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct AgentsRegistry {
+    /// Absent in anything 2.x wrote ⇒ [`SchemaVersion::LEGACY`].
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
     #[serde(default, rename = "agent")]
     pub agents: Vec<AgentEntry>,
 }
@@ -107,11 +123,19 @@ impl Workspace {
     }
 
     /// Save to `<root>/.bwoc/workspace.toml` (creating `.bwoc/` if needed).
+    ///
+    /// The write always stamps [`SchemaVersion::CURRENT`], regardless of what
+    /// was loaded: the file that comes back out was written by *this* build, so
+    /// claiming an older revision would be a lie. It also means any command
+    /// that rewrites the workspace carries a legacy file forward, and
+    /// `bwoc migrate` is load-then-save rather than a bespoke rewriter.
     pub fn save(&self, root: &Path) -> Result<(), WorkspaceError> {
         let dir = root.join(".bwoc");
         fs::create_dir_all(&dir)?;
         let p = dir.join("workspace.toml");
-        let content = toml::to_string_pretty(self)?;
+        let mut out = self.clone();
+        out.schema_version = SchemaVersion::CURRENT;
+        let content = toml::to_string_pretty(&out)?;
         fs::write(&p, content)?;
         Ok(())
     }
@@ -122,25 +146,47 @@ impl AgentsRegistry {
     pub fn load(root: &Path) -> Result<Self, WorkspaceError> {
         let p = root.join(".bwoc/agents.toml");
         if !p.exists() {
-            return Ok(Self::default());
+            return Ok(Self::fresh());
         }
         let content = fs::read_to_string(&p)?;
         if content.trim().is_empty() {
-            return Ok(Self::default());
+            return Ok(Self::fresh());
         }
         let reg = toml::from_str(&content)?;
         Ok(reg)
     }
 
+    /// An empty registry that no 2.x binary wrote.
+    ///
+    /// Distinct from [`Default`]: the derived default carries
+    /// [`SchemaVersion::LEGACY`], which is the right reading for a *file* whose
+    /// marker is absent but the wrong one for a file that does not exist —
+    /// reporting "needs migration" for a workspace with no registry yet would
+    /// be noise.
+    fn fresh() -> Self {
+        Self {
+            schema_version: SchemaVersion::CURRENT,
+            agents: Vec::new(),
+        }
+    }
+
     /// Save to `<root>/.bwoc/agents.toml`.
+    ///
+    /// Stamps [`SchemaVersion::CURRENT`] for the same reason [`Workspace::save`]
+    /// does.
     pub fn save(&self, root: &Path) -> Result<(), WorkspaceError> {
         let dir = root.join(".bwoc");
         fs::create_dir_all(&dir)?;
         let p = dir.join("agents.toml");
-        let content = if self.agents.is_empty() {
-            "# Agents registry — managed by the bwoc CLI.\n# Entries are added by `bwoc new` and removed by `bwoc retire`.\n".to_string()
+        let mut out = self.clone();
+        out.schema_version = SchemaVersion::CURRENT;
+        let content = if out.agents.is_empty() {
+            format!(
+                "# Agents registry — managed by the bwoc CLI.\n# Entries are added by `bwoc new` and removed by `bwoc retire`.\nschema_version = {}\n",
+                SchemaVersion::CURRENT.0
+            )
         } else {
-            toml::to_string_pretty(self)?
+            toml::to_string_pretty(&out)?
         };
         fs::write(&p, content)?;
         Ok(())
@@ -164,8 +210,100 @@ mod tests {
     }
 
     #[test]
+    fn legacy_files_load_without_a_marker() {
+        // The 2.x shape verbatim: no `schema_version` anywhere.
+        let ws: Workspace = toml::from_str(
+            "[workspace]\nname = 'demo'\nversion = '0.1.0'\ncreated = '2026-05-22T06:00:00Z'\n",
+        )
+        .unwrap();
+        assert_eq!(ws.schema_version, SchemaVersion::LEGACY);
+
+        let reg: AgentsRegistry = toml::from_str(
+            "[[agent]]\nid = 'agent-a'\npath = 'agents/agent-a'\nbackend = 'claude'\nincarnated = '2026-05-22T06:00:00Z'\nstatus = 'active'\n",
+        )
+        .unwrap();
+        assert_eq!(reg.schema_version, SchemaVersion::LEGACY);
+        assert_eq!(reg.agents.len(), 1);
+    }
+
+    #[test]
+    fn save_stamps_current_over_a_legacy_load() {
+        let dir = fresh_temp_dir("stamp");
+        let mut ws = Workspace {
+            schema_version: SchemaVersion::LEGACY,
+            workspace: WorkspaceMeta {
+                name: "demo".into(),
+                version: "0.1.0".into(),
+                created: "2026-05-22T06:00:00Z".into(),
+            },
+            defaults: WorkspaceDefaults::default(),
+        };
+        ws.save(&dir).unwrap();
+        assert_eq!(
+            Workspace::load(&dir).unwrap().schema_version,
+            SchemaVersion::CURRENT
+        );
+
+        // The in-memory value the caller held is untouched — `save` stamps the
+        // file, it does not mutate the caller's struct.
+        assert_eq!(ws.schema_version, SchemaVersion::LEGACY);
+        ws.schema_version = SchemaVersion::CURRENT;
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agents_toml_marker_precedes_the_array_of_tables() {
+        // TOML requires every scalar key before the first table, so a
+        // `schema_version` declared after `agents` would make this serialize to
+        // a document that cannot be read back. Guard the field order.
+        let dir = fresh_temp_dir("ordering");
+        let reg = AgentsRegistry {
+            schema_version: SchemaVersion::CURRENT,
+            agents: vec![AgentEntry {
+                id: "agent-a".into(),
+                path: "agents/agent-a".into(),
+                backend: "claude".into(),
+                incarnated: "2026-05-22T06:00:00Z".into(),
+                status: "active".into(),
+            }],
+        };
+        reg.save(&dir).unwrap();
+        let text = fs::read_to_string(dir.join(".bwoc/agents.toml")).unwrap();
+        assert!(
+            text.find("schema_version").unwrap() < text.find("[[agent]]").unwrap(),
+            "marker must precede the array of tables:\n{text}"
+        );
+        assert_eq!(AgentsRegistry::load(&dir).unwrap(), reg);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_registry_file_still_carries_the_marker() {
+        let dir = fresh_temp_dir("emptyreg");
+        AgentsRegistry::fresh().save(&dir).unwrap();
+        assert_eq!(
+            AgentsRegistry::load(&dir).unwrap().schema_version,
+            SchemaVersion::CURRENT
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absent_registry_is_current_not_legacy() {
+        // No file is not a 2.x file — reporting "needs migration" for a
+        // workspace that has never registered an agent would be noise.
+        let dir = fresh_temp_dir("absentreg");
+        assert_eq!(
+            AgentsRegistry::load(&dir).unwrap().schema_version,
+            SchemaVersion::CURRENT
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn workspace_roundtrip() {
         let ws = Workspace {
+            schema_version: crate::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: "demo".into(),
                 version: "0.1.0".into(),
@@ -194,6 +332,7 @@ mod tests {
     fn agents_registry_with_entries_roundtrip() {
         let dir = fresh_temp_dir("with-entries");
         let reg = AgentsRegistry {
+            schema_version: crate::schema::SchemaVersion::CURRENT,
             agents: vec![AgentEntry {
                 id: "agent-foo".into(),
                 path: "agents/agent-foo".into(),

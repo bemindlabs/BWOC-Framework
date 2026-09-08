@@ -827,6 +827,14 @@ fn resolve_peer_manifest(local_ws: &Path, sender_id: &str) -> Option<Manifest> {
 fn resolve_pinned_peer(agent_dir: &Path, sender_id: &str) -> Option<Manifest> {
     let path = agent_dir.join(".bwoc").join("peers.toml");
     let v: toml::Value = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    // A keyring written by a newer BWOC resolves to no peer at all. This file
+    // decides which signatures count as a verified identity; a revision whose
+    // semantics this build does not know (a per-entry expiry, say, silently
+    // ignored here) would mean honouring a pin the operator had retired.
+    // Unpinned is the fail-safe reading — the sender simply stays unverified.
+    if bwoc_core::schema::marker_from_toml(&v).is_future() {
+        return None;
+    }
     let entry = v
         .get("peer")?
         .as_array()?

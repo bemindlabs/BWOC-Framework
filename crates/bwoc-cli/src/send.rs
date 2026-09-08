@@ -1033,6 +1033,7 @@ mod tests {
         fs::create_dir_all(root.join(".bwoc")).unwrap();
         fs::create_dir_all(root.join("agents/agent-alpha")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: label.to_string(),
                 version: "0.1.0".to_string(),
@@ -1196,6 +1197,7 @@ mod tests {
         fs::create_dir_all(root.join("agents/agent-alpha")).unwrap();
         fs::create_dir_all(root.join("agents/agent-beta")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: label.to_string(),
                 version: "0.1.0".to_string(),
@@ -1400,6 +1402,7 @@ mod tests {
         fs::create_dir_all(local.join(".bwoc/interconnect")).unwrap();
         fs::create_dir_all(local.join("agents/agent-alpha")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: local_label.into(),
                 version: "0.1.0".into(),
@@ -1424,6 +1427,7 @@ mod tests {
         fs::create_dir_all(peer.join(".bwoc")).unwrap();
         fs::create_dir_all(peer.join(&peer_agent_path)).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: peer_label.into(),
                 version: "0.1.0".into(),
@@ -1585,6 +1589,7 @@ mod tests {
         let _ = fs::remove_dir_all(&local);
         fs::create_dir_all(local.join(".bwoc/interconnect")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: "both-keys".into(),
                 version: "0.1.0".into(),
@@ -1629,6 +1634,7 @@ mod tests {
         let _ = fs::remove_dir_all(&local);
         fs::create_dir_all(local.join(".bwoc/interconnect")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: "neither-key".into(),
                 version: "0.1.0".into(),
@@ -1747,6 +1753,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".bwoc/teams")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: label.to_string(),
                 version: "0.1.0".to_string(),

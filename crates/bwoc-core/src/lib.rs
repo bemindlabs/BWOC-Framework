@@ -1,7 +1,8 @@
 //! BWOC framework — shared types.
 //!
-//! Phase 1 v2.0 scaffold. Module stubs declared here; implementations land
-//! in follow-up turns as the CLI and agent runtime are built out.
+//! The types every BWOC binary agrees on: the agent manifest, the workspace
+//! registry, lifecycle and routing, inbox/outbox envelopes, trust, and the
+//! on-disk [`schema`] versioning seam they all share.
 
 pub mod chat_proto;
 pub mod deep_memory;
@@ -19,6 +20,7 @@ pub mod loop_control;
 pub mod manifest;
 pub mod outbox;
 pub mod routing;
+pub mod schema;
 pub mod team;
 pub mod time;
 pub mod trust;

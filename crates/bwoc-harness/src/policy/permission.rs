@@ -59,6 +59,8 @@
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
+use bwoc_core::schema::SchemaVersion;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -197,6 +199,12 @@ impl Default for Policy {
 /// Top-level structure of `.bwoc/harness-policy.toml`.
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct HarnessPolicy {
+    /// Which revision of this format the file claims. Absent ⇒
+    /// [`SchemaVersion::LEGACY`] (everything 2.x wrote), which stays readable
+    /// through the 3.x line. A revision *ahead* of this build is refused by
+    /// [`HarnessPolicy::load`] — see there for why.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
     #[serde(default = "default_mode_str")]
     pub default_mode: String,
     #[serde(default)]
@@ -227,6 +235,13 @@ impl HarnessPolicy {
     ///
     /// Returns a default (fail-safe deny-all) policy if the file does not
     /// exist.  Returns an error if the file exists but cannot be parsed.
+    ///
+    /// A `schemaVersion` **ahead** of this build is refused rather than read.
+    /// This file decides what every turn is allowed to do, so a revision whose
+    /// semantics this binary does not know is exactly the thing not to guess
+    /// at: a key that meant "deny" in a later revision, silently ignored here,
+    /// is a permission the operator never granted. Fail closed, consistent
+    /// with the deny-by-default this loader already applies everywhere else.
     pub fn load(workspace_root: &Path) -> Result<Self, String> {
         let policy_path = workspace_root.join(".bwoc").join("harness-policy.toml");
         if !policy_path.exists() {
@@ -234,7 +249,16 @@ impl HarnessPolicy {
         }
         let raw = std::fs::read_to_string(&policy_path)
             .map_err(|e| format!("cannot read harness-policy.toml: {e}"))?;
-        toml::from_str(&raw).map_err(|e| format!("cannot parse harness-policy.toml: {e}"))
+        let parsed: Self =
+            toml::from_str(&raw).map_err(|e| format!("cannot parse harness-policy.toml: {e}"))?;
+        if parsed.schema_version.is_future() {
+            return Err(format!(
+                "harness-policy.toml declares schemaVersion {} but this bwoc understands at most {} — refusing to interpret a policy written by a newer BWOC (upgrade bwoc)",
+                parsed.schema_version.0,
+                SchemaVersion::CURRENT.0
+            ));
+        }
+        Ok(parsed)
     }
 }
 
@@ -544,6 +568,60 @@ fn prompt_operator(tool_name: &str, arguments_json: &str) -> PermissionDecision 
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    fn policy_ws(label: &str, body: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("bwoc-policy-schema-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bwoc")).unwrap();
+        std::fs::write(root.join(".bwoc/harness-policy.toml"), body).unwrap();
+        root
+    }
+
+    #[test]
+    fn harness_policy_default_is_legacy_not_current() {
+        // `HarnessPolicy::default()` is the fail-safe deny-all used for an
+        // ABSENT file. If the marker defaulted to CURRENT, a 2.x policy whose
+        // key is simply missing would read as already-migrated and never
+        // surface — the deprecation would be invisible exactly where the
+        // control plane lives.
+        assert_eq!(
+            HarnessPolicy::default().schema_version,
+            SchemaVersion::LEGACY
+        );
+    }
+
+    #[test]
+    fn legacy_policy_still_loads() {
+        let root = policy_ws("legacy", "default_mode = \"allow\"\n");
+        let p = HarnessPolicy::load(&root).unwrap();
+        assert_eq!(p.schema_version, SchemaVersion::LEGACY);
+        assert_eq!(p.default_mode, "allow");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn future_policy_is_refused_not_interpreted() {
+        // Fail closed: a policy from a newer BWOC may express a denial this
+        // build cannot see, and silently ignoring it grants a permission the
+        // operator never wrote.
+        let root = policy_ws("future", "schema_version = 99\ndefault_mode = \"allow\"\n");
+        let err = HarnessPolicy::load(&root).unwrap_err();
+        assert!(
+            err.contains("schemaVersion 99") || err.contains("99"),
+            "{err}"
+        );
+        assert!(err.contains("refusing"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn current_policy_loads_clean() {
+        let root = policy_ws("current", "schema_version = 3\ndefault_mode = \"ask\"\n");
+        let p = HarnessPolicy::load(&root).unwrap();
+        assert!(p.schema_version.is_current());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Scripted approval channel: `Some(true)` allow, `Some(false)` deny,
     /// `None` timeout (→ caller applies fail-safe).

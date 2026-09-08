@@ -8,6 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use bwoc_core::schema::SchemaVersion;
 use bwoc_core::workspace::{AgentsRegistry, Workspace, WorkspaceDefaults, WorkspaceMeta};
 
 use crate::i18n;
@@ -143,6 +144,7 @@ fn init(args: InitArgs) -> Result<PathBuf, InitError> {
     let created = utc_now_iso8601();
 
     let ws = Workspace {
+        schema_version: SchemaVersion::CURRENT,
         workspace: WorkspaceMeta {
             name,
             version: "0.1.0".to_string(),
