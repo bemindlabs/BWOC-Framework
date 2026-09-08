@@ -215,3 +215,63 @@ fn the_homebrew_formula_is_at_most_one_release_behind() {
             .join("\n  ")
     );
 }
+
+/// The specification version is written in two places and validated in a third.
+///
+/// `modules/agent-template/AGENTS.md` carries the canonical `| **Version** |`
+/// row, `VERSION.md` mirrors it as `**Specification:** ... vX.Y`, and
+/// `bwoc check` compares an agent's `config.manifest.json` against a constant in
+/// `check.rs`. Nothing tied any of them together — the same shape as the
+/// "Latest release" drift above, and the reason `Manifest.version` sat unread at
+/// `2.0` for the whole 2.x line.
+///
+/// The template's own manifest is included because `bwoc new` clones it: a
+/// mismatch there ships a wrong specification version into every agent
+/// incarnated after it.
+#[test]
+fn the_specification_version_agrees_everywhere() {
+    let root = repo_root();
+
+    let agents_md = fs::read_to_string(root.join("modules/agent-template/AGENTS.md"))
+        .expect("read modules/agent-template/AGENTS.md");
+    let from_agents_md = agents_md
+        .lines()
+        .find(|l| l.trim_start().starts_with('|') && l.contains("**Version**"))
+        .and_then(|l| {
+            l.split('|')
+                .map(str::trim)
+                .find(|c| !c.is_empty() && !c.contains("**Version**"))
+                .map(str::to_string)
+        })
+        .expect("AGENTS.md has a `| **Version** | X.Y |` row");
+
+    let version_md = fs::read_to_string(root.join("VERSION.md")).expect("read VERSION.md");
+    let from_version_md = version_md
+        .lines()
+        .find(|l| l.starts_with("**Specification:**"))
+        .and_then(|l| l.rsplit(" v").next())
+        .map(|v| v.trim().to_string())
+        .expect("VERSION.md has a `**Specification:** ... vX.Y` line");
+
+    assert_eq!(
+        from_agents_md, from_version_md,
+        "AGENTS.md declares specification {from_agents_md} but VERSION.md says \
+         {from_version_md} — bump both, or neither"
+    );
+
+    let manifest = fs::read_to_string(root.join("modules/agent-template/config.manifest.json"))
+        .expect("read modules/agent-template/config.manifest.json");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&manifest).expect("template manifest is valid JSON");
+    let from_manifest = parsed
+        .get("version")
+        .and_then(|v| v.as_str())
+        .expect("template manifest has a top-level `version`");
+
+    assert_eq!(
+        from_manifest, from_agents_md,
+        "the agent template's config.manifest.json declares specification \
+         {from_manifest} but its AGENTS.md says {from_agents_md} — `bwoc new` \
+         clones both, so every new agent would ship the mismatch"
+    );
+}

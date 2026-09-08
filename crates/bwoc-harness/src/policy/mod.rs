@@ -739,6 +739,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn migrate_backups_are_inside_the_control_plane() {
+        // `bwoc migrate` copies the originals it is about to rewrite. Where it
+        // puts them is a security decision, not an ergonomic one: this gate
+        // matches on a `.bwoc` path component (plus the exact name
+        // `config.manifest.json`), so a backup under `.bwoc/migrate-backup/`
+        // inherits the protection while a sibling `config.manifest.json.bak`
+        // would sit outside it — and an untrusted turn could plant a poisoned
+        // "backup" for an operator to restore.
+        //
+        // The first list must stay denied; the second documents the trap the
+        // backup layout is chosen to avoid. If `is_control_plane` ever changes
+        // shape, this is the test that says what depended on it.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = allow_policy();
+
+        for target in [
+            ".bwoc/migrate-backup/2026-01-01T00-00-00Z/.bwoc/workspace.toml",
+            ".bwoc/migrate-backup/2026-01-01T00-00-00Z/config.manifest.json",
+            ".bwoc/migrate-backup/2026-01-01T00-00-00Z/AGENTS.md",
+        ] {
+            let args = format!(r#"{{"path": "{target}", "content": "pwned"}}"#);
+            let outcome = run_pipeline(
+                "write_file",
+                &args,
+                dir.path(),
+                &policy,
+                false,
+                TrustLevel::Untrusted,
+                None,
+            );
+            assert!(
+                matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+                "a migrate backup is control-plane state and must be denied on \
+                 an untrusted turn, got {outcome:?} for `{target}`"
+            );
+        }
+
+        // The counter-case: a backup NOT under `.bwoc/` is ordinary content.
+        // This is why `migrate` does not write one there.
+        let args = r#"{"path": "config.manifest.json.bak-v2", "content": "x"}"#;
+        let outcome = run_pipeline(
+            "write_file",
+            args,
+            dir.path(),
+            &policy,
+            false,
+            TrustLevel::Untrusted,
+            None,
+        );
+        assert!(
+            !matches!(outcome, PolicyOutcome::CapabilityDenied { .. }),
+            "a sibling backup is outside the control plane — if this ever \
+             starts being denied, `migrate` may relax its backup layout"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlinked_control_plane_directory_is_still_denied() {
