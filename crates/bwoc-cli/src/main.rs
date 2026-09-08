@@ -995,10 +995,17 @@ enum TaskCommand {
         /// Explicit task id (default: auto `t<N>`).
         #[arg(long = "id")]
         id: Option<String>,
-        /// Gate completion on lead plan approval (Pavāraṇā): the claimant must
-        /// submit a plan and the lead must approve it before `task complete`.
-        #[arg(long = "requires-plan")]
-        requires_plan: bool,
+        /// Opt OUT of the plan-approval gate (Pavāraṇā). By default a task
+        /// cannot be completed until the claimant submits a plan and the lead
+        /// approves it.
+        ///
+        /// The default flipped in 3.0 because an ungated task is a task an
+        /// agent can assert done without doing: a goal-loop worker marked
+        /// "merge branch X to main" completed having merged nothing, and the
+        /// completion unblocked its dependent. Pass this only for work whose
+        /// completion you can verify yourself.
+        #[arg(long = "no-plan")]
+        no_plan: bool,
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
         #[arg(long)]
@@ -3105,10 +3112,10 @@ fn main() -> ExitCode {
                     title,
                     deps,
                     id,
-                    requires_plan,
+                    no_plan,
                     workspace,
                     json,
-                } => sangha::run_task_add(workspace, team, title, deps, id, requires_plan, json),
+                } => sangha::run_task_add(workspace, team, title, deps, id, !no_plan, json),
                 TaskCommand::List {
                     team,
                     workspace,

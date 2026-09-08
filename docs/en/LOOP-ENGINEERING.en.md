@@ -62,6 +62,12 @@ What decides, each fire, whether to act, pause, or stop. Composed of already-shi
 The `🔒 HELD` convention that the Refinement Loop honored by hand becomes an **enforced** gate here: a HELD item routes to the plan-approval flow and cannot be auto-actioned.
 
 
+The gate is **on by default** as of 3.0: `bwoc task add` creates a gated task,
+and `--no-plan` is the explicit opt-out. It used to be the other way round —
+opt-in via `--requires-plan` — and the flip has a cause rather than a
+preference behind it. See §Withdrawing a completion below for what happened on
+the one ungated task in the first real loop run.
+
 ### Withdrawing a completion
 
 The gate above stops a *plan-gated* task from completing unattended. It does not

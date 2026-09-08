@@ -422,6 +422,14 @@ fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<
 // --- task commands ---------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+/// `bwoc task add <team> <title> [--deps …] [--id …] [--no-plan]`.
+///
+/// `requires_plan` arrives already resolved from the CLI's `--no-plan`
+/// opt-out: **gated is the default since 3.0**. The flip is a breaking change
+/// to a documented CLI surface, and it is in this release because the
+/// alternative was living with the hazard for a whole major — the first
+/// goal-loop run against a real task list produced a false completion on the
+/// one task that had no gate.
 pub fn run_task_add(
     workspace: Option<PathBuf>,
     team_id: String,
