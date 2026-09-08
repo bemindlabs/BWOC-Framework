@@ -42,7 +42,7 @@ Optional implementation files (Rust crate, binary on `PATH` matching `entry`, co
 | `{{pluginVersion}}` | yes | Author edit; semver of the plugin itself, separate from the framework version | `0.1.0` |
 | `{{pluginDescription}}` | yes | Author edit; one-sentence summary; the **only** manifest value where a vendor name is tolerated | `No-op Tier 2 memory backend that forwards to Tier 1.` |
 
-`compat` is seeded as `">=2.5.0"` — the framework version range under which this plugin is known to load. The author tightens or extends the range honestly; a mismatch at load time causes `bwoc` to refuse the plugin (see [[../../docs/en/PLUGINS.en#loading-mechanism|PLUGINS.en.md §Loading Mechanism]]).
+`compat` is seeded as `">=3.0.0, <4.0.0"` — the framework version range under which this plugin is known to load. Keep the upper bound: an open-ended range would claim compatibility with majors that break this plugin, which is the failure the field exists to prevent. The author tightens or extends the range honestly; a mismatch at load time causes `bwoc` to refuse the plugin (see [[../../docs/en/PLUGINS.en#loading-mechanism|PLUGINS.en.md §Loading Mechanism]]).
 
 `entry` is pre-wired to `bwoc-plugin-{{pluginName}}` — a binary on `PATH` (preferred) or a sibling Rust crate name the framework dispatches to. The same name placeholder is reused so a single substitution wires both the identifier and the entry point.
 

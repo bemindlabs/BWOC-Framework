@@ -3,7 +3,7 @@ name        = "gws-calendar"
 kind        = "gws"
 version     = "0.1.0"
 description = "Reference gws plugin — read-mostly Google Calendar adapter: lists the calendars a token can see (calendarList.list) and lists events on a calendar (events.list), each projected into the normative Calendar event shape. Never creates or modifies events. Sources the OAuth credential helpers from the sibling gws-auth foundation; requires the calendar.readonly scope."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 
 # [config.schema] intentionally omitted.

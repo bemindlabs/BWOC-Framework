@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.8-0] — 2026-09-08 — 3.0.0
+
+**BWOC 3.0 — the compatibility contract.** The first major driven by actual breakage rather than by a decision about a version number: through 2.x, exactly one artifact on disk could say which revision wrote it, `config.manifest.json`'s `version` was written and never read, and `[plugin].compat` was documented as enforced but was not. A format that cannot say what it is can only ever break silently, so this release makes every one of them say it — and writes down what the project will and will not break.
+
+**Nothing breaks on upgrade.** 3.x reads everything 2.x wrote, warns, and names `bwoc migrate`. Schema 2 support is removed in 4.0. See [`docs/en/COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) for the contract and [`docs/en/MIGRATION.en.md`](docs/en/MIGRATION.en.md) for the path.
+
+### Added
+
+- **A schema version on every artifact BWOC owns** — `schema_version` in `.bwoc/workspace.toml`, `.bwoc/agents.toml`, `.bwoc/interconnect/routes.toml`, `.bwoc/harness-policy.toml` and `.bwoc/peers.toml`, decided in one place (`bwoc-core::schema`). Absent means schema 2, which is what makes the upgrade non-destructive. `.bwoc/doc-kinds.toml`, `.bwoc/secrets.toml`, `.bwoc/installed-sources.toml`, `.bwoc/teams/*.toml` and the `*.jsonl` streams are deliberately unversioned — no reader could act on the marker.
+- **`bwoc migrate [path] [--all] [--dry-run] [--json] [--yes] [--no-backup]`** — moves a workspace or an agent onto the current schema and specification. Idempotent. It **splices text and never reserializes**: `Manifest::save_to_path` drops `skills.framework[]` and `Workspace::save` drops `[plugins.*]`, since neither struct models a catch-all, so a migration built on them would quietly delete an operator's config while claiming to upgrade it. Comments, key order and unmodeled tables survive byte-for-byte. Originals are copied to `<root>/.bwoc/migrate-backup/<timestamp>/`, inside the control plane — a sibling `config.manifest.json.bak` would sit outside the harness gate and could be planted by an untrusted turn for an operator to restore.
+- **[`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) / [`MIGRATION.en.md`](docs/en/MIGRATION.en.md)** (both with Thai pairs) — the three public surfaces and, explicitly, the Rust API as not one; the one-major support window; read-forward and downgrade rules; the deprecation sequence. `SECURITY.md` gains a Supported Versions section, and `RELEASING` a "Cutting a major" checklist.
+- **Phase 7 — *anicca*** in the roadmap, plus the **Phase 6 section that never existed in either language** (it lived only as a sentence in the status paragraph). Phase 6 is declared DoD-met.
+
+### Changed
+
+- **Specification 3.0, and it is now read.** An agent declares `"version": "3.0"` in `config.manifest.json`, mirrored by the `| **Version** |` row in its `AGENTS.md`. `bwoc check` validates it: 3.0 passes, 2.0 is a **warning** naming `bwoc migrate`, anything else is a violation. No section of `AGENTS.md` changed — the contract around the version did, not the document.
+- **`[plugin].compat` is enforced, and ranges must be bounded above.** The eight resolvers that run a plugin refuse a mismatch rather than skipping it (reporting "not installed" for a plugin on disk sends the operator looking in the wrong place); `bwoc plugin show` marks it `WILL NOT LOAD` instead, since a listing should show it. `bwoc check` grades three ways: unparseable is a violation, a mismatch is a warning, an open-ended range is a warning. All 29 in-tree manifests move to `>=3.0.0, <4.0.0` — enforcing the old `>=2.x` shape would have gated nothing, because a bare `>=` comparator has no ceiling.
+- **`harness-policy.toml` and `peers.toml` fail closed on a newer schema** — refused rather than read with the unknown parts ignored. These decide what a turn may do and whose signature counts as verified; ignoring a key this build cannot interpret would grant a permission the operator never wrote.
+- **`VERSION.md`** drops a stale promise of a crates.io publish at the Cargo `1.0.0` milestone — the workspace passed that point 40-odd minors ago without publishing. The Rust API is stated as not a public surface instead.
+
+### Fixed
+
+- **`Routes::remove_agent_routes` would have silently stripped the schema marker** — it reserializes through a private wire struct, so any `bwoc retire` would have quietly un-migrated a workspace.
+- **The accounting integration test wrote a plugin manifest with no `compat` field** — required since 2.5, undetected because nothing read it.
+
+### Migration
+
+```bash
+bwoc migrate --all --dry-run   # see what would change
+bwoc migrate --all             # apply; originals under .bwoc/migrate-backup/
+bwoc check --all               # confirm
+```
+
+Plugin authors: give each `manifest.toml` a bounded `compat = ">=3.0.0, <4.0.0"`. `bwoc migrate` deliberately does not do this for you — declaring which framework a plugin works with is the author's assertion to make.
+
 ## [v2026.8.20-2] — 2026-08-20 — 2.44.2
 
 **A security release.** Two ways an untrusted turn could escape the trust boundary are closed, both reachable on today's shipped code. Upgrading is recommended for anyone running `bwoc-harness` against a remote or shared model endpoint, or auto-processing inbound agent messages.

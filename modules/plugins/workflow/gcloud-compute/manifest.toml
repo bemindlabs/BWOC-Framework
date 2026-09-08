@@ -3,7 +3,7 @@ name        = "gcloud-compute"
 kind        = "workflow"
 version     = "0.1.0"
 description = "Google Cloud (gcloud) compute instance lifecycle adapter — list / describe (read) and start / stop (gated writes); sources credential helpers from the sibling gcloud-auth plugin. EPIC-9, the first write-capable GCP slice."
-compat      = ">=2.11.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gcloud.sh"
 
 # [config.schema] intentionally omitted.

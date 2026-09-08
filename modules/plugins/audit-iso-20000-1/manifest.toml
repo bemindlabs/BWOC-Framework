@@ -3,7 +3,7 @@ name        = "audit-iso-20000-1"
 kind        = "audit"
 version     = "0.2.0"
 description = "ISO/IEC 20000-1 IT Service Management System audit — attestation + sample runtime (BWOC-33)."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "audit.sh"
 
 # [config.schema] intentionally omitted. v0.2.0 adopts two per-criterion

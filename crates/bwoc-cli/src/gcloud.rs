@@ -3458,7 +3458,7 @@ mod tests {
     }
 
     fn write_plugin_at(root: &Path, layout: &str, name: &str, kind: &str) {
-        write_plugin_with_compat(root, layout, name, kind, ">=2.5.0");
+        write_plugin_with_compat(root, layout, name, kind, ">=3.0.0, <4.0.0");
     }
 
     fn write_plugin_with_compat(root: &Path, layout: &str, name: &str, kind: &str, compat: &str) {

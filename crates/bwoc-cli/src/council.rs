@@ -2013,7 +2013,7 @@ mod tests {
             dir.join("manifest.toml"),
             format!(
                 "[plugin]\nname = \"{name}\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
-                 description = \"a council\"\ncompat = \">=2.5.0\"\nentry = \"council.sh\"\n{council}"
+                 description = \"a council\"\ncompat = \">=3.0.0, <4.0.0\"\nentry = \"council.sh\"\n{council}"
             ),
         )
         .unwrap();
