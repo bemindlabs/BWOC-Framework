@@ -122,6 +122,22 @@ read verb **ไม่มี** gate — ฟรี **verb ที่ destructive + 
 
 ค่า `criterion_id` เป็น public surface ของปลั๊กอิน การเพิ่ม criterion คือ minor-version bump ใน semver ของปลั๊กอินเอง **การเปลี่ยนชื่อหรือลบ** `criterion_id` คือ major-version bump (แยกจากเวอร์ชันเฟรมเวิร์กใน `[plugin].compat`) — consumer ปลายทาง (เครื่องมือ diff, archive ของรายงาน, dashboard) อ้างอิงตัวระบุเหล่านี้
 
+`[plugin].compat` คือครึ่งฝั่งเวอร์ชันเฟรมเวิร์กของ surface เดียวกัน และตั้งแต่ 3.0
+มัน **ถูกบังคับใช้จริง ไม่ใช่แค่ประกาศไว้** ตามมาด้วยสองกฎ:
+
+- **range ต้องมีขอบบน** — `>=3.0.0, <4.0.0` ไม่ใช่ `>=3.0.0` range ที่เปิดปลาย
+  จะอ้างว่าเข้ากันได้กับทุก major ในอนาคต รวมถึง major ที่ทำให้ปลั๊กอินพัง —
+  ซึ่งทำให้ field นี้ไร้ความหมายพอดีตอนที่มันควรมีความหมายที่สุด `bwoc check`
+  เตือนเมื่อ range ไม่มีขอบบน
+- **mismatch = ปฏิเสธการโหลด ไม่ใช่ข้ามเงียบ ๆ** resolver ที่รายงานว่า "ไม่ได้ติดตั้ง"
+  ทั้งที่ปลั๊กอินอยู่บนดิสก์จะทำให้ผู้ดูแลไปตามหาผิดที่ `bwoc check` รายงาน mismatch
+  เป็น **warning** (workspace ไม่ได้พัง ปลั๊กอินแค่ต้องประกาศใหม่) ส่วนคำสั่งที่จะรัน
+  ปลั๊กอินจริงจะล้มพร้อมบอก path ของ manifest และ range ที่ไม่ตรง ส่วน range ที่
+  parse ไม่ได้เป็น violation ของ `bwoc check`
+
+การประกาศ `compat` ใหม่ทุก major ของเฟรมเวิร์กคือต้นทุนที่ตั้งใจให้มี:
+มันคือการที่ผู้เขียนปลั๊กอินยืนยันว่าได้ทบทวนปลั๊กอินกับ contract ชุดใหม่แล้ว
+
 ### ตัวอย่าง
 
 Finding ที่ผ่านไม่ใส่ `remedy`:
@@ -503,7 +519,7 @@ name        = "memory-tier2-noop"               # บังคับ — ต้�
 kind        = "memory-backend"                  # บังคับ — หนึ่งใน: memory-backend | llm-backend | workflow | audit | jira
 version     = "0.1.0"                           # บังคับ — semver
 description = "No-op Tier 2 memory backend that forwards to Tier 1."   # บังคับ — สรุปหนึ่งประโยค
-compat      = ">=2.5.0"                         # บังคับ — semver range; เวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้
+compat      = ">=3.0.0, <4.0.0"                 # บังคับ — semver range มีขอบบน; เวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้
 entry       = "bwoc-plugin-memory-tier2-noop"   # บังคับ — binary บน PATH (แนะนำ) หรือชื่อ Rust crate ข้างเคียง
 
 [config.schema]                                 # ไม่บังคับ — ตัดทั้ง table ออกได้ถ้าปลั๊กอินไม่รับ config
@@ -522,7 +538,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # บังคับ — binary 
 | `[plugin]` | `kind` | ใช่ | enum | หนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; เปลี่ยนไม่ได้หลัง `init` |
 | `[plugin]` | `version` | ใช่ | string (semver) | Semver ของปลั๊กอินเอง แยกจากเวอร์ชันเฟรมเวิร์ก |
 | `[plugin]` | `description` | ใช่ | string | สรุปหนึ่งประโยค; เป็นค่า **ที่เดียว** ใน manifest ที่ยอมให้มีชื่อ vendor |
-| `[plugin]` | `compat` | ใช่ | string (semver range) | ช่วงเวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้; ถ้าไม่ตรงเฟรมเวิร์กปฏิเสธการ load |
+| `[plugin]` | `compat` | ใช่ | string (semver range มีขอบบน) | ช่วงเวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้ บังคับใช้ตั้งแต่ 3.0: ไม่ตรง = ปฏิเสธการ load, parse ไม่ได้ = `bwoc check` fail, ไม่มีขอบบน = เตือน |
 | `[plugin]` | `entry` | ใช่ | string | Binary บน `PATH` (แนะนำ) หรือชื่อ Rust crate ข้างเคียงที่เฟรมเวิร์ก dispatch ไป |
 | `[config.schema]` | (free keys) | ไม่ | inline-table ต่อ key | Schema สำหรับ validate `workspace.toml [plugins.<name>]`; แต่ละ key ระบุ `type`, `required`, และ `default` (ไม่บังคับ) |
 
@@ -790,7 +806,9 @@ Source ที่ถูกลบไม่ถูก auto-uninstall จาก `.bwo
 | Neutrality | ชื่อ vendor ปรากฏเฉพาะใน `description`; ที่อื่นไม่ได้ |
 | มี `SPEC.md` | ไฟล์ `SPEC.md` อยู่ข้าง manifest |
 | ฟิลด์บังคับครบ | `name`, `kind`, `version`, `description`, `compat`, `entry` ครบ |
-| ช่วง compat valid | `[plugin].compat` parse เป็น semver range ได้ |
+| ช่วง compat valid | `[plugin].compat` parse เป็น semver range ได้ — ถ้าไม่ได้เป็น violation |
+| ช่วง compat ตรงรุ่น | `[plugin].compat` ครอบเวอร์ชันเฟรมเวิร์กที่รันอยู่ — ถ้าไม่ตรงเป็น **warning** (ปลั๊กอินต้องประกาศใหม่ ไม่ใช่ workspace พัง) |
+| ช่วง compat มีขอบบน | `[plugin].compat` ประกาศขอบบนไว้ — ถ้าเปิดปลายเป็น **warning** |
 | Source registry parseable | `.bwoc/installed-sources.toml` เป็น TOML ที่ valid ถ้ามี |
 | ไม่มี orphan source record | ทุก entry ที่ `kind = "plugin"` ใน registry มี `modules/plugins/<name>/` ที่ match |
 | ไม่มี orphan installation | ทุก `modules/plugins/<name>/` มี registry entry หรือมี marker file `.authored-in-place` |

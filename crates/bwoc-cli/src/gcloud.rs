@@ -679,6 +679,11 @@ struct PluginSection {
     name: String,
     kind: String,
     entry: String,
+    /// Resolved against the framework version before the plugin is used.
+    /// `#[serde(default)]` so a manifest missing it yields an explicit refusal
+    /// rather than an opaque TOML parse error.
+    #[serde(default)]
+    compat: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -761,6 +766,16 @@ fn discover_plugin(root: &Path, name: &str) -> Result<Option<GcloudPlugin>, Stri
                 parsed.plugin.kind,
                 PLUGIN_KIND
             ));
+        }
+        // The plugin exists and is the right kind, but declares a framework
+        // range this build is outside. `PLUGINS.en.md` has always specified
+        // that the framework refuses to load on a compat mismatch; this is
+        // where that refusal lives. Surface it — silently degrading to "not
+        // installed" would hide a plugin the operator believes is active.
+        if let Err(e) =
+            crate::util::check_plugin_compat(&parsed.plugin.compat, crate::util::FRAMEWORK_VERSION)
+        {
+            return Err(format!("{}: {e}", manifest.display()));
         }
         return Ok(Some(GcloudPlugin {
             name: parsed.plugin.name,
@@ -3443,13 +3458,17 @@ mod tests {
     }
 
     fn write_plugin_at(root: &Path, layout: &str, name: &str, kind: &str) {
+        write_plugin_with_compat(root, layout, name, kind, ">=2.5.0");
+    }
+
+    fn write_plugin_with_compat(root: &Path, layout: &str, name: &str, kind: &str, compat: &str) {
         let dir = root.join("modules/plugins").join(layout).join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("manifest.toml"),
             format!(
                 "[plugin]\nname = \"{name}\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
-                 description = \"x\"\ncompat = \">=2.5.0\"\nentry = \"gcloud.sh\"\n"
+                 description = \"x\"\ncompat = \"{compat}\"\nentry = \"gcloud.sh\"\n"
             ),
         )
         .unwrap();
@@ -3487,6 +3506,35 @@ mod tests {
         let err = discover_plugin(dir.path(), PLUGIN_AUTH).unwrap_err();
         assert!(err.contains("expected"), "{err}");
         assert!(err.contains("workflow"), "{err}");
+    }
+
+    #[test]
+    fn discovery_refuses_a_compat_mismatch() {
+        // `PLUGINS.en.md` promises the framework "refuses to load" on a compat
+        // mismatch. Refuse loudly rather than returning `None` — degrading to
+        // "not installed" would hide a plugin the operator can see on disk.
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin_with_compat(dir.path(), "", PLUGIN_AUTH, "workflow", ">=99.0.0");
+        let err = discover_plugin(dir.path(), PLUGIN_AUTH).unwrap_err();
+        assert!(err.contains("compat"), "{err}");
+        assert!(err.contains("does not match"), "{err}");
+    }
+
+    #[test]
+    fn discovery_refuses_a_manifest_with_no_compat_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin_dir = dir.path().join("modules/plugins").join(PLUGIN_AUTH);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("manifest.toml"),
+            format!(
+                "[plugin]\nname = \"{PLUGIN_AUTH}\"\nkind = \"workflow\"\n\
+                 version = \"0.1.0\"\ndescription = \"x\"\nentry = \"gcloud.sh\"\n"
+            ),
+        )
+        .unwrap();
+        let err = discover_plugin(dir.path(), PLUGIN_AUTH).unwrap_err();
+        assert!(err.contains("compat"), "{err}");
     }
 
     #[test]

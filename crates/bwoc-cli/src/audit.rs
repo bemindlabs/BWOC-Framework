@@ -90,7 +90,6 @@ struct PluginSection {
     version: String,
     #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
     compat: String,
     entry: String,
 }
@@ -177,6 +176,17 @@ fn discover_audit(root: &Path) -> Result<Vec<DiscoveredAudit>, String> {
         }
         if manifest.plugin.kind != "audit" {
             continue;
+        }
+        // A compat mismatch is a refusal, not a skip: `bwoc audit run` spawns
+        // this plugin's binary and trusts its findings, so a plugin declaring a
+        // framework it was not written for must stop the run rather than
+        // quietly drop out of the set (which would report a clean audit that
+        // simply never ran).
+        if let Err(e) = crate::util::check_plugin_compat(
+            &manifest.plugin.compat,
+            crate::util::FRAMEWORK_VERSION,
+        ) {
+            return Err(format!("modules/plugins/{dir_name}/manifest.toml: {e}"));
         }
         out.push(DiscoveredAudit {
             path: plugin_dir,

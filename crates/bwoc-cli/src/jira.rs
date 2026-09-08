@@ -490,6 +490,11 @@ struct PluginSection {
     name: String,
     kind: String,
     entry: String,
+    /// Resolved against the framework version before the plugin is used.
+    /// `#[serde(default)]` so a manifest missing it yields an explicit refusal
+    /// rather than an opaque TOML parse error.
+    #[serde(default)]
+    compat: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -548,6 +553,16 @@ fn discover_jira_plugins(root: &Path) -> Result<Vec<JiraPlugin>, String> {
         let parsed: ManifestRaw =
             toml::from_str(&body).map_err(|e| format!("parse {}: {e}", manifest.display()))?;
         if parsed.plugin.kind == "jira" {
+            // Refuse rather than skip: a jira plugin declaring a framework it
+            // was not written for would otherwise vanish from the set, and
+            // `bwoc jira sync` would report "no plugin installed" for one the
+            // operator can see on disk.
+            if let Err(e) = crate::util::check_plugin_compat(
+                &parsed.plugin.compat,
+                crate::util::FRAMEWORK_VERSION,
+            ) {
+                return Err(format!("{}: {e}", manifest.display()));
+            }
             found.push(JiraPlugin {
                 name: parsed.plugin.name,
                 dir: plugin_dir,
