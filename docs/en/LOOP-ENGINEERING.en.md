@@ -61,6 +61,32 @@ What decides, each fire, whether to act, pause, or stop. Composed of already-shi
 
 The `🔒 HELD` convention that the Refinement Loop honored by hand becomes an **enforced** gate here: a HELD item routes to the plan-approval flow and cannot be auto-actioned.
 
+
+### Withdrawing a completion
+
+The gate above stops a *plan-gated* task from completing unattended. It does not
+stop an **ungated** one, and a completion is an assertion an agent can get
+wrong — the first real `--loop` run marked "merge branch X to main" completed by
+a worker that had merged nothing, and the state machine ran one way only, so the
+shared list carried the falsehood and the dependent task it unblocked inherited
+it.
+
+`bwoc task reopen <team> <task> [--reason …]` withdraws the claim. It is an
+**operator** action — no `--as`, no membership check — because the premise is
+that the fleet's own record is wrong. It takes the same lock and the same
+load → mutate → save path as every other write, so correcting the record never
+becomes a reason to hand-edit `tasks.jsonl`.
+
+| Reopen | Why |
+|---|---|
+| clears `claimed_by` and `completed_at` | they describe work no longer asserted to have happened |
+| clears the plan **verdict** on a gated task | a surviving `Some(true)` would let the next claimant complete without a fresh plan — the exact gate the false completion evaded |
+| **keeps** the plan text | the claimant's own account is evidence for whoever picks the task up, not a claim to withdraw |
+| **reports** dependents, never cascades | an unclaimed dependent re-blocks on its own (`claim_task` re-checks deps); one already in progress is the operator's judgment, not this call's |
+
+The practical lesson from that run: **an ungated task is a task a model can
+assert done.** Gate anything whose completion you could not verify yourself.
+
 ## The iteration cycle
 
 Each ticker fire runs one turn of: **evaluate DoD → if met, stop → else select one coherent unit → execute it → log/discover → re-gate**.

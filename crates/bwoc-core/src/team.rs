@@ -183,6 +183,8 @@ pub enum TeamError {
         id: String,
         plan_state: &'static str,
     },
+    #[error("task '{id}' is {state} — only a completed task can be reopened")]
+    NotReopenable { id: String, state: &'static str },
 }
 
 /// Append a new task. Rejects a duplicate id and any dependency that
@@ -287,6 +289,79 @@ pub fn complete_task(tasks: &mut [Task], id: &str, agent: &str) -> Result<(), Te
     task.state = TaskState::Completed;
     task.completed_at = Some(utc_now_iso8601());
     Ok(())
+}
+
+/// Reopen a completed task, returning it to `Pending`.
+///
+/// # Why this exists
+///
+/// A completion is an assertion about the world, and an agent can assert
+/// something false. The first `--loop` run against a real task list marked
+/// "merge branch X to main" completed by a worker that had merged nothing —
+/// and because the state machine ran one way only, the shared list carried
+/// that falsehood with no way to withdraw it. Every downstream task the
+/// completion unblocked inherited it.
+///
+/// So this is not an undo convenience. It is the correction path a shared
+/// record needs in order to stay trustworthy: without one, the only fix is
+/// hand-editing `tasks.jsonl` outside the locked `bwoc task` path, which
+/// leaves no trace of what was corrected or why.
+///
+/// # What it clears, and what it keeps
+///
+/// Reopening drops `claimed_by`, `completed_at`, and — for a plan-gated task
+/// — the approval verdict, because all three describe work that is no longer
+/// asserted to have happened. A stale `Some(true)` verdict would let the next
+/// claimant complete the task without a fresh plan, which is exactly the gate
+/// this incident proved is load-bearing.
+///
+/// The **plan text itself is kept**: it is the claimant's own account of what
+/// they intended, useful to whoever picks the task up, and destroying it would
+/// discard evidence rather than correct a claim.
+///
+/// # Dependents
+///
+/// Tasks that depend on this one are left alone deliberately. `claim_task`
+/// re-checks dependency state at claim time, so a dependent that has not yet
+/// been claimed becomes unclaimable again on its own. One that is already
+/// `InProgress` or `Completed` is a judgment call for the operator — silently
+/// cascading a reopen through the graph would withdraw assertions nobody asked
+/// this call to touch. [`dependents_of`] surfaces them so the caller can
+/// report them instead of guessing.
+pub fn reopen_task(tasks: &mut [Task], id: &str) -> Result<(), TeamError> {
+    let task = tasks
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or_else(|| TeamError::TaskNotFound(id.to_string()))?;
+
+    if task.state != TaskState::Completed {
+        return Err(TeamError::NotReopenable {
+            id: id.to_string(),
+            state: task.state.as_str(),
+        });
+    }
+
+    task.state = TaskState::Pending;
+    task.claimed_by = None;
+    task.completed_at = None;
+    // A plan-gated task must be re-approved: a surviving verdict would let the
+    // next claimant complete without one.
+    if task.requires_plan {
+        task.plan_approved = None;
+    }
+    Ok(())
+}
+
+/// Ids of the tasks that list `id` as a dependency, in list order.
+///
+/// For reporting after a [`reopen_task`] — the caller can name what the
+/// reopened task was holding up rather than leaving the operator to grep.
+pub fn dependents_of(tasks: &[Task], id: &str) -> Vec<String> {
+    tasks
+        .iter()
+        .filter(|t| t.deps.iter().any(|d| d == id))
+        .map(|t| t.id.clone())
+        .collect()
 }
 
 /// Submit (or revise) a plan for a task the agent has claimed — Pavāraṇā,
@@ -673,5 +748,118 @@ mod tests {
         ];
         let back = parse_chat(&render_chat(&msgs).unwrap()).unwrap();
         assert_eq!(back, msgs);
+    }
+
+    // ── reopen ───────────────────────────────────────────────────────────────
+
+    fn completed_list() -> Vec<Task> {
+        let mut tasks = Vec::new();
+        add_task(&mut tasks, Task::new("t1", "merge the branch", vec![])).unwrap();
+        add_task(
+            &mut tasks,
+            Task::new("t2", "build on the merge", vec!["t1".to_string()]),
+        )
+        .unwrap();
+        claim_task(&mut tasks, "t1", "agent-a").unwrap();
+        complete_task(&mut tasks, "t1", "agent-a").unwrap();
+        tasks
+    }
+
+    #[test]
+    fn reopen_withdraws_the_completion_and_its_claim() {
+        let mut tasks = completed_list();
+        reopen_task(&mut tasks, "t1").unwrap();
+        let t1 = tasks.iter().find(|t| t.id == "t1").unwrap();
+        assert_eq!(t1.state, TaskState::Pending);
+        assert_eq!(
+            t1.claimed_by, None,
+            "a withdrawn completion has no claimant"
+        );
+        assert_eq!(t1.completed_at, None);
+    }
+
+    #[test]
+    fn a_dependent_becomes_unclaimable_again() {
+        // The whole point: a false completion unblocks downstream work, and
+        // withdrawing it has to re-block that work.
+        let mut tasks = completed_list();
+        assert!(claim_task(&mut tasks, "t2", "agent-b").is_ok());
+
+        // Reset t2 so the dependency check is what decides.
+        let mut tasks = completed_list();
+        reopen_task(&mut tasks, "t1").unwrap();
+        let err = claim_task(&mut tasks, "t2", "agent-b").unwrap_err();
+        assert!(
+            matches!(err, TeamError::BlockedByDependency { ref dep, .. } if dep == "t1"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn reopening_a_plan_gated_task_clears_the_verdict() {
+        // A surviving `Some(true)` would let the next claimant complete
+        // without a fresh plan — the exact gate a false completion evades.
+        let mut tasks = Vec::new();
+        let mut t = Task::new("t1", "gated", vec![]);
+        t.requires_plan = true;
+        add_task(&mut tasks, t).unwrap();
+        claim_task(&mut tasks, "t1", "agent-a").unwrap();
+        submit_plan(&mut tasks, "t1", "agent-a", "the plan").unwrap();
+        review_plan(&mut tasks, "t1", true).unwrap();
+        complete_task(&mut tasks, "t1", "agent-a").unwrap();
+
+        reopen_task(&mut tasks, "t1").unwrap();
+        let t1 = tasks.iter().find(|t| t.id == "t1").unwrap();
+        assert_eq!(t1.plan_approved, None, "verdict must not survive a reopen");
+        assert_eq!(
+            t1.plan.as_deref(),
+            Some("the plan"),
+            "the claimant's own account is evidence, not a claim — keep it"
+        );
+
+        // And the gate really is armed again.
+        claim_task(&mut tasks, "t1", "agent-b").unwrap();
+        let err = complete_task(&mut tasks, "t1", "agent-b").unwrap_err();
+        assert!(matches!(err, TeamError::PlanNotApproved { .. }), "{err}");
+    }
+
+    #[test]
+    fn only_a_completed_task_can_be_reopened() {
+        let mut tasks = Vec::new();
+        add_task(&mut tasks, Task::new("t1", "x", vec![])).unwrap();
+        assert!(matches!(
+            reopen_task(&mut tasks, "t1").unwrap_err(),
+            TeamError::NotReopenable { .. }
+        ));
+        claim_task(&mut tasks, "t1", "agent-a").unwrap();
+        assert!(matches!(
+            reopen_task(&mut tasks, "t1").unwrap_err(),
+            TeamError::NotReopenable { .. }
+        ));
+        assert!(matches!(
+            reopen_task(&mut tasks, "nope").unwrap_err(),
+            TeamError::TaskNotFound(_)
+        ));
+    }
+
+    #[test]
+    fn reopen_is_idempotent_only_once() {
+        // Reopening twice is an error, not a silent no-op: the second call
+        // means the caller's model of the list is wrong.
+        let mut tasks = completed_list();
+        reopen_task(&mut tasks, "t1").unwrap();
+        assert!(reopen_task(&mut tasks, "t1").is_err());
+    }
+
+    #[test]
+    fn dependents_are_reported_not_cascaded() {
+        let mut tasks = completed_list();
+        assert_eq!(dependents_of(&tasks, "t1"), vec!["t2".to_string()]);
+        reopen_task(&mut tasks, "t1").unwrap();
+        // t2 is untouched — cascading would withdraw an assertion this call
+        // was not asked to touch.
+        let t2 = tasks.iter().find(|t| t.id == "t2").unwrap();
+        assert_eq!(t2.state, TaskState::Pending);
+        assert!(dependents_of(&tasks, "t2").is_empty());
     }
 }

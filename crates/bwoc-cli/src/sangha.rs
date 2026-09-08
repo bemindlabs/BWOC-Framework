@@ -578,6 +578,99 @@ pub fn run_task_complete(
     )
 }
 
+/// `bwoc task reopen <team> <task> [--reason …]` — withdraw a completion.
+///
+/// An **operator** action, not an agent one, which is why there is no `--as`
+/// and no team-membership check: the whole point is that the record is wrong
+/// and the fleet cannot be trusted to fix its own claim. It takes the same
+/// lock and the same load → mutate → save path as every other write, so it
+/// stays inside the locked `bwoc task` surface rather than becoming a reason
+/// to hand-edit `tasks.jsonl`.
+///
+/// Reports the dependents the reopened task was unblocking. They are not
+/// cascaded — an already-claimed dependent is the operator's call — but they
+/// are named, because a false completion propagates and the operator needs to
+/// know how far.
+pub fn run_task_reopen(
+    workspace: Option<PathBuf>,
+    team_id: String,
+    task_id: String,
+    reason: Option<String>,
+    json: bool,
+) -> i32 {
+    let Some(ws) = resolve_workspace(workspace) else {
+        eprintln!("bwoc task reopen: no workspace found. Pass --workspace or run `bwoc init`.");
+        return 2;
+    };
+    if let Err(e) = load_team(&ws, &team_id) {
+        eprintln!("bwoc task reopen: {e}");
+        return 2;
+    }
+    let task_dir = team_task_dir(&ws, &team_id);
+    let _lock = match TaskLock::acquire(&task_dir) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("bwoc task reopen: {e}");
+            return 1;
+        }
+    };
+    let mut tasks = match load_tasks(&ws, &team_id) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("bwoc task reopen: {e}");
+            return 1;
+        }
+    };
+    // Capture who claimed it before the transition clears that, so the report
+    // can say whose completion was withdrawn.
+    let previous_claimant = tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .and_then(|t| t.claimed_by.clone());
+
+    if let Err(e) = team::reopen_task(&mut tasks, &task_id) {
+        eprintln!("bwoc task reopen: {e}");
+        return 2;
+    }
+    let dependents = team::dependents_of(&tasks, &task_id);
+
+    if let Err(e) = save_tasks(&ws, &team_id, &tasks) {
+        eprintln!("bwoc task reopen: {e}");
+        return 1;
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "team": team_id,
+                "task": task_id,
+                "op": "reopen",
+                "ok": true,
+                "previous_claimant": previous_claimant,
+                "reason": reason,
+                "dependents": dependents,
+            })
+        );
+    } else {
+        let by = previous_claimant
+            .as_deref()
+            .map(|a| format!(" (was completed by {a})"))
+            .unwrap_or_default();
+        println!("reopen: '{task_id}' is pending again{by}");
+        if let Some(r) = &reason {
+            println!("  reason: {r}");
+        }
+        if !dependents.is_empty() {
+            println!(
+                "  dependents not cascaded — review them: {}",
+                dependents.join(", ")
+            );
+        }
+    }
+    0
+}
+
 /// Shared claim/complete path: resolve workspace, verify the actor is a
 /// team member, acquire the lock, load → mutate → save. The `op` closure
 /// runs the core transition; `verb` is just for messages.

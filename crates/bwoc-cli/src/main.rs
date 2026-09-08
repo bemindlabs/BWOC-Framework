@@ -252,7 +252,7 @@ enum Commands {
     /// Manage Saṅgha teams — a named subset of agents sharing a task list.
     #[command(subcommand)]
     Team(TeamCommand),
-    /// Manage a team's shared task list (add / list / claim / complete).
+    /// Manage a team's shared task list (add / list / claim / complete / reopen).
     #[command(subcommand)]
     Task(TaskCommand),
     /// Query task status across **every** team (fleet-wide): filter by `--agent`
@@ -1036,6 +1036,26 @@ enum TaskCommand {
         /// Completing agent id (must be the claimant).
         #[arg(long = "as")]
         agent: String,
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Withdraw a completion: return a completed task to pending. An operator
+    /// action — an agent can assert a task done that it did not do, and the
+    /// shared list needs a way to take that claim back without hand-editing
+    /// `tasks.jsonl`. Clears the claimant and, on a plan-gated task, the
+    /// approval verdict; keeps the submitted plan text as evidence. Dependents
+    /// are reported, never cascaded.
+    Reopen {
+        /// Team id.
+        team: String,
+        /// Task id to reopen.
+        task: String,
+        /// Why the completion is being withdrawn — recorded in `--json`
+        /// output and echoed in the report.
+        #[arg(long)]
+        reason: Option<String>,
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
         #[arg(long)]
@@ -3108,6 +3128,13 @@ fn main() -> ExitCode {
                     workspace,
                     json,
                 } => sangha::run_task_complete(workspace, team, task, agent, json),
+                TaskCommand::Reopen {
+                    team,
+                    task,
+                    reason,
+                    workspace,
+                    json,
+                } => sangha::run_task_reopen(workspace, team, task, reason, json),
                 TaskCommand::Plan {
                     team,
                     task,
