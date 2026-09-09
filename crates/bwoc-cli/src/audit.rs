@@ -902,8 +902,8 @@ impl Summary {
 // ---------------------------------------------------------------------------
 
 /// Exit-code constants — see module doc for the normative convention.
-const EXIT_FRAMEWORK_ERROR: i32 = 255;
-const EXIT_FAIL_COUNT_MAX: i32 = 254;
+const EXIT_FRAMEWORK_ERROR: i32 = crate::exit::INTERNAL;
+const EXIT_FAIL_COUNT_MAX: i32 = crate::exit::FAIL_COUNT_MAX;
 
 /// Map the post-run state to a process exit code per the module-doc
 /// convention. Framework errors win over fail counts — if any plugin failed

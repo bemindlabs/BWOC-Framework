@@ -1059,14 +1059,21 @@ pub fn run(target: &Path, lang: &str, json: bool) -> i32 {
             Ok(s) => println!("{s}"),
             Err(e) => {
                 eprintln!("bwoc check: failed to serialize JSON: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
     } else {
         let bundle = i18n::bundle_for(lang);
         print_report(&report, &bundle);
     }
-    if report.violations.is_empty() { 0 } else { 1 }
+    // 3.0: violations are a negative-but-valid *finding* (exit 3, FINDINGS), not
+    // a command error (exit 1). This aligns `check` with `workspace validate` and
+    // `council`, and lets CI tell "check found violations" from "check crashed".
+    if report.violations.is_empty() {
+        crate::exit::OK
+    } else {
+        crate::exit::FINDINGS
+    }
 }
 
 /// Fleet-wide audit. Iterates the workspace's `agents.toml`, runs
@@ -1089,7 +1096,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
                             "bwoc check --all: no workspace found. Pass --workspace, set \
                              BWOC_WORKSPACE, or run from a workspace directory."
                         );
-                        return 2;
+                        return crate::exit::USAGE;
                     };
                     p
                 }
@@ -1099,7 +1106,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
                         "bwoc check --all: no workspace found. Pass --workspace, set \
                          BWOC_WORKSPACE, or run from a workspace directory."
                     );
-                    return 2;
+                    return crate::exit::USAGE;
                 };
                 p
             }
@@ -1109,7 +1116,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
         Ok(r) => r,
         Err(e) => {
             eprintln!("bwoc check --all: failed to read agents.toml: {e}");
-            return 1;
+            return crate::exit::ERROR;
         }
     };
     if registry.agents.is_empty() {
@@ -1118,7 +1125,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
              Run `bwoc new <name>` to incarnate one.",
             root.display()
         );
-        return 0;
+        return crate::exit::OK;
     }
 
     let mut total_violations = 0u32;
@@ -1233,7 +1240,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
             Ok(s) => println!("{s}"),
             Err(e) => {
                 eprintln!("bwoc check --all: failed to serialize JSON: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
     } else {
@@ -1266,7 +1273,12 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
         println!();
     }
 
-    if total_violations > 0 { 1 } else { 0 }
+    // 3.0: violations → FINDINGS (3), same as single-target `run` (see above).
+    if total_violations > 0 {
+        crate::exit::FINDINGS
+    } else {
+        crate::exit::OK
+    }
 }
 
 // ---------------------------------------------------------------------------

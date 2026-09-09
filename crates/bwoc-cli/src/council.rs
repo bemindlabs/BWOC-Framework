@@ -88,12 +88,12 @@ use bwoc_core::workspace::AgentsRegistry;
 // Exit codes + plugin kind (single source of truth).
 // ---------------------------------------------------------------------------
 
-const EXIT_OK: i32 = 0;
-const EXIT_LOCAL_ERROR: i32 = 1;
-const EXIT_USAGE: i32 = 2;
-const EXIT_NOT_RESOLVED: i32 = 3;
-const EXIT_NO_PLUGIN: i32 = 4;
-const EXIT_PLUGIN_ERROR: i32 = 255;
+const EXIT_OK: i32 = crate::exit::OK;
+const EXIT_LOCAL_ERROR: i32 = crate::exit::ERROR;
+const EXIT_USAGE: i32 = crate::exit::USAGE;
+const EXIT_NOT_RESOLVED: i32 = crate::exit::FINDINGS;
+const EXIT_NO_PLUGIN: i32 = crate::exit::NO_PLUGIN;
+const EXIT_PLUGIN_ERROR: i32 = crate::exit::INTERNAL;
 
 const PLUGIN_KIND: &str = "council";
 

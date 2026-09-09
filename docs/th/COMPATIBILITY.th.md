@@ -38,6 +38,26 @@ module ของ `bwoc-core` เป็น `pub` เพื่อ binary ใน wo
 ที่ไม่ใช่ public เช่นกัน: layout ภายใต้ `target/`, รูปแบบ log, ถ้อยคำของ output
 แบบ human-readable (ที่ไม่ใช่ `--json`) และอะไรก็ตามที่เอกสารระบุว่าเป็น experimental
 
+### Exit code (3.0)
+
+CLI ใช้ **ชุดเดียว** ของ exit code (ก่อน 3.0 แต่ละกลุ่มคำสั่งคิดของตัวเอง — `check`
+คืน `1` เมื่อมี violation, `workspace validate` คืน `2` สำหรับความหมายเดียวกัน ซึ่งชนกับ
+"ไม่พบ"). ตารางมาตรฐาน โดย source of truth คือ `crates/bwoc-cli/src/exit.rs`:
+
+| Code | ความหมาย |
+|---|---|
+| `0` | สำเร็จ |
+| `1` | ตัวคำสั่งเองผิดพลาด (I/O, parse, network, internal ที่กู้ได้) — "เครื่องมือพัง" |
+| `2` | เรียกใช้ผิด หรือหา workspace / agent / target ที่จำเป็น **ไม่พบ** |
+| `3` | คำสั่งทำงานได้แต่คำตอบเป็น **ลบ**: `check` / `workspace validate` มี violation, `council` ยังไม่ resolve, `audit` มี failure — "เครื่องมือทำงาน แต่ผลคือ 'ไม่'" |
+| `4` | plugin ที่จำเป็นไม่ได้ติดตั้ง / discover ไม่เจอ |
+| `254` | เพดานของ `audit run` — มันเข้ารหัส **จำนวน** fail (`1..=254`) ไว้ที่นี่ เป็นข้อยกเว้นเดียวที่ตั้งใจ |
+| `255` | error ระดับ framework/internal ที่ผู้เรียกทำอะไรไม่ได้ |
+
+จุดสำคัญคือ **`1` vs `3`**: crash กับ finding เชิงลบ. **breaking ใน 3.0:** `bwoc check`
+violation ย้าย `1 → 3` และ `bwoc workspace validate` violation ย้าย `2 → 3`. `|| fail`
+ยังทำงาน (ทั้งคู่ non-zero); script ที่เช็ค `[ $? -eq 1 ]` / `-eq 2` เจาะจงต้องเปลี่ยนเป็น `-eq 3`
+
 ---
 
 ## Artifact ที่มี version

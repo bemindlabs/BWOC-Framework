@@ -39,6 +39,29 @@ this table gains a fourth row first.
 Also not public: internal file layout under `target/`, log formats, the wording
 of human-readable (non-`--json`) output, and anything a doc calls experimental.
 
+### Exit codes (3.0)
+
+The CLI speaks **one** exit-code vocabulary (before 3.0 each family invented its
+own — `check` returned `1` for violations, `workspace validate` returned `2` for
+the *same* thing, colliding with "not found"). The canonical table, whose source
+of truth is `crates/bwoc-cli/src/exit.rs`:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | The command itself errored (I/O, parse, network, recoverable-internal) — "the tool broke". |
+| `2` | Bad invocation, or a required workspace / agent / target was **not found**. |
+| `3` | The command ran but the answer is **negative**: `check` / `workspace validate` violations, `council` not-resolved, an `audit` with failures — "the tool worked; the result is 'no'". |
+| `4` | A required plugin is not installed / not discoverable. |
+| `254` | `audit run` ceiling — it additionally encodes its fail **count** (`1..=254`) here, the one deliberate exception. |
+| `255` | Framework/internal error the caller cannot act on. |
+
+The load-bearing distinction is **`1` vs `3`**: a crash vs. a negative finding.
+**3.0 breaking change:** `bwoc check` violations moved `1 → 3` and `bwoc
+workspace validate` violations moved `2 → 3`. A `|| fail` guard still fires (both
+are non-zero); a script testing `[ $? -eq 1 ]` / `-eq 2` specifically must move
+to `-eq 3`.
+
 ---
 
 ## Versioned artifacts

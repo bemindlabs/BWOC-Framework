@@ -25,6 +25,7 @@ mod digest;
 mod doc_cmd;
 mod doctor;
 mod eval;
+mod exit;
 mod figma;
 mod fleet;
 mod fleet_term;
