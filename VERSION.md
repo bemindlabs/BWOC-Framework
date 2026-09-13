@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `3.0.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `3.0.1`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.14.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 7 — *anicca* (versioned change & the compatibility contract), **in progress** — producing 3.0. Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** *(t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature — see `reports/retro/t32-deep-memory-design.md`)*. **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant)*; Phase 3 vaya + Phase 4 fleet-governance also met
-**Latest release:** [`v2026.9.13-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.13-0) *(2026-09-13 — **3.0.0** — **BWOC 3.0, the compatibility contract**: every artifact BWOC owns declares its schema, `bwoc migrate` moves an installation forward without losing comments or unmodeled keys, specification 3.0 is validated rather than merely written, and `[plugin].compat` is enforced with bounded ranges. 3.x reads everything 2.x wrote; schema 2 goes away in 4.0. See `docs/en/COMPATIBILITY.en.md` and `docs/en/MIGRATION.en.md`. Prior: `v2026.9.6-0` 2.45.0 — hardening release, HTTP 429 retryable, guardrails peel command wrappers, tool output byte-capped; `v2026.8.20-2` 2.44.2 — security release, a provider response can no longer choose its own provenance and an untrusted turn can no longer write its own control plane; `v2026.8.20-1` 2.44.1 — `bwoc-harness` ships in every release archive (#460))*
+**Latest release:** [`v2026.9.13-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.13-1) *(2026-09-13 — **3.0.1** — patch: per-chat connector session files, `bwoc init` keeps an existing agent registry, `bwoc new` stamps spec 3.0. Prior: `v2026.9.13-0` 3.0.0 — **BWOC 3.0, the compatibility contract**; `v2026.9.6-0` 2.45.0 — hardening release)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v3.0
-**Last-Updated:** `2026-09-13T11:26:29Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-09-13T13:47:54Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 

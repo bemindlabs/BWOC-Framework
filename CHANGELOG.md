@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.13-1] — 2026-09-13 — 3.0.1
+
+**A patch release** — three fixes found while rolling 3.0 out across a real fleet: chat connectors kept one conversation file per agent (every chat shared it), `bwoc init` wiped an existing agent registry, and `bwoc new` still stamped spec 2.0. Upgrading is recommended; nothing to migrate.
+
 ### Fixed
 
 - **Chat connectors isolate each chat's conversation** — every bridged chat shared the agent's single `.bwoc/chat-session.json`, so two chats (or a DM and a group) leaked context into each other and clobbered history. Each chat now persists to `.bwoc/chat-sessions/<platform>-<chat_id>.json` (sanitized; new `bwoc-harness --session-file`), and bridged turns carry `Principal::Platform { platform, user_id }` provenance instead of `Unknown` (still untrusted). `bwoc chat --tui` is unchanged.

