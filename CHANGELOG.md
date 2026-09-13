@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 - **Connector `[bot]` block and limited public mode** — `connectors/<platform>.toml` now accepts `schema_version`, using the 3.0 `SchemaVersion`: absent ⇒ legacy v2, which loads with a warning; 3 is current; a newer revision makes the connector refuse to start. `bwoc migrate` now stamps `connectors/*.toml` and an optional `[bot]` table. `[bot]` adds fixed slash-command replies (`[bot.commands]`, exact first token, `@botname` stripped, never forwarded to the agent), a per-sender `rate_limit_per_min` (default 20: one notice, then silent drops) and `max_input_chars` (default 4000). `public = true` lets non-allow-listed senders reach the agent, but only by DM or @mention. Their sessions are locked to read-only harness `plan` mode, always capped, and run in their own workdir (`.bwoc/public/<platform>-<chat_id>/`, holding only copies of `AGENTS.md` and `config.manifest.json` minus `deepMemoryCmd`) outside team chat. Without `[bot]`, behaviour is unchanged (closed by default).
 
+### Fixed
+
+- **Tool path confinement resolves symlinks** — `ToolContext::resolve_path` only checked paths lexically, so a symlink inside the workdir that pointed outside let `read_file` / `list_dir` / `write_file` / `edit_file` escape. Confined paths now also canonicalize their deepest existing ancestor and must stay inside the canonical workdir (shared with `sandbox::confine_path`). `memory_read` / `memory_write` get the same check, and `grep` no longer follows an escaping link. `--unrestricted` is unchanged.
+
 ## [v2026.9.13-1] — 2026-09-13 — 3.0.1
 
 **A patch release** — three fixes found while rolling 3.0 out across a real fleet: chat connectors kept one conversation file per agent (every chat shared it), `bwoc init` wiped an existing agent registry, and `bwoc new` still stamped spec 2.0. Upgrading is recommended; nothing to migrate.
