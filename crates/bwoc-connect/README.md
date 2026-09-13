@@ -22,6 +22,17 @@ Four platforms are supported — no others:
 - **`imessage`** — macOS-only `ImessageTransport`: read-only SQLite poll of `~/Library/Messages/chat.db` plus `build_send_script` / `escape_applescript` / `decode_message_text` / `hash_id`. Hard-errors on other platforms.
 - **`session`** — `HarnessSessionFactory` / `HarnessSession`: the `bwoc-harness --chat` subprocess edge. `ChatEvent::PermissionRequest` is **auto-denied** — a remote chat user can never approve a tool call. Each chat keeps its own session file at `<agent-dir>/.bwoc/chat-sessions/<platform>-<chat_id>.json`, and every turn is tagged with `Principal::Platform` provenance (3.0.1, #501).
 
+
+## `[bot]` block (3.1)
+
+A connector config can carry an optional `[bot]` table in `connectors/<platform>.toml` (stamped `schema_version = 3`; `bwoc migrate` adds the marker):
+
+- **`commands`**: exact slash-command keys mapped to fixed replies. They are answered before the model is called, and a Telegram `@botname` suffix is stripped.
+- **`rate_limit_per_min`** (default 20) / **`max_input_chars`** (default 4000): per-sender caps. The first time a sender goes over, they get one short notice; further messages are dropped.
+- **`public = true`**: opt-in **limited public mode**. Senders not on the allow-list are served only by DM or @mention. Their session is locked to the harness read-only `plan` mode, and creation fails closed if that is not confirmed. It runs in an isolated `.bwoc/public/<platform>-<chat>/` workdir holding only a copied `AGENTS.md` and the manifest minus `deepMemoryCmd`, and never shares a session with allow-listed senders.
+
+Without a `[bot]` table the bridge is closed by default: allow-list only. See [`docs/en/CONNECTORS.en.md`](../../docs/en/CONNECTORS.en.md) and [`docs/en/THREAT-MODEL.en.md`](../../docs/en/THREAT-MODEL.en.md).
+
 ## Usage
 
 Config lives at `<agent-dir>/connectors/<platform>.toml` and is **closed by default** — an empty allow-list ignores everyone.
