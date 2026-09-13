@@ -7,7 +7,7 @@ A framework for building AI coding agents grounded in Buddhist philosophy as an 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#tech-stack)
 [![Docs](https://img.shields.io/badge/docs-EN%20%7C%20TH-blue.svg)](modules/agent-template/docs/)
-[![Status](https://img.shields.io/badge/status-Phase%205%20%E2%9C%93%20%7C%20sa%E1%B9%83vara-green.svg)](#status)
+[![Status](https://img.shields.io/badge/status-3.0%20%C2%B7%20Phase%207%20anicca-green.svg)](#status)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 Buddhist principles are used here as **engineering thinking aids** — not religious interpretation. Pali terms are section names; the content is technical.
@@ -472,9 +472,9 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 ## Status
 
-**Current phase:** Phase 6 — _paññā_ (harness eval & cross-platform hardening) — **in progress**. Phases 1–5 DoD met and signed off: Phase 1 end-to-end **uppāda** for one backend; Phase 2 _ṭhiti operations_ (lifecycle verbs, `--serve` daemon, Unix-socket IPC, inbox messaging, doctor sweeps, TUI dashboard); Phase 3 the cross-workspace interconnect mesh (view · learn · give-feedback) + Kalyāṇamitta-7 trust; Phase 4 fleet governance; Phase 5 _saṃvara_ trust-boundary & sandbox hardening. The self-hosted **`bwoc-harness`** runtime provides a full agentic run loop plus an interactive **`--chat`** session with token streaming, persistent cross-restart memory, live permission modes, and full-machine file editing. Per-phase detail is in [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md).
+**Current phase:** Phase 7 — _anicca_ (versioned change & the compatibility contract) — **3.0 shipped** (`v2026.9.13-0`, patch `v2026.9.13-1`): every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward, specification 3.0 is validated, and `[plugin].compat` is enforced. Phase 6 — _paññā_ (harness eval & cross-platform hardening) DoD met; Phases 1–5 DoD met and signed off: Phase 1 end-to-end **uppāda** for one backend; Phase 2 _ṭhiti operations_; Phase 3 the cross-workspace interconnect mesh + Kalyāṇamitta-7 trust; Phase 4 fleet governance; Phase 5 _saṃvara_ trust-boundary & sandbox hardening. Per-phase detail is in [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md).
 
-**Latest release:** [`v2026.9.13-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.13-0) (3.0.0) — **BWOC 3.0, the compatibility contract.** Every artifact BWOC owns declares its schema, `bwoc migrate` moves an installation forward, and `[plugin].compat` is enforced. 3.x reads everything 2.x wrote; schema 2 goes away in 4.0 — see [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) and [`MIGRATION.en.md`](docs/en/MIGRATION.en.md). Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. See [`CHANGELOG.md`](CHANGELOG.md) for the per-release history.
+**Latest release:** [`v2026.9.13-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.13-1) (3.0.1) — patch on **BWOC 3.0, the compatibility contract** (`v2026.9.13-0`). Every artifact BWOC owns declares its schema, `bwoc migrate` moves an installation forward, and `[plugin].compat` is enforced. 3.x reads everything 2.x wrote; schema 2 goes away in 4.0 — see [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) and [`MIGRATION.en.md`](docs/en/MIGRATION.en.md). Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. See [`CHANGELOG.md`](CHANGELOG.md) for the per-release history.
 
 | Area                                                            | Status                                                         |
 | --------------------------------------------------------------- | -------------------------------------------------------------- |
