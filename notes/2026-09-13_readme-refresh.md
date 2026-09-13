@@ -38,7 +38,7 @@ I audited every README against `main` after 3.0.1 and fixed or trimmed the claim
 ## Decisions
 
 - I kept the persona examples in `docs/` rather than moving them to a new `examples/` slot, because that is the smallest change.
-- I did not document the connect `[bot]` block or public mode, because PR #506 is not merged.
+- I did not document the connect `[bot]` block or public mode, because PR #506 has since merged (3.1.0); the connect README now documents the `[bot]` block and limited public mode.
 
 ## Related
 

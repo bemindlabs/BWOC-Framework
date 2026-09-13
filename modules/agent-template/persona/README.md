@@ -48,4 +48,4 @@ Describe what this agent does in 1–3 sentences. What is its primary function?
 
 ## Supported LLM Backends
 
-Every backend reads `AGENTS.md` through its entry file. See [[../neutrality|Neutrality]] for the backend list and the symlink design.
+Backends consume this persona through `AGENTS.md`: vendor-CLI backends via their entry file (see `neutrality.md`), harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) by loading `AGENTS.md` directly — no backend-specific persona file is needed.

@@ -14,16 +14,16 @@ The full contract (manifest, invocation lifecycle, discovery) is in [`docs/en/SK
 |---|---|
 | [`ai-dlc`](ai-dlc/) | Run the AI-Driven Development Life Cycle |
 | [`ai-loop-engineer`](ai-loop-engineer/) | Engineer autonomous agent loops |
-| [`auditor`](auditor/) | Check work or claims against a standard, surface issues, and adversarially verify each finding before repor… |
+| [`auditor`](auditor/) | Check work or claims against a standard, surface issues, and adversarially verify each finding before reporting |
 | [`counselor`](counselor/) | Meet a person with compassion |
 | [`data-engineer`](data-engineer/) | Move data reliably |
 | [`data-scientist`](data-scientist/) | Learn from data honestly |
 | [`documenter`](documenter/) | Capture how a system actually works so the next reader/agent doesn't re-derive it |
 | [`engineering`](engineering/) | Build software the disciplined way |
-| [`gcloud-ops`](gcloud-ops/) | Agent-facing read-mostly GCP operations driven through the gcloud-auth + gcloud-project workflow plugins vi… |
+| [`gcloud-ops`](gcloud-ops/) | Agent-facing read-mostly GCP operations driven through the gcloud-auth + gcloud-project workflow plugins via the bwoc gcloud CLI |
 | [`illustrator`](illustrator/) | Turn an intent into a visual |
 | [`lawyer`](lawyer/) | Reason about rules |
-| [`manager`](manager/) | Decompose work into right-sized pieces, form/assign them to Saṅgha teams + shared task lists, and track to… |
+| [`manager`](manager/) | Decompose work into right-sized pieces, form/assign them to Saṅgha teams + shared task lists, and track to done |
 | [`mathematics`](mathematics/) | Reason rigorously with symbols and quantities |
 | [`physics`](physics/) | Model a physical system |
 | [`product-manager`](product-manager/) | Decide what to build and why |

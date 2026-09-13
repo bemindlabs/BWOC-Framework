@@ -71,7 +71,7 @@ Should print `Neutrality check passed.` regardless of which backend you switch t
 
 ## Caveats
 
-- All ten backends read **the same `AGENTS.md`** — via entry-file symlinks (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `COPILOT.md`, `GROK.md`, `OLLAMA.md`, `OPENAI.md`), and Copilot and Grok also read `AGENTS.md` natively. If your agent's instructions assume a specific backend, `bwoc check` will flag it as a neutrality violation.
+All ten backends use `AGENTS.md` as the single source of truth. The vendor-CLI backends (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`) reach it through their entry file (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` → `AGENTS.md`; Copilot and Grok read `AGENTS.md` natively). The harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) load `AGENTS.md` directly through `bwoc-harness`, so there is no `OPENROUTER.md` or `LITELLM.md` to look for.
 - Model identifiers in the picker are a convenience catalog, not a whitelist — type any model name and it's accepted as-is.
 
 ## What's next
