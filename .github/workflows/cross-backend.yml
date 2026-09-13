@@ -76,7 +76,12 @@ jobs:
           if ! wait_api 30 "installer service"; then
             sudo systemctl start ollama 2>/dev/null || true
             if ! wait_api 30 "systemctl start"; then
-              echo "::warning::systemd ollama unit never answered — starting ollama serve directly"
+              echo "::warning::systemd ollama unit never answered — stopping it and starting ollama serve directly"
+              # A unit stuck in "activating" could still bind :11434 later and
+              # race our serve, so take it out of play for this job. --runtime
+              # scopes the mask to this boot; the runner is thrown away after.
+              sudo systemctl stop ollama 2>/dev/null || true
+              sudo systemctl mask --runtime ollama 2>/dev/null || true
               ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
               if ! wait_api 30 "ollama serve"; then
                 echo "::error::Ollama API did not become ready (service, restart, and direct serve all failed)"
