@@ -7,14 +7,13 @@ Short, runnable, one-task-each. Each recipe lists prerequisites, exact commands,
 | Recipe | What you'll do | Time |
 |---|---|---|
 | [`first-agent.md`](first-agent.md) | Init a workspace, incarnate your first agent, spawn the backend | ~5 min |
-| [`configure-backends.md`](configure-backends.md) | Switch which LLM backend (claude / agy / codex / kimi) an agent uses | ~2 min |
+| [`configure-backends.md`](configure-backends.md) | Switch which of the ten declared LLM backends an agent uses | ~2 min |
 | [`workspace-layout.md`](workspace-layout.md) | Organize a workspace: agents/, projects/, notes/, central memory | ~3 min |
 | [`diagnose-and-fix.md`](diagnose-and-fix.md) | Use `bwoc doctor` to find and auto-fix common issues | ~2 min |
 
 ## Planned
 
-- `add-a-new-backend.md` — once Phase 2 backend SDK lands, what it takes to add a 5th backend
-- `interconnect-two-agents.md` — Phase 3 sammā-vācā channel between agents
+- `interconnect-two-agents.md` — signed sammā-vācā messaging between two agents
 - `monorepo-multi-stack.md` — one workspace, multiple projects in different languages
 
 ## Convention
