@@ -98,7 +98,9 @@ struct Args {
 
     /// Persist the `--chat` / `--headless` conversation to this file instead of
     /// the default `<workdir>/.bwoc/chat-session.json`. Chat connectors pass one
-    /// file per bridged chat so chats never share history.
+    /// file per bridged chat so chats never share history. A relative path
+    /// resolves against `--workdir`. Rejected without `--chat` / `--headless`,
+    /// where it would be silently ignored.
     #[arg(long)]
     session_file: Option<PathBuf>,
 
@@ -361,6 +363,10 @@ fn assert_cgroup_enforcement_if_required() {
 
 async fn run() -> HarnessResult<()> {
     let args = Args::parse();
+    if args.session_file.is_some() && !(args.chat || args.headless) {
+        eprintln!("bwoc-harness: --session-file only applies to --chat or --headless");
+        std::process::exit(2);
+    }
 
     // Resolve working directory to an absolute path.
     let workdir = args.workdir.canonicalize().unwrap_or_else(|_| {

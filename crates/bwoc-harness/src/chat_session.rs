@@ -82,11 +82,14 @@ pub struct ChatConfig {
 }
 
 /// The persisted-conversation path for `config` against `workdir`.
+/// A relative `--session-file` resolves against `workdir` (like the default), not
+/// the process CWD, so it can't land outside the agent directory by accident.
 pub fn session_path_for(workdir: &std::path::Path, config: &ChatConfig) -> PathBuf {
-    config
-        .session_path
-        .clone()
-        .unwrap_or_else(|| workdir.join(".bwoc").join("chat-session.json"))
+    match &config.session_path {
+        Some(p) if p.is_relative() => workdir.join(p),
+        Some(p) => p.clone(),
+        None => workdir.join(".bwoc").join("chat-session.json"),
+    }
 }
 
 /// Default chat context budget (heuristic tokens) — conservative for the local
@@ -1421,6 +1424,27 @@ mod tests {
         )
         .await;
         assert!(!session.is_file(), "forget should delete the session file");
+    }
+
+    #[test]
+    fn relative_session_path_resolves_against_workdir() {
+        let wd = std::path::Path::new("/agents/agent-x");
+        let cfg = |p: Option<&str>| ChatConfig {
+            session_path: p.map(PathBuf::from),
+            ..config(allow_all())
+        };
+        assert_eq!(
+            session_path_for(wd, &cfg(Some(".bwoc/chat-sessions/t-1.json"))),
+            wd.join(".bwoc/chat-sessions/t-1.json")
+        );
+        assert_eq!(
+            session_path_for(wd, &cfg(Some("/abs/s.json"))),
+            PathBuf::from("/abs/s.json")
+        );
+        assert_eq!(
+            session_path_for(wd, &cfg(None)),
+            wd.join(".bwoc/chat-session.json")
+        );
     }
 
     #[tokio::test]
