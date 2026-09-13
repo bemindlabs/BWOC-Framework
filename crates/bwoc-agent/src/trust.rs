@@ -652,6 +652,21 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     // and the relay-replay threat is the cross-machine one.
     if cross_workspace {
         let nonce = env.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
+        // A verified envelope carries an identity, so it must also be
+        // replay-checkable. `ReplayGuard::check` skips the duplicate check for an
+        // empty nonce and the freshness window for an empty ts — together that
+        // lets a captured signed envelope be re-delivered indefinitely. Every
+        // BWOC signer (`bwoc send`) sets both, so only a crafted envelope trips
+        // this; unsigned envelopes are unaffected (they prove nothing to replay).
+        if verified_from.is_some() && (nonce.is_empty() || envelope_ts.is_empty()) {
+            return TrustOutcome::Refuse(Refusal {
+                envelope_offset,
+                envelope_ts: envelope_ts.clone(),
+                envelope_from: from.clone(),
+                reason: "unreplayable",
+                missing: vec![],
+            });
+        }
         // Recover the guard even if a prior holder panicked: a poisoned lock
         // must NOT silently disable replay defense (fail-open). The inner set is
         // still consistent — `check` only inserts after its decision.
@@ -1798,6 +1813,64 @@ mod tests {
             evaluate(&ctx, &line, 0),
             TrustOutcome::Pass { .. }
         ));
+    }
+
+    #[test]
+    fn verified_envelope_without_nonce_or_ts_is_refused() {
+        use std::fs;
+        let agent = tempfile::tempdir().unwrap();
+        let peer_bwoc = tempfile::tempdir().unwrap();
+        let pubkey = bwoc_signing::generate_keypair(peer_bwoc.path(), false).unwrap();
+        let key = bwoc_signing::load_signing_key(peer_bwoc.path())
+            .unwrap()
+            .unwrap();
+        fs::create_dir_all(agent.path().join(".bwoc")).unwrap();
+        fs::write(
+            agent.path().join(".bwoc/peers.toml"),
+            format!("[[peer]]\nid = \"agent-remote\"\npubkey = \"{pubkey}\"\n"),
+        )
+        .unwrap();
+        let ctx = standalone_ctx(agent.path());
+        let now = bwoc_core::time::utc_now_iso8601();
+
+        // Sign exactly what the wire carries, with nonce and/or ts left empty.
+        // Built at runtime (not literals) so CodeQL's hard-coded-crypto
+        // heuristic stays quiet, as in `signed_line`.
+        let line = |ts: &str, mid: &str, with_nonce: bool| {
+            let nonce = if with_nonce {
+                format!("nonce-{mid}")
+            } else {
+                String::new()
+            };
+            let sig = bwoc_signing::sign(
+                &key,
+                &bwoc_signing::canonical_bytes("agent-remote", "agent-me", ts, mid, "hi", &nonce),
+            );
+            format!(
+                r#"{{"from":"agent-remote","to":"agent-me","ts":"{ts}","messageId":"{mid}","message":"hi","nonce":"{nonce}","sig":"{sig}"}}"#
+            )
+        };
+
+        // Signature verifies, but with no nonce the duplicate check would be
+        // skipped — refuse, and keep refusing on a re-delivery.
+        let no_nonce = line(&now, "m1", false);
+        for offset in 0..2 {
+            match evaluate(&ctx, &no_nonce, offset) {
+                TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unreplayable"),
+                other => panic!("nonce-less signed envelope must refuse, got {other:?}"),
+            }
+        }
+
+        // Signature verifies, nonce present, but no ts ⇒ no freshness window.
+        let no_ts = line("", "m2", true);
+        match evaluate(&ctx, &no_ts, 2) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "unreplayable"),
+            other => panic!("ts-less signed envelope must refuse, got {other:?}"),
+        }
+
+        // Control: the normal shape still passes.
+        let ok = line(&now, "m3", true);
+        assert!(matches!(evaluate(&ctx, &ok, 3), TrustOutcome::Pass { .. }));
     }
 
     fn sample_manifest() -> Manifest {

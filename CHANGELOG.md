@@ -34,6 +34,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - **`Routes::remove_agent_routes` would have silently stripped the schema marker** — it reserializes through a private wire struct, so any `bwoc retire` would have quietly un-migrated a workspace.
 - **The accounting integration test wrote a plugin manifest with no `compat` field** — required since 2.5, undetected because nothing read it.
 
+### Security
+
+- **A verified cross-workspace envelope must be replay-checkable.** `ReplayGuard::check` skipped the duplicate check for an empty `nonce` and the freshness window for an empty `ts`. A signed envelope that carried neither a `nonce` nor a `ts` passed signature verification and could then be re-delivered with no limit. Such an envelope now refuses as `unreplayable`. `bwoc send` always sets both fields, so no BWOC sender is affected, and unsigned envelopes behave as before.
+
 ### Migration
 
 ```bash
