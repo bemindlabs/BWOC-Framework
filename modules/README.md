@@ -1,20 +1,20 @@
 # `modules/`
 
-Framework-level modules. Each subdirectory is a distinct concern with its own lifecycle.
+These are the framework-level modules. Each subdirectory has its own concern and lifecycle. The Rust runtime lives in [`crates/`](../crates/), and the specification in [`docs/`](../docs/).
 
-| Module | Purpose | Status |
+| Module | Purpose | Status (3.0) |
 |---|---|---|
-| [`agent-template/`](agent-template/) | The canonical blueprint copied into every new agent. Single source of truth for agent shape. | Ready |
-| [`plugins/`](plugins/) | Pluggable framework extensions — Tier 2 memory backends, additional LLM-backend integrations beyond the four declared. | Planned |
-| [`skills/`](skills/) | Framework-level skills — capabilities the framework recommends as a baseline for any agent. | Planned |
-| [`cli/`](cli/) | Deprecated stub. Replaced by [`crates/bwoc-cli/`](../crates/bwoc-cli/). | Deprecated |
-
-For the implementation runtime (Rust crates), see [`crates/`](../crates/). For specification documents, see [`docs/`](../docs/) and [`modules/agent-template/docs/`](agent-template/docs/).
+| [`agent-template/`](agent-template/) | The canonical blueprint `bwoc new` copies into every agent. It is the single source of truth for agent shape and carries **specification 3.0** (`| **Version** | 3.0 |`, checked by `bwoc check`). | Shipped |
+| [`plugins/`](plugins/) | Workspace-level extensions, one `kind` each (audit, jira, okr, council, figma, gws, workflow, memory-backend, llm-backend). Each one declares a bounded `compat` range, which is **enforced** in 3.0. | Shipped — 28 plugins |
+| [`skills/`](skills/) | Framework skills: the recommended baseline capabilities any agent can opt into. | Shipped — 23 skills |
+| [`plugin-template/`](plugin-template/) | The scaffold `bwoc plugin init` copies (`SPEC.md` + `manifest.toml`). | Shipped |
+| [`skill-template/`](skill-template/) | The scaffold `bwoc skill init` copies (`SPEC.md` + `manifest.toml`). | Shipped |
 
 ## Adding a new module
 
-A new top-level module is a strategic decision — it adds a long-term concern the framework commits to. Open an issue or RFC before adding one. Each module needs:
+A new top-level module is a long-term commitment for the framework, so open an issue or RFC before adding one. Each module needs:
 
-- A `README.md` describing purpose, scope, and status.
-- A clear boundary with adjacent modules.
-- A statement of how it composes with `agent-template/` (which all agents inherit from).
+- A `README.md` describing its purpose, scope, and status.
+- A clear boundary with the modules next to it.
+- A statement of how it composes with `agent-template/`, which every agent inherits from.
+- If it defines an on-disk format: a `schema_version` marker and a `bwoc migrate` path. See [`COMPATIBILITY.en.md`](../docs/en/COMPATIBILITY.en.md).
