@@ -21,14 +21,33 @@ fn bin() -> PathBuf {
 /// Install a stub `workflow/accounting-api` plugin whose entry echoes a canned
 /// envelope keyed by the operation it's handed on stdin. Proves the CLI spawns
 /// the plugin and renders its output — no live API involved.
+/// A bounded `[plugin].compat` range covering exactly the running build's
+/// major — what a plugin author is expected to declare.
+fn current_major_range() -> String {
+    let major: u64 = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .next()
+        .and_then(|m| m.parse().ok())
+        .expect("crate major version");
+    format!(">={major}.0.0, <{}.0.0", major + 1)
+}
+
 fn install_stub_plugin(workspace: &Path) {
     let dir = workspace.join("modules/plugins/accounting-api");
     std::fs::create_dir_all(&dir).expect("mkdir stub plugin dir");
 
     std::fs::write(
         dir.join("manifest.toml"),
-        "[plugin]\nname = \"accounting-api\"\nkind = \"workflow\"\n\
-         version = \"0.0.0\"\ndescription = \"stub\"\nentry = \"stub.sh\"\n",
+        // `compat` is required and, since 3.0, enforced at resolution time —
+        // a stub without it is refused like any other malformed manifest.
+        // Derived from the running build's major so this fixture survives the
+        // next version bump instead of pinning a range that goes stale.
+        format!(
+            "[plugin]\nname = \"accounting-api\"\nkind = \"workflow\"\n\
+             version = \"0.0.0\"\ndescription = \"stub\"\ncompat = \"{}\"\n\
+             entry = \"stub.sh\"\n",
+            current_major_range()
+        ),
     )
     .expect("write stub manifest");
 

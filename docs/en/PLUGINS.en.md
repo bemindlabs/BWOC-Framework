@@ -122,6 +122,24 @@ Every `audit` plugin's `invoke` returns a list of **findings**. The schema below
 
 `criterion_id` values are part of the plugin's public surface. Adding criteria is a minor-version bump under the plugin's own semver. **Renaming or removing** a `criterion_id` is a major-version bump (independent of the framework version in `[plugin].compat`) — downstream consumers (diff tooling, report archives, dashboards) key on these identifiers.
 
+`[plugin].compat` is the framework-version half of the same surface, and since
+3.0 it is **enforced, not merely declared**. Two rules follow from that:
+
+- **Ranges must be bounded above.** `>=3.0.0, <4.0.0`, not `>=3.0.0`. An
+  open-ended range keeps claiming compatibility with every future major,
+  including the ones that break the plugin — which makes the field decorative
+  exactly when it matters. `bwoc check` warns on an unbounded range.
+- **A mismatch refuses the load, it does not skip it.** A resolver that quietly
+  reported "not installed" for a plugin sitting on disk would send the operator
+  looking in the wrong place. `bwoc check` reports a mismatch as a **warning**
+  (the workspace is not broken; the plugin needs re-declaring), while any
+  command that would actually run the plugin fails with the manifest path and
+  the range that did not match. An unparseable range is a `bwoc check`
+  violation.
+
+Re-declaring `compat` at each framework major is the intended cost: it is the
+plugin author asserting that the plugin was reviewed against the new contracts.
+
 ### Examples
 
 A passing finding omits `remedy`:
@@ -503,7 +521,7 @@ name        = "memory-tier2-noop"               # required — must match the di
 kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira
 version     = "0.1.0"                           # required — semver
 description = "No-op Tier 2 memory backend that forwards to Tier 1."   # required — one-sentence summary
-compat      = ">=2.5.0"                         # required — semver range; framework versions this plugin works with
+compat      = ">=3.0.0, <4.0.0"                 # required — semver range, bounded above; framework versions this plugin works with
 entry       = "bwoc-plugin-memory-tier2-noop"   # required — binary on PATH (preferred) or sibling Rust crate name
 
 [config.schema]                                 # optional — omit the table entirely if the plugin takes no config
@@ -522,7 +540,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # required — binary on PATH (p
 | `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; immutable after `init` |
 | `[plugin]` | `version` | yes | string (semver) | Semver of the plugin itself, separate from the framework version |
 | `[plugin]` | `description` | yes | string | One-sentence summary; the **only** manifest value where a vendor name is tolerated |
-| `[plugin]` | `compat` | yes | string (semver range) | Framework versions this plugin is compatible with; framework refuses to load on mismatch |
+| `[plugin]` | `compat` | yes | string (semver range, bounded above) | Framework versions this plugin is compatible with. Enforced since 3.0: a mismatch refuses the load, an unparseable range fails `bwoc check`, an open-ended range warns |
 | `[plugin]` | `entry` | yes | string | Binary on `PATH` (preferred) or sibling Rust crate name the framework dispatches to |
 | `[config.schema]` | (free keys) | no | inline-table per key | Schema the operator's `workspace.toml [plugins.<name>]` block is validated against; each key declares `type`, `required`, optional `default` |
 
@@ -790,7 +808,9 @@ A removed source is not auto-uninstalled from `.bwoc/installed-sources.toml`. Pa
 | Neutrality | Vendor names only inside `description`; nowhere else |
 | `SPEC.md` present | A `SPEC.md` file exists alongside the manifest |
 | Required fields | `name`, `kind`, `version`, `description`, `compat`, `entry` all present |
-| Compat range valid | `[plugin].compat` parses as a semver range |
+| Compat range valid | `[plugin].compat` parses as a semver range — a violation if it does not |
+| Compat range matches | `[plugin].compat` covers the running framework version — a **warning** if not (the plugin needs re-declaring; the workspace is not broken) |
+| Compat range bounded | `[plugin].compat` declares an upper bound — a **warning** if open-ended |
 | Source registry parseable | `.bwoc/installed-sources.toml` is valid TOML if present |
 | No orphan source records | every entry where `kind = "plugin"` in the registry has a matching `modules/plugins/<name>/` directory |
 | No orphan installations | every `modules/plugins/<name>/` either has a registry entry OR contains an `.authored-in-place` marker file |

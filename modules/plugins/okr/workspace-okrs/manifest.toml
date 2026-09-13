@@ -3,7 +3,7 @@ name        = "workspace-okrs"
 kind        = "okr"
 version     = "0.1.0"
 description = "Reference okr plugin — tracks operator-authored Objectives + Key Results from local objectives.toml / key_results.toml and emits a normative OKR Progress report. Local-file-only; no network, no credentials."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "okr.sh"
 
 # [config.schema] intentionally omitted.

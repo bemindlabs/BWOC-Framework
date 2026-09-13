@@ -422,6 +422,14 @@ fn run_task_hook(workspace: &Path, event: &str, env: &[(&str, &str)]) -> Result<
 // --- task commands ---------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+/// `bwoc task add <team> <title> [--deps …] [--id …] [--no-plan]`.
+///
+/// `requires_plan` arrives already resolved from the CLI's `--no-plan`
+/// opt-out: **gated is the default since 3.0**. The flip is a breaking change
+/// to a documented CLI surface, and it is in this release because the
+/// alternative was living with the hazard for a whole major — the first
+/// goal-loop run against a real task list produced a false completion on the
+/// one task that had no gate.
 pub fn run_task_add(
     workspace: Option<PathBuf>,
     team_id: String,
@@ -576,6 +584,99 @@ pub fn run_task_complete(
         "complete",
         |tasks| team::complete_task(tasks, &task_id, &agent),
     )
+}
+
+/// `bwoc task reopen <team> <task> [--reason …]` — withdraw a completion.
+///
+/// An **operator** action, not an agent one, which is why there is no `--as`
+/// and no team-membership check: the whole point is that the record is wrong
+/// and the fleet cannot be trusted to fix its own claim. It takes the same
+/// lock and the same load → mutate → save path as every other write, so it
+/// stays inside the locked `bwoc task` surface rather than becoming a reason
+/// to hand-edit `tasks.jsonl`.
+///
+/// Reports the dependents the reopened task was unblocking. They are not
+/// cascaded — an already-claimed dependent is the operator's call — but they
+/// are named, because a false completion propagates and the operator needs to
+/// know how far.
+pub fn run_task_reopen(
+    workspace: Option<PathBuf>,
+    team_id: String,
+    task_id: String,
+    reason: Option<String>,
+    json: bool,
+) -> i32 {
+    let Some(ws) = resolve_workspace(workspace) else {
+        eprintln!("bwoc task reopen: no workspace found. Pass --workspace or run `bwoc init`.");
+        return crate::exit::USAGE;
+    };
+    if let Err(e) = load_team(&ws, &team_id) {
+        eprintln!("bwoc task reopen: {e}");
+        return crate::exit::USAGE;
+    }
+    let task_dir = team_task_dir(&ws, &team_id);
+    let _lock = match TaskLock::acquire(&task_dir) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("bwoc task reopen: {e}");
+            return crate::exit::ERROR;
+        }
+    };
+    let mut tasks = match load_tasks(&ws, &team_id) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("bwoc task reopen: {e}");
+            return crate::exit::ERROR;
+        }
+    };
+    // Capture who claimed it before the transition clears that, so the report
+    // can say whose completion was withdrawn.
+    let previous_claimant = tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .and_then(|t| t.claimed_by.clone());
+
+    if let Err(e) = team::reopen_task(&mut tasks, &task_id) {
+        eprintln!("bwoc task reopen: {e}");
+        return crate::exit::USAGE;
+    }
+    let dependents = team::dependents_of(&tasks, &task_id);
+
+    if let Err(e) = save_tasks(&ws, &team_id, &tasks) {
+        eprintln!("bwoc task reopen: {e}");
+        return crate::exit::ERROR;
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "team": team_id,
+                "task": task_id,
+                "op": "reopen",
+                "ok": true,
+                "previous_claimant": previous_claimant,
+                "reason": reason,
+                "dependents": dependents,
+            })
+        );
+    } else {
+        let by = previous_claimant
+            .as_deref()
+            .map(|a| format!(" (was completed by {a})"))
+            .unwrap_or_default();
+        println!("reopen: '{task_id}' is pending again{by}");
+        if let Some(r) = &reason {
+            println!("  reason: {r}");
+        }
+        if !dependents.is_empty() {
+            println!(
+                "  dependents not cascaded — review them: {}",
+                dependents.join(", ")
+            );
+        }
+    }
+    crate::exit::OK
 }
 
 /// Shared claim/complete path: resolve workspace, verify the actor is a

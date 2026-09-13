@@ -3,7 +3,7 @@ name        = "gcloud-iam"
 kind        = "workflow"
 version     = "0.1.0"
 description = "Google Cloud IAM (gcloud) project-policy adapter — get-iam-policy (read) and add/remove project IAM bindings (gated write, T4 — security blast radius); sources credential helpers from the sibling gcloud-auth plugin. EPIC-12, the fourth and LAST (highest blast radius) write-capable GCP slice."
-compat      = ">=2.14.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gcloud.sh"
 
 # [config.schema] intentionally omitted.

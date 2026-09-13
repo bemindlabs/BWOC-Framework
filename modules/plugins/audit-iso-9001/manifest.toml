@@ -3,7 +3,7 @@ name        = "audit-iso-9001"
 kind        = "audit"
 version     = "0.2.0"
 description = "ISO 9001 Quality Management System audit — attestation runtime (BWOC-28)."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "audit.sh"
 
 # [config.schema] intentionally omitted. v0.2.0 adopts a per-criterion

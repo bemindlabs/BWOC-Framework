@@ -3,7 +3,7 @@ name        = "council-sangha-7"
 kind        = "council"
 version     = "0.1.0"
 description = "Reference council plugin — records fleet decisions through a propose/discuss/vote/resolve protocol under the sangha voting model (unanimous assent of the quorum, dissent preserved), seeded with the Aparihaniya-dhamma 7 issue templates. Local/fleet-only; no network, no credentials. Records decisions, never executes them."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "protocol.sh"
 
 # [council] — council-kind configuration.

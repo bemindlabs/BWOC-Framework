@@ -70,7 +70,7 @@ pub fn run_info(args: InfoArgs) -> i32 {
             "bwoc workspace info: no workspace found (no .bwoc/workspace.toml in cwd or ancestors). \
              Pass a path, set BWOC_WORKSPACE, or run `bwoc init` first."
         );
-        return 2;
+        return crate::exit::USAGE;
     };
     // --path-only short-circuits: just the resolved root. Wins over --json
     // (most restrictive output mode).
@@ -93,20 +93,20 @@ pub fn run_info(args: InfoArgs) -> i32 {
 fn info_json(root: &Path) -> i32 {
     if !root.is_dir() {
         eprintln!("bwoc workspace info: not a directory: {}", root.display());
-        return 1;
+        return crate::exit::ERROR;
     }
     if !root.join(".bwoc/workspace.toml").exists() {
         eprintln!(
             "bwoc workspace info: not a BWOC workspace (no .bwoc/workspace.toml): {}",
             root.display()
         );
-        return 2;
+        return crate::exit::USAGE;
     }
     let ws = match Workspace::load(root) {
         Ok(w) => w,
         Err(e) => {
             eprintln!("bwoc workspace info: {e}");
-            return 1;
+            return crate::exit::ERROR;
         }
     };
     let registry = AgentsRegistry::load(root).unwrap_or_default();
@@ -163,7 +163,7 @@ pub fn run_validate(args: ValidateArgs) -> i32 {
             "bwoc workspace validate: no workspace found (no .bwoc/workspace.toml in cwd or ancestors). \
              Pass a path, set BWOC_WORKSPACE, or run `bwoc init` first."
         );
-        return 2;
+        return crate::exit::USAGE;
     };
     let report = validate(&root);
     if args.json {
@@ -180,13 +180,21 @@ pub fn run_validate(args: ValidateArgs) -> i32 {
             Ok(s) => println!("{s}"),
             Err(e) => {
                 eprintln!("bwoc workspace validate: failed to serialize JSON: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
     } else {
         print_validation_report(&root, &report, &bundle);
     }
-    if report.violations.is_empty() { 0 } else { 2 }
+    // 3.0: violations → FINDINGS (3), NOT 2. Pre-3.0 this returned 2 for both
+    // "workspace not found" (above) and "workspace has violations" — a script
+    // could not tell them apart. 2 now means only usage/not-found; 3 is the
+    // negative-but-valid finding, matching `check` and `council`.
+    if report.violations.is_empty() {
+        crate::exit::OK
+    } else {
+        crate::exit::FINDINGS
+    }
 }
 
 /// Validate that a resolved workspace root is a real BWOC workspace before use.
@@ -234,7 +242,7 @@ pub fn run_list(args: ListArgs) -> i32 {
             "bwoc list: no workspace found (no .bwoc/workspace.toml in cwd or ancestors). \
              Pass --workspace <path>, set BWOC_WORKSPACE, or run `bwoc init` first."
         );
-        return 2;
+        return crate::exit::USAGE;
     };
 
     if let Err(code) = ensure_workspace(&root, "bwoc list") {
@@ -248,7 +256,7 @@ pub fn run_list(args: ListArgs) -> i32 {
                 "bwoc list: failed to read agents.toml at {}: {e}",
                 root.display()
             );
-            return 1;
+            return crate::exit::ERROR;
         }
     };
 
@@ -297,7 +305,7 @@ pub fn run_list(args: ListArgs) -> i32 {
                     "bwoc list --sort: unknown field '{other}'. \
                      Accepted: id | inbox | incarnated | backend"
                 );
-                return 2;
+                return crate::exit::USAGE;
             }
         }
     }
@@ -317,7 +325,7 @@ pub fn run_list(args: ListArgs) -> i32 {
                 }
                 Err(e) => {
                     eprintln!("bwoc list --count --json: serialize failed: {e}");
-                    return 1;
+                    return crate::exit::ERROR;
                 }
             }
         }
@@ -341,7 +349,7 @@ pub fn run_list(args: ListArgs) -> i32 {
                 }
                 Err(e) => {
                     eprintln!("bwoc list --names-only --json: serialize failed: {e}");
-                    return 1;
+                    return crate::exit::ERROR;
                 }
             }
         }
@@ -393,7 +401,7 @@ pub fn run_list(args: ListArgs) -> i32 {
             }
             Err(e) => {
                 eprintln!("bwoc list: failed to serialize JSON: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
     }
@@ -515,14 +523,14 @@ pub fn run_prune(args: PruneArgs) -> i32 {
             "bwoc workspace prune: no workspace found (no .bwoc/workspace.toml in cwd or ancestors). \
              Pass a path, set BWOC_WORKSPACE, or run `bwoc init` first."
         );
-        return 2;
+        return crate::exit::USAGE;
     };
 
     let mut registry = match AgentsRegistry::load(&root) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("bwoc workspace prune: failed to read agents.toml: {e}");
-            return 1;
+            return crate::exit::ERROR;
         }
     };
 
@@ -588,7 +596,7 @@ pub fn run_prune(args: PruneArgs) -> i32 {
             }
             if let Err(e) = registry.save(&root) {
                 eprintln!("bwoc workspace prune --json: failed to save agents.toml: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
         let value = serde_json::json!({
@@ -602,7 +610,7 @@ pub fn run_prune(args: PruneArgs) -> i32 {
             Ok(s) => println!("{s}"),
             Err(e) => {
                 eprintln!("bwoc workspace prune --json: serialize failed: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
         // Exit 0 if clean OR fully applied; 2 if orphans remain (matches human path).
@@ -661,7 +669,7 @@ pub fn run_prune(args: PruneArgs) -> i32 {
         if let Err(e) = registry.save(&root) {
             eprintln!();
             eprintln!("bwoc workspace prune: failed to save updated agents.toml: {e}");
-            return 1;
+            return crate::exit::ERROR;
         }
         println!();
         if !removed.is_empty() {
@@ -678,7 +686,13 @@ pub fn run_prune(args: PruneArgs) -> i32 {
             );
         }
         println!();
-        return if orphans.is_empty() { 0 } else { 2 };
+        // 3.0: leftover orphans are a negative-but-valid finding → FINDINGS (3),
+        // not 2 (which now means only usage/not-found).
+        return if orphans.is_empty() {
+            crate::exit::OK
+        } else {
+            crate::exit::FINDINGS
+        };
     }
 
     println!();

@@ -132,10 +132,13 @@ pub fn run(args: DoctorArgs) -> i32 {
         print_report(&results, args.auto);
     }
 
+    // 3.0: FAILs are a negative-but-valid finding → FINDINGS (3), not USAGE
+    // (2). Pre-3.0 this returned 2 for both "bad invocation" and "found
+    // failures"; the unified contract (crate::exit) needs them distinct.
     if results.iter().any(|r| matches!(r.status, Status::Fail(_))) {
-        2
+        crate::exit::FINDINGS
     } else {
-        0
+        crate::exit::OK
     }
 }
 
@@ -148,7 +151,7 @@ pub fn run(args: DoctorArgs) -> i32 {
 ///     ...
 ///   ],
 ///   "summary": { "pass": N, "warn": N, "fail": N, "fixed": N },
-///   "exit": 0 | 2     // 2 iff any "fail" present
+///   "exit": 0 | 3     // 3 (FINDINGS) iff any "fail" present
 /// }
 /// ```
 fn emit_json(results: &[CheckResult]) {
@@ -187,7 +190,7 @@ fn emit_json(results: &[CheckResult]) {
     let value = serde_json::json!({
         "results": items,
         "summary": { "pass": pass, "warn": warn, "fail": fail, "fixed": fixed },
-        "exit": if fail > 0 { 2 } else { 0 },
+        "exit": if fail > 0 { crate::exit::FINDINGS } else { crate::exit::OK },
     });
     match serde_json::to_string_pretty(&value) {
         Ok(s) => println!("{s}"),
