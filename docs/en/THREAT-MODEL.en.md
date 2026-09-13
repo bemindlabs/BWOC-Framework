@@ -132,15 +132,13 @@ adversarial input. See `CONNECTORS` for the config.
 |---|---|
 | A stranger steers the agent into writing files, running commands, or reaching the network | The session is locked to harness `plan` mode, a fixed read-only allow-list (`read_file`, `list_dir`, `grep`, `memory_read`), before any user text is sent. If the harness doesn't confirm the mode, the session is not created (fail closed). |
 | Flooding or oversized prompts | The per-sender rate cap and input-length cap always apply to public senders; `0` means the default, never "off". |
-| A stranger inherits a member's context in a shared room | Public sessions use a separate file (`…-<chat_id>-public.json`) and never join the team chat. Unaddressed stranger chatter is dropped, not logged. |
+| A stranger reads the agent's private state or a member's context | Public sessions run in their own workdir (`.bwoc/public/<platform>-<chat_id>/`) that holds only copies of `AGENTS.md` and `config.manifest.json` (minus `deepMemoryCmd`) plus their own session file. There are no memories, connectors, skills or other chats. Tool paths are confined to that workdir after canonicalization (the deepest existing ancestor must stay inside the canonical workdir), so a symlink can't reach out. Public sessions never join team chat, and unaddressed stranger chatter is dropped, not logged. |
 | A stranger's text is mistaken for operator authority | Every bridged turn is `Principal::Platform`, which is untrusted. |
 
 **Residuals.** (1) **Token-cost abuse:** spend is bounded only by rate cap ×
 active senders × turn size. `--token-budget` does not apply to `--chat`, so no
 per-turn token cap exists yet. (2) **Prompt injection into replies:** a stranger
-can still shape what the agent *says*. (3) **Read exposure:** the read-only tools
-can read anything in the agent directory, including other chats' session files.
-Keep secrets and private history out of any agent you run in public mode.
+can still shape what the agent *says*, including repeating its copied persona.
 
 ## The deferred-control fence (t8)
 

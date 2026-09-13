@@ -14,7 +14,13 @@ Phase 1 of bwoc-bot, built on Phase 0 (per-chat session files, `Principal::Platf
   - Finally `serve_turn`.
   - Sessions are keyed `(chat_id, public)`.
 - `RateLimiter`: in-memory 60 s sliding window per sender. `check()` takes `now: Instant`, so tests don't sleep. One notice per over-limit episode; the notice re-arms once a slot frees. The map prunes idle senders past 4096 entries.
-- `SessionFactory::create(chat_id, public)`. `HarnessSessionFactory` keys the file as `<platform>-<chat_id>-public.json` for public sessions. It then sends `SetMode{"plan"}` and requires a `ModeChanged{"plan"}` ack (the `Restored` replay is skipped). Anything else fails session creation.
+- `SessionFactory::create(chat_id, public)`. For a public session, `HarnessSessionFactory` spawns the harness with `--workdir <agent>/.bwoc/public/<platform>-<chat_id>/` (Phase 0's sanitizer on both segments) and puts the session file inside that dir. It then sends `SetMode{"plan"}` and requires a `ModeChanged{"plan"}` ack (the `Restored` replay is skipped). Anything else fails session creation. Allow-listed sessions are unchanged.
+- The public workdir is prepared on every spawn:
+  - `AGENTS.md` is **copied** in, falling back to `CLAUDE.md` (the harness's load order), always written as `AGENTS.md`.
+  - `config.manifest.json` is copied with `deepMemoryCmd` removed.
+  - A file is re-copied when its source is newer.
+  - Nothing else goes in: no memories, connectors, sessions or skills.
+- Harness (`fix(harness)` commit): `ToolContext::resolve_path` now also canonicalizes the target's deepest existing ancestor and requires it inside the canonical workdir. The check is `sandbox::is_confined`, split out of `confine_path`. Before, a symlink inside the workdir pointing outside escaped every confined file tool, and `--chat` has no Landlock jail to catch it. `memory_read`/`memory_write` use the same check, and `grep` skips escaping links. `--unrestricted` is unchanged.
 - Docs: CONNECTORS and THREAT-MODEL (EN + TH).
 
 ## Decisions
@@ -32,7 +38,9 @@ Phase 1 of bwoc-bot, built on Phase 0 (per-chat session files, `Principal::Platf
 
 ## Status / deferred
 
-- Read exposure: public turns can `read_file` anything in the agent dir, including other chats' `chat-sessions/*.json`. Documented as a residual. A per-session read confinement would need a new harness seam.
+- Read exposure closed in review: a public session originally ran against the agent dir. It now gets a separate workdir plus symlink-safe confinement.
+- `deepMemoryCmd` is stripped from the public manifest copy. Copying it verbatim would have let the wake-up inject the agent's deep memory into a stranger's prompt, and let the session-end mine write the stranger's chat into that memory. This is a deliberate narrowing of "copy the manifest".
+- No per-turn token cap for `--chat` remains a residual.
 - A stranger's Telegram `/cmd@bot` in a group isn't detected as a mention (`mentions()` needs a non-username byte before `@`), so it's dropped; DMs work.
 
 ## Related

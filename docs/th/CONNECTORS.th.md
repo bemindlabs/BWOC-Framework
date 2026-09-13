@@ -99,10 +99,10 @@ allow_handles = ["+15551234567", "friend@icloud.com"]  # ปิดโดยป�
 >
 > - session ถูกล็อกให้ใช้ได้เฉพาะ **เครื่องมืออ่านอย่างเดียว** (โหมด `plan` ของ harness: `read_file`, `list_dir`, `grep`, `memory_read`) การเขียน, `run_command`, git, การมอบงาน และเครื่องมือ MCP ถูกปฏิเสธ ถ้า harness ไม่ยืนยันโหมด session จะไม่ถูกสร้าง
 > - เพดานอัตราและความยาวบังคับใช้เสมอ แม้ตั้งเป็น `0` สำหรับผู้ส่งสาธารณะ `0` จะกลับไปใช้ค่าปริยาย
-> - session **แยก** จากของคนใน allow-list ในแชตเดียวกัน (`<platform>-<chat_id>-public.json`) และไม่เคยเข้า team chat คนแปลกหน้าจึงไม่เห็น context ของสมาชิกในห้อง
+> - session รันใน **workdir ของตัวเอง** คือ `<agent>/.bwoc/public/<platform>-<chat_id>/` ซึ่งมีแค่สำเนาของ `AGENTS.md` และ `config.manifest.json` (ตัด `deepMemoryCmd` ออก) กับไฟล์ session ของตัวเอง ไม่มี memories, connectors, skills หรือแชตอื่น และไม่เคยเข้า team chat เครื่องมือไฟล์ถูกจำกัดให้อยู่ในนั้นหลัง resolve symlink แล้ว link จึงพาออกไปข้างนอกไม่ได้
 > - turn ยังถูกแท็ก `Principal::Platform` ซึ่งไม่น่าเชื่อถือ
 >
-> คนใน allow-list ทำงานเหมือนเดิมทุกอย่าง turn สาธารณะยัง **อ่าน** โฟลเดอร์ agent ได้ จึงอย่าเก็บความลับไว้ในนั้น
+> คนใน allow-list ทำงานเหมือนเดิมทุกอย่าง
 
 ### Token
 

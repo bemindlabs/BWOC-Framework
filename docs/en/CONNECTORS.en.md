@@ -102,10 +102,10 @@ allow_handles = ["+15551234567", "friend@icloud.com"]  # CLOSED BY DEFAULT
 >
 > - The session is locked to **read-only tools** (the harness `plan` mode: `read_file`, `list_dir`, `grep`, `memory_read`). Writes, `run_command`, git, delegation and MCP tools are refused. If the harness doesn't confirm the mode, the session is not created.
 > - The rate and length caps always apply, even when set to `0`; `0` falls back to the default for public senders.
-> - The session is **separate** from the chat's allow-listed one (`<platform>-<chat_id>-public.json`). It never joins a team chat, so a stranger can't see the room's member context.
+> - The session runs in its **own workdir**, `<agent>/.bwoc/public/<platform>-<chat_id>/`. That workdir holds only a copy of `AGENTS.md` and `config.manifest.json` (without `deepMemoryCmd`), plus its own session file. It has no memories, connectors, skills or other chats, and it never joins a team chat. File tools are confined to it after symlinks are resolved, so a link can't reach out.
 > - The turn stays tagged `Principal::Platform`, which is untrusted.
 >
-> Allow-listed senders behave exactly as before. Public turns can still **read** the agent directory, so keep secrets out of it.
+> Allow-listed senders behave exactly as before.
 
 ### Tokens
 
