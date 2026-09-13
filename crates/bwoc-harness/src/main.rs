@@ -96,6 +96,12 @@ struct Args {
     #[arg(long, requires = "chat")]
     team_chat: Option<PathBuf>,
 
+    /// Persist the `--chat` / `--headless` conversation to this file instead of
+    /// the default `<workdir>/.bwoc/chat-session.json`. Chat connectors pass one
+    /// file per bridged chat so chats never share history.
+    #[arg(long)]
+    session_file: Option<PathBuf>,
+
     /// Agent id the lead claims tasks as (lead mode).
     #[arg(long, default_value = "agent-lead")]
     agent: String,
@@ -1335,17 +1341,18 @@ async fn run_chat_mode(
         // #301: served mode auto-approves `ask` tools (no human to prompt);
         // guardrails + deny rules + sandbox still confine the session.
         headless,
+        session_path: args.session_file.clone(),
     };
+    let session_path = chat_session::session_path_for(workdir, &config);
 
     let outcome = chat_session::run(provider, registry, ctx, config).await;
 
     // Tier 2 mine (HV3-1): the persisted conversation becomes memory. The
-    // chat driver saves `.bwoc/chat-session.json` after each turn, so this
-    // captures the whole session regardless of how it ended.
+    // chat driver saves the session file after each turn, so this captures
+    // the whole session regardless of how it ended.
     if let Some(dm) = &deep_memory {
         let mode = if headless { "served" } else { "chat" };
-        dm.mine(&workdir.join(".bwoc").join("chat-session.json"), mode)
-            .await;
+        dm.mine(&session_path, mode).await;
     }
 
     outcome

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat connectors isolate each chat's conversation** — every bridged chat shared the agent's single `.bwoc/chat-session.json`, so two chats (or a DM and a group) leaked context into each other and clobbered history. Each chat now persists to `.bwoc/chat-sessions/<platform>-<chat_id>.json` (sanitized; new `bwoc-harness --session-file`), and bridged turns carry `Principal::Platform { platform, user_id }` provenance instead of `Unknown` (still untrusted). `bwoc chat --tui` is unchanged.
+
 ## [v2026.9.6-0] — 2026-09-06 — 2.45.0
 
 **A hardening release.** Seven robustness and trust-boundary fixes surfaced by a comparison pass against xAI Grok Build (see `research/2026-08-23_grok-build-comparison.md`). Several are security-relevant; upgrading is recommended for anyone running `bwoc-harness` against a remote model endpoint or a permissive permission policy.

@@ -74,6 +74,19 @@ pub struct ChatConfig {
     /// agent sets this; it must never be combined with `--unrestricted` (that
     /// lifts the sandbox the autonomy relies on).
     pub headless: bool,
+    /// Where the conversation is persisted. `None` (the default) keeps the
+    /// historical `<workdir>/.bwoc/chat-session.json` — the `bwoc chat --tui`
+    /// path, unchanged. A chat connector sets one file per bridged chat so two
+    /// chats against the same agent never share or clobber history.
+    pub session_path: Option<PathBuf>,
+}
+
+/// The persisted-conversation path for `config` against `workdir`.
+pub fn session_path_for(workdir: &std::path::Path, config: &ChatConfig) -> PathBuf {
+    config
+        .session_path
+        .clone()
+        .unwrap_or_else(|| workdir.join(".bwoc").join("chat-session.json"))
 }
 
 /// Default chat context budget (heuristic tokens) — conservative for the local
@@ -92,6 +105,7 @@ impl Default for ChatConfig {
             max_context_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
             team_chat_log: None,
             headless: false,
+            session_path: None,
         }
     }
 }
@@ -205,7 +219,7 @@ where
     // Session history: system prompt + every user/assistant/tool message. A
     // persisted conversation (if any) is reloaded so the agent *remembers* across
     // restarts, not just the displayed transcript.
-    let session_path = ctx.workdir.join(".bwoc").join("chat-session.json");
+    let session_path = session_path_for(&ctx.workdir, &config);
     let mut history: Vec<ChatMessage> = vec![ChatMessage::system(&config.system_prompt)];
     history.extend(load_session(&session_path));
 
@@ -1289,6 +1303,7 @@ mod tests {
             max_context_tokens: 0,
             team_chat_log: None,
             headless: false,
+            session_path: None,
         }
     }
 
@@ -1406,6 +1421,38 @@ mod tests {
         )
         .await;
         assert!(!session.is_file(), "forget should delete the session file");
+    }
+
+    #[tokio::test]
+    async fn explicit_session_path_isolates_from_default() {
+        // A connector-bridged chat persists to its own file, never the default
+        // `bwoc chat --tui` one (per-chat isolation).
+        let tmp = TempDir::new().unwrap();
+        let custom = tmp.path().join(".bwoc/chat-sessions/telegram-42.json");
+        let provider = Arc::new(MockProvider::new(vec![final_response("ok")]));
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let stdin = "{\"type\":\"user\",\"text\":\"hi\"}\n{\"type\":\"quit\"}\n";
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        let cfg = ChatConfig {
+            session_path: Some(custom.clone()),
+            ..config(allow_all())
+        };
+        drive(
+            provider,
+            registry,
+            ToolContext::new(tmp.path()),
+            cfg,
+            lines,
+            &mut out,
+        )
+        .await
+        .unwrap();
+        assert!(custom.is_file(), "custom session file written");
+        assert!(
+            !tmp.path().join(".bwoc/chat-session.json").exists(),
+            "default session file untouched"
+        );
     }
 
     #[tokio::test]

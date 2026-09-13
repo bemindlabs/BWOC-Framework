@@ -163,7 +163,7 @@ async fn run() -> Result<(), ConnectError> {
         }
         _ => unreachable!("platform validated above"),
     };
-    let dm_factory = HarnessSessionFactory::new(&agent_dir)?;
+    let dm_factory = HarnessSessionFactory::new(&agent_dir, platform)?;
 
     // Group binding (PR2): if `[group].team` is set, resolve the team's shared
     // chat.jsonl and build a --team-chat factory for group rooms.
@@ -181,7 +181,9 @@ async fn run() -> Result<(), ConnectError> {
         None => None,
     };
     let group_factory = match &group_chat_log {
-        Some(log) => Some(HarnessSessionFactory::new(&agent_dir)?.with_team_chat(log.clone())),
+        Some(log) => {
+            Some(HarnessSessionFactory::new(&agent_dir, platform)?.with_team_chat(log.clone()))
+        }
         None => None,
     };
     // Short platform tag for logged-peer `from` fields (tg:/dc:/ln:<id>).

@@ -216,8 +216,9 @@ pub trait ReplyStream: Send {
 /// One agent conversation (a `bwoc-harness --chat` subprocess in PR1).
 #[async_trait]
 pub trait AgentSession: Send {
-    /// Deliver a user message; return the agent's final reply text.
-    async fn ask(&mut self, text: &str) -> Result<String, ConnectError>;
+    /// Deliver a user message from platform user `from_user_id`; return the
+    /// agent's final reply text.
+    async fn ask(&mut self, text: &str, from_user_id: i64) -> Result<String, ConnectError>;
 
     /// Like [`ask`](Self::ask) but pushing the accumulated reply to `sink` as
     /// tokens stream in. The default delegates to `ask` (no streaming — one
@@ -226,17 +227,19 @@ pub trait AgentSession: Send {
     async fn ask_streamed(
         &mut self,
         text: &str,
+        from_user_id: i64,
         sink: &mut dyn ReplyStream,
     ) -> Result<String, ConnectError> {
         let _ = sink;
-        self.ask(text).await
+        self.ask(text, from_user_id).await
     }
 }
 
 /// Makes a fresh [`AgentSession`] per conversation (lazily, on first message).
+/// `chat_id` keys the conversation, so an impl can isolate per-chat state.
 #[async_trait]
 pub trait SessionFactory: Send + Sync {
-    async fn create(&self) -> Result<Box<dyn AgentSession>, ConnectError>;
+    async fn create(&self, chat_id: i64) -> Result<Box<dyn AgentSession>, ConnectError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,9 +340,9 @@ pub async fn run_bridge(
                 }
                 // Addressed: serve via the --team-chat group session, which
                 // injects the room's peer messages and broadcasts its reply.
-                serve_turn(&mut sessions, gb.factory, transport, msg.chat_id, &msg.text).await;
+                serve_turn(&mut sessions, gb.factory, transport, &msg).await;
             } else {
-                serve_turn(&mut sessions, dm_factory, transport, msg.chat_id, &msg.text).await;
+                serve_turn(&mut sessions, dm_factory, transport, &msg).await;
             }
         }
     }
@@ -352,11 +355,11 @@ async fn serve_turn(
     sessions: &mut HashMap<i64, Box<dyn AgentSession>>,
     factory: &dyn SessionFactory,
     transport: &dyn Transport,
-    chat_id: i64,
-    text: &str,
+    msg: &Incoming,
 ) {
+    let chat_id = msg.chat_id;
     if let std::collections::hash_map::Entry::Vacant(slot) = sessions.entry(chat_id) {
-        match factory.create().await {
+        match factory.create(chat_id).await {
             Ok(s) => {
                 slot.insert(s);
             }
@@ -371,7 +374,10 @@ async fn serve_turn(
     }
     let session = sessions.get_mut(&chat_id).expect("inserted above");
     let mut stream = PlatformStream::new(transport, chat_id);
-    match session.ask_streamed(text, &mut stream).await {
+    match session
+        .ask_streamed(&msg.text, msg.from_user_id, &mut stream)
+        .await
+    {
         Ok(reply) => {
             // Ensure the platform shows the complete reply: a final edit (or a
             // single send if no tokens streamed). Errors are already logged
@@ -576,7 +582,7 @@ mod tests {
     struct EchoSession;
     #[async_trait]
     impl AgentSession for EchoSession {
-        async fn ask(&mut self, text: &str) -> Result<String, ConnectError> {
+        async fn ask(&mut self, text: &str, _from: i64) -> Result<String, ConnectError> {
             Ok(format!("echo: {text}"))
         }
     }
@@ -586,7 +592,7 @@ mod tests {
     }
     #[async_trait]
     impl SessionFactory for EchoFactory {
-        async fn create(&self) -> Result<Box<dyn AgentSession>, ConnectError> {
+        async fn create(&self, _chat_id: i64) -> Result<Box<dyn AgentSession>, ConnectError> {
             self.created
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Box::new(EchoSession))
@@ -658,7 +664,7 @@ mod tests {
     struct DeadSession;
     #[async_trait]
     impl AgentSession for DeadSession {
-        async fn ask(&mut self, _text: &str) -> Result<String, ConnectError> {
+        async fn ask(&mut self, _text: &str, _from: i64) -> Result<String, ConnectError> {
             Err(ConnectError::Session("harness died".into()))
         }
     }
@@ -669,7 +675,7 @@ mod tests {
     }
     #[async_trait]
     impl SessionFactory for FlakyFactory {
-        async fn create(&self) -> Result<Box<dyn AgentSession>, ConnectError> {
+        async fn create(&self, _chat_id: i64) -> Result<Box<dyn AgentSession>, ConnectError> {
             let n = self
                 .created
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -864,12 +870,13 @@ mod tests {
     struct StreamSession;
     #[async_trait]
     impl AgentSession for StreamSession {
-        async fn ask(&mut self, text: &str) -> Result<String, ConnectError> {
+        async fn ask(&mut self, text: &str, _from: i64) -> Result<String, ConnectError> {
             Ok(format!("echo: {text}"))
         }
         async fn ask_streamed(
             &mut self,
             text: &str,
+            _from: i64,
             sink: &mut dyn ReplyStream,
         ) -> Result<String, ConnectError> {
             let full = format!("echo: {text}");
@@ -881,7 +888,7 @@ mod tests {
     struct StreamFactory;
     #[async_trait]
     impl SessionFactory for StreamFactory {
-        async fn create(&self) -> Result<Box<dyn AgentSession>, ConnectError> {
+        async fn create(&self, _chat_id: i64) -> Result<Box<dyn AgentSession>, ConnectError> {
             Ok(Box::new(StreamSession))
         }
     }
