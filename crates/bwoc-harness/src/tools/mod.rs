@@ -97,9 +97,12 @@ impl ToolContext {
     /// Resolve `raw` against the workdir, enforcing confinement when enabled.
     ///
     /// Returns the lexically-normalized absolute path. Does NOT require the path
-    /// to exist yet (for write_file on new files), so we use `Path::starts_with`
-    /// on the normalized path rather than `fs::canonicalize`. When [`confine`] is
-    /// false the escape check is skipped — any absolute path is allowed.
+    /// to exist yet (for write_file on new files). Confinement is two checks: a
+    /// lexical `starts_with` on the normalized path, then a symlink-safe one —
+    /// the deepest existing ancestor is canonicalized and must still sit inside
+    /// the canonicalized workdir ([`crate::sandbox::is_confined`]), so a
+    /// symlink inside the workdir that points outside is rejected. When
+    /// [`confine`] is false both checks are skipped — any path is allowed.
     ///
     /// [`confine`]: ToolContext::confine
     pub fn resolve_path(&self, raw: &str) -> Result<PathBuf, HarnessError> {
@@ -112,7 +115,10 @@ impl ToolContext {
         // Lexical normalisation: collapse `..` and `.` components.
         let normalized = normalize_path(&p);
 
-        if self.confine && !normalized.starts_with(&self.workdir) {
+        if self.confine
+            && (!normalized.starts_with(&self.workdir)
+                || !crate::sandbox::is_confined(&normalized, &self.workdir))
+        {
             return Err(HarnessError::PathEscape(raw.to_string()));
         }
 
@@ -340,6 +346,102 @@ mod tests {
         assert_eq!(p, outside_path);
         // `..` escaping the workdir is likewise permitted when unconfined.
         assert!(ctx.resolve_path("../sibling/x").is_ok());
+    }
+
+    /// A workdir holding `inner/` (real dir), `inside_link -> inner`, and
+    /// `escape_link -> <outside dir>` with `secret.txt` in the outside dir.
+    #[cfg(unix)]
+    fn symlinked_workdir() -> (TempDir, TempDir) {
+        let wd = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
+        std::fs::create_dir(wd.path().join("inner")).unwrap();
+        std::fs::write(wd.path().join("inner/ok.txt"), "fine").unwrap();
+        std::os::unix::fs::symlink(outside.path(), wd.path().join("escape_link")).unwrap();
+        std::os::unix::fs::symlink(wd.path().join("inner"), wd.path().join("inside_link")).unwrap();
+        (wd, outside)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_rejects_symlink_escaping_the_workdir() {
+        let (wd, _outside) = symlinked_workdir();
+        let ctx = ctx(wd.path());
+        for raw in [
+            "escape_link",
+            "escape_link/secret.txt",
+            "escape_link/new.txt",
+        ] {
+            assert!(
+                matches!(ctx.resolve_path(raw), Err(HarnessError::PathEscape(_))),
+                "{raw} must be rejected"
+            );
+        }
+        // A normal nested path and a symlink that stays inside still resolve.
+        assert!(ctx.resolve_path("inner/ok.txt").is_ok());
+        assert!(ctx.resolve_path("inside_link/ok.txt").is_ok());
+        assert!(ctx.resolve_path("inner/not_yet.txt").is_ok());
+        // `--unrestricted` is unchanged: the symlink is followed.
+        let open = ToolContext::unconfined(wd.path().to_path_buf());
+        assert!(open.resolve_path("escape_link/secret.txt").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_tools_refuse_a_symlink_escape() {
+        use serde_json::json;
+        let (wd, outside) = symlinked_workdir();
+        let ctx = ctx(wd.path());
+        let read = ReadFile
+            .execute(json!({"path": "escape_link/secret.txt"}), &ctx)
+            .await;
+        assert!(matches!(read, Err(HarnessError::PathEscape(_))), "{read:?}");
+        let list = ListDir.execute(json!({"path": "escape_link"}), &ctx).await;
+        assert!(matches!(list, Err(HarnessError::PathEscape(_))), "{list:?}");
+        let write = WriteFile
+            .execute(
+                json!({"path": "escape_link/planted.txt", "content": "x"}),
+                &ctx,
+            )
+            .await;
+        assert!(
+            matches!(write, Err(HarnessError::PathEscape(_))),
+            "{write:?}"
+        );
+        assert!(!outside.path().join("planted.txt").exists());
+        // grep never descends through the escaping link.
+        let hits = Grep
+            .execute(json!({"pattern": "top secret"}), &ctx)
+            .await
+            .unwrap();
+        assert!(hits.starts_with("no matches"), "{hits}");
+        // In-workdir reads through an inside symlink still work.
+        let ok = ReadFile
+            .execute(json!({"path": "inside_link/ok.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(ok, "fine");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn memory_tools_refuse_a_symlinked_memory_dir() {
+        use serde_json::json;
+        let wd = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("MEMORY.md"), "leak").unwrap();
+        std::os::unix::fs::symlink(outside.path(), wd.path().join("memories")).unwrap();
+        let ctx = ctx(wd.path());
+        let read = MemoryRead.execute(json!({}), &ctx).await;
+        assert!(matches!(read, Err(HarnessError::PathEscape(_))), "{read:?}");
+        let write = MemoryWrite
+            .execute(json!({"name": "x.md", "content": "x"}), &ctx)
+            .await;
+        assert!(
+            matches!(write, Err(HarnessError::PathEscape(_))),
+            "{write:?}"
+        );
+        assert!(!outside.path().join("x.md").exists());
     }
 
     #[test]

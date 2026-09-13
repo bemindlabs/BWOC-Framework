@@ -429,7 +429,18 @@ pub fn confine_path(raw: &str, worktree_root: &Path) -> Result<PathBuf, HarnessE
     } else {
         worktree_root.join(raw)
     };
+    confined_resolution(&p, worktree_root).ok_or_else(|| HarnessError::PathEscape(raw.to_string()))
+}
 
+/// Symlink-safe confinement test for an already-absolute path: `true` iff `p`,
+/// with its deepest existing ancestor canonicalized, stays inside the
+/// canonicalized `root`. Shared by [`confine_path`] and the tool layer's
+/// `ToolContext::resolve_path` so both resolve symlinks the same way.
+pub fn is_confined(p: &Path, root: &Path) -> bool {
+    confined_resolution(p, root).is_some()
+}
+
+fn confined_resolution(p: &Path, worktree_root: &Path) -> Option<PathBuf> {
     // Canonicalize the worktree root, then run it through the SAME lexical
     // normalization as `resolved` below. Both must go through `normalize_path_lex`
     // so the comparison is apples-to-apples — on Windows `fs::canonicalize`
@@ -447,13 +458,9 @@ pub fn confine_path(raw: &str, worktree_root: &Path) -> Result<PathBuf, HarnessE
     // parent-fallback wrongly allowed it whenever the symlink's parent was the
     // root itself, which is the common case — a real symlink-escape hole that
     // only macOS happened to catch via its /private canonicalization quirk.)
-    let resolved = normalize_path_lex(&resolve_existing_prefix(&p));
+    let resolved = normalize_path_lex(&resolve_existing_prefix(p));
 
-    if resolved.starts_with(&root) {
-        Ok(resolved)
-    } else {
-        Err(HarnessError::PathEscape(raw.to_string()))
-    }
+    resolved.starts_with(&root).then_some(resolved)
 }
 
 /// Canonicalize the deepest existing ancestor of `p` (resolving symlinks in the
