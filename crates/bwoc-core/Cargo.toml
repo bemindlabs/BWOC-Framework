@@ -1,6 +1,6 @@
 [package]
 name = "bwoc-core"
-description = "Shared types for the BWOC framework — manifest, identity, lifecycle phases (uppāda · ṭhiti · vaya)."
+description = "Shared types for the BWOC framework — manifest, workspace, schema versioning, trust labeling, lifecycle phases (uppāda · ṭhiti · vaya)."
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

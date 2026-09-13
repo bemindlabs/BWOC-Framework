@@ -12,7 +12,7 @@ A native single binary for **macOS · Linux · Windows**. Run inside an incarnat
 - **`warm`** — keeps one resident `bwoc-harness --headless` process loaded so claimed team tasks run **trusted** without a cold start. Refuses ambient (non-harness) backends; skips `requires_plan` tasks, which need lead approval.
 - **`autoprocess`** — answers gateway-relayed messages by keeping one **untrusted**, read-only `bwoc-harness --chat` session per remote sender (idle-reaped, so a back-and-forth reuses its context), auto-denying every permission request and replying via `bwoc send`. Deliberately never shares a process with `warm` — one untrusted turn taints a session permanently.
 - **`connectors`** — spawns and keeps alive `bwoc-connect` when the agent declares an enabled connector, with backoff on crash-loop.
-- **`gateway`** — same supervision for `bwoc-gateway-recv`, which dials the relay and appends inbound envelopes into `.bwoc/inbox.jsonl`.
+- **`gateway`** — same supervision for `bwoc-gateway-recv` (built in the separate [bwoc-gateway](https://github.com/bemindlabs/bwoc-gateway) repo, not this workspace), which dials the relay and appends inbound envelopes into `.bwoc/inbox.jsonl`.
 - **`i18n`** — Project Fluent bundles from `locales/{en,th}/agent.ftl`; locale from `BWOC_LANG`, falling back to `$LANG` then `en`.
 
 ## Usage

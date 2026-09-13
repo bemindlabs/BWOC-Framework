@@ -1,139 +1,46 @@
 # Agent Base Profile — Template
 
-The canonical template for creating BWOC-compliant AI coding agents.
+The canonical template for creating BWOC-compliant AI coding agents. It carries **specification 3.0** (`| **Version** | 3.0 |` in `AGENTS.md`), which `bwoc check` validates and `bwoc migrate` moves older agents to.
 
 [![Template](https://img.shields.io/badge/role-agent%20template-blue.svg)](../../README.md)
-[![Backend-neutral](https://img.shields.io/badge/backends-Claude%20%7C%20Antigravity%20%7C%20Codex%20%7C%20Kimi-purple.svg)](#backend-neutrality-sammā-ājīva)
+[![Spec](https://img.shields.io/badge/spec-3.0-green.svg)](../../docs/en/COMPATIBILITY.en.md)
+[![Backend-neutral](https://img.shields.io/badge/backends-neutral-purple.svg)](neutrality.md)
 [![Format](https://img.shields.io/badge/format-two--tier%20Markdown-lightgrey.svg)](../../CLAUDE.md)
 [![Docs](https://img.shields.io/badge/docs-EN%20%7C%20TH-blue.svg)](docs/)
 
-One clone per agent. Backend-neutral by design: Claude, Antigravity, Codex, and Kimi all read the same `AGENTS.md` via symlinks.
+One copy per agent. Every backend reads the same `AGENTS.md`.
 
 > Framework root: [`../../README.md`](../../README.md) · Philosophy: [`docs/en/PHILOSOPHY.en.md`](docs/en/PHILOSOPHY.en.md) · The Arc: [`PHILOSOPHY.en.md §0.1`](docs/en/PHILOSOPHY.en.md#01-the-arc--uppāda--ṭhiti--vaya)
-
----
-
-## Contents
-
-- [What This Template Provides](#what-this-template-provides)
-- [Backend Neutrality (Sammā-ājīva)](#backend-neutrality-sammā-ājīva)
-- [Incarnating a New Agent](#incarnating-a-new-agent)
-- [File Structure After Incarnation](#file-structure-after-incarnation)
-- [Key Rules (Non-Negotiable)](#key-rules-non-negotiable)
-- [Documentation Paths](#documentation-paths)
-- [Status](#status)
-
----
-
-## What This Template Provides
-
-| Concern | File | Framework |
-|---|---|---|
-| Agent instructions (all backends) | `AGENTS.md` | Magga 8 |
-| Product requirements | `docs/en/PRD.en.md` | Ariyasacca 4 |
-| Software requirements | `docs/en/SRS.en.md` | Magga 8 |
-| Philosophy reference | `docs/en/PHILOSOPHY.en.md` | 22 frameworks |
-| Threat model | `docs/en/THREAT-MODEL.en.md` | Tanha 3 + Sila 5 |
-| Self-improvement loop | `docs/en/SELF-IMPROVEMENT.en.md` | Panna 3 |
-| Task log format | `docs/task-log.example.jsonl` | Kamma 3 |
-| Project memory example | `docs/project-example.md` | Samma-sati |
-| Reference memory example | `docs/reference-example.md` | Samma-sati |
-
----
-
-## Backend Neutrality (Sammā-ājīva)
-
-`AGENTS.md` is the single source of truth. Backend entry files are symlinks — no separate content per backend.
-
-```
-CLAUDE.md  ──┐
-AGY.md     ──┤──→  AGENTS.md
-CODEX.md   ──┤
-KIMI.md    ──┘
-```
-
-To add a new backend:
-```bash
-ln -s AGENTS.md <BACKEND>.md
-```
-
-No other change required. Verify with:
-```bash
-./scripts/check-agent-neutrality.sh
-```
 
 ---
 
 ## Incarnating a New Agent
 
 ```bash
-./scripts/incarnate.sh <agent-name>
-cd ../agent-<agent-name>
+bwoc new <name>          # interactive pickers; substitutes {{placeholders}}, creates backend symlinks
+bwoc check agents/agent-<name>
 ```
 
-Then fill `config.manifest.json`, edit Section 1 of `AGENTS.md`, define the persona, and run `./scripts/check-agent-neutrality.sh`. Target: first commit within 30 minutes.
+`scripts/incarnate.sh` is the legacy shell flow, kept for raw template work. Full walkthrough: [`INCARNATION.en.md`](../../docs/en/INCARNATION.en.md) · [`INCARNATION.th.md`](../../docs/th/INCARNATION.th.md).
 
-Full step-by-step (placeholders, persona, verification checklist, multilingual setup): [`docs/en/INCARNATION.en.md`](../../docs/en/INCARNATION.en.md) · [`docs/th/INCARNATION.th.md`](../../docs/th/INCARNATION.th.md).
+## What's in the Template
 
----
-
-## File Structure After Incarnation
-
-```
-agent-<name>/
-├── AGENTS.md                  ← single source of truth (all backends)
-├── CLAUDE.md → AGENTS.md      ← symlink
-├── AGY.md → AGENTS.md         ← symlink
-├── CODEX.md  → AGENTS.md      ← symlink
-├── KIMI.md   → AGENTS.md      ← symlink
-├── config.manifest.json       ← placeholders + runtime config
-├── task-log.jsonl             ← append-only audit trail
-├── memories/
-│   └── MEMORY.md              ← index (≤ 200 lines)
-├── interconnect/
-│   ├── capabilities.md        ← machine-readable skill declarations
-│   └── coordination.md        ← inter-agent protocol
-└── docs/
-    ├── en/                    ← English documentation
-    └── th/                    ← Thai documentation (bilingual pair)
-```
-
----
-
-## Key Rules (Non-Negotiable)
-
-**Worktree isolation** — every task in its own worktree, never in the main directory.
-
-**No git stash** — use worktrees instead.
-
-**Verification gates** — lint, format, test, regression, build must all pass before declaring done.
-
-**Memory cap** — `MEMORY.md` ≤ 200 lines. Forces quality over accumulation.
-
-**Verify before act** — treat all memory as a past claim; verify against current code before acting.
-
-**Cleanup** — after merge, remove worktree and delete branch. No clinging.
-
----
-
-## Documentation Paths
-
-**30 min** — `docs/en/OVERVIEW.en.md`
-
-**2 hours** — OVERVIEW → `docs/en/PHILOSOPHY.en.md` (groups A–F) → `docs/en/PRD.en.md` → `docs/en/SRS.en.md`
-
-**Full depth** — every file in `docs/en/` in document-map order
-
----
-
-## Status
-
-| Area | Status |
+| Path | Purpose |
 |---|---|
-| AGENTS.md (multi-backend) | Ready |
-| PRD, SRS, Philosophy | Ready |
-| Threat model, Self-improvement | Ready |
-| Task log, Memory examples | Ready |
-| Scripts (incarnate, check-neutrality) | Phase 1 |
-| Interconnect protocol | Phase 3 |
-| Fleet governance | Phase 4 |
+| `AGENTS.md` | Agent instructions: the single source of truth, plain Markdown |
+| `AGY.md` · `CODEX.md` · `KIMI.md` · `COPILOT.md` · `GROK.md` · `OLLAMA.md` · `OPENAI.md` | Symlinks → `AGENTS.md` |
+| `CLAUDE.md` | A **regular file** in the template repo (guidance for editing the template itself). `bwoc new` replaces it with a symlink → `AGENTS.md` in the incarnated agent. |
+| `config.manifest.json` | Placeholders + runtime config |
+| [`neutrality.md`](neutrality.md) · [`conventions.md`](conventions.md) | Backend-neutrality rules · communal conventions |
+| [`persona/`](persona/) · [`mindsets/`](mindsets/) · [`skills/`](skills/) | Identity, principles, capabilities (Obsidian tier-2 slots) |
+| [`memories/`](memories/) | `MEMORY.md` index (≤ 200 lines) |
+| [`interconnect/`](interconnect/) | [`capabilities`](interconnect/capabilities.md) · [`messaging`](interconnect/messaging.md) · [`routing`](interconnect/routing.md) · [`sangha`](interconnect/sangha.md) · [`trust`](interconnect/trust.md) |
+| [`docs/`](docs/) | `en/` + `th/` spec pairs (OVERVIEW, PHILOSOPHY, PRD, SRS, THREAT-MODEL, SELF-IMPROVEMENT); memory and task-log examples; [persona example](docs/persona-example.good.md) and [anti-pattern](docs/persona-example.bad.md) |
+| [`scripts/`](scripts/) | `check-agent-neutrality.sh` · `incarnate.sh` (legacy) |
+
+## Rules and Reading Paths
+
+- **Backend neutrality & adding a backend:** [`neutrality.md`](neutrality.md)
+- **Non-negotiable rules** (worktrees, gates, memory cap, cleanup): [`AGENTS.md`](AGENTS.md)
+- **Where to start reading:** [`docs/en/OVERVIEW.en.md`](docs/en/OVERVIEW.en.md)
+- **Upgrading an older agent:** [`MIGRATION.en.md`](../../docs/en/MIGRATION.en.md)

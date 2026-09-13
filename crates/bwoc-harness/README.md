@@ -43,7 +43,7 @@ Optional features: `otel` (OTLP export), `browser` (live `computer` executor), `
 
 ## Status
 
-Built and in use — P1 through P5 are complete: loop, tools, safety pipeline, task queue, telemetry, tool auth, eval, and process isolation. The isolation claims are proven by the gate suites in `tests/` (`sandbox_escape`, `egress_pure_read`, `process_isolation`, `resource_limits`, `cgroup_pids`), not asserted; residual gaps are tracked in [`THREAT-MODEL.en.md`](../../docs/en/THREAT-MODEL.en.md).
+Built and in use: loop, tools, safety pipeline, task queue, telemetry, tool auth, eval, and process isolation all ship. The isolation claims are proven by the gate suites in `tests/` (`sandbox_escape`, `egress_pure_read`, `process_isolation`, `resource_limits`, `cgroup_pids`), not asserted; residual gaps are tracked in [`THREAT-MODEL.en.md`](../../docs/en/THREAT-MODEL.en.md).
 
 ## License
 

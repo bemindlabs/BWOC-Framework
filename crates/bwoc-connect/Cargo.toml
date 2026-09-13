@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Chat connectors (Telegram first) bridging external platforms to BWOC agents. Quarantines the network deps so bwoc-cli/agent/core stay lean."
+description = "Chat connectors (Telegram, Discord, LINE, iMessage) bridging external platforms to BWOC agents. Quarantines the network deps so bwoc-cli/agent/core stay lean."
 readme = "README.md"
 
 [[bin]]
