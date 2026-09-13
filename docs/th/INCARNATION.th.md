@@ -133,7 +133,7 @@ Resolve ทุก placeholder ที่จำเป็น อย่างน้�
 - Principles (กรอบ BWOC ที่ใช้บ่อยที่สุด)
 - ขอบเขตกับ agent อื่น
 
-ตัวอย่าง persona ที่ดี: ดู `modules/agent-template/docs/README.md` (ปัจจุบันชื่อผิด — จะเปลี่ยนเป็น `examples/persona-good.md`)
+ตัวอย่าง persona: [`persona-example.good.md`](../../modules/agent-template/docs/persona-example.good.md) (ตัวอย่างที่ดี) · [`persona-example.bad.md`](../../modules/agent-template/docs/persona-example.bad.md) (anti-pattern)
 
 ### 5. Verify Backend Neutrality
 

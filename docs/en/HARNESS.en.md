@@ -2,7 +2,7 @@
 title: bwoc-harness — Self-Hosted Agent Runtime
 aliases: [harness, ollama-harness, agentic-harness]
 tags: [harness, runtime, safety, tools, ollama, self-host]
-status: v1 (P1–P5 complete; see caveats)
+status: shipped (see caveats)
 canonical-source: crates/bwoc-harness/src/
 parent: English
 nav_order: 8

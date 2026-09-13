@@ -8,7 +8,8 @@ Eight of the workspace's eleven crates depend on it ([`bwoc-cli`](../bwoc-cli/),
 
 - **`manifest`** — `config.manifest.json` for an incarnated agent: `Manifest` (`load_from_path` / `save_to_path`), `TrustBlock`, `TrustDeclared`, `RefusalMode`, `ManifestError`.
 - **`workspace`** — `.bwoc/workspace.toml` and `.bwoc/agents.toml`; the agent registry and per-agent `inbox_path`. Spec: [`WORKSPACE.en.md`](../../docs/en/WORKSPACE.en.md).
-- **`trust`** — ingress trust labeling. `Principal` (immutable, persisted provenance) and `TrustLevel` (derived, **never** serialized), plus `BackendTrust` for whether a backend's tool execution can be confined.
+- **`trust`** — ingress trust labeling. `Principal` (immutable, persisted provenance — including `Principal::Platform { platform, user_id }` for chat-connector turns) and `TrustLevel` (derived, **never** serialized), plus `BackendTrust` for whether a backend's tool execution can be confined.
+- **`schema`** — `SchemaVersion`, the version marker on framework-owned control-plane files: `CURRENT` = 3, `LEGACY` = 2. An absent marker reads as legacy (2.x files load, warn, and point at `bwoc migrate`); a version newer than `CURRENT` is refused rather than guessed. Contract: [`COMPATIBILITY.en.md`](../../docs/en/COMPATIBILITY.en.md).
 - **`chat_proto`** — the JSON-line wire format (`ChatInput` on stdin, `ChatEvent` on stdout) between a `bwoc-harness --chat` subprocess and a frontend. Exists precisely because of the dep-quarantine: the CLI drives the harness as a process, not a library.
 - **`team`** — Saṅgha membership and the shared task list: `Team`, `Task`, `TeamChatMessage` and their state-transition rules (locking stays at the CLI layer).
 - **`routing`** — `.bwoc/interconnect/routes.toml`: `Routes::load` / `resolve`, `RouteKind::{Agent, Namespace}`, `SharedAllowlist`, and `redact_broker` for logging broker URLs without credentials.

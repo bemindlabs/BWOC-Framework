@@ -48,11 +48,4 @@ Describe what this agent does in 1–3 sentences. What is its primary function?
 
 ## Supported LLM Backends
 
-| Backend | Instruction File |
-|---|---|
-| Claude | `CLAUDE.md` → `AGENTS.md` |
-| Antigravity | `AGY.md` → `AGENTS.md` |
-| Codex  | `CODEX.md` → `AGENTS.md` |
-| Kimi   | `KIMI.md` → `AGENTS.md` |
-
-See [[../neutrality|Neutrality]] for the symlink design.
+Backends consume this persona through `AGENTS.md`: vendor-CLI backends via their entry file (see `neutrality.md`), harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) by loading `AGENTS.md` directly — no backend-specific persona file is needed.

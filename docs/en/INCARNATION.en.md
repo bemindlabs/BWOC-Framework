@@ -133,7 +133,7 @@ Edit [`persona/README.md`](../../modules/agent-template/persona/README.md) with 
 - Principles (which BWOC frameworks it leans on most)
 - Boundaries with other agents
 
-A good persona example: see `modules/agent-template/docs/README.md` (currently misnamed — to be renamed `examples/persona-good.md`).
+Persona examples: [`persona-example.good.md`](../../modules/agent-template/docs/persona-example.good.md) (good) · [`persona-example.bad.md`](../../modules/agent-template/docs/persona-example.bad.md) (anti-pattern).
 
 ### 5. Verify Backend Neutrality
 

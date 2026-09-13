@@ -65,7 +65,7 @@ Buddhist principles are used here as **engineering thinking aids** — not relig
 BWOC provides a **template and doctrine** for creating AI coding agents with a consistent, principled foundation:
 
 - **One repo, one agent** — each agent lives in its own repository cloned from the template
-- **Backend-neutral** — runs on Claude, Antigravity, Codex, Kimi, or self-hosted models via `bwoc-harness` (`bwoc spawn --backend ollama`; Ollama / any OpenAI-compatible endpoint)
+- **Backend-neutral** — one `AGENTS.md` runs on ten declared backends: Claude, Antigravity, Codex, Kimi, Copilot, Grok, or self-hosted / hosted models via `bwoc-harness` (Ollama, any OpenAI-compatible endpoint, OpenRouter, LiteLLM)
 - **Persistent memory** — accumulates knowledge across sessions with impermanence-aware pruning
 - **Multi-agent safe** — multiple agents co-operate in the same repo without collision
 
@@ -191,10 +191,10 @@ The framework is a Rust workspace of focused crates, plus companion apps that bu
 
 | Crate | Kind | What it does |
 | --- | --- | --- |
-| [`bwoc-core`](crates/bwoc-core) | lib | Shared types — manifest, workspace/agent registry, identity, lifecycle, trust labeling, `chat_proto`, idempotency ledger, loop control, env-scrub, sibling-binary resolution. **Lean + dep-quarantined**: every crate except `bwoc-signing` and `bwoc-deep-memory` depends on it, so it in turn depends on almost nothing (`serde`, `serde_json`, `toml`, `thiserror`). |
-| [`bwoc-cli`](crates/bwoc-cli) | bin `bwoc` | The operator CLI — `init` · `new` · `list` · `spawn` · `chat` (`--tui`) · `run` · `start`/`stop`/`supervise` · `dashboard` · `loop` · `monitor` · `digest` · `check` · `audit` · `send` · `task` · `team`. |
+| [`bwoc-core`](crates/bwoc-core) | lib | Shared types — manifest, workspace/agent registry, schema versioning, lifecycle, trust labeling, `chat_proto`, idempotency ledger, loop control, env-scrub, sibling-binary resolution. **Lean + dep-quarantined**: every crate except `bwoc-signing` and `bwoc-deep-memory` depends on it, so it in turn depends on almost nothing (`serde`, `serde_json`, `toml`, `thiserror`). |
+| [`bwoc-cli`](crates/bwoc-cli) | bin `bwoc` | The operator CLI — `init` · `new` · `list` · `spawn` · `chat` (`--tui`) · `run` · `start`/`stop`/`supervise` · `dashboard` · `loop` · `monitor` · `digest` · `check` · `migrate` · `audit` · `send` · `task` · `team`. |
 | [`bwoc-agent`](crates/bwoc-agent) | bin `bwoc-agent` | The per-agent daemon (`--serve`) — Unix control socket (PING/STATUS/STOP), inbox polling + auto-process, and Saṅgha task-watch. |
-| [`bwoc-harness`](crates/bwoc-harness) | bin + lib | The self-hosted agentic run loop for the `ollama` / `openai-compatible` backends — tool set, capability gate → guardrails → permission → sandbox pipeline (with `--unrestricted` to lift the workdir path sandbox), OpenTelemetry, Saṅgha lead/worker (`--lead --loop`), checkpoint/resume, MCP client, and the interactive `--chat` session (streaming, persistent memory, live permission modes). |
+| [`bwoc-harness`](crates/bwoc-harness) | bin + lib | The self-hosted agentic run loop for the `ollama` / `openai-compatible` / `openrouter` / `litellm` backends — tool set, capability gate → guardrails → permission → sandbox pipeline (with `--unrestricted` to lift the workdir path sandbox), OpenTelemetry, Saṅgha lead/worker (`--lead --loop`), checkpoint/resume, MCP client, and the interactive `--chat` session (streaming, persistent memory, live permission modes). |
 | [`bwoc-tui`](crates/bwoc-tui) | lib | The ratatui chat client behind `bwoc chat --tui`, plus the multi-agent fleet view (`--fleet`) — renders the `chat_proto` stream from `bwoc-harness --chat`. |
 | [`bwoc-loop-tui`](crates/bwoc-loop-tui) | lib | The `bwoc loop` control center — watch a team's task list drive toward Definition-of-Done, start/stop the goal-loop, and edit tasks · ticker · budget · plan approvals in place. |
 | [`bwoc-signing`](crates/bwoc-signing) | lib | ed25519 signing primitives for the trust layer. |
@@ -221,21 +221,26 @@ Two distinct trees the project deals with: **(A)** this repository — what a co
 ```
 bwoc-framework/
 ├── crates/                      ← Rust workspace (the reference implementation)
-│   ├── bwoc-core/                 • shared types — manifest, workspace, identity, chat_proto (lean, dep-quarantined)
-│   ├── bwoc-cli/                  • `bwoc` binary — install · workspace · lifecycle · chat · audit
+│   ├── bwoc-core/                 • shared types — manifest, workspace, schema, trust, chat_proto (lean, dep-quarantined)
+│   ├── bwoc-cli/                  • `bwoc` binary — install · workspace · lifecycle · migrate · chat · audit
 │   ├── bwoc-agent/                • `bwoc-agent` daemon — control socket · inbox · task watch
-│   ├── bwoc-harness/              • self-hosted run loop (ollama / openai-compatible) — tools, guardrails, sandbox, OTel, Saṅgha, `--chat`
+│   ├── bwoc-harness/              • self-hosted run loop — tools, guardrails, sandbox, OTel, Saṅgha, `--chat`
 │   ├── bwoc-tui/                  • ratatui chat client behind `bwoc chat --tui`
+│   ├── bwoc-loop-tui/             • `bwoc loop` control center
 │   ├── bwoc-signing/              • ed25519 signing primitives
-│   └── bwoc-a2a/                  • agent-to-agent — signed envelopes + cross-workspace identity
+│   ├── bwoc-a2a/                  • agent-to-agent — signed envelopes + cross-workspace identity
+│   ├── bwoc-mqtt/                 • MQTT inter-workspace transport
+│   ├── bwoc-connect/              • chat connectors — Telegram · Discord · LINE · iMessage
+│   └── bwoc-deep-memory/          • Tier-2 semantic recall (out-of-process)
 ├── modules/
+│   ├── plugins/ · skills/       ← framework plugins + skills (see modules/README.md)
 │   └── agent-template/          ← Core template (cloned per agent — see B)
-│       ├── AGENTS.md              • single source of truth (symlinked from CLAUDE/AGY/CODEX/KIMI/OLLAMA.md)
+│       ├── AGENTS.md              • single source of truth (backend entry files symlink to it — see neutrality.md)
 │       ├── docs/{en,th}/          • PHILOSOPHY · PRD · SRS · SELF-IMPROVEMENT · THREAT-MODEL · OVERVIEW
 │       ├── persona/ · mindsets/ · skills/ · interconnect/ · memories/
-│       └── scripts/               • incarnate.sh · check-agent-neutrality.sh
+│       └── scripts/               • check-agent-neutrality.sh · incarnate.sh (legacy — use `bwoc new`)
 ├── docs/{en,th}/                ← Framework-level docs (bilingual pair)
-│                                    ARCHITECTURE · INCARNATION · WORKSPACE · NAMING · GLOSSARY · ROADMAP · FAQ
+│                                    ARCHITECTURE · COMPATIBILITY · MIGRATION · INCARNATION · WORKSPACE · NAMING · GLOSSARY · ROADMAP · FAQ
 ├── examples/                    ← howto · showcases · usecases (illustrative)
 ├── Formula/                     ← Homebrew formula (tap)
 ├── scripts/                     ← install.sh · bump-version.sh
@@ -275,17 +280,17 @@ The CLI operates against a **workspace** the user designates — independent of 
 
 A [C4](https://c4model.com/) container view of the reference implementation —
 the native Rust binaries + libraries, the local filesystem state, and the
-external LLM backend. Everything is local: no network ports, no database, no
-container runtime (see [Infrastructure & Datastores](#infrastructure--datastores)).
+external LLM backend. The core is local-first — no database server or container
+runtime; network surfaces are opt-in (see [Infrastructure & Datastores](#infrastructure--datastores)).
 
 ```mermaid
 C4Container
     title BWOC Framework — Container view
 
     Person(operator, "Operator", "Human who incarnates and drives agents")
-    System_Ext(llm, "LLM backend", "Claude Code · Codex · Kimi · Ollama · OpenAI-compatible")
+    System_Ext(llm, "LLM backend", "Claude Code · Antigravity · Codex · Kimi · Copilot · Grok · Ollama · OpenAI-compatible · OpenRouter · LiteLLM")
 
-    System_Boundary(bwoc, "BWOC Framework — native Rust, no network ports") {
+    System_Boundary(bwoc, "BWOC Framework — native Rust, local-first") {
         Container(cli, "bwoc CLI", "Rust static binary", "Incarnate · lifecycle · send/inbox · trust --keygen · audit · plugins/skills")
         Container(agent, "bwoc-agent", "Rust daemon", "Control over a Unix socket; trust gate verifies signed envelopes before delivery")
         Container(harness, "bwoc-harness", "Rust", "Sandboxed run loop (landlock / sandbox-exec); durable checkpoints; Saṅgha subprocess workers")
@@ -336,15 +341,9 @@ The `bwoc` CLI and `bwoc-agent` daemon read and respect the following environmen
 ## Infrastructure & Datastores
 
 BWOC is designed to be extremely lightweight, localized, and resilient. To clarify system architecture:
-- **No Node.js / JVM Requirement:** The entire toolchain is built in native Rust, compiling down to single static binaries (`bwoc` and `bwoc-agent`).
-- **No Docker / Containerization Needed:** No Docker containers, virtual machines, or external runtime packages are required to run or incarnate agents. The optional `bwoc-harness` runs backends inside localized sandbox engines natively (`landlock` on Linux, `sandbox-exec` on macOS).
-- **No Network Ports or API Endpoints:** The framework does not bind to TCP/UDP ports or connect to remote servers. All agent-to-daemon communication is conducted locally over a **Unix domain socket** located at `<workspace>/.bwoc/agent.sock` on Unix-like systems.
-- **No External Datastore / Database:** There is no SQLite, PostgreSQL, Redis, or other database server. All state is maintained natively within the **local filesystem** using standard structured files:
-  - Workspace configuration: `.bwoc/workspace.toml`
-  - Registered agents index: `.bwoc/agents.toml`
-  - Agent inbox queue: `.bwoc/inbox.jsonl`
-  - Trust refusals log: `.bwoc/inbox.refusals.jsonl`
-  - Shared Saṅgha team tasks: `.bwoc/teams/<team-id>.toml`
+- **Native binaries, no runtime:** single static Rust binaries — no Node.js, JVM, Docker, or VM needed to incarnate or run agents. `bwoc-harness` sandboxes natively (Landlock + seccomp on Linux, `sandbox-exec` on macOS).
+- **Local-first state:** the core keeps state as plain files — `.bwoc/workspace.toml`, `.bwoc/agents.toml`, `.bwoc/inbox.jsonl`, `.bwoc/inbox.refusals.jsonl`, `.bwoc/teams/` — and the daemon talks over a Unix domain socket (`.bwoc/agent.sock`) or a Windows named pipe. No database server.
+- **Opt-in network and storage surfaces, out of process:** `bwoc a2a serve` (loopback by default), `bwoc-mqtt`, `bwoc-connect` chat connectors, and `bwoc-deep-memory` (embedded SQLite) are separate binaries you enable explicitly.
 
 ---
 
@@ -379,6 +378,8 @@ Installs all three binaries (`bwoc` CLI + `bwoc-agent` daemon + `bwoc-harness` a
 cargo install --path crates/bwoc-cli --locked --force
 ```
 
+**Upgrading from 2.x:** 3.x reads everything 2.x wrote and warns on legacy schema; run `bwoc migrate` to move an installation forward. See [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) and [`MIGRATION.en.md`](docs/en/MIGRATION.en.md).
+
 ### As an Agent Author
 
 ```bash
@@ -405,11 +406,7 @@ bwoc retire alpha            # removes from registry (+ optional file delete)
 
 Run `bwoc help` for the topic index. Ten guides ship in-binary: `getting-started`, `backends`, `workspace`, `manifest`, `arc`, `lifecycle`, `daemon`, `messaging`, `persona`, `memory`. Run `bwoc help <topic>` for any specific one.
 
-The original shell-script flow is still supported for raw template work:
-
-```bash
-cd modules/agent-template && ./scripts/incarnate.sh <agent-name>
-```
+Legacy: `modules/agent-template/scripts/incarnate.sh` still copies the raw template, but `bwoc new` is the supported path.
 
 **Target: from clone to first configured commit in under 30 minutes.**
 
@@ -462,8 +459,8 @@ BWOC is specification-first. The reference implementation is a native, cross-pla
 | `bwoc` CLI                                              | Rust, single static binary                                                                                             | **macOS · Linux · Windows**                               |
 | `bwoc-agent` runtime (ships with each incarnated agent) | Rust, single static binary                                                                                             | **macOS · Linux · Windows**                               |
 | CLI i18n (output strings)                               | Project Fluent (`.ftl` per locale)                                                                                     | **Ships with TH · EN**; pluggable for any future language |
-| Backend integration                                     | Subprocess of the LLM's own CLI — Claude Code, Antigravity CLI, Codex CLI, Kimi CLI — or `bwoc-harness` for self-hosted Ollama / OpenAI-compatible models (`bwoc spawn --backend ollama`) | Whatever the backend supports                             |
-| Distribution                                            | GitHub Release binaries with SHA-256 checksums; `cargo install --git` from source (crates.io publish targeted for 1.0) | —                                                         |
+| Backend integration | Ten declared backends: vendor CLIs as subprocesses (`claude`, `agy`, `codex`, `kimi`, `copilot`, `grok`) or `bwoc-harness` for `ollama` / `openai-compatible` / `openrouter` / `litellm` | Whatever the backend supports |
+| Distribution | GitHub Release binaries with SHA-256 checksums · Homebrew tap · `cargo install` from source | — |
 | License                                                 | MIT (see [`LICENSE`](LICENSE))                                                                                         | —                                                         |
 
 The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, no Docker required to incarnate or run an agent.
@@ -476,18 +473,16 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 **Latest release:** [`v2026.9.13-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.13-2) (3.1.0) — **bwoc-bot phase 1**: one agent, one bot — connector `[bot]` block and opt-in limited public mode, on top of **BWOC 3.0, the compatibility contract**. Every artifact BWOC owns declares its schema, `bwoc migrate` moves an installation forward, and `[plugin].compat` is enforced. 3.x reads everything 2.x wrote; schema 2 goes away in 4.0 — see [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) and [`MIGRATION.en.md`](docs/en/MIGRATION.en.md). Cross-platform binaries (`aarch64` / `x86_64` macOS & Linux, `x86_64` Windows) with SHA-256 checksums; CalVer tag scheme `v<YYYY>.<M>.<D>-<patch>`. See [`CHANGELOG.md`](CHANGELOG.md) for the per-release history.
 
-| Area                                                            | Status                                                         |
-| --------------------------------------------------------------- | -------------------------------------------------------------- |
-| Specification (Philosophy, PRD, SRS, Threat)                    | Ready                                                          |
-| Lifecycle, Observability, Failure, Improvement                  | Ready                                                          |
-| Coordination, Governance                                        | Ready                                                          |
-| Kalyāṇamitta-7 trust (manifest + check + read + daemon refusal) | **Phase 3 ✓ (behind `BWOC_TRUST_GATING=1`)**                   |
-| `bwoc` CLI (Rust, macOS · Linux · Windows · CI matrix green)    | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 ✓ · Phase 5 ✓ · plugin-cycle ✓**          |
-| `bwoc-agent` runtime (Rust; `--serve` daemon on Unix)           | **Phase 1 ✓ · Phase 2 ✓ · Phase 3 ✓ · Phase 5 ✓ · plugin-cycle ✓**          |
-| Reference agents (`agent-pi`, `agent-oracle`)                   | **Phase 3 ✓ (incarnated + personalized + `bwoc check` clean)** |
-| Fleet dashboard (`bwoc dashboard` TUI)                          | **Phase 2 ✓**                                                  |
-| Loop engineering (goal + ticker + gate)                         | **L1 ✓** (`bwoc-harness --lead --loop` + the `bwoc loop` TUI) · **L2 partial** (`bwoc fleet health --loop`; `Cron`/`Adaptive` deferred) · **L3 ✓ for the product loops** (`bwoc monitor`, `bwoc digest`) — see [`LOOP-ENGINEERING.en.md`](docs/en/LOOP-ENGINEERING.en.md) |
-| `bwoc-harness` self-hosted runtime + interactive `--chat`       | **Phase 5 ✓ (_saṃvara_ sandbox hardening) · Phase 6 ⋯ (_paññā_ harness eval + cross-platform hardening, in progress) — agentic loop, streaming, memory, permission modes** |
+| Area | Status |
+| --- | --- |
+| Specification 3.0 (Philosophy, PRD, SRS, Threat) — validated by `bwoc check` | Ready |
+| Compatibility contract — schema markers, `bwoc migrate`, enforced `[plugin].compat` | Ready — [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) |
+| `bwoc` CLI + `bwoc-agent` daemon (macOS · Linux · Windows, CI matrix) | Ready |
+| Kalyāṇamitta-7 trust + signed envelopes | Ready (daemon refusal behind `BWOC_TRUST_GATING=1`) |
+| `bwoc-harness` self-hosted runtime (`--chat`, sandbox, eval) | Ready |
+| Interconnect (A2A, MQTT) + chat connectors | Ready |
+| Fleet dashboard (`bwoc dashboard`) | Ready |
+| Loop engineering (goal + ticker + gate) | **L1 ✓** · **L2 partial** (`Cron`/`Adaptive` deferred) · **L3 ✓** — see [`LOOP-ENGINEERING.en.md`](docs/en/LOOP-ENGINEERING.en.md) |
 
 For the full phase-by-phase plan with completed / in-progress / remaining items, see [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md) (Thai: [`docs/th/ROADMAP.th.md`](docs/th/ROADMAP.th.md)).
 

@@ -11,7 +11,7 @@ Understand the per-agent backend choice and how to switch it.
 
 ## Background
 
-BWOC supports six declared backends (Samānattatā — equal treatment, no vendor lock-in):
+BWOC supports ten declared backends (Samānattatā — equal treatment, no vendor lock-in):
 
 | Backend | CLI binary | Common models |
 |---|---|---|
@@ -21,6 +21,10 @@ BWOC supports six declared backends (Samānattatā — equal treatment, no vendo
 | Kimi | `kimi` | `kimi-k2`, `kimi-k1.5` |
 | Ollama | `bwoc-harness` | `qwen2.5-coder:7b`, `llama3.1:8b`, `mistral-nemo`, `gemma4:8b` |
 | OpenAI-compatible | `bwoc-harness` | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini` |
+| Copilot | `copilot` | see the `bwoc new` picker |
+| Grok | `grok` | `grok-4.5`, `grok-code-fast-1`, `grok-build` |
+| OpenRouter | `bwoc-harness` | any OpenRouter model id (key: `OPENROUTER_API_KEY`) |
+| LiteLLM | `bwoc-harness` | `gpt-5.5`, `claude-opus-4-8`, `gemini-2.5-pro` (base: `LITELLM_API_BASE`) |
 
 Each agent picks **one** backend at incarnation time, recorded in its `config.manifest.json` (`primaryModel` + optional `fallbackModel`) and in the workspace's `.bwoc/agents.toml`.
 
@@ -36,26 +40,16 @@ Or pass `--backend agy` and let the interactive picker show you Antigravity's mo
 
 ### Option B — change an existing agent's backend
 
-There's no `bwoc set-backend` yet (Phase 2 work). To switch:
+```bash
+bwoc set my-agent --backend agy --primary-model gemini-3.5-flash-medium
+```
 
-1. Edit the agent's `config.manifest.json`:
+`bwoc set` rewrites the `.bwoc/agents.toml` entry and `primaryModel` / `fallbackModel` in `config.manifest.json`; the backend symlinks already exist. Verify:
 
-   ```json
-   {
-     "primaryModel": "gemini-3.5-flash-medium",
-     "fallbackModel": "gemini-3.1-pro-low",
-     ...
-   }
-   ```
-
-2. Edit the workspace's `.bwoc/agents.toml` to update the `backend = "..."` field for that agent.
-
-3. Verify:
-
-   ```bash
-   bwoc check agents/my-agent     # should still pass
-   bwoc list                      # should show the new backend
-   ```
+```bash
+bwoc check agents/my-agent     # should still pass
+bwoc list                      # should show the new backend
+```
 
 ### Option C — spawn against a different backend without changing the manifest
 
@@ -77,12 +71,11 @@ Should print `Neutrality check passed.` regardless of which backend you switch t
 
 ## Caveats
 
-- All six backends read **the same `AGENTS.md`** via symlinks (`CLAUDE.md` / `AGY.md` / `CODEX.md` / `KIMI.md` / `OLLAMA.md` / `OPENAI.md` all point to `AGENTS.md`). If your agent's instructions assume a specific backend, `bwoc check` will flag it as a neutrality violation.
+All ten backends use `AGENTS.md` as the single source of truth. The vendor-CLI backends (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`) reach it through their entry file (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` → `AGENTS.md`; Copilot and Grok read `AGENTS.md` natively). The harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) load `AGENTS.md` directly through `bwoc-harness`, so there is no `OPENROUTER.md` or `LITELLM.md` to look for.
 - Model identifiers in the picker are a convenience catalog, not a whitelist — type any model name and it's accepted as-is.
-- Phase 2 adds `bwoc set-backend` and related lifecycle commands; for now manifest editing is the manual path.
 
 ## What's next
 
 - [`first-agent.md`](first-agent.md) — full incarnation walkthrough
-- [`docs/en/PHILOSOPHY.en.md` §Samānattatā](../../docs/en/PHILOSOPHY.en.md) — the principle behind backend neutrality
+- [`docs/en/PHILOSOPHY.en.md` §Samānattatā](../../modules/agent-template/docs/en/PHILOSOPHY.en.md) — the principle behind backend neutrality
 - `crates/bwoc-cli/src/spawn.rs::Backend::models()` — the source of truth for the picker catalog

@@ -1,6 +1,6 @@
 [package]
 name = "bwoc-agent"
-description = "Minimal runtime that ships with each incarnated BWOC agent. Phase 1 v2.0 DoD: prints liveness from config.manifest.json."
+description = "Per-agent BWOC daemon — control endpoint, trust- and signature-gated inbox, Saṅgha task watch, and supervision of network-facing children."
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
