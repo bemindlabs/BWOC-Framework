@@ -84,7 +84,7 @@ bump rules defines what makes a release major in the first place.
    what replaces it.
 2. **The migration path exists and is tested.** `bwoc migrate` covers every
    changed on-disk format, `crates/bwoc-cli/tests/migrate_roundtrip.rs` proves it
-   round-trips without losing unmodeled keys, and `docs/{en,th}/MIGRATION-<X.0>.*`
+   round-trips without losing unmodeled keys, and `docs/{en,th}/MIGRATION.*` (one section per major)
    walks an operator through it.
 3. **The previous schema still reads.** One major of overlap
    ([`COMPATIBILITY.en.md`](COMPATIBILITY.en.md#the-support-window)) — the new

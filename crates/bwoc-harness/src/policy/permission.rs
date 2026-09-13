@@ -242,7 +242,7 @@ impl HarnessPolicy {
     /// Returns a default (fail-safe deny-all) policy if the file does not
     /// exist.  Returns an error if the file exists but cannot be parsed.
     ///
-    /// A `schemaVersion` **ahead** of this build is refused rather than read.
+    /// A `schema_version` **ahead** of this build is refused rather than read.
     /// This file decides what every turn is allowed to do, so a revision whose
     /// semantics this binary does not know is exactly the thing not to guess
     /// at: a key that meant "deny" in a later revision, silently ignored here,
@@ -259,7 +259,7 @@ impl HarnessPolicy {
             toml::from_str(&raw).map_err(|e| format!("cannot parse harness-policy.toml: {e}"))?;
         if parsed.schema_version.is_future() {
             return Err(format!(
-                "harness-policy.toml declares schemaVersion {} but this bwoc understands at most {} — refusing to interpret a policy written by a newer BWOC (upgrade bwoc)",
+                "harness-policy.toml declares schema_version {} but this bwoc understands at most {} — refusing to interpret a policy written by a newer BWOC (upgrade bwoc)",
                 parsed.schema_version.0,
                 SchemaVersion::CURRENT.0
             ));

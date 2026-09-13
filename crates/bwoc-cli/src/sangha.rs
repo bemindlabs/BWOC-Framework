@@ -608,25 +608,25 @@ pub fn run_task_reopen(
 ) -> i32 {
     let Some(ws) = resolve_workspace(workspace) else {
         eprintln!("bwoc task reopen: no workspace found. Pass --workspace or run `bwoc init`.");
-        return 2;
+        return crate::exit::USAGE;
     };
     if let Err(e) = load_team(&ws, &team_id) {
         eprintln!("bwoc task reopen: {e}");
-        return 2;
+        return crate::exit::USAGE;
     }
     let task_dir = team_task_dir(&ws, &team_id);
     let _lock = match TaskLock::acquire(&task_dir) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("bwoc task reopen: {e}");
-            return 1;
+            return crate::exit::ERROR;
         }
     };
     let mut tasks = match load_tasks(&ws, &team_id) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("bwoc task reopen: {e}");
-            return 1;
+            return crate::exit::ERROR;
         }
     };
     // Capture who claimed it before the transition clears that, so the report
@@ -638,13 +638,13 @@ pub fn run_task_reopen(
 
     if let Err(e) = team::reopen_task(&mut tasks, &task_id) {
         eprintln!("bwoc task reopen: {e}");
-        return 2;
+        return crate::exit::USAGE;
     }
     let dependents = team::dependents_of(&tasks, &task_id);
 
     if let Err(e) = save_tasks(&ws, &team_id, &tasks) {
         eprintln!("bwoc task reopen: {e}");
-        return 1;
+        return crate::exit::ERROR;
     }
 
     if json {
@@ -676,7 +676,7 @@ pub fn run_task_reopen(
             );
         }
     }
-    0
+    crate::exit::OK
 }
 
 /// Shared claim/complete path: resolve workspace, verify the actor is a

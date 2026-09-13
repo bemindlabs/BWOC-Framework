@@ -83,7 +83,7 @@ MAJOR release ไม่ใช่ tag ที่ใหญ่ขึ้น แต่
 1. **breaking change ทุกข้อถูกระบุชื่อ** ใน `CHANGELOG.md` ใต้ release นั้น พร้อมบอกว่าอะไรมาแทน
 2. **เส้นทาง migration มีอยู่จริงและถูกทดสอบ** — `bwoc migrate` ครอบทุก format บนดิสก์
    ที่เปลี่ยน, `crates/bwoc-cli/tests/migrate_roundtrip.rs` พิสูจน์ว่ามัน round-trip
-   โดยไม่ทำ key ที่ไม่ได้ model ไว้หาย และ `docs/{en,th}/MIGRATION-<X.0>.*`
+   โดยไม่ทำ key ที่ไม่ได้ model ไว้หาย และ `docs/{en,th}/MIGRATION.*` (หนึ่งหัวข้อต่อหนึ่ง major)
    พาผู้ดูแลเดินผ่านทีละขั้น
 3. **schema เดิมยังอ่านได้** — เหลื่อมกันหนึ่ง major
    ([`COMPATIBILITY.th.md`](COMPATIBILITY.th.md#หน้าต่างการรองรับ-support-window))
