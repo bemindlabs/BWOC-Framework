@@ -156,9 +156,10 @@ impl ApprovalChannel for FileApprovalChannel {
 
         let deadline = Instant::now() + Duration::from_secs(req.timeout_s);
         let result = loop {
-            // A decision that does not parse yet is a writer caught mid-write
-            // (`fs::write` truncates, then fills), not a verdict — keep polling
-            // until the deadline rather than reporting `None` (a deny).
+            // A decision that does not parse is most likely a writer caught
+            // mid-write (`fs::write` truncates, then fills), though it could also
+            // be malformed. Either way it is not a verdict yet: keep polling, and
+            // let the deadline turn a file that never parses into `None` (a deny).
             if let Ok(bytes) = std::fs::read(&decided)
                 && let Ok(d) = serde_json::from_slice::<ApprovalDecision>(&bytes)
             {
