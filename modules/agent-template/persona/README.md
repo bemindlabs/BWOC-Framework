@@ -48,11 +48,4 @@ Describe what this agent does in 1–3 sentences. What is its primary function?
 
 ## Supported LLM Backends
 
-| Backend | Instruction File |
-|---|---|
-| Claude | `CLAUDE.md` → `AGENTS.md` |
-| Antigravity | `AGY.md` → `AGENTS.md` |
-| Codex  | `CODEX.md` → `AGENTS.md` |
-| Kimi   | `KIMI.md` → `AGENTS.md` |
-
-See [[../neutrality|Neutrality]] for the symlink design.
+Every backend reads `AGENTS.md` through its entry file. See [[../neutrality|Neutrality]] for the backend list and the symlink design.
