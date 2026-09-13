@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 - **Chat connectors isolate each chat's conversation** — every bridged chat shared the agent's single `.bwoc/chat-session.json`, so two chats (or a DM and a group) leaked context into each other and clobbered history. Each chat now persists to `.bwoc/chat-sessions/<platform>-<chat_id>.json` (sanitized; new `bwoc-harness --session-file`), and bridged turns carry `Principal::Platform { platform, user_id }` provenance instead of `Unknown` (still untrusted). `bwoc chat --tui` is unchanged.
 - **`bwoc new` stamps the current specification.** On 3.0.0 it still wrote `"version": "2.0"` into `config.manifest.json` while the template's `AGENTS.md` said 3.0. Every freshly incarnated agent therefore warned "specification version 2.0 — run `bwoc migrate`" straight away. It now uses the same constant that `bwoc migrate` migrates to.
+- **`bwoc init` no longer overwrites an existing `.bwoc/agents.toml`.** Before, it wrote an empty registry every time, including under `--force` (documented to replace only `workspace.toml`) and in a directory that had `agents.toml` but no `workspace.toml`. Every registered agent silently disappeared from the registry. Found while turning a daemon-only fleet host into a full workspace for the 3.0 migration.
 
 ## [v2026.9.13-0] — 2026-09-13 — 3.0.0
 
@@ -429,7 +430,6 @@ The **standalone agent** release: an incarnated agent now runs as a self-hosted,
 
 - **Chat connectors — reply streaming (in-place edits).** Telegram + Discord replies now stream: the bridge **sends** a message on the first token and **edits it in place** as the agent's reply grows, debounced to 1 edit/sec (clear of Telegram's ~1/s and Discord's ~5/5s limits), with a guaranteed final edit showing the complete text. `Transport::send` now returns the message id and gains `edit`; `AgentSession::ask_streamed` relays `chat_proto` `Token` deltas (the default still does a single send, so non-streaming sessions are unchanged). A new `PlatformStream` carries the send-then-debounced-edit logic, unit-tested (placeholder→edits, no-tokens→single-send, blank-skip, end-to-end via the bridge). No new deps.
 
-
 ## [v2026.6.7-0] — 2026-06-07 — 2.25.0
 
 ### Added
@@ -579,7 +579,6 @@ The **standalone agent** release: an incarnated agent now runs as a self-hosted,
 - **`bwoc-harness` per-tool `execute_tool` OTel spans (BWOC-13).** Completing the BWOC-10 follow-up, each tool the model requests now emits an `execute_tool` child span (`gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`) nested under its `bwoc.turn` span. `TurnMetrics` gains an additive `tool_names` list. Same env-gate + dep-quarantine; default build unchanged.
 
 - **`bwoc-harness` per-turn model on OTel spans (BWOC-11).** Each `bwoc.turn` child span now carries `gen_ai.request.model` (the active model that turn, recorded in `TurnMetrics.model`) — useful when token pressure switches the model mid-session. `session-metrics.jsonl` gains an additive `model` field (omitted when empty). Default build + behaviour unchanged.
-
 
 ## [v2026.5.31-2] — 2026-05-31 — 2.17.1
 
