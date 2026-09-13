@@ -137,6 +137,12 @@ Telegram และ Discord **สตรีมคำตอบสด**: bridge ส�
 - session ของ harness ที่ถูกบริดจ์เป็น **non-TTY** ดังนั้นเครื่องมือโหมด `ask`
   จะ fail-safe เป็น **deny** และ `PermissionRequest` ถูกปฏิเสธอัตโนมัติ — ผู้ใช้แชต
   ระยะไกลอนุมัติ tool call ไม่ได้เด็ดขาด
+- **แยก session ต่อแชต** แต่ละแชตที่ถูกบริดจ์มีไฟล์บทสนทนาของตัวเอง
+  `<agent>/.bwoc/chat-sessions/<platform>-<chat_id>.json` (id ที่ไม่ใช่
+  `[A-Za-z0-9_-]` ล้วนจะถูก hash) สองแชต — หรือ DM กับกลุ่ม — จึงไม่ปน context หรือ
+  ประวัติกัน ส่วน `bwoc chat --tui` ยังใช้ `.bwoc/chat-session.json` เหมือนเดิม
+- ทุก turn ที่ถูกบริดจ์ถูกแท็กตัวตนผู้ส่งบนแพลตฟอร์ม (`Principal::Platform`) ซึ่ง
+  **ไม่น่าเชื่อถือ (untrusted)** เสมอ
 - webhook ของ **LINE** ถูกตรวจลายเซ็น (`X-Line-Signature` = base64(HMAC-SHA256(
   channel secret, body)), แบบ constant-time) คำขอที่ไม่มีลายเซ็น/ปลอมถูกปฏิเสธ
 - **iMessage** เปิด `chat.db` แบบ **อ่านอย่างเดียว** และ agent พูดในนาม **Apple ID ของ
