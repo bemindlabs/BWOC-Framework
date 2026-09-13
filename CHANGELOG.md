@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Security
+
+- **A verified cross-workspace envelope must be replay-checkable.** `ReplayGuard::check` skipped the duplicate check for an empty `nonce` and the freshness window for an empty `ts`. A signed envelope crafted without both passed signature verification and could then be re-delivered with no limit. Such an envelope now refuses as `unreplayable`. `bwoc send` always sets both fields, so no BWOC sender is affected, and unsigned envelopes behave as before.
+
 ## [v2026.9.6-0] — 2026-09-06 — 2.45.0
 
 **A hardening release.** Seven robustness and trust-boundary fixes surfaced by a comparison pass against xAI Grok Build (see `research/2026-08-23_grok-build-comparison.md`). Several are security-relevant; upgrading is recommended for anyone running `bwoc-harness` against a remote model endpoint or a permissive permission policy.
