@@ -6,7 +6,7 @@ Tier 2 is optional: the framework runs on Tier 1 (file-based memory) alone. This
 
 ## Scope
 
-- **`store`** — the SQLite file. One `memories` table (`source`, `text`, `mode`, `ts`, `embedding` as a little-endian `f32` BLOB) with a `ts` index. `insert` / `recent` / `search` / `prune` / `count`. Ranking is brute-force cosine in Rust; rows whose stored dimension differs from the query (model changed, corrupt BLOB) score `NaN` and are skipped rather than mis-ranked.
+- **`store`** — the SQLite file. One `memories` table (`source`, `text`, `mode`, `ts`, `embedding` as a little-endian `f32` BLOB, `embed_model`) with a `ts` index and a unique index on `(source, text, embed_model)`: inserts are `INSERT OR IGNORE`, so re-mining the same chunk is a no-op while switching models re-embeds it (#491). `insert` / `recent` / `search` / `prune` / `count`. Ranking is brute-force cosine in Rust; rows whose stored dimension differs from the query (model changed, corrupt BLOB) score `NaN` and are skipped rather than mis-ranked.
 - **`embed`** — the `Embedder` trait plus `HttpEmbedder` (`POST {base}/v1/embeddings`, 60s timeout, optional bearer auth) and `StubEmbedder`, a deterministic FNV-1a bag-of-words hash so `cargo test` never touches the network.
 - **`mine`** — walks a file or directory for `.md/.txt/.jsonl/.json/.log`, skips files over 5 MiB, and splits bodies into paragraph-bounded chunks capped at 1200 chars (over-long paragraphs hard-split on char boundaries).
 - **`redact`** — scrubs secrets out of chunk text *before* it is embedded or stored, so the store never becomes a secret sink. Precision-biased rules: PEM private-key blocks, `key = value` assignments with secret-ish keys, AWS `AKIA…`, GitHub `gh[pousr]_…`, `sk-…`, Slack `xox[baprs]-…`, and JWTs.
@@ -33,9 +33,10 @@ bwoc-deep-memory --db agent/.bwoc/deep.db prune --older-than-days 90 --keep 5000
 
 Wire it into an agent's `config.manifest.json`:
 
-```text
-deepMemoryCmd = "bwoc-deep-memory --db agents/agent-foo/.bwoc/deep.db \
-                 --embed-url http://localhost:11434 --embed-model nomic-embed-text"
+```json
+{
+  "deepMemoryCmd": "bwoc-deep-memory --db agents/agent-foo/.bwoc/deep.db --embed-url http://localhost:11434 --embed-model nomic-embed-text"
+}
 ```
 
 Flags take precedence over environment variables over defaults:
@@ -51,7 +52,7 @@ The embedding endpoint is any OpenAI-compatible `POST /v1/embeddings` — Ollama
 
 ## Status
 
-Working tool, not a stub. All four sub-commands (`wake-up`, `search`, `mine`, `prune`), mining with secret redaction, and the cosine-ranked store ship today. The `Store` surface is deliberately stable so a `sqlite-vec` k-NN backend can replace brute-force scoring without touching callers. Still deferred: ANN indexing, re-ranking, multi-agent shared stores, and incremental/dedup mining.
+Working tool, not a stub. All four sub-commands (`wake-up`, `search`, `mine`, `prune`), mining with secret redaction, and the cosine-ranked store ship today. The `Store` surface is deliberately stable so a `sqlite-vec` k-NN backend can replace brute-force scoring without touching callers. Still deferred: ANN indexing, re-ranking, multi-agent shared stores, and incremental mining.
 
 ## License
 
