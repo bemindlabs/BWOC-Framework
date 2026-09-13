@@ -367,14 +367,19 @@ mod tests {
             // ETXTBSY until that child execs — SPAWN_SERIAL can't prevent it,
             // because the forking test may live in any module.
             let path = dir.join("fake-cli");
-            let ok = std::process::Command::new("/bin/sh")
+            let out = std::process::Command::new("/bin/sh")
                 .args(["-c", r#"printf '%s\n' "$1" > "$2" && chmod 755 "$2""#, "sh"])
                 .arg(format!("#!/bin/sh\n{body}"))
                 .arg(&path)
-                .status()
-                .unwrap()
-                .success();
-            assert!(ok, "failed to write fake CLI");
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "failed to write fake CLI {}: {} — {}",
+                path.display(),
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            );
             path.to_string_lossy().into_owned()
         }
 
