@@ -41,7 +41,7 @@ env:
   # Small, fast model — enough to prove the agent loop talks to the backend.
   OLLAMA_MODEL: "qwen2.5:0.5b"
   # Pinned Ollama version (reproducibility). Bump deliberately.
-  OLLAMA_VERSION: "0.30.0"
+  OLLAMA_VERSION: "0.34.0"
 
 jobs:
   # ── ollama: full uppāda → ṭhiti, no secrets required ──────────────────────
@@ -59,7 +59,14 @@ jobs:
           # installer is still piped to sh — an accepted tradeoff for an
           # ephemeral, secret-less CI runner; the pin keeps runs deterministic.
           curl -fsSL https://ollama.com/install.sh | sh
-          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          # The installer already starts a systemd `ollama` service on the
+          # runner. A second `ollama serve` only dies on the port collision and
+          # leaves an empty log while the crash evidence goes to journald — so
+          # start one ourselves only when no service answered.
+          if ! curl -fsS http://localhost:11434/api/version >/dev/null 2>&1 \
+             && ! systemctl is-active --quiet ollama 2>/dev/null; then
+            ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          fi
           # Wait for the API to answer, then fail fast with the serve log if it
           # never came up — otherwise `ollama pull` errors with a confusing
           # message that masks the real cause (serve never started).
@@ -72,7 +79,7 @@ jobs:
           done
           if [ -z "$ready" ]; then
             echo "::error::Ollama API did not become ready within 30s"
-            cat "$RUNNER_TEMP/ollama.log" || true
+            sudo journalctl -u ollama --no-pager 2>/dev/null || cat "$RUNNER_TEMP/ollama.log" || true
             exit 1
           fi
           ollama pull "$OLLAMA_MODEL"
@@ -142,7 +149,9 @@ jobs:
 
       - name: Ollama log (on failure)
         if: failure()
-        run: cat "$RUNNER_TEMP/ollama.log" || true
+        run: |
+          sudo journalctl -u ollama --no-pager 2>/dev/null || true
+          cat "$RUNNER_TEMP/ollama.log" 2>/dev/null || true
 
   # ── claude: same arc through the harness, gated on the Anthropic key ───────
   # No-ops (exit 0 with a warning) when ANTHROPIC_API_KEY is absent, so this is
