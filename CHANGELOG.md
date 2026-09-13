@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
-## [v2026.9.8-0] — 2026-09-08 — 3.0.0
+## [v2026.9.13-0] — 2026-09-13 — 3.0.0
 
 **BWOC 3.0 — the compatibility contract.** The first major driven by actual breakage rather than by a decision about a version number: through 2.x, exactly one artifact on disk could say which revision wrote it, `config.manifest.json`'s `version` was written and never read, and `[plugin].compat` was documented as enforced but was not. A format that cannot say what it is can only ever break silently, so this release makes every one of them say it — and writes down what the project will and will not break.
 
