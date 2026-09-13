@@ -62,9 +62,10 @@ jobs:
           # The installer already starts a systemd `ollama` service on the
           # runner. A second `ollama serve` only dies on the port collision and
           # leaves an empty log while the crash evidence goes to journald — so
-          # start one ourselves only when no service answered.
-          if ! curl -fsS http://localhost:11434/api/version >/dev/null 2>&1 \
-             && ! systemctl is-active --quiet ollama 2>/dev/null; then
+          # start one ourselves only when no service exists. A unit that is
+          # still "activating" is not "active" yet, so test for the unit, not
+          # its state — the readiness loop below waits for it either way.
+          if ! systemctl list-unit-files ollama.service >/dev/null 2>&1; then
             ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
           fi
           # Wait for the API to answer, then fail fast with the serve log if it
@@ -79,7 +80,8 @@ jobs:
           done
           if [ -z "$ready" ]; then
             echo "::error::Ollama API did not become ready within 30s"
-            sudo journalctl -u ollama --no-pager 2>/dev/null || cat "$RUNNER_TEMP/ollama.log" || true
+            sudo journalctl -u ollama --no-pager 2>/dev/null || true
+            cat "$RUNNER_TEMP/ollama.log" 2>/dev/null || true
             exit 1
           fi
           ollama pull "$OLLAMA_MODEL"
