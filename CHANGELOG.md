@@ -8,11 +8,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Fixed
 
-<<<<<<< HEAD
-- **`bwoc init` no longer overwrites an existing `.bwoc/agents.toml`.** Before, it wrote an empty registry every time, including under `--force` (documented to replace only `workspace.toml`) and in a directory that had `agents.toml` but no `workspace.toml`. Every registered agent silently disappeared from the registry. Found while turning a daemon-only fleet host into a full workspace for the 3.0 migration.
-=======
 - **Chat connectors isolate each chat's conversation** — every bridged chat shared the agent's single `.bwoc/chat-session.json`, so two chats (or a DM and a group) leaked context into each other and clobbered history. Each chat now persists to `.bwoc/chat-sessions/<platform>-<chat_id>.json` (sanitized; new `bwoc-harness --session-file`), and bridged turns carry `Principal::Platform { platform, user_id }` provenance instead of `Unknown` (still untrusted). `bwoc chat --tui` is unchanged.
->>>>>>> origin/main
+- **`bwoc init` no longer overwrites an existing `.bwoc/agents.toml`.** Before, it wrote an empty registry every time, including under `--force` (documented to replace only `workspace.toml`) and in a directory that had `agents.toml` but no `workspace.toml`. Every registered agent silently disappeared from the registry. Found while turning a daemon-only fleet host into a full workspace for the 3.0 migration.
 
 ## [v2026.9.13-0] — 2026-09-13 — 3.0.0
 
