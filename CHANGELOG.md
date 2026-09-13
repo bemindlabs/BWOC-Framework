@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bwoc init` no longer overwrites an existing `.bwoc/agents.toml`.** Before, it wrote an empty registry every time, including under `--force` (documented to replace only `workspace.toml`) and in a directory that had `agents.toml` but no `workspace.toml`. Every registered agent silently disappeared from the registry. Found while turning a daemon-only fleet host into a full workspace for the 3.0 migration.
+
 ## [v2026.9.13-0] — 2026-09-13 — 3.0.0
 
 **BWOC 3.0 — the compatibility contract.** The first major driven by actual breakage rather than by a decision about a version number: through 2.x, exactly one artifact on disk could say which revision wrote it, `config.manifest.json`'s `version` was written and never read, and `[plugin].compat` was documented as enforced but was not. A format that cannot say what it is can only ever break silently, so this release makes every one of them say it — and writes down what the project will and will not break.

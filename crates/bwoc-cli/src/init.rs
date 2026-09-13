@@ -154,8 +154,13 @@ fn init(args: InitArgs) -> Result<PathBuf, InitError> {
     };
     ws.save(&root)?;
 
-    let registry = AgentsRegistry::default();
-    registry.save(&root)?;
+    // Never clobber an existing registry: `--force` is documented to overwrite
+    // workspace.toml only, and a directory can carry `.bwoc/agents.toml` without
+    // a workspace.toml (e.g. a hand-assembled daemon workspace). Writing a
+    // default registry over it would silently unregister every agent.
+    if !root.join(".bwoc/agents.toml").exists() {
+        AgentsRegistry::default().save(&root)?;
+    }
 
     // Create the agents/ directory + its README. `--single-agent` swaps in
     // single-agent-oriented guidance instead of the fleet default.
@@ -480,6 +485,27 @@ mod tests {
         let content = fs::read_to_string(dir.join("notes/README.md")).unwrap();
         assert_eq!(content, "# my custom notes readme");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn init_keeps_an_existing_agents_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join(".bwoc")).unwrap();
+        let registry = "[[agent]]\nid = \"agent-keep\"\npath = \"agents/agent-keep\"\nbackend = \"ollama\"\nincarnated = \"2026-06-13T14:46:05Z\"\nstatus = \"active\"\n";
+        std::fs::write(dir.join(".bwoc/agents.toml"), registry).unwrap();
+
+        // No workspace.toml yet: init must add it without touching the registry.
+        init(args(dir, false)).unwrap();
+        assert!(dir.join(".bwoc/workspace.toml").exists());
+        let loaded = AgentsRegistry::load(dir).unwrap();
+        assert_eq!(loaded.agents.len(), 1);
+        assert_eq!(loaded.agents[0].id, "agent-keep");
+
+        // `--force` rewrites workspace.toml only — the registry still survives.
+        init(args(dir, true)).unwrap();
+        let loaded = AgentsRegistry::load(dir).unwrap();
+        assert_eq!(loaded.agents.len(), 1, "--force must not unregister agents");
     }
 
     #[test]
