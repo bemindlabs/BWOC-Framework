@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 2.0 |
+| **Version** | 3.0 |
 | **Date** | 2026-05-22 |
 | **Philosophy** | docs/en/PHILOSOPHY.en.md |
 | **Requirements** | docs/en/SRS.en.md |

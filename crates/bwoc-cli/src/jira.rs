@@ -66,12 +66,12 @@ use std::process::{Command, Stdio};
 // Exit codes + env var names (single source of truth for the module).
 // ---------------------------------------------------------------------------
 
-const EXIT_OK: i32 = 0;
-const EXIT_LOCAL_ERROR: i32 = 1;
-const EXIT_USAGE: i32 = 2;
-const EXIT_CONFLICT: i32 = 3;
-const EXIT_NO_PLUGIN: i32 = 4;
-const EXIT_PLUGIN_ERROR: i32 = 255;
+const EXIT_OK: i32 = crate::exit::OK;
+const EXIT_LOCAL_ERROR: i32 = crate::exit::ERROR;
+const EXIT_USAGE: i32 = crate::exit::USAGE;
+const EXIT_CONFLICT: i32 = crate::exit::FINDINGS;
+const EXIT_NO_PLUGIN: i32 = crate::exit::NO_PLUGIN;
+const EXIT_PLUGIN_ERROR: i32 = crate::exit::INTERNAL;
 
 const ENV_EMAIL: &str = "BWOC_JIRA_EMAIL";
 const ENV_TOKEN: &str = "BWOC_JIRA_TOKEN";
@@ -490,6 +490,11 @@ struct PluginSection {
     name: String,
     kind: String,
     entry: String,
+    /// Resolved against the framework version before the plugin is used.
+    /// `#[serde(default)]` so a manifest missing it yields an explicit refusal
+    /// rather than an opaque TOML parse error.
+    #[serde(default)]
+    compat: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -548,6 +553,16 @@ fn discover_jira_plugins(root: &Path) -> Result<Vec<JiraPlugin>, String> {
         let parsed: ManifestRaw =
             toml::from_str(&body).map_err(|e| format!("parse {}: {e}", manifest.display()))?;
         if parsed.plugin.kind == "jira" {
+            // Refuse rather than skip: a jira plugin declaring a framework it
+            // was not written for would otherwise vanish from the set, and
+            // `bwoc jira sync` would report "no plugin installed" for one the
+            // operator can see on disk.
+            if let Err(e) = crate::util::check_plugin_compat(
+                &parsed.plugin.compat,
+                crate::util::FRAMEWORK_VERSION,
+            ) {
+                return Err(format!("{}: {e}", manifest.display()));
+            }
             found.push(JiraPlugin {
                 name: parsed.plugin.name,
                 dir: plugin_dir,
@@ -1692,7 +1707,7 @@ mod tests {
             dir.join("manifest.toml"),
             format!(
                 "[plugin]\nname = \"{name}\"\nkind = \"{kind}\"\nversion = \"0.1.0\"\n\
-                 description = \"x\"\ncompat = \">=2.5.0\"\nentry = \"jira.sh\"\n"
+                 description = \"x\"\ncompat = \">=3.0.0, <4.0.0\"\nentry = \"jira.sh\"\n"
             ),
         )
         .unwrap();

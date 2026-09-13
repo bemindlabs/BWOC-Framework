@@ -2330,7 +2330,7 @@ mod tests {
         std::fs::write(
             dir.join("manifest.toml"),
             "[plugin]\nname = \"jira-cloud-rest\"\nkind = \"jira\"\nversion = \"0.1.0\"\n\
-             description = \"jira adapter\"\ncompat = \">=2.7.0\"\nentry = \"jira.sh\"\n",
+             description = \"jira adapter\"\ncompat = \">=3.0.0, <4.0.0\"\nentry = \"jira.sh\"\n",
         )
         .unwrap();
         let bwoc = root.join(".bwoc");
@@ -2428,7 +2428,7 @@ mod tests {
         std::fs::write(
             dir.join("manifest.toml"),
             "[plugin]\nname = \"gcloud-auth\"\nkind = \"workflow\"\nversion = \"0.1.0\"\n\
-             description = \"gcloud credential-state adapter\"\ncompat = \">=2.9.0\"\n\
+             description = \"gcloud credential-state adapter\"\ncompat = \">=3.0.0, <4.0.0\"\n\
              entry = \"gcloud.sh\"\n",
         )
         .unwrap();

@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 6 — *paññā* (harness eval & cross-platform hardening) — **in progress.** t29 (macOS network-egress parity in the sandbox SBPL), t30 (`cli` ambient-backend trust tier — refuse untrusted autoprocess), and t31 (agent_loop decomposition + eval ambient-backend guard) shipped; t32 (deep-memory sqlite-vec / governance) parked as premature (see `reports/retro/t32-deep-memory-design.md`). Prior **Phase 5 — *turn-executor isolation*** (self-hosted harness hardening) — **FULLY signed off (t11 merged).** t1–t7a shipped (re-exec process isolation, `setrlimit`, Landlock FS jail + anti-ptrace); t8 the deferred-control fence (honesty gate); **t11 — network-egress containment (seccomp + the no-fd invariant, Linux, fail-closed)**. t9 (cgroup `pids.max` per-turn process cap) has since landed too — best-effort, enforced where a delegated cgroup v2 subtree exists, degrading to the `RLIMIT_NPROC` floor otherwise; **no Phase 5 containment ticket remains deferred.** Earlier phases: Phase 3 *vaya + interconnect* DoD met (2026-05-23; Trust v2 + Tier 2 `bwoc-deep-memory` since shipped); Phase 4 fleet-governance spec landed; Phase 1 v2.0 and Phase 2 DoDs met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Active phase:** Phase 7 — *anicca* (versioned change & the compatibility contract) — **in progress**, producing **3.0**: every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward without losing comments or unmodeled keys, specification 3.0 is validated rather than merely written, and `[plugin].compat` is enforced with bounded ranges. The contract itself is in [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md). Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** (t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature, resume order recorded in `reports/retro/t32-deep-memory-design.md`). **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off; Phase 3 *vaya* + Phase 4 fleet-governance DoDs met; Phase 1 v2.0 and Phase 2 met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -200,6 +200,63 @@ where no delegated cgroup subtree exists (t9 landed), and macOS stays dev-only
 
 ---
 
+## Phase 6 — *paññā* (harness eval & cross-platform hardening)
+
+**Definition of done:** the harness can be measured, not just trusted — an eval
+fixture scores a backend reproducibly — and the Phase 5 containment story holds
+on more than one operating system.
+
+### Shipped in Phase 6
+
+| Ticket | Item | Status |
+|---|---|---|
+| t29 | macOS network-egress parity in the sandbox SBPL | ✓ |
+| t30 | `cli` ambient-backend trust tier — refuse untrusted autoprocess | ✓ |
+| t31a | `agent_loop` decomposition | ✓ |
+| t31b | eval ambient-backend guard | ✓ |
+| t32 | deep-memory sqlite-vec / governance | **parked as premature** — see [`reports/retro/t32-deep-memory-design.md`](../../reports/retro/t32-deep-memory-design.md) |
+
+**Phase 6 DoD is met.** t32 is not a gap in it: the investigation concluded that
+ANN recall is not yet needed at any real workload, and the note records the
+resume order (redaction on `mine`, then retention/TTL, then `sqlite-vec`) so the
+work is deferred rather than lost. Mattaññutā.
+
+---
+
+## Phase 7 — *anicca* (versioned change & the compatibility contract)
+
+**Definition of done:** BWOC can change its own on-disk and CLI contracts without
+breaking an installation silently — every format says which revision wrote it,
+one command moves an installation forward, and what the project will and will not
+break is written down.
+
+The phase that produces **3.0**, the first major release driven by actual
+breakage rather than by a version-number decision.
+
+| Item | Status |
+|---|---|
+| `schema_version` on every framework-owned artifact; absent ⇒ schema 2 | ✓ |
+| Control-plane files fail closed on a newer schema (`harness-policy.toml`, `peers.toml`) | ✓ |
+| `bwoc migrate` — splices in place, keeps comments and unmodeled keys, backs up under `.bwoc/` | ✓ |
+| Specification 3.0, and `bwoc check` actually validating it | ✓ |
+| `[plugin].compat` enforced, ranges bounded above | ✓ |
+| [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md) — public surfaces, support window, deprecation | ✓ |
+| [`MIGRATION.en.md`](MIGRATION.en.md) — the operator's path from 2.x | ✓ |
+| Supported-versions statement in [`SECURITY.md`](../../SECURITY.md) | ✓ |
+
+### Deliberately not in 3.0
+
+Each of these is deferred with a reason, not forgotten:
+
+- **ACP adapter** ([#485](https://github.com/bemindlabs/BWOC-Framework/issues/485)) — demand-gated; the gate is an actual editor user asking.
+- **A shared `Dispatch` seam** ([#452](https://github.com/bemindlabs/BWOC-Framework/issues/452)) — earns its place at the first real third consumer, not before.
+- **HV3-4 / HV3-5 / HV3-6 (`agy`, `kimi`)** — features. A feature does not make a release major, and holding 3.0 for them would delay the contract that is ready.
+- **CLI surface reduction** — the 60 top-level subcommands and the 8.4k-line `check.rs` are real debt, but a different kind of breaking change with a different blast radius. Reserved for 4.0.
+- **Code signing** (Apple notarization / Windows Authenticode) — blocked on the maintainer provisioning certificates, not on code. Still listed in [`RELEASING.en.md`](RELEASING.en.md).
+- **crates.io publish** — the Rust API is deliberately not a public surface; see [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md#what-is-a-public-surface).
+
+---
+
 ## Cross-cutting (every phase)
 
 - **Bilingual parity** — every spec doc has EN canonical + TH (and future languages); the bilingual-reminder hook gates this.
@@ -218,6 +275,7 @@ See [`VISION.md` §Non-Goals](../../VISION.md#non-goals). Summary: BWOC is not a
 ## See Also
 
 - [`VERSION.md`](../../VERSION.md) — current versions and SemVer policy.
+- [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md) — public surfaces, support window, deprecation.
 - [`VISION.md`](../../VISION.md) — 1-year and 3-year success criteria.
 - [`CHANGELOG.md`](../../CHANGELOG.md) — what shipped, when.
 - [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md) — how the components fit.

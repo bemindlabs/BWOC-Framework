@@ -1,6 +1,6 @@
 # 2026-09-13 — Verified envelopes must be replay-checkable
 
-Found while triaging the open CodeQL alerts. Alerts #24/#25 flag the `unwrap_or("")` defaults in `bwoc-agent/src/trust.rs` as "hard-coded cryptographic value". As a crypto finding that is a false positive: the empty string is just a default. Reading the code behind it turned up a real replay hole.
+Found while triaging the open CodeQL alerts. Alerts #24/#25 flag the `unwrap_or("")` defaults in `bwoc-agent/src/trust.rs` as "hard-coded cryptographic value". As a crypto finding, that is a false positive: the empty string is just a default. Reading the code behind it turned up a real replay hole.
 
 ## What changed
 - In `evaluate`, on the cross-workspace / gateway path: if the signature verified (`verified_from.is_some()`) but `nonce` or `ts` is empty, the envelope is refused with reason `unreplayable`.
@@ -20,5 +20,6 @@ Found while triaging the open CodeQL alerts. Alerts #24/#25 flag the `unwrap_or(
   - the normal shape still passes
 
 ## Related
+- Shipped in 3.0.0 (`v2026.9.13-0`).
 - CodeQL alerts #24, #25
 - `notes/2026-06-09_trust-pinned-peers-replay.md`

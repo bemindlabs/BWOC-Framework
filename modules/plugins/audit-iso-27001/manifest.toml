@@ -3,7 +3,7 @@ name        = "audit-iso-27001"
 kind        = "audit"
 version     = "0.2.0"
 description = "ISO/IEC 27001 Information Security Management System audit — attestation + SoA-driven sample runtime (BWOC-34)."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "audit.sh"
 
 # [config.schema] intentionally omitted. v0.2.0 adopts three per-criterion

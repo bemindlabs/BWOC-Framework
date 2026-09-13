@@ -41,10 +41,10 @@ use std::process::{Command, Stdio};
 // Exit codes + plugin name + env (single source of truth).
 // ---------------------------------------------------------------------------
 
-const EXIT_OK: i32 = 0;
-const EXIT_USAGE: i32 = 2;
-const EXIT_NO_PLUGIN: i32 = 4;
-const EXIT_PLUGIN_ERROR: i32 = 255;
+const EXIT_OK: i32 = crate::exit::OK;
+const EXIT_USAGE: i32 = crate::exit::USAGE;
+const EXIT_NO_PLUGIN: i32 = crate::exit::NO_PLUGIN;
+const EXIT_PLUGIN_ERROR: i32 = crate::exit::INTERNAL;
 
 const PLUGIN_ACCOUNTING: &str = "accounting-api";
 const PLUGIN_KIND: &str = "workflow";
@@ -558,6 +558,11 @@ struct PluginSection {
     name: String,
     kind: String,
     entry: String,
+    /// Resolved against the framework version before the plugin is used.
+    /// `#[serde(default)]` so a manifest missing it yields an explicit refusal
+    /// rather than an opaque TOML parse error.
+    #[serde(default)]
+    compat: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -594,6 +599,16 @@ fn discover_plugin(root: &Path, name: &str) -> Result<Option<AccountingPlugin>, 
                 parsed.plugin.kind,
                 PLUGIN_KIND
             ));
+        }
+        // The plugin exists and is the right kind, but declares a framework
+        // range this build is outside. `PLUGINS.en.md` has always specified
+        // that the framework refuses to load on a compat mismatch; this is
+        // where that refusal lives. Surface it — silently degrading to "not
+        // installed" would hide a plugin the operator believes is active.
+        if let Err(e) =
+            crate::util::check_plugin_compat(&parsed.plugin.compat, crate::util::FRAMEWORK_VERSION)
+        {
+            return Err(format!("{}: {e}", manifest.display()));
         }
         return Ok(Some(AccountingPlugin {
             name: parsed.plugin.name,

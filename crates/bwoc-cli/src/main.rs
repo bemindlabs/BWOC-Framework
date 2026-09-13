@@ -25,6 +25,7 @@ mod digest;
 mod doc_cmd;
 mod doctor;
 mod eval;
+mod exit;
 mod figma;
 mod fleet;
 mod fleet_term;
@@ -42,6 +43,7 @@ mod livecheck;
 mod log;
 mod loop_cmd;
 mod memory;
+mod migrate;
 mod monitor;
 mod new;
 mod okr;
@@ -113,6 +115,36 @@ enum Commands {
         /// Emit JSON to stdout instead of the human-readable report.
         #[arg(long)]
         json: bool,
+    },
+    /// Bring on-disk artifacts up to the current schema (anicca). Reads what
+    /// 2.x wrote, writes what 3.x reads; support for the older revision ends in
+    /// BWOC 4.0. Splices in place — comments and unmodeled keys survive.
+    Migrate {
+        /// Workspace root or agent directory to migrate. Defaults to the
+        /// current directory. Mutually exclusive with `--all`.
+        #[arg(conflicts_with = "all")]
+        path: Option<PathBuf>,
+        /// Migrate the workspace plus every agent registered in it.
+        #[arg(long)]
+        all: bool,
+        /// Workspace root (only used with `--all`). Defaults follow standard
+        /// resolution: --workspace > BWOC_WORKSPACE env > ancestor walk.
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+        /// Report what would change without writing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Emit JSON to stdout instead of the human-readable report. Requires
+        /// `--yes`, since it writes without prompting.
+        #[arg(long)]
+        json: bool,
+        /// Proceed without confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Do not keep a copy of the originals under
+        /// `<root>/.bwoc/migrate-backup/`.
+        #[arg(long = "no-backup")]
+        no_backup: bool,
     },
     /// Incarnate a new agent from the template (uppāda).
     New(Box<NewArgs>),
@@ -221,7 +253,7 @@ enum Commands {
     /// Manage Saṅgha teams — a named subset of agents sharing a task list.
     #[command(subcommand)]
     Team(TeamCommand),
-    /// Manage a team's shared task list (add / list / claim / complete).
+    /// Manage a team's shared task list (add / list / claim / complete / reopen).
     #[command(subcommand)]
     Task(TaskCommand),
     /// Query task status across **every** team (fleet-wide): filter by `--agent`
@@ -964,10 +996,17 @@ enum TaskCommand {
         /// Explicit task id (default: auto `t<N>`).
         #[arg(long = "id")]
         id: Option<String>,
-        /// Gate completion on lead plan approval (Pavāraṇā): the claimant must
-        /// submit a plan and the lead must approve it before `task complete`.
-        #[arg(long = "requires-plan")]
-        requires_plan: bool,
+        /// Opt OUT of the plan-approval gate (Pavāraṇā). By default a task
+        /// cannot be completed until the claimant submits a plan and the lead
+        /// approves it.
+        ///
+        /// The default flipped in 3.0 because an ungated task is a task an
+        /// agent can assert done without doing: a goal-loop worker marked
+        /// "merge branch X to main" completed having merged nothing, and the
+        /// completion unblocked its dependent. Pass this only for work whose
+        /// completion you can verify yourself.
+        #[arg(long = "no-plan")]
+        no_plan: bool,
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
         #[arg(long)]
@@ -1005,6 +1044,26 @@ enum TaskCommand {
         /// Completing agent id (must be the claimant).
         #[arg(long = "as")]
         agent: String,
+        #[arg(long = "workspace")]
+        workspace: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Withdraw a completion: return a completed task to pending. An operator
+    /// action — an agent can assert a task done that it did not do, and the
+    /// shared list needs a way to take that claim back without hand-editing
+    /// `tasks.jsonl`. Clears the claimant and, on a plan-gated task, the
+    /// approval verdict; keeps the submitted plan text as evidence. Dependents
+    /// are reported, never cascaded.
+    Reopen {
+        /// Team id.
+        team: String,
+        /// Task id to reopen.
+        task: String,
+        /// Why the completion is being withdrawn — recorded in `--json`
+        /// output and echoed in the report.
+        #[arg(long)]
+        reason: Option<String>,
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
         #[arg(long)]
@@ -2785,6 +2844,26 @@ fn main() -> ExitCode {
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
+        Some(Commands::Migrate {
+            path,
+            all,
+            workspace,
+            dry_run,
+            json,
+            yes,
+            no_backup,
+        }) => {
+            let code = migrate::run(migrate::MigrateArgs {
+                path,
+                all,
+                workspace,
+                dry_run,
+                json,
+                yes,
+                no_backup,
+            });
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
         Some(Commands::New(args)) => {
             let code = new::run((*args).into_runtime(lang.clone()));
             ExitCode::from(u8::try_from(code).unwrap_or(1))
@@ -3034,10 +3113,10 @@ fn main() -> ExitCode {
                     title,
                     deps,
                     id,
-                    requires_plan,
+                    no_plan,
                     workspace,
                     json,
-                } => sangha::run_task_add(workspace, team, title, deps, id, requires_plan, json),
+                } => sangha::run_task_add(workspace, team, title, deps, id, !no_plan, json),
                 TaskCommand::List {
                     team,
                     workspace,
@@ -3057,6 +3136,13 @@ fn main() -> ExitCode {
                     workspace,
                     json,
                 } => sangha::run_task_complete(workspace, team, task, agent, json),
+                TaskCommand::Reopen {
+                    team,
+                    task,
+                    reason,
+                    workspace,
+                    json,
+                } => sangha::run_task_reopen(workspace, team, task, reason, json),
                 TaskCommand::Plan {
                     team,
                     task,

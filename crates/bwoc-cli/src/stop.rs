@@ -504,6 +504,7 @@ mod tests {
         fs::create_dir_all(root.join(".bwoc")).unwrap();
         fs::create_dir_all(root.join("agents")).unwrap();
         Workspace {
+            schema_version: bwoc_core::schema::SchemaVersion::CURRENT,
             workspace: WorkspaceMeta {
                 name: label.to_string(),
                 version: "0.1.0".to_string(),

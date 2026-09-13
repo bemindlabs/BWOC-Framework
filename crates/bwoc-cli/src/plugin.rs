@@ -626,7 +626,25 @@ pub fn run_show(args: ShowArgs) -> i32 {
     println!("Plugin        {}", p.manifest.plugin.name);
     println!("Kind          {}", p.manifest.plugin.kind);
     println!("Version       {}", p.manifest.plugin.version);
-    println!("Compat        {}", p.manifest.plugin.compat);
+    // Listing shows an incompatible plugin rather than hiding it — the
+    // operator can see it on disk, so the useful answer is "present, but will
+    // not load", not silence. The refusal itself lives in the resolvers that
+    // actually run a plugin.
+    match crate::util::check_plugin_compat(
+        &p.manifest.plugin.compat,
+        crate::util::FRAMEWORK_VERSION,
+    ) {
+        Ok(()) => println!(
+            "Compat        {} (matches {})",
+            p.manifest.plugin.compat,
+            crate::util::FRAMEWORK_VERSION
+        ),
+        Err(_) => println!(
+            "Compat        {} — WILL NOT LOAD on {}",
+            p.manifest.plugin.compat,
+            crate::util::FRAMEWORK_VERSION
+        ),
+    }
     println!("Entry         {}", p.manifest.plugin.entry);
     println!("Description   {}", p.manifest.plugin.description);
     println!("Path          {}", p.path.display());
