@@ -119,11 +119,49 @@ impl HarnessSessionFactory {
     }
 }
 
+/// Session-file key for a conversation. A public sender's session never shares
+/// the chat's allow-listed file: `<chat_id>-public` can't be an integer chat id,
+/// so it can't collide with one.
+fn session_key(chat_id: i64, public: bool) -> String {
+    if public {
+        format!("{chat_id}-public")
+    } else {
+        chat_id.to_string()
+    }
+}
+
+/// The harness session mode a limited-public session is locked into: the
+/// `plan` mode's fixed read-only tool allow-list (`read_file`, `list_dir`,
+/// `grep`, `memory_read`); every write, `run_command`, git, delegation, and
+/// MCP tool is refused before the permission gate.
+const READ_ONLY_MODE: &str = "plan";
+
+/// One startup event while waiting for the read-only ack: `None` ⇒ keep
+/// reading (the restored-history replay). Anything but the `plan` ack — an
+/// error, another mode, EOF — fails session creation (fail closed).
+fn read_only_ack(ev: Option<ChatEvent>) -> Option<Result<(), ConnectError>> {
+    match ev {
+        Some(ChatEvent::ModeChanged { mode }) if mode == READ_ONLY_MODE => Some(Ok(())),
+        Some(ChatEvent::Restored { .. }) => None,
+        _ => Some(Err(ConnectError::Session(
+            "harness did not confirm read-only mode for a public session".into(),
+        ))),
+    }
+}
+
 #[async_trait]
 impl SessionFactory for HarnessSessionFactory {
-    async fn create(&self, chat_id: i64) -> Result<Box<dyn AgentSession>, ConnectError> {
-        let session_file = chat_session_file(&self.agent_dir, &self.platform, &chat_id.to_string());
-        let s = HarnessSession::spawn(
+    async fn create(
+        &self,
+        chat_id: i64,
+        public: bool,
+    ) -> Result<Box<dyn AgentSession>, ConnectError> {
+        let session_file = chat_session_file(
+            &self.agent_dir,
+            &self.platform,
+            &session_key(chat_id, public),
+        );
+        let mut s = HarnessSession::spawn(
             &self.harness,
             &self.agent_dir,
             &session_file,
@@ -135,6 +173,9 @@ impl SessionFactory for HarnessSessionFactory {
             self.team_chat.as_deref(),
         )
         .await?;
+        if public {
+            s.enter_read_only().await?;
+        }
         Ok(Box::new(s))
     }
 }
@@ -235,6 +276,23 @@ impl HarnessSession {
             }
         }
         Err(ConnectError::Session("harness exited before Ready".into()))
+    }
+
+    /// Lock this session to [`READ_ONLY_MODE`] before any user text is sent.
+    /// Only this bridge writes the harness's stdin, and remote text only ever
+    /// travels inside a JSON-encoded `User` input, so a sender can't switch
+    /// the mode back.
+    async fn enter_read_only(&mut self) -> Result<(), ConnectError> {
+        self.write_input(&ChatInput::SetMode {
+            mode: READ_ONLY_MODE.to_string(),
+        })
+        .await?;
+        loop {
+            let ev = self.next_event().await?;
+            if let Some(outcome) = read_only_ack(ev) {
+                return outcome;
+            }
+        }
     }
 
     async fn write_input(&mut self, input: &ChatInput) -> Result<(), ConnectError> {
@@ -356,6 +414,59 @@ mod tests {
         // A hostile platform tag is contained the same way.
         let p = chat_session_file(agent, "../../etc", "1");
         assert_eq!(p.parent(), Some(sessions_dir(agent).as_path()));
+    }
+
+    #[test]
+    fn public_session_file_is_distinct_from_the_chats_allow_listed_one() {
+        let agent = Path::new("/agents/agent-x");
+        let private = chat_session_file(agent, "telegram", &session_key(-100, false));
+        let public = chat_session_file(agent, "telegram", &session_key(-100, true));
+        assert_ne!(private, public);
+        assert_eq!(private, sessions_dir(agent).join("telegram--100.json"));
+        assert_eq!(
+            public,
+            sessions_dir(agent).join("telegram--100-public.json")
+        );
+    }
+
+    #[test]
+    fn read_only_handshake_requires_the_plan_ack() {
+        assert!(matches!(
+            read_only_ack(Some(ChatEvent::ModeChanged {
+                mode: "plan".into()
+            })),
+            Some(Ok(()))
+        ));
+        // History replay after Ready is skipped, not treated as a failure.
+        assert!(
+            read_only_ack(Some(ChatEvent::Restored {
+                role: "user".into(),
+                text: "hi".into()
+            }))
+            .is_none()
+        );
+        // Anything else fails closed: another mode, an error, EOF.
+        for ev in [
+            Some(ChatEvent::ModeChanged {
+                mode: "default".into(),
+            }),
+            Some(ChatEvent::Error {
+                message: "unknown permission mode".into(),
+            }),
+            None,
+        ] {
+            assert!(matches!(read_only_ack(ev), Some(Err(_))));
+        }
+        // The mode string is one the harness parses.
+        let line = ChatInput::SetMode {
+            mode: READ_ONLY_MODE.into(),
+        }
+        .to_line()
+        .unwrap();
+        assert!(
+            line.contains("\"set_mode\"") && line.contains("\"plan\""),
+            "{line}"
+        );
     }
 
     #[test]

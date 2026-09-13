@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Connector `[bot]` block and limited public mode** — `connectors/<platform>.toml` now accepts `schema_version` (absent ⇒ 2; a newer revision makes the connector refuse to start) and an optional `[bot]` table. `[bot]` adds fixed slash-command replies (`[bot.commands]`, exact first token, `@botname` stripped, never forwarded to the agent), a per-sender `rate_limit_per_min` (default 20: one notice, then silent drops) and `max_input_chars` (default 4000). `public = true` lets non-allow-listed senders reach the agent, but only by DM or @mention. Their sessions are locked to read-only harness `plan` mode, always capped, and kept in a separate `…-public.json` session outside team chat. Without `[bot]`, behaviour is unchanged (closed by default).
+
 ### Fixed
 
 - **Chat connectors isolate each chat's conversation** — every bridged chat shared the agent's single `.bwoc/chat-session.json`, so two chats (or a DM and a group) leaked context into each other and clobbered history. Each chat now persists to `.bwoc/chat-sessions/<platform>-<chat_id>.json` (sanitized; new `bwoc-harness --session-file`), and bridged turns carry `Principal::Platform { platform, user_id }` provenance instead of `Unknown` (still untrusted). `bwoc chat --tui` is unchanged.

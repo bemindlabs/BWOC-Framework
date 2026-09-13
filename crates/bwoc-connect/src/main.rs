@@ -96,7 +96,12 @@ async fn run() -> Result<(), ConnectError> {
             .map(|h| bwoc_connect::imessage::hash_id(h))
             .collect();
     }
-    if cfg.allow_from.is_empty() {
+    if cfg.bot.as_ref().is_some_and(|b| b.public) {
+        eprintln!(
+            "[bwoc-connect] limited public mode: non-allow-listed senders are served \
+             (DM or @mention only) on read-only, rate- and length-capped sessions."
+        );
+    } else if cfg.allow_from.is_empty() {
         eprintln!(
             "[bwoc-connect] warning: allow_from is empty — the bridge will ignore \
              everyone (closed by default). Add platform user ids to {}.",
