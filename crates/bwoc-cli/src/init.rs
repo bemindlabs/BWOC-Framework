@@ -158,8 +158,23 @@ fn init(args: InitArgs) -> Result<PathBuf, InitError> {
     // workspace.toml only, and a directory can carry `.bwoc/agents.toml` without
     // a workspace.toml (e.g. a hand-assembled daemon workspace). Writing a
     // default registry over it would silently unregister every agent.
-    if !root.join(".bwoc/agents.toml").exists() {
-        AgentsRegistry::default().save(&root)?;
+    let registry_path = root.join(".bwoc/agents.toml");
+    match fs::symlink_metadata(&registry_path) {
+        Ok(meta) if meta.is_file() => {}
+        // Something that isn't a regular file (a directory, a dangling link)
+        // would make every later registry load fail — refuse now instead of
+        // reporting a successful init over a broken workspace.
+        Ok(_) => {
+            return Err(io::Error::other(format!(
+                "{} exists but is not a regular file",
+                registry_path.display()
+            ))
+            .into());
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            AgentsRegistry::default().save(&root)?;
+        }
+        Err(e) => return Err(e.into()),
     }
 
     // Create the agents/ directory + its README. `--single-agent` swaps in
@@ -485,6 +500,13 @@ mod tests {
         let content = fs::read_to_string(dir.join("notes/README.md")).unwrap();
         assert_eq!(content, "# my custom notes readme");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn init_refuses_a_registry_path_that_is_not_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".bwoc/agents.toml")).unwrap();
+        assert!(init(args(tmp.path(), false)).is_err());
     }
 
     #[test]
