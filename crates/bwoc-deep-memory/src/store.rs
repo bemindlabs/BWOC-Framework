@@ -64,21 +64,83 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
+        // Fresh schema (new installs get everything at once). `embed_model`
+        // stamps which model produced the vector so search can skip a
+        // same-dimension-but-different-model row (#482).
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS memories (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                source    TEXT    NOT NULL,
-                text      TEXT    NOT NULL,
-                mode      TEXT    NOT NULL,
-                ts        INTEGER NOT NULL,
-                embedding BLOB    NOT NULL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                source      TEXT    NOT NULL,
+                text        TEXT    NOT NULL,
+                mode        TEXT    NOT NULL,
+                ts          INTEGER NOT NULL,
+                embedding   BLOB    NOT NULL,
+                embed_model TEXT    NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_memories_ts ON memories(ts);",
         )?;
+
+        // Migrate a pre-#482 table: add the column if it's missing. SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`, so probe `PRAGMA table_info` first.
+        let has_embed_model = {
+            let mut stmt = conn.prepare("PRAGMA table_info(memories)")?;
+            let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            let mut found = false;
+            for c in cols {
+                if c? == "embed_model" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if !has_embed_model {
+            conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN embed_model TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
+
+        // One-time migration: collapse any duplicates a pre-#482 store already
+        // accumulated (the same `chat-session.json` was re-mined every resume),
+        // then enforce uniqueness so `INSERT OR IGNORE` makes re-mining
+        // idempotent. Uniqueness is on `(source, text, embed_model)` — NOT just
+        // `(source, text)` — so switching to a new embedding model re-embeds and
+        // stores fresh rows under the new model instead of being ignored (and
+        // then filtered out at search, which would make those memories vanish).
+        // The full-table dedup scan runs only until the index exists, so a large
+        // migrated store doesn't pay it on every open.
+        let index_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+                ["idx_memories_source_text_model"],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !index_exists {
+            conn.execute_batch(
+                "DELETE FROM memories
+                   WHERE id NOT IN (
+                     SELECT MIN(id) FROM memories GROUP BY source, text, embed_model
+                   );
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_source_text_model
+                   ON memories(source, text, embed_model);",
+            )?;
+        }
+
         Ok(Self { conn })
     }
 
-    /// Insert one memory. Returns the new row id.
+    /// Insert one memory, stamped with the embedding model that produced the
+    /// vector. Returns `true` if a row was written, `false` if it was a
+    /// duplicate `(source, text, embed_model)` and skipped — so callers can count
+    /// dedups.
+    ///
+    /// `INSERT OR IGNORE` against the `(source, text, embed_model)` unique index
+    /// makes re-mining the same session with the same model idempotent (#482) —
+    /// a resumed session re-mines `chat-session.json`, and without this the store
+    /// grew linearly per resume — while a **model switch** still re-embeds and
+    /// stores fresh rows (the model is part of the key), so recall never silently
+    /// disappears after changing `--embed-model`.
     pub fn insert(
         &self,
         source: &str,
@@ -86,13 +148,14 @@ impl Store {
         mode: &str,
         ts: i64,
         embedding: &[f32],
-    ) -> Result<i64, StoreError> {
-        self.conn.execute(
-            "INSERT INTO memories (source, text, mode, ts, embedding)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![source, text, mode, ts, vec_to_blob(embedding)],
+        embed_model: &str,
+    ) -> Result<bool, StoreError> {
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO memories (source, text, mode, ts, embedding, embed_model)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![source, text, mode, ts, vec_to_blob(embedding), embed_model],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(changed > 0)
     }
 
     /// Total rows in the store.
@@ -184,17 +247,30 @@ impl Store {
         Ok(deleted)
     }
 
-    /// Top-`limit` memories by cosine similarity to `query_vec`.
+    /// Top-`limit` memories by cosine similarity to `query_vec`, restricted to
+    /// rows embedded by `embed_model` (or unstamped legacy rows).
     ///
-    /// Brute force: loads every row's embedding and scores in Rust. Rows whose
-    /// stored dimension differs from the query (e.g. the embedding model
-    /// changed) are skipped rather than silently mis-scored.
-    pub fn search(&self, query_vec: &[f32], limit: usize) -> Result<Vec<Memory>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, source, text, mode, ts, embedding FROM memories")?;
+    /// Brute force: loads every candidate row's embedding and scores in Rust.
+    /// Two guards against silent mis-ranking (#482):
+    /// - **model stamp** — a row whose `embed_model` is a *different* non-empty
+    ///   model is excluded in SQL, since a same-dimension different model scores
+    ///   plausibly but wrongly (the dimension check can't catch it). An empty
+    ///   `embed_model` (legacy/unstamped) is kept, as is an empty `embed_model`
+    ///   argument (an unstamped embedder matches only legacy rows).
+    /// - **dimension** — a surviving row whose stored dimension differs from the
+    ///   query scores `NaN` and is dropped below.
+    pub fn search(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+        embed_model: &str,
+    ) -> Result<Vec<Memory>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source, text, mode, ts, embedding FROM memories
+             WHERE embed_model = ?1 OR embed_model = ''",
+        )?;
         let mut scored: Vec<Memory> = stmt
-            .query_map([], |r| {
+            .query_map([embed_model], |r| {
                 let blob: Vec<u8> = r.get(5)?;
                 let emb = blob_to_vec(&blob);
                 let score = cosine(query_vec, &emb);
@@ -290,9 +366,9 @@ mod tests {
     #[test]
     fn insert_count_recent() {
         let s = Store::open_in_memory().unwrap();
-        s.insert("a.md", "first", "convos", 100, &[1.0, 0.0])
+        s.insert("a.md", "first", "convos", 100, &[1.0, 0.0], "")
             .unwrap();
-        s.insert("b.md", "second", "convos", 200, &[0.0, 1.0])
+        s.insert("b.md", "second", "convos", 200, &[0.0, 1.0], "")
             .unwrap();
         assert_eq!(s.count().unwrap(), 2);
         let recent = s.recent(1).unwrap();
@@ -303,9 +379,9 @@ mod tests {
     #[test]
     fn search_ranks_by_cosine() {
         let s = Store::open_in_memory().unwrap();
-        s.insert("x", "near", "m", 1, &[1.0, 0.1]).unwrap();
-        s.insert("y", "far", "m", 2, &[-1.0, 0.0]).unwrap();
-        let hits = s.search(&[1.0, 0.0], 10).unwrap();
+        s.insert("x", "near", "m", 1, &[1.0, 0.1], "").unwrap();
+        s.insert("y", "far", "m", 2, &[-1.0, 0.0], "").unwrap();
+        let hits = s.search(&[1.0, 0.0], 10, "").unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].text, "near");
         assert!(hits[0].score > hits[1].score);
@@ -314,9 +390,9 @@ mod tests {
     #[test]
     fn prune_older_than_drops_only_old_rows() {
         let s = Store::open_in_memory().unwrap();
-        s.insert("a", "old", "m", 100, &[1.0, 0.0]).unwrap();
-        s.insert("b", "mid", "m", 200, &[1.0, 0.0]).unwrap();
-        s.insert("c", "new", "m", 300, &[1.0, 0.0]).unwrap();
+        s.insert("a", "old", "m", 100, &[1.0, 0.0], "").unwrap();
+        s.insert("b", "mid", "m", 200, &[1.0, 0.0], "").unwrap();
+        s.insert("c", "new", "m", 300, &[1.0, 0.0], "").unwrap();
         // ts < 250 → drops "old" (100) and "mid" (200), keeps "new" (300).
         assert_eq!(s.prune(Some(250), None, false).unwrap(), 2);
         assert_eq!(s.count().unwrap(), 1);
@@ -327,7 +403,7 @@ mod tests {
     fn prune_keep_newest_caps_by_count() {
         let s = Store::open_in_memory().unwrap();
         for (src, ts) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
-            s.insert(src, src, "m", ts, &[1.0, 0.0]).unwrap();
+            s.insert(src, src, "m", ts, &[1.0, 0.0], "").unwrap();
         }
         // keep newest 2 → drops the 2 oldest.
         assert_eq!(s.prune(None, Some(2), false).unwrap(), 2);
@@ -340,8 +416,8 @@ mod tests {
     #[test]
     fn prune_dry_run_counts_without_deleting() {
         let s = Store::open_in_memory().unwrap();
-        s.insert("a", "old", "m", 100, &[1.0, 0.0]).unwrap();
-        s.insert("b", "new", "m", 300, &[1.0, 0.0]).unwrap();
+        s.insert("a", "old", "m", 100, &[1.0, 0.0], "").unwrap();
+        s.insert("b", "new", "m", 300, &[1.0, 0.0], "").unwrap();
         assert_eq!(s.prune(Some(200), None, true).unwrap(), 1);
         assert_eq!(s.count().unwrap(), 2); // nothing actually removed
     }
@@ -352,7 +428,7 @@ mod tests {
         // ts: a=1 b=2 c=3 d=4. older_than=3 → {a,b}; keep_newest=1 → {a,b,c}.
         // Union is {a,b,c}; "a"/"b" overlap and must not be double-counted.
         for (src, ts) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
-            s.insert(src, src, "m", ts, &[1.0, 0.0]).unwrap();
+            s.insert(src, src, "m", ts, &[1.0, 0.0], "").unwrap();
         }
         assert_eq!(s.prune(Some(3), Some(1), false).unwrap(), 3);
         assert_eq!(s.count().unwrap(), 1);
@@ -362,7 +438,7 @@ mod tests {
     #[test]
     fn prune_no_rule_is_noop() {
         let s = Store::open_in_memory().unwrap();
-        s.insert("a", "keep", "m", 1, &[1.0, 0.0]).unwrap();
+        s.insert("a", "keep", "m", 1, &[1.0, 0.0], "").unwrap();
         assert_eq!(s.prune(None, None, false).unwrap(), 0);
         assert_eq!(s.count().unwrap(), 1);
     }
@@ -370,11 +446,85 @@ mod tests {
     #[test]
     fn search_skips_dimension_mismatch() {
         let s = Store::open_in_memory().unwrap();
-        s.insert("ok", "good", "m", 1, &[1.0, 0.0]).unwrap();
-        s.insert("bad", "wrong-dim", "m", 2, &[1.0, 0.0, 0.0])
+        s.insert("ok", "good", "m", 1, &[1.0, 0.0], "").unwrap();
+        s.insert("bad", "wrong-dim", "m", 2, &[1.0, 0.0, 0.0], "")
             .unwrap();
-        let hits = s.search(&[1.0, 0.0], 10).unwrap();
+        let hits = s.search(&[1.0, 0.0], 10, "").unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].text, "good");
+    }
+
+    #[test]
+    fn insert_dedups_same_source_text() {
+        // Re-mining the same session must not grow the store (#482).
+        let s = Store::open_in_memory().unwrap();
+        assert!(
+            s.insert("sess.json", "hi", "m", 1, &[1.0, 0.0], "")
+                .unwrap()
+        );
+        // Same (source, text) again — even with a newer ts — is a skip.
+        assert!(
+            !s.insert("sess.json", "hi", "m", 2, &[1.0, 0.0], "")
+                .unwrap()
+        );
+        assert_eq!(s.count().unwrap(), 1);
+        // A different text at the same source is a distinct row.
+        assert!(
+            s.insert("sess.json", "bye", "m", 3, &[0.0, 1.0], "")
+                .unwrap()
+        );
+        assert_eq!(s.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn model_switch_re_embeds_instead_of_vanishing() {
+        // #491: after switching embed_model, re-mining the same (source, text)
+        // must store a fresh row under the new model — not be ignored and then
+        // filtered out of search, which would make the memory disappear.
+        let s = Store::open_in_memory().unwrap();
+        assert!(
+            s.insert("sess", "fact", "m", 1, &[1.0, 0.0], "old")
+                .unwrap()
+        );
+        // Same (source, text) but a NEW model → a distinct row, not a skip.
+        assert!(
+            s.insert("sess", "fact", "m", 2, &[0.0, 1.0], "new")
+                .unwrap()
+        );
+        assert_eq!(s.count().unwrap(), 2);
+        // A search on the new model still finds the memory.
+        let hits = s.search(&[0.0, 1.0], 10, "new").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].text, "fact");
+        // Re-mining again with the new model is idempotent.
+        assert!(
+            !s.insert("sess", "fact", "m", 3, &[0.0, 1.0], "new")
+                .unwrap()
+        );
+        assert_eq!(s.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn search_filters_out_a_different_embed_model() {
+        // Two same-dimension rows from different models: a search stamped with
+        // model "A" must not rank the "B" row (silent mis-rank guard, #482).
+        let s = Store::open_in_memory().unwrap();
+        s.insert("a", "from-a", "m", 1, &[1.0, 0.0], "model-a")
+            .unwrap();
+        s.insert("b", "from-b", "m", 2, &[1.0, 0.0], "model-b")
+            .unwrap();
+        s.insert("c", "legacy", "m", 3, &[1.0, 0.0], "").unwrap(); // unstamped
+
+        let hits = s.search(&[1.0, 0.0], 10, "model-a").unwrap();
+        let texts: Vec<&str> = hits.iter().map(|m| m.text.as_str()).collect();
+        assert!(texts.contains(&"from-a"), "same-model row kept: {texts:?}");
+        assert!(
+            texts.contains(&"legacy"),
+            "unstamped legacy row kept: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"from-b"),
+            "different-model row excluded: {texts:?}"
+        );
     }
 }

@@ -325,72 +325,91 @@ where
                 }
             },
             ChatInput::User { text, principal } => {
-                // Team chat (HV3-3a): pull in any teammate messages posted
-                // since the last turn as a system note, before the new user
-                // message, so the agent answers with the team's context — and
-                // surface each to the frontend as a TeamMessage event.
-                if let Some(log) = &config.team_chat_log {
-                    for m in inject_peer_messages(&mut history, log, &config.agent, &mut team_seen)
-                    {
-                        emit(
-                            &mut out,
-                            &ChatEvent::TeamMessage {
-                                from: m.from,
-                                text: m.text,
-                                ts: m.ts,
-                            },
+                // Process this turn, then drain any operator message that arrived
+                // mid-permission-prompt (recovered by `read_permission` rather than
+                // dropped) as the next turn — #480.
+                let mut next: Option<(String, bwoc_core::trust::Principal)> =
+                    Some((text, principal));
+                while let Some((text, principal)) = next.take() {
+                    // Team chat (HV3-3a): pull in any teammate messages posted
+                    // since the last turn as a system note, before the new user
+                    // message, so the agent answers with the team's context — and
+                    // surface each to the frontend as a TeamMessage event.
+                    if let Some(log) = &config.team_chat_log {
+                        for m in
+                            inject_peer_messages(&mut history, log, &config.agent, &mut team_seen)
+                        {
+                            emit(
+                                &mut out,
+                                &ChatEvent::TeamMessage {
+                                    from: m.from,
+                                    text: m.text,
+                                    ts: m.ts,
+                                },
+                            )
+                            .await?;
+                        }
+                    }
+                    // Phase 5 t1: stamp the inbound turn with the provenance the
+                    // frontend declared. The local TUI declares LocalOperator
+                    // (Trusted); a chat connector omits it, so `principal` arrives
+                    // as Unknown → Untrusted (fail-closed). `ingest` clamps any
+                    // attempt to claim SelfAgent.
+                    history.push(ChatMessage::ingest(principal, text));
+                    // Keep the conversation under the context budget: summarize the
+                    // oldest turns when needed, before the provider sees them.
+                    if config.max_context_tokens > 0 {
+                        // Unified context engine (HV3-2): summarize-first with a
+                        // truncate fallback; folded content is mined into Tier 2
+                        // when the manifest configures deepMemoryCmd.
+                        let outcome = crate::compact::compact_context(
+                            &*provider,
+                            &config.model,
+                            config.max_context_tokens,
+                            &mut history,
+                            &ctx.workdir,
                         )
-                        .await?;
+                        .await;
+                        let removed = outcome.removed();
+                        if removed > 0 {
+                            emit(&mut out, &ChatEvent::Compacted { removed }).await?;
+                        }
                     }
-                }
-                // Phase 5 t1: stamp the inbound turn with the provenance the
-                // frontend declared. The local TUI declares LocalOperator
-                // (Trusted); a chat connector omits it, so `principal` arrives
-                // as Unknown → Untrusted (fail-closed). `ingest` clamps any
-                // attempt to claim SelfAgent.
-                history.push(ChatMessage::ingest(principal, text));
-                // Keep the conversation under the context budget: summarize the
-                // oldest turns when needed, before the provider sees them.
-                if config.max_context_tokens > 0 {
-                    // Unified context engine (HV3-2): summarize-first with a
-                    // truncate fallback; folded content is mined into Tier 2
-                    // when the manifest configures deepMemoryCmd.
-                    let outcome = crate::compact::compact_context(
+                    let mut interjection: Option<(String, bwoc_core::trust::Principal)> = None;
+                    // Mark where this turn's messages begin, so the team broadcast
+                    // below only considers a reply produced *this* turn — an
+                    // interjection-aborted turn adds no new assistant message, and
+                    // scanning all of `history` would re-broadcast the previous
+                    // turn's reply (#480 review).
+                    let turn_start = history.len();
+                    run_turn(
                         &*provider,
-                        &config.model,
-                        config.max_context_tokens,
+                        &registry,
+                        &ctx,
+                        &config,
+                        &tools,
                         &mut history,
-                        &ctx.workdir,
+                        &mut lines,
+                        &mut out,
+                        &mut prompt_tokens,
+                        &mut completion_tokens,
+                        &mut session_mode,
+                        &mut interjection,
                     )
-                    .await;
-                    let removed = outcome.removed();
-                    if removed > 0 {
-                        emit(&mut out, &ChatEvent::Compacted { removed }).await?;
+                    .await?;
+                    // Persist the conversation after the turn settles (incl. tool
+                    // results) so the next launch resumes with full context.
+                    save_session(&session_path, &history);
+                    // Team chat (HV3-3a): broadcast this agent's reply to the
+                    // shared log so teammates see it on their next turn — only a
+                    // reply from THIS turn (see `turn_start`).
+                    if let Some(log) = &config.team_chat_log {
+                        if let Some(reply) = last_assistant_text(&history[turn_start..]) {
+                            append_team_message(log, &config.agent, &reply);
+                        }
                     }
-                }
-                run_turn(
-                    &*provider,
-                    &registry,
-                    &ctx,
-                    &config,
-                    &tools,
-                    &mut history,
-                    &mut lines,
-                    &mut out,
-                    &mut prompt_tokens,
-                    &mut completion_tokens,
-                    &mut session_mode,
-                )
-                .await?;
-                // Persist the conversation after the turn settles (incl. tool
-                // results) so the next launch resumes with full context.
-                save_session(&session_path, &history);
-                // Team chat (HV3-3a): broadcast this agent's reply to the
-                // shared log so teammates see it on their next turn.
-                if let Some(log) = &config.team_chat_log {
-                    if let Some(reply) = last_assistant_text(&history) {
-                        append_team_message(log, &config.agent, &reply);
-                    }
+                    // Replay a mid-prompt operator message (if any) as the next turn.
+                    next = interjection;
                 }
             }
         }
@@ -678,6 +697,7 @@ async fn run_turn<R, W>(
     prompt_tokens: &mut u64,
     completion_tokens: &mut u64,
     session_mode: &mut SessionMode,
+    interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
 ) -> HarnessResult<()>
 where
     R: AsyncBufReadExt + Unpin,
@@ -783,6 +803,7 @@ where
                 lines,
                 out,
                 session_mode,
+                interjection,
             )
             .await?;
             history.push(ChatMessage::tool_result(
@@ -790,6 +811,14 @@ where
                 call.function.name.clone(),
                 result,
             ));
+        }
+        // If the operator interjected with a message mid-prompt, stop the turn at
+        // this batch boundary (every tool_call now has a matching tool_result, so
+        // history stays well-formed) and let the loop replay their text as the
+        // next user turn instead of continuing on our own (#480).
+        if interjection.is_some() {
+            emit_turn_end(out, *prompt_tokens, *completion_tokens).await?;
+            return Ok(());
         }
         // Loop: feed the tool results back for the next provider call.
     }
@@ -810,6 +839,7 @@ async fn dispatch_call<R, W>(
     lines: &mut Lines<R>,
     out: &mut W,
     session_mode: &mut SessionMode,
+    interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
 ) -> HarnessResult<String>
 where
     R: AsyncBufReadExt + Unpin,
@@ -870,11 +900,25 @@ where
                     },
                 )
                 .await?;
-                let allowed = read_permission(lines, &call.id, session_mode).await?;
-                if !allowed {
-                    let msg = format!("DENIED by operator: `{name}` was declined");
-                    emit_tool_result(out, call, false, &msg).await?;
-                    return Ok(msg);
+                match read_permission(lines, &call.id, session_mode).await? {
+                    PermissionOutcome::Allow => {}
+                    PermissionOutcome::Deny => {
+                        let msg = format!("DENIED by operator: `{name}` was declined");
+                        emit_tool_result(out, call, false, &msg).await?;
+                        return Ok(msg);
+                    }
+                    PermissionOutcome::DenyWithUserText { text, principal } => {
+                        // The operator typed a message instead of answering: deny
+                        // the tool (fail-safe) AND hand the text back so the loop
+                        // replays it as the next user turn — never a silent drop.
+                        *interjection = Some((text, principal));
+                        let msg = format!(
+                            "DENIED by operator: `{name}` was declined (operator sent a message \
+                             instead — handling it as the next turn)"
+                        );
+                        emit_tool_result(out, call, false, &msg).await?;
+                        return Ok(msg);
+                    }
                 }
             }
         }
@@ -899,6 +943,23 @@ where
     Ok(output)
 }
 
+/// The outcome of a blocking permission read.
+///
+/// A plain [`Allow`](PermissionOutcome::Allow) / [`Deny`](PermissionOutcome::Deny)
+/// answers the prompt. [`DenyWithUserText`](PermissionOutcome::DenyWithUserText)
+/// is the case that used to lose data: the operator typed a *message* instead of
+/// answering, so the tool is denied (fail-safe) **and** the text is recovered to
+/// be replayed as the next user turn — the frontend already echoed it locally, so
+/// silently dropping it made the operator believe it was sent (#480).
+enum PermissionOutcome {
+    Allow,
+    Deny,
+    DenyWithUserText {
+        text: String,
+        principal: bwoc_core::trust::Principal,
+    },
+}
+
 /// Block reading stdin until the frontend answers the pending permission
 /// request for `expect_id`. Skips blank lines; a `Quit` mid-prompt is treated as
 /// a deny so the call does not execute. A mismatched id is also a deny (the
@@ -909,11 +970,15 @@ where
 /// calls, exactly as it would between turns) and keeps waiting for the decision.
 /// No `ModeChanged` ack is emitted mid-prompt; the change is silent until the
 /// next call observes it.
+///
+/// A `User` message mid-prompt still denies the tool (fail-safe), but its text is
+/// **not** discarded: it is returned so the caller can replay it as the next
+/// user turn instead of losing it silently.
 async fn read_permission<R>(
     lines: &mut Lines<R>,
     expect_id: &str,
     session_mode: &mut SessionMode,
-) -> HarnessResult<bool>
+) -> HarnessResult<PermissionOutcome>
 where
     R: AsyncBufReadExt + Unpin,
 {
@@ -924,9 +989,13 @@ where
         }
         match ChatInput::from_line(line) {
             Ok(ChatInput::Permission { id, allow }) => {
-                return Ok(allow && id == expect_id);
+                return Ok(if allow && id == expect_id {
+                    PermissionOutcome::Allow
+                } else {
+                    PermissionOutcome::Deny
+                });
             }
-            Ok(ChatInput::Quit) => return Ok(false),
+            Ok(ChatInput::Quit) => return Ok(PermissionOutcome::Deny),
             // A mode switch mid-prompt is applied to `session_mode` (effective
             // for later calls) but does not answer this prompt — keep waiting.
             Ok(ChatInput::SetMode { mode }) => {
@@ -935,13 +1004,17 @@ where
                 }
                 continue;
             }
-            // A User message or a malformed line mid-prompt: fail safe (deny)
-            // rather than silently dropping it or executing unapproved.
-            _ => return Ok(false),
+            // A User message mid-prompt: deny the tool (fail-safe) but RECOVER
+            // the text so it becomes the next turn instead of vanishing.
+            Ok(ChatInput::User { text, principal }) => {
+                return Ok(PermissionOutcome::DenyWithUserText { text, principal });
+            }
+            // A malformed line mid-prompt: fail safe (deny).
+            _ => return Ok(PermissionOutcome::Deny),
         }
     }
     // EOF before an answer: deny.
-    Ok(false)
+    Ok(PermissionOutcome::Deny)
 }
 
 /// Serialize and write one event as a single JSON line, then flush.
@@ -1436,6 +1509,107 @@ mod tests {
             |e| matches!(e, ChatEvent::ToolResult { ok, output, .. } if !*ok && output.contains("DENIED"))
         ));
         assert!(!tmp.path().join("x.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn interjection_aborted_turn_does_not_rebroadcast_prior_reply() {
+        // #480 review: a turn aborted by an operator interjection produces no new
+        // assistant message, so the team broadcast must not re-send the PREVIOUS
+        // turn's reply.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let team_log = tmp.path().join("team.jsonl");
+        let mut policy = allow_all();
+        policy.tools.insert("write_file".to_string(), Mode::Ask);
+        let cfg = ChatConfig {
+            team_chat_log: Some(team_log.clone()),
+            ..config(policy)
+        };
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"hi\"}\n",
+            "{\"type\":\"user\",\"text\":\"do X\"}\n",
+            "{\"type\":\"user\",\"text\":\"stop, do this instead\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let provider = Arc::new(MockProvider::new(vec![
+            final_response("first reply"),
+            tool_call_response("write_file", r#"{"path":"x.txt","content":"hi"}"#),
+            final_response("second reply"),
+        ]));
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        drive(provider, registry, ctx, cfg, lines, &mut out)
+            .await
+            .unwrap();
+
+        let log = std::fs::read_to_string(&team_log).unwrap_or_default();
+        let first_count = log.matches("first reply").count();
+        assert_eq!(
+            first_count, 1,
+            "prior reply must be broadcast once, not re-sent: {log}"
+        );
+        assert!(
+            log.contains("second reply"),
+            "the replayed turn's reply is broadcast: {log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_text_during_permission_prompt_denies_then_becomes_next_turn() {
+        // #480: the operator types a MESSAGE instead of answering a pending
+        // permission prompt. The tool must be denied (fail-safe) AND the text
+        // must not vanish — it becomes the next user turn.
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let mut policy = allow_all();
+        policy.tools.insert("write_file".to_string(), Mode::Ask);
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"please write x\"}\n",
+            // Instead of a permission answer, the operator sends a message:
+            "{\"type\":\"user\",\"text\":\"wait, do this instead\"}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let lines = run_scripted(
+            vec![
+                // Turn 1: the model asks to write; the operator interjects, so the
+                // turn stops here (no second provider call this turn).
+                tool_call_response("write_file", r#"{"path":"x.txt","content":"hi"}"#),
+                // The replayed interjection turn gets its own provider call.
+                final_response("Understood — new plan"),
+            ],
+            policy,
+            stdin,
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+
+        // The tool was denied and its file never written.
+        assert!(events.iter().any(
+            |e| matches!(e, ChatEvent::ToolResult { ok, output, .. } if !*ok && output.contains("DENIED"))
+        ));
+        assert!(
+            !tmp.path().join("x.txt").exists(),
+            "denied write must not run"
+        );
+
+        // The interjected text became the next turn: the replay's final Message
+        // is present, and there are TWO TurnEnds (aborted turn + replay).
+        assert!(
+            events.iter().any(
+                |e| matches!(e, ChatEvent::Message { text } if text == "Understood — new plan")
+            ),
+            "interjected text must be processed as the next turn: {events:?}"
+        );
+        let turn_ends = events
+            .iter()
+            .filter(|e| matches!(e, ChatEvent::TurnEnd { .. }))
+            .count();
+        assert_eq!(
+            turn_ends, 2,
+            "aborted turn + replayed turn each end: {events:?}"
+        );
     }
 
     #[tokio::test]

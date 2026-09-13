@@ -24,6 +24,12 @@ pub(super) const BACKOFF_BASE_MS: u64 = 200;
 /// Maximum backoff cap in milliseconds (≈ 3 seconds).
 pub(super) const MAX_BACKOFF_MS: u64 = 3_200;
 
+/// Upper clamp for a server-supplied `Retry-After` hint (≈ 4× `MAX_BACKOFF_MS`,
+/// ~13 s). A cooperative rate-limiter's hint is honoured as-is; a hostile or
+/// misconfigured endpoint cannot use an enormous `Retry-After` to stall the run
+/// past this bound (#479).
+pub(super) const RETRY_AFTER_MAX_MS: u64 = MAX_BACKOFF_MS * 4;
+
 /// Unified provider call helper that handles both stream and non-stream paths,
 /// returning `(ChatMessage, Option<Usage>)`.
 async fn call_provider_once(
@@ -75,7 +81,7 @@ pub(crate) async fn call_with_retry_v2(
             Ok(result) => return Ok(result),
             Err(e) if e.is_transient() && attempt < MAX_TRANSIENT_RETRIES => {
                 attempt += 1;
-                let delay = backoff_ms(attempt);
+                let delay = retry_delay_ms(e.retry_after(), attempt);
                 eprintln!(
                     "[bwoc-harness] transient error on `{model}` (attempt {attempt}/{MAX_TRANSIENT_RETRIES}): {e}. \
                      Retrying in {delay}ms…"
@@ -89,10 +95,27 @@ pub(crate) async fn call_with_retry_v2(
 
 /// Compute bounded exponential backoff.
 ///
-/// attempt 1 → 200ms, 2 → 400ms, 3 → 800ms, 4 → 1600ms … capped at 3200ms.
+/// The loop calls this with `attempt` starting at 1, so attempt 1 is the base
+/// delay: 1 → 200ms, 2 → 400ms, 3 → 800ms, 4 → 1600ms, 5 → 3200ms … capped at
+/// `MAX_BACKOFF_MS`. The shift is `attempt - 1` so the first retry waits the
+/// base, not double it (the earlier `1 << attempt` was off by one — first retry
+/// waited 400ms while the docs promised 200ms).
 pub(super) fn backoff_ms(attempt: u32) -> u64 {
-    let raw = BACKOFF_BASE_MS.saturating_mul(1u64 << attempt.min(10));
+    let shift = attempt.saturating_sub(1).min(10);
+    let raw = BACKOFF_BASE_MS.saturating_mul(1u64 << shift);
     raw.min(MAX_BACKOFF_MS)
+}
+
+/// Decide how long to wait before the next retry.
+///
+/// Prefers the server's own `Retry-After` hint (clamped to `RETRY_AFTER_MAX_MS`
+/// so a hostile endpoint cannot park the run), and otherwise falls back to the
+/// bounded exponential backoff for this attempt (#479).
+pub(super) fn retry_delay_ms(retry_after: Option<std::time::Duration>, attempt: u32) -> u64 {
+    match retry_after {
+        Some(d) => (d.as_millis() as u64).min(RETRY_AFTER_MAX_MS),
+        None => backoff_ms(attempt),
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +123,40 @@ mod tests {
     use super::*;
     use crate::provider::{ChatCompletion, Tool};
     use bwoc_core::trust::{Principal, TrustLevel};
+    use std::time::Duration;
+
+    #[test]
+    fn backoff_matches_documented_schedule() {
+        // Pin the exact schedule the doc comment promises — attempt 1 is the
+        // base delay, not double it (guards the off-by-one Copilot caught).
+        assert_eq!(backoff_ms(1), 200);
+        assert_eq!(backoff_ms(2), 400);
+        assert_eq!(backoff_ms(3), 800);
+        assert_eq!(backoff_ms(4), 1_600);
+        assert_eq!(backoff_ms(5), MAX_BACKOFF_MS); // 3200, capped
+        assert_eq!(backoff_ms(50), MAX_BACKOFF_MS); // stays capped, no overflow
+    }
+
+    #[test]
+    fn retry_delay_prefers_server_hint() {
+        // A cooperative Retry-After (2s) is honoured verbatim, overriding the
+        // ~200ms first-attempt backoff.
+        let d = retry_delay_ms(Some(Duration::from_secs(2)), 1);
+        assert_eq!(d, 2_000);
+    }
+
+    #[test]
+    fn retry_delay_clamps_hostile_hint() {
+        // An enormous Retry-After cannot park the run past the clamp.
+        let d = retry_delay_ms(Some(Duration::from_secs(86_400)), 1);
+        assert_eq!(d, RETRY_AFTER_MAX_MS);
+    }
+
+    #[test]
+    fn retry_delay_falls_back_to_backoff() {
+        // No hint → the existing bounded exponential backoff for this attempt.
+        assert_eq!(retry_delay_ms(None, 2), backoff_ms(2));
+    }
 
     /// A provider that answers with a completion whose `principal` was chosen by
     /// the "endpoint" — i.e. by the wire, not by us.

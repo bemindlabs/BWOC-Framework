@@ -39,6 +39,15 @@ pub trait Embedder {
         v.pop()
             .ok_or(EmbedError::CountMismatch { asked: 1, got: 0 })
     }
+
+    /// The embedding model's identity, stamped on each stored memory so a later
+    /// `search` can skip rows embedded by a **different** model that shares the
+    /// same dimension — which the dimension check alone cannot catch and which
+    /// would otherwise be silently mis-ranked (#482). The default `""` means
+    /// "unstamped": treated as unknown/legacy and never filtered out.
+    fn model_id(&self) -> &str {
+        ""
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +105,10 @@ struct EmbedDatum {
 }
 
 impl Embedder for HttpEmbedder {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -138,16 +151,35 @@ impl Embedder for HttpEmbedder {
 /// exercise the store + k-NN ranking without a model server.
 pub struct StubEmbedder {
     pub dim: usize,
+    /// Reported by [`Embedder::model_id`]. Empty by default (unstamped);
+    /// [`StubEmbedder::with_model`] sets it so tests can simulate two models.
+    pub model: String,
 }
 
 impl StubEmbedder {
     /// Construct with a given vector dimension (`16` is plenty for tests).
     pub fn new(dim: usize) -> Self {
-        Self { dim }
+        Self {
+            dim,
+            model: String::new(),
+        }
+    }
+
+    /// Construct with a dimension and a model id (to exercise the embed-model
+    /// stamp / filter).
+    pub fn with_model(dim: usize, model: impl Into<String>) -> Self {
+        Self {
+            dim,
+            model: model.into(),
+        }
     }
 }
 
 impl Embedder for StubEmbedder {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         Ok(texts.iter().map(|t| hash_embed(t, self.dim)).collect())
     }

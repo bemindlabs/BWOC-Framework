@@ -271,8 +271,23 @@ async fn assert_http_contract<S: HttpSubject>() {
             .await
             .expect_err("5xx must error");
         assert!(
-            matches!(err, HarnessError::TransientProvider(_)),
+            matches!(err, HarnessError::TransientProvider { .. }),
             "[{who}] 5xx must be TransientProvider, got {err:?}"
+        );
+    }
+    // 3a-bis. error mapping — 429 (rate limit) is transient, not fatal. The
+    // single most common real-world provider failure must ride the backoff
+    // loop, not abort the run (#479).
+    {
+        let server = MockServer::start().await;
+        S::mount_completion_status(&server, 429).await;
+        let err = S::client(&server.uri())
+            .complete(user(), vec![], S::MODEL)
+            .await
+            .expect_err("429 must error");
+        assert!(
+            matches!(err, HarnessError::TransientProvider { .. }),
+            "[{who}] 429 must be TransientProvider, got {err:?}"
         );
     }
     // 3b. error mapping — a generic 4xx is fatal.
