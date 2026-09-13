@@ -45,8 +45,9 @@ bwoc check --all               # ยืนยัน: ไม่เหลือ wa
 
 ### 1. ทุก artifact ที่ BWOC เป็นเจ้าของประกาศ schema ของตัวเอง
 
-`workspace.toml`, `agents.toml`, `routes.toml`, `harness-policy.toml` และ
-`peers.toml` ได้ key ระดับบนสุด `schema_version = 3` artifact ที่ไม่มี key นี้จะถูกอ่าน
+`workspace.toml`, `agents.toml`, `routes.toml`, `harness-policy.toml`,
+`peers.toml` และ `connectors/<platform>.toml` ของแต่ละ agent ได้ key ระดับบนสุด
+`schema_version = 3` artifact ที่ไม่มี key นี้จะถูกอ่าน
 เป็น schema 2 — ยังใช้ได้ใน 3.x, มี warning, และถูกตัดออกใน 4.0
 
 ผลในทางปฏิบัติ: BWOC แยกไฟล์เก่ากับไฟล์ใหม่ออกจากกันได้แล้ว ใน 2.x มันแยกไม่ได้

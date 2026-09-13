@@ -47,8 +47,9 @@ Then, if you maintain plugins, give each one a bounded `compat` range — see
 
 ### 1. Every artifact BWOC owns declares its schema
 
-`workspace.toml`, `agents.toml`, `routes.toml`, `harness-policy.toml` and
-`peers.toml` gain a top-level `schema_version = 3`. An artifact without the key
+`workspace.toml`, `agents.toml`, `routes.toml`, `harness-policy.toml`,
+`peers.toml` and each agent's `connectors/<platform>.toml` gain a top-level
+`schema_version = 3`. An artifact without the key
 is read as schema 2 — still valid in 3.x, warned about, removed in 4.0.
 
 The practical consequence: BWOC can now tell an old file from a new one. In 2.x

@@ -111,6 +111,12 @@ const AGENT_ARTIFACTS: &[&str] = &[
     "AGENTS.md",
     ".bwoc/harness-policy.toml",
     ".bwoc/peers.toml",
+    // Hand-authored chat-connector configs (bwoc-connect refuses a future
+    // marker); absent files are skipped like any other artifact.
+    "connectors/telegram.toml",
+    "connectors/discord.toml",
+    "connectors/line.toml",
+    "connectors/imessage.toml",
 ];
 
 pub fn run(args: MigrateArgs) -> i32 {
@@ -727,6 +733,34 @@ enabled = true
             bwoc_core::schema::marker_from_toml(&v),
             SchemaVersion::CURRENT
         );
+    }
+
+    #[test]
+    fn agent_connector_configs_are_stamped_in_place() {
+        for p in [
+            "connectors/telegram.toml",
+            "connectors/discord.toml",
+            "connectors/line.toml",
+            "connectors/imessage.toml",
+        ] {
+            assert!(
+                AGENT_ARTIFACTS.contains(&p),
+                "{p} not in the per-agent walk"
+            );
+        }
+        let src =
+            "# my bot\nenabled = true\nallow_from = [1]\n\n[bot.commands]\n\"/start\" = \"hi\"\n";
+        let Plan::Rewrite { text, .. } = plan_toml_marker(src).unwrap() else {
+            panic!("an unmarked connector file should be stamped");
+        };
+        assert!(text.contains("# my bot") && text.contains("\"/start\" = \"hi\""));
+        let v: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(
+            bwoc_core::schema::marker_from_toml(&v),
+            SchemaVersion::CURRENT
+        );
+        assert_eq!(v["enabled"].as_bool(), Some(true));
+        assert_eq!(v["bot"]["commands"]["/start"].as_str(), Some("hi"));
     }
 
     // ── Manifest spec version ────────────────────────────────────────────────
