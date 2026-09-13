@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 - **Tool path confinement resolves symlinks** — `ToolContext::resolve_path` only checked paths lexically, so a symlink inside the workdir that pointed outside let `read_file` / `list_dir` / `write_file` / `edit_file` escape. Confined paths now also canonicalize their deepest existing ancestor and must stay inside the canonical workdir (shared with `sandbox::confine_path`). `memory_read` / `memory_write` get the same check, and `grep` no longer follows an escaping link. `--unrestricted` is unchanged.
 - **Chat connectors isolate each chat's conversation** — every bridged chat shared the agent's single `.bwoc/chat-session.json`, so two chats (or a DM and a group) leaked context into each other and clobbered history. Each chat now persists to `.bwoc/chat-sessions/<platform>-<chat_id>.json` (sanitized; new `bwoc-harness --session-file`), and bridged turns carry `Principal::Platform { platform, user_id }` provenance instead of `Unknown` (still untrusted). `bwoc chat --tui` is unchanged.
+- **`bwoc new` stamps the current specification.** On 3.0.0 it still wrote `"version": "2.0"` into `config.manifest.json` while the template's `AGENTS.md` said 3.0. Every freshly incarnated agent therefore warned "specification version 2.0 — run `bwoc migrate`" straight away. It now uses the same constant that `bwoc migrate` migrates to.
 
 ## [v2026.9.13-0] — 2026-09-13 — 3.0.0
 

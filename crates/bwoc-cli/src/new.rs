@@ -1141,7 +1141,9 @@ fn build_manifest(r: &Resolved) -> Manifest {
         backend: None,
         cli_cmd: None,
         base_url: None,
-        version: "2.0".to_string(),
+        // The specification this build writes — the same constant `bwoc migrate`
+        // moves agents to, so a fresh agent never starts on a legacy spec.
+        version: crate::migrate::SPEC_VERSION_CURRENT.to_string(),
     }
 }
 
@@ -1537,6 +1539,11 @@ mod tests {
             skills: Vec::new(),
         };
         let m = build_manifest(&r);
+        assert_eq!(
+            m.version,
+            crate::migrate::SPEC_VERSION_CURRENT,
+            "a new agent starts on the current spec"
+        );
         assert_eq!(m.agent_id, "agent-demo");
         assert_eq!(m.primary_model, "model-x");
         assert_eq!(m.fallback_model.as_deref(), Some("model-y"));

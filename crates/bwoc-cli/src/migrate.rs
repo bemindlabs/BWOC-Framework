@@ -44,7 +44,7 @@ use crate::util::utc_now_iso8601;
 /// The spec version an agent's `config.manifest.json` and `AGENTS.md` declare
 /// once migrated. Tracks the framework specification, not the schema integer —
 /// see `VERSION.md` §Specification.
-const SPEC_VERSION_CURRENT: &str = "3.0";
+pub(crate) const SPEC_VERSION_CURRENT: &str = "3.0";
 /// What 2.x agents declare.
 const SPEC_VERSION_LEGACY: &str = "2.0";
 
