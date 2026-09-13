@@ -117,15 +117,133 @@ impl HarnessSessionFactory {
         self.team_chat = Some(chat_log.into());
         self
     }
+
+    /// `(workdir, session file)` for a conversation. Allow-listed: the agent dir
+    /// and its per-chat file (unchanged). Public: a prepared isolated workdir
+    /// with the session file inside it, so it can't even list other chats.
+    fn spawn_paths(&self, chat_id: i64, public: bool) -> Result<(PathBuf, PathBuf), ConnectError> {
+        let chat = chat_id.to_string();
+        if public {
+            let workdir = prepare_public_workdir(&self.agent_dir, &self.platform, &chat)?;
+            let file = workdir.join(".bwoc").join("chat-session.json");
+            Ok((workdir, file))
+        } else {
+            let file = chat_session_file(&self.agent_dir, &self.platform, &chat);
+            Ok((self.agent_dir.clone(), file))
+        }
+    }
+}
+
+/// Isolated workdir for a limited-public session:
+/// `<agent_dir>/.bwoc/public/<platform>-<chat_id>/`. The harness runs with this
+/// as `--workdir`, so its (canonicalized) file-tool confinement keeps a public
+/// turn out of the agent's memories, connectors, skills, and other chats.
+pub fn public_workdir(agent_dir: &Path, platform: &str, chat_id: &str) -> PathBuf {
+    agent_dir.join(".bwoc").join("public").join(format!(
+        "{}-{}",
+        sanitize_segment(platform),
+        sanitize_segment(chat_id)
+    ))
+}
+
+/// Create the public workdir and copy in the persona (`AGENTS.md`, or the
+/// `CLAUDE.md` the harness would fall back to, written as `AGENTS.md`) and
+/// `config.manifest.json` — nothing else. Copies, never symlinks; re-copied
+/// when the source is newer.
+pub fn prepare_public_workdir(
+    agent_dir: &Path,
+    platform: &str,
+    chat_id: &str,
+) -> Result<PathBuf, ConnectError> {
+    let dir = public_workdir(agent_dir, platform, chat_id);
+    let fail = |what: &str, e: std::io::Error| {
+        ConnectError::Session(format!("public workdir {}: {what}: {e}", dir.display()))
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| fail("create", e))?;
+    if let Some(src) = ["AGENTS.md", "CLAUDE.md"]
+        .iter()
+        .map(|f| agent_dir.join(f))
+        .find(|p| p.is_file())
+    {
+        copy_if_newer(&src, &dir.join("AGENTS.md"), Some).map_err(|e| fail("AGENTS.md", e))?;
+    }
+    let manifest = agent_dir.join("config.manifest.json");
+    if manifest.is_file() {
+        copy_if_newer(
+            &manifest,
+            &dir.join("config.manifest.json"),
+            strip_deep_memory,
+        )
+        .map_err(|e| fail("config.manifest.json", e))?;
+    }
+    Ok(dir)
+}
+
+/// Copy `src` → `dst` (through `transform`) unless `dst` is already at least as
+/// new. `dst` is removed first so a pre-existing link there is replaced, never
+/// written through. `transform` returning `None` (e.g. a malformed manifest)
+/// **removes** `dst` rather than leaving a stale copy, so the harness falls back
+/// to its defaults instead of reading an out-of-date file.
+fn copy_if_newer(
+    src: &Path,
+    dst: &Path,
+    transform: impl FnOnce(Vec<u8>) -> Option<Vec<u8>>,
+) -> std::io::Result<()> {
+    let src_time = std::fs::metadata(src)?.modified()?;
+    let fresh = std::fs::symlink_metadata(dst)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t >= src_time);
+    if fresh {
+        return Ok(());
+    }
+    let transformed = transform(std::fs::read(src)?);
+    let _ = std::fs::remove_file(dst);
+    match transformed {
+        Some(bytes) => std::fs::write(dst, bytes),
+        None => Ok(()),
+    }
+}
+
+/// Drop `deepMemoryCmd` from the public manifest copy: its wake-up would inject
+/// the agent's recalled memory into a stranger's system prompt, and its
+/// session-end mine would write the stranger's conversation into that memory.
+/// A malformed manifest isn't copied (the harness then uses its defaults).
+fn strip_deep_memory(bytes: Vec<u8>) -> Option<Vec<u8>> {
+    let mut v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.as_object_mut()?.remove("deepMemoryCmd");
+    serde_json::to_vec_pretty(&v).ok()
+}
+
+/// The harness session mode a limited-public session is locked into: the
+/// `plan` mode's fixed read-only tool allow-list (`read_file`, `list_dir`,
+/// `grep`, `memory_read`); every write, `run_command`, git, delegation, and
+/// MCP tool is refused before the permission gate.
+const READ_ONLY_MODE: &str = "plan";
+
+/// One startup event while waiting for the read-only ack: `None` ⇒ keep
+/// reading (the restored-history replay). Anything but the `plan` ack — an
+/// error, another mode, EOF — fails session creation (fail closed).
+fn read_only_ack(ev: Option<ChatEvent>) -> Option<Result<(), ConnectError>> {
+    match ev {
+        Some(ChatEvent::ModeChanged { mode }) if mode == READ_ONLY_MODE => Some(Ok(())),
+        Some(ChatEvent::Restored { .. }) => None,
+        _ => Some(Err(ConnectError::Session(
+            "harness did not confirm read-only mode for a public session".into(),
+        ))),
+    }
 }
 
 #[async_trait]
 impl SessionFactory for HarnessSessionFactory {
-    async fn create(&self, chat_id: i64) -> Result<Box<dyn AgentSession>, ConnectError> {
-        let session_file = chat_session_file(&self.agent_dir, &self.platform, &chat_id.to_string());
-        let s = HarnessSession::spawn(
+    async fn create(
+        &self,
+        chat_id: i64,
+        public: bool,
+    ) -> Result<Box<dyn AgentSession>, ConnectError> {
+        let (workdir, session_file) = self.spawn_paths(chat_id, public)?;
+        let mut s = HarnessSession::spawn(
             &self.harness,
-            &self.agent_dir,
+            &workdir,
             &session_file,
             self.platform.clone(),
             self.model.as_deref(),
@@ -135,6 +253,9 @@ impl SessionFactory for HarnessSessionFactory {
             self.team_chat.as_deref(),
         )
         .await?;
+        if public {
+            s.enter_read_only().await?;
+        }
         Ok(Box::new(s))
     }
 }
@@ -237,6 +358,23 @@ impl HarnessSession {
         Err(ConnectError::Session("harness exited before Ready".into()))
     }
 
+    /// Lock this session to [`READ_ONLY_MODE`] before any user text is sent.
+    /// Only this bridge writes the harness's stdin, and remote text only ever
+    /// travels inside a JSON-encoded `User` input, so a sender can't switch
+    /// the mode back.
+    async fn enter_read_only(&mut self) -> Result<(), ConnectError> {
+        self.write_input(&ChatInput::SetMode {
+            mode: READ_ONLY_MODE.to_string(),
+        })
+        .await?;
+        loop {
+            let ev = self.next_event().await?;
+            if let Some(outcome) = read_only_ack(ev) {
+                return outcome;
+            }
+        }
+    }
+
     async fn write_input(&mut self, input: &ChatInput) -> Result<(), ConnectError> {
         let line = input
             .to_line()
@@ -319,6 +457,30 @@ impl Drop for HarnessSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manifest_that_no_longer_parses_removes_the_stale_public_copy() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dst_dir = tempfile::tempdir().unwrap();
+        let src = src_dir.path().join("config.manifest.json");
+        let dst = dst_dir.path().join("config.manifest.json");
+        std::fs::write(&src, br#"{"name":"x","deepMemoryCmd":"mine"}"#).unwrap();
+        copy_if_newer(&src, &dst, strip_deep_memory).unwrap();
+        assert!(dst.is_file());
+
+        // Make the source newer and malformed: the old copy must go.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&src, b"{ not json").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        copy_if_newer(&src, &dst, strip_deep_memory).unwrap();
+        assert!(!dst.exists(), "stale manifest copy must be removed");
+    }
     use bwoc_core::trust::TrustLevel;
 
     fn sessions_dir(agent: &Path) -> PathBuf {
@@ -356,6 +518,150 @@ mod tests {
         // A hostile platform tag is contained the same way.
         let p = chat_session_file(agent, "../../etc", "1");
         assert_eq!(p.parent(), Some(sessions_dir(agent).as_path()));
+    }
+
+    fn factory(agent: &Path) -> HarnessSessionFactory {
+        HarnessSessionFactory {
+            harness: PathBuf::from("bwoc-harness"),
+            agent_dir: agent.to_path_buf(),
+            platform: "telegram".into(),
+            model: None,
+            endpoint: None,
+            backend: None,
+            cli_cmd: None,
+            team_chat: None,
+        }
+    }
+
+    /// An agent dir with the persona, a manifest, and everything a public
+    /// session must not see.
+    fn populated_agent() -> tempfile::TempDir {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path();
+        std::fs::write(a.join("AGENTS.md"), "persona").unwrap();
+        std::fs::write(
+            a.join("config.manifest.json"),
+            r#"{"agentId":"agent-x","primaryModel":"m","deepMemoryCmd":"mem recall"}"#,
+        )
+        .unwrap();
+        for d in ["memories", "connectors", "skills", ".bwoc/chat-sessions"] {
+            std::fs::create_dir_all(a.join(d)).unwrap();
+        }
+        std::fs::write(a.join("memories/MEMORY.md"), "private").unwrap();
+        std::fs::write(a.join("connectors/telegram.toml"), "enabled = true").unwrap();
+        std::fs::write(a.join(".bwoc/chat-sessions/telegram-111.json"), "[]").unwrap();
+        tmp
+    }
+
+    #[test]
+    fn public_sessions_get_an_isolated_workdir_allow_listed_keep_the_agent_dir() {
+        let agent = populated_agent();
+        let f = factory(agent.path());
+        let (wd, file) = f.spawn_paths(111, false).unwrap();
+        assert_eq!(wd, agent.path());
+        assert_eq!(file, chat_session_file(agent.path(), "telegram", "111"));
+        let (pwd, pfile) = f.spawn_paths(-100, true).unwrap();
+        assert_eq!(pwd, agent.path().join(".bwoc/public/telegram--100"));
+        assert!(
+            pfile.starts_with(&pwd),
+            "session file lives in the public dir"
+        );
+        assert!(pwd.is_dir());
+    }
+
+    #[test]
+    fn public_workdir_holds_only_the_copied_persona_and_manifest() {
+        let agent = populated_agent();
+        let wd = prepare_public_workdir(agent.path(), "telegram", "42").unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&wd)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["AGENTS.md", "config.manifest.json"]);
+        let persona = wd.join("AGENTS.md");
+        assert!(!persona.is_symlink(), "a copy, not a link");
+        assert_eq!(std::fs::read_to_string(&persona).unwrap(), "persona");
+        let m: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(wd.join("config.manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(m["primaryModel"], "m");
+        assert!(m.get("deepMemoryCmd").is_none(), "deep memory stripped");
+    }
+
+    #[test]
+    fn public_workdir_recopies_a_newer_persona() {
+        let agent = populated_agent();
+        let wd = prepare_public_workdir(agent.path(), "telegram", "42").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(wd.join("AGENTS.md"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        std::fs::write(agent.path().join("AGENTS.md"), "persona v2").unwrap();
+        prepare_public_workdir(agent.path(), "telegram", "42").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(wd.join("AGENTS.md")).unwrap(),
+            "persona v2"
+        );
+    }
+
+    #[test]
+    fn hostile_ids_stay_inside_the_public_root() {
+        let agent = tempfile::TempDir::new().unwrap();
+        let root = agent.path().join(".bwoc").join("public");
+        for (platform, chat) in [
+            ("../../etc", "1"),
+            ("telegram", "../x"),
+            ("telegram", "a/../../b"),
+            ("..", ".."),
+        ] {
+            let wd = prepare_public_workdir(agent.path(), platform, chat).unwrap();
+            assert_eq!(wd.parent(), Some(root.as_path()), "{platform:?} {chat:?}");
+        }
+    }
+
+    #[test]
+    fn read_only_handshake_requires_the_plan_ack() {
+        assert!(matches!(
+            read_only_ack(Some(ChatEvent::ModeChanged {
+                mode: "plan".into()
+            })),
+            Some(Ok(()))
+        ));
+        // History replay after Ready is skipped, not treated as a failure.
+        assert!(
+            read_only_ack(Some(ChatEvent::Restored {
+                role: "user".into(),
+                text: "hi".into()
+            }))
+            .is_none()
+        );
+        // Anything else fails closed: another mode, an error, EOF.
+        for ev in [
+            Some(ChatEvent::ModeChanged {
+                mode: "default".into(),
+            }),
+            Some(ChatEvent::Error {
+                message: "unknown permission mode".into(),
+            }),
+            None,
+        ] {
+            assert!(matches!(read_only_ack(ev), Some(Err(_))));
+        }
+        // The mode string is one the harness parses.
+        let line = ChatInput::SetMode {
+            mode: READ_ONLY_MODE.into(),
+        }
+        .to_line()
+        .unwrap();
+        assert!(
+            line.contains("\"set_mode\"") && line.contains("\"plan\""),
+            "{line}"
+        );
     }
 
     #[test]

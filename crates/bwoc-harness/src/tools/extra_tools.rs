@@ -363,8 +363,12 @@ fn grep_walk(
         };
         for entry in rd.flatten() {
             let p = entry.path();
-            // Confinement check.
-            if !p.starts_with(workdir) {
+            // Confinement check. A symlink is followed only if its target stays
+            // inside the workdir (canonical check) — never out through a link.
+            if !p.starts_with(workdir)
+                || (entry.file_type().is_ok_and(|t| t.is_symlink())
+                    && !crate::sandbox::is_confined(&p, workdir))
+            {
                 continue;
             }
             // Skip hidden directories (.git, .bwoc, …).
@@ -1188,6 +1192,10 @@ impl ToolImpl for MemoryRead {
         if !canonical_mem_dir.starts_with(&ctx.workdir) {
             return Err(HarnessError::PathEscape("memories/".to_string()));
         }
+        // Symlink-safe: a symlinked memories/ (or file) must not leave the workdir.
+        if !crate::sandbox::is_confined(&canonical_path, &ctx.workdir) {
+            return Err(HarnessError::PathEscape(name.to_string()));
+        }
 
         tokio::fs::read_to_string(&mem_path)
             .await
@@ -1266,6 +1274,10 @@ impl ToolImpl for MemoryWrite {
         }
         if !canonical_mem_dir.starts_with(&ctx.workdir) {
             return Err(HarnessError::PathEscape("memories/".to_string()));
+        }
+        // Symlink-safe: a symlinked memories/ (or file) must not leave the workdir.
+        if !crate::sandbox::is_confined(&canonical_path, &ctx.workdir) {
+            return Err(HarnessError::PathEscape(name.to_string()));
         }
 
         // Create the memories directory if needed.

@@ -73,6 +73,7 @@ violation ย้าย `1 → 3` และ `bwoc workspace validate` violation �
 | `.bwoc/interconnect/routes.toml` | `schema_version` |
 | `.bwoc/harness-policy.toml` | `schema_version` |
 | `.bwoc/peers.toml` | `schema_version` |
+| `connectors/<platform>.toml` (ต่อ agent) | `schema_version` |
 | `config.manifest.json` | `version` (เวอร์ชัน specification — `3.0`) และ `trust.schemaVersion` สำหรับ sub-spec Kalyāṇamitta-7 ซึ่งมี version แยกของตัวเอง |
 
 **ไม่มี marker = schema 2** — ทุกอย่างที่ BWOC 2.x เขียนไว้ นี่คือสิ่งที่ทำให้การ upgrade

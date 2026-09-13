@@ -42,13 +42,43 @@ Each agent opts in with a per-platform file under its directory:
 
 ```toml
 # connectors/telegram.toml  (or discord.toml)
+schema_version = 3                     # optional; absent ⇒ legacy 2 (still loads)
 enabled    = true
 allow_from = [123456789, 987654321]   # platform user ids; CLOSED BY DEFAULT
 
 [group]                                # optional — bridge group rooms to a team
 team         = "tianting"              # a Saṅgha team id
 mention_only = true                    # reply only when the bot is @mentioned
+
+[bot]                                  # optional — absent ⇒ none of the below
+rate_limit_per_min = 20                # per sender (default 20; 0 = off, allow-listed only)
+max_input_chars    = 4000              # longer messages get a notice (default 4000)
+public             = false             # true ⇒ limited public mode (below)
+
+[bot.commands]                         # fixed replies; never reach the agent
+"/start" = "Hi — I'm the tianting agent. Ask me anything."
+"/help"  = "DM me, or @mention me in a group."
 ```
+
+`schema_version` works on every connector file; the current revision is 3. Leave
+it out and the file reads as legacy revision 2: it still loads, with a warning
+naming `bwoc migrate`, which stamps `schema_version = 3` in place. If a file
+declares a newer revision than this build knows, the connector refuses to start
+and names `schema_version` in the error (fail closed).
+
+**`[bot]`** checks every message that would reach the agent. They run in this
+order, before any session starts:
+
+1. **Rate cap:** a sliding one-minute window per sender, kept in memory. The
+   first message over the cap gets one short notice. Later ones are dropped
+   silently until the window frees up.
+2. **Commands:** if the first token exactly matches a `[bot.commands]` key, the
+   bot sends that fixed text and stops. A Telegram `@botname` suffix is stripped
+   first. There is no templating and nothing is executed.
+3. **Length cap:** a longer message gets a short notice and is not forwarded.
+
+The agent's `AGENTS.md` is the bot's persona, so `[bot]` has no persona field
+(one agent = one bot).
 
 ```toml
 # connectors/line.toml  — LINE ids are strings, so its allow-list lives here
@@ -70,7 +100,14 @@ allow_handles = ["+15551234567", "friend@icloud.com"]  # CLOSED BY DEFAULT
 # poll_interval_secs = 2
 ```
 
-> [!warning] **Closed by default.** An empty or absent allow-list permits **nobody** — there are no public bots. List the exact user ids that may reach the agent. Non-allow-listed senders are ignored entirely (Sīla over completeness).
+> [!warning] **Closed by default; `public = true` opts into limited public mode.** An empty or absent allow-list lets **nobody** in, and senders not on the list are ignored completely (Sīla over completeness). The only way to open a bot is `[bot] public = true`. A non-allow-listed sender is then served **only** in a DM or when they @mention the bot in a group; other group chatter from them is dropped and never logged. Every such turn is limited as follows:
+>
+> - The session is locked to **read-only tools** (the harness `plan` mode: `read_file`, `list_dir`, `grep`, `memory_read`). Writes, `run_command`, git, delegation and MCP tools are refused. If the harness doesn't confirm the mode, the session is not created.
+> - The rate and length caps always apply, even when set to `0`; `0` falls back to the default for public senders.
+> - The session runs in its **own workdir**, `<agent>/.bwoc/public/<platform>-<chat_id>/`. That workdir holds only a copy of `AGENTS.md` and `config.manifest.json` (without `deepMemoryCmd`), plus its own session file. It has no memories, connectors, skills or other chats, and it never joins a team chat. File tools are confined to it after symlinks are resolved, so a link can't reach out.
+> - The turn stays tagged `Principal::Platform`, which is untrusted.
+>
+> Allow-listed senders behave exactly as before.
 
 ### Tokens
 
@@ -139,7 +176,9 @@ turn end. This is automatic — a transport advertises `supports_edit`.
 
 ## Security posture
 
-- **Closed-by-default allow-list** gates who may reach the agent.
+- **Closed-by-default allow-list** gates who may reach the agent; `[bot] public
+  = true` is the only way to open it, and those turns get read-only, capped,
+  separate sessions (see the warning under *Configuration*).
 - The bridged harness session is **non-TTY**, so `ask`-mode tool calls fail safe
   to **deny**, and a `PermissionRequest` is auto-denied — a remote chat user can
   never approve a tool call.
