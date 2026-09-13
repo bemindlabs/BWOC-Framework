@@ -143,6 +143,12 @@ turn end. This is automatic — a transport advertises `supports_edit`.
 - The bridged harness session is **non-TTY**, so `ask`-mode tool calls fail safe
   to **deny**, and a `PermissionRequest` is auto-denied — a remote chat user can
   never approve a tool call.
+- **Per-chat isolation.** Each bridged chat keeps its own conversation file,
+  `<agent>/.bwoc/chat-sessions/<platform>-<chat_id>.json` (ids that aren't plain
+  `[A-Za-z0-9_-]` are hashed), so two chats — or a DM and a group — never share
+  context or history. `bwoc chat --tui` keeps `.bwoc/chat-session.json`.
+- Each bridged turn is tagged with the sender's platform identity
+  (`Principal::Platform`), which is always **untrusted**.
 - **LINE** webhooks are verified (`X-Line-Signature` = base64(HMAC-SHA256(channel
   secret, body)), constant-time); unsigned/forged requests are rejected.
 - **iMessage** opens `chat.db` **read-only**, and the agent speaks as the **Mac's

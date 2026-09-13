@@ -15,16 +15,65 @@ use async_trait::async_trait;
 use bwoc_core::chat_proto::{ChatEvent, ChatInput};
 use bwoc_core::manifest::Manifest;
 use bwoc_core::trust::Principal;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::{AgentSession, ConnectError, ReplyStream, SessionFactory};
+
+/// Longest id kept verbatim in a session filename; longer ids are hashed.
+const MAX_SEGMENT_LEN: usize = 64;
+
+/// A filesystem-safe filename segment for an untrusted id. An id that is
+/// already plain (`[A-Za-z0-9_-]`, non-empty, ≤ [`MAX_SEGMENT_LEN`]) is kept
+/// verbatim (Telegram's negative group ids stay readable); anything else —
+/// `..`, `/`, `\`, NUL, over-long — becomes `h.<sha256 prefix>`. The `.` can
+/// never appear in a verbatim segment, so a hashed name can't collide with one,
+/// and no output can traverse out of the sessions directory.
+fn sanitize_segment(raw: &str) -> String {
+    let plain = !raw.is_empty()
+        && raw.len() <= MAX_SEGMENT_LEN
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if plain {
+        return raw.to_string();
+    }
+    let digest = Sha256::digest(raw.as_bytes());
+    let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+    format!("h.{hex}")
+}
+
+/// Per-chat conversation file:
+/// `<agent_dir>/.bwoc/chat-sessions/<platform>-<chat_id>.json`. One file per
+/// bridged chat so two chats (or a DM and a group) never share or clobber
+/// history; the interactive `bwoc chat --tui` default is untouched.
+pub fn chat_session_file(agent_dir: &Path, platform: &str, chat_id: &str) -> PathBuf {
+    agent_dir.join(".bwoc").join("chat-sessions").join(format!(
+        "{}-{}.json",
+        sanitize_segment(platform),
+        sanitize_segment(chat_id)
+    ))
+}
+
+/// Provenance for a bridged turn: the sending platform user. Always
+/// [`TrustLevel::Untrusted`](bwoc_core::trust::TrustLevel) — `trust()` elevates
+/// only the local operator and the agent's own constitution.
+pub fn bridged_principal(platform: &str, user_id: i64) -> Principal {
+    Principal::Platform {
+        platform: platform.to_string(),
+        user_id,
+    }
+}
 
 /// Builds a `bwoc-harness --chat` session per conversation against one agent
 /// directory (resolving model/endpoint from its manifest, like `bwoc chat`).
 pub struct HarnessSessionFactory {
     harness: PathBuf,
     agent_dir: PathBuf,
+    /// Connector platform (`telegram` / `discord` / `line` / `imessage`): keys
+    /// the per-chat session file and tags each turn's [`Principal::Platform`].
+    platform: String,
     model: Option<String>,
     endpoint: Option<String>,
     /// Manifest `backend`, forwarded as `--backend` so a `cli` / `openrouter`
@@ -41,7 +90,7 @@ pub struct HarnessSessionFactory {
 impl HarnessSessionFactory {
     /// Resolve the harness binary (sibling of this process, then PATH) and the
     /// agent's model/endpoint from `config.manifest.json` (best-effort).
-    pub fn new(agent_dir: impl AsRef<Path>) -> Result<Self, ConnectError> {
+    pub fn new(agent_dir: impl AsRef<Path>, platform: &str) -> Result<Self, ConnectError> {
         let agent_dir = agent_dir.as_ref().to_path_buf();
         let harness = bwoc_core::exec::sibling_binary("bwoc-harness").ok_or_else(|| {
             ConnectError::Session("bwoc-harness binary not found (install it / add to PATH)".into())
@@ -54,6 +103,7 @@ impl HarnessSessionFactory {
         Ok(Self {
             harness,
             agent_dir,
+            platform: platform.to_string(),
             model,
             endpoint,
             backend,
@@ -71,10 +121,13 @@ impl HarnessSessionFactory {
 
 #[async_trait]
 impl SessionFactory for HarnessSessionFactory {
-    async fn create(&self) -> Result<Box<dyn AgentSession>, ConnectError> {
+    async fn create(&self, chat_id: i64) -> Result<Box<dyn AgentSession>, ConnectError> {
+        let session_file = chat_session_file(&self.agent_dir, &self.platform, &chat_id.to_string());
         let s = HarnessSession::spawn(
             &self.harness,
             &self.agent_dir,
+            &session_file,
+            self.platform.clone(),
             self.model.as_deref(),
             self.endpoint.as_deref(),
             self.backend.as_deref(),
@@ -90,12 +143,16 @@ pub struct HarnessSession {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
+    platform: String,
 }
 
 impl HarnessSession {
+    #[allow(clippy::too_many_arguments)]
     async fn spawn(
         harness: &Path,
         agent_dir: &Path,
+        session_file: &Path,
+        platform: String,
         model: Option<&str>,
         endpoint: Option<&str>,
         backend: Option<&str>,
@@ -103,7 +160,11 @@ impl HarnessSession {
         team_chat: Option<&Path>,
     ) -> Result<Self, ConnectError> {
         let mut cmd = Command::new(harness);
-        cmd.arg("--chat").arg("--workdir").arg(agent_dir);
+        cmd.arg("--chat")
+            .arg("--workdir")
+            .arg(agent_dir)
+            .arg("--session-file")
+            .arg(session_file);
         if let Some(m) = model {
             cmd.arg("--model").arg(m);
         }
@@ -139,6 +200,7 @@ impl HarnessSession {
             child,
             stdin,
             stdout: BufReader::new(stdout).lines(),
+            platform,
         };
         // Drain startup events up to and including `Ready` so the first `ask`
         // doesn't race the banner/restore replay.
@@ -188,26 +250,24 @@ impl HarnessSession {
 
 #[async_trait]
 impl AgentSession for HarnessSession {
-    async fn ask(&mut self, text: &str) -> Result<String, ConnectError> {
+    async fn ask(&mut self, text: &str, from_user_id: i64) -> Result<String, ConnectError> {
         // Non-streaming callers get the final text only.
         let mut noop = NoopStream;
-        self.ask_streamed(text, &mut noop).await
+        self.ask_streamed(text, from_user_id, &mut noop).await
     }
 
     async fn ask_streamed(
         &mut self,
         text: &str,
+        from_user_id: i64,
         sink: &mut dyn ReplyStream,
     ) -> Result<String, ConnectError> {
         // Phase 5 t1: chat-connector ingress is unauthenticated adversarial
-        // input. We omit an explicit principal, so the harness defaults it to
-        // Unknown → Untrusted (fail-closed). Threading richer
-        // `Principal::Platform { kind, user_id }` provenance from the inbound
-        // event is a deferred fidelity improvement; the fail-closed default
-        // keeps connector turns Untrusted regardless.
+        // input. Stamp the sender's platform identity as provenance; a
+        // `Platform` principal is Untrusted, so the turn stays fail-closed.
         self.write_input(&ChatInput::User {
             text: text.to_string(),
-            principal: Principal::default(),
+            principal: bridged_principal(&self.platform, from_user_id),
         })
         .await?;
 
@@ -253,5 +313,62 @@ impl Drop for HarnessSession {
     fn drop(&mut self) {
         // Best-effort graceful quit; kill_on_drop reaps if it ignores us.
         let _ = self.child.start_kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bwoc_core::trust::TrustLevel;
+
+    fn sessions_dir(agent: &Path) -> PathBuf {
+        agent.join(".bwoc").join("chat-sessions")
+    }
+
+    #[test]
+    fn distinct_chats_get_distinct_session_files() {
+        let agent = Path::new("/agents/agent-x");
+        let dm = chat_session_file(agent, "telegram", "42");
+        let group = chat_session_file(agent, "telegram", "-100123");
+        assert_ne!(dm, group);
+        assert_eq!(dm, sessions_dir(agent).join("telegram-42.json"));
+        assert_eq!(group, sessions_dir(agent).join("telegram--100123.json"));
+        // Same id on another platform is a different conversation.
+        assert_ne!(dm, chat_session_file(agent, "discord", "42"));
+        // Never the interactive TUI's default file.
+        assert_ne!(dm, agent.join(".bwoc").join("chat-session.json"));
+    }
+
+    #[test]
+    fn hostile_ids_are_sanitized_into_the_sessions_dir() {
+        let agent = Path::new("/agents/agent-x");
+        let long = "9".repeat(10_000);
+        let hostile = ["../x", "/", "..", "a/../../b", "a\\b", "x\0y", "", &long];
+        let mut names = std::collections::HashSet::new();
+        for id in hostile {
+            let p = chat_session_file(agent, "telegram", id);
+            assert_eq!(p.parent(), Some(sessions_dir(agent).as_path()), "{id:?}");
+            let name = p.file_name().unwrap().to_str().unwrap();
+            assert!(!name.contains('/') && !name.contains('\\') && !name.contains(".."));
+            assert!(name.len() < 100, "bounded length: {name}");
+            assert!(names.insert(name.to_string()), "no collision for {id:?}");
+        }
+        // A hostile platform tag is contained the same way.
+        let p = chat_session_file(agent, "../../etc", "1");
+        assert_eq!(p.parent(), Some(sessions_dir(agent).as_path()));
+    }
+
+    #[test]
+    fn bridged_turn_principal_is_platform_and_untrusted() {
+        let p = bridged_principal("telegram", 111);
+        assert_eq!(
+            p,
+            Principal::Platform {
+                platform: "telegram".into(),
+                user_id: 111
+            }
+        );
+        assert_eq!(p.trust(), TrustLevel::Untrusted);
+        assert!(p.carries_untrusted_taint());
     }
 }
