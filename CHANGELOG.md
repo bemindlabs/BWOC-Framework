@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.13-2] — 2026-09-13 — 3.1.0
+
+**bwoc-bot, phase 1 — one agent, one bot.** Chat connectors gain a `[bot]` block: fixed slash-command replies that never reach the model, per-sender rate and message-length caps, and an opt-in **limited public mode** that lets strangers reach the agent by DM or @mention — read-only tools, a separate workdir with no memories or other chats, and an Untrusted principal. File-tool confinement is now symlink-safe for every agent, and connector configs carry a `schema_version` that `bwoc migrate` stamps.
+
 ### Added
 
 - **Connector `[bot]` block and limited public mode** — `connectors/<platform>.toml` now accepts `schema_version`, using the 3.0 `SchemaVersion`: absent ⇒ legacy v2, which loads with a warning; 3 is current; a newer revision makes the connector refuse to start. `bwoc migrate` now stamps `connectors/*.toml` and an optional `[bot]` table. `[bot]` adds fixed slash-command replies (`[bot.commands]`, exact first token, `@botname` stripped, never forwarded to the agent), a per-sender `rate_limit_per_min` (default 20: one notice, then silent drops) and `max_input_chars` (default 4000). `public = true` lets non-allow-listed senders reach the agent, but only by DM or @mention. Their sessions are locked to read-only harness `plan` mode, always capped, and run in their own workdir (`.bwoc/public/<platform>-<chat_id>/`, holding only copies of `AGENTS.md` and `config.manifest.json` minus `deepMemoryCmd`) outside team chat. Without `[bot]`, behaviour is unchanged (closed by default).
@@ -20,7 +24,6 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Fixed
 
-- **Tool path confinement resolves symlinks** — `ToolContext::resolve_path` only checked paths lexically, so a symlink inside the workdir that pointed outside let `read_file` / `list_dir` / `write_file` / `edit_file` escape. Confined paths now also canonicalize their deepest existing ancestor and must stay inside the canonical workdir (shared with `sandbox::confine_path`). `memory_read` / `memory_write` get the same check, and `grep` no longer follows an escaping link. `--unrestricted` is unchanged.
 - **Chat connectors isolate each chat's conversation** — every bridged chat shared the agent's single `.bwoc/chat-session.json`, so two chats (or a DM and a group) leaked context into each other and clobbered history. Each chat now persists to `.bwoc/chat-sessions/<platform>-<chat_id>.json` (sanitized; new `bwoc-harness --session-file`), and bridged turns carry `Principal::Platform { platform, user_id }` provenance instead of `Unknown` (still untrusted). `bwoc chat --tui` is unchanged.
 - **`bwoc new` stamps the current specification.** On 3.0.0 it still wrote `"version": "2.0"` into `config.manifest.json` while the template's `AGENTS.md` said 3.0. Every freshly incarnated agent therefore warned "specification version 2.0 — run `bwoc migrate`" straight away. It now uses the same constant that `bwoc migrate` migrates to.
 - **`bwoc init` no longer overwrites an existing `.bwoc/agents.toml`.** Before, it wrote an empty registry every time, including under `--force` (documented to replace only `workspace.toml`) and in a directory that had `agents.toml` but no `workspace.toml`. Every registered agent silently disappeared from the registry. Found while turning a daemon-only fleet host into a full workspace for the 3.0 migration.
