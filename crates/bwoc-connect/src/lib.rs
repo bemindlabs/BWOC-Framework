@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use bwoc_core::schema::SchemaVersion;
 use serde::Deserialize;
 
 pub mod discord;
@@ -58,22 +59,15 @@ pub enum ConnectError {
 // Config — <agent>/connectors/telegram.toml
 // ---------------------------------------------------------------------------
 
-/// Highest connector-config `schema_version` this build understands. An
-/// unmarked file reads as this revision (every connector file written so far).
-pub const CONNECTOR_SCHEMA_VERSION: u32 = 2;
-
-fn default_schema_version() -> u32 {
-    CONNECTOR_SCHEMA_VERSION
-}
-
 /// Per-agent Telegram connector config. The token is **not** here — it
 /// resolves via the keyring / env fallback (see `main`).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TelegramConfig {
-    /// Format revision. Absent ⇒ [`CONNECTOR_SCHEMA_VERSION`]; a revision ahead
-    /// of this build is refused by [`TelegramConfig::parse`] (fail closed).
-    #[serde(default = "default_schema_version")]
-    pub schema_version: u32,
+    /// Format revision. Absent ⇒ [`SchemaVersion::LEGACY`] (still loads; `main`
+    /// warns and names `bwoc migrate`); a revision ahead of
+    /// [`SchemaVersion::CURRENT`] is refused by [`TelegramConfig::parse`].
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
     /// Connector is off unless explicitly enabled.
     #[serde(default)]
     pub enabled: bool,
@@ -237,12 +231,12 @@ impl TelegramConfig {
     pub fn parse(toml_src: &str) -> Result<Self, ConnectError> {
         let cfg: Self =
             toml::from_str(toml_src).map_err(|e| ConnectError::Config(e.to_string()))?;
-        if cfg.schema_version > CONNECTOR_SCHEMA_VERSION {
+        if cfg.schema_version.is_future() {
             return Err(ConnectError::Config(format!(
                 "connector config declares schema_version {} but this bwoc-connect understands \
-                 at most {CONNECTOR_SCHEMA_VERSION} — refusing to start a connector written for a \
-                 newer BWOC (upgrade bwoc)",
-                cfg.schema_version
+                 at most {} — refusing to start a connector written for a newer BWOC (upgrade bwoc)",
+                cfg.schema_version.0,
+                SchemaVersion::CURRENT.0
             )));
         }
         Ok(cfg)
@@ -828,7 +822,7 @@ mod tests {
 
     fn cfg(allow: &[i64]) -> TelegramConfig {
         TelegramConfig {
-            schema_version: CONNECTOR_SCHEMA_VERSION,
+            schema_version: SchemaVersion::CURRENT,
             enabled: true,
             allow_from: allow.to_vec(),
             bot: None,
@@ -1005,7 +999,7 @@ mod tests {
 
     fn group_cfg(allow: &[i64], mention_only: bool) -> TelegramConfig {
         TelegramConfig {
-            schema_version: CONNECTOR_SCHEMA_VERSION,
+            schema_version: SchemaVersion::CURRENT,
             enabled: true,
             allow_from: allow.to_vec(),
             bot: None,
@@ -1246,12 +1240,19 @@ mod tests {
     // ── bwoc-bot Phase 1: schema_version + [bot] ─────────────────────────────
 
     #[test]
-    fn schema_version_absent_is_accepted_future_is_refused() {
+    fn schema_version_absent_is_legacy_current_loads_future_is_refused() {
         let absent = TelegramConfig::parse("enabled = true\n").unwrap();
-        assert_eq!(absent.schema_version, CONNECTOR_SCHEMA_VERSION);
+        assert_eq!(absent.schema_version, SchemaVersion::LEGACY);
+        assert!(
+            absent.schema_version.is_legacy(),
+            "absent ⇒ legacy v2, still loads"
+        );
         assert!(absent.bot.is_none(), "no [bot] table ⇒ None");
-        TelegramConfig::parse("schema_version = 2\nenabled = true\n").unwrap();
-        let err = TelegramConfig::parse("schema_version = 3\nenabled = true\n")
+        let legacy = TelegramConfig::parse("schema_version = 2\nenabled = true\n").unwrap();
+        assert!(legacy.schema_version.is_legacy());
+        let current = TelegramConfig::parse("schema_version = 3\nenabled = true\n").unwrap();
+        assert!(current.schema_version.is_current());
+        let err = TelegramConfig::parse("schema_version = 4\nenabled = true\n")
             .unwrap_err()
             .to_string();
         assert!(err.contains("schema_version"), "{err}");

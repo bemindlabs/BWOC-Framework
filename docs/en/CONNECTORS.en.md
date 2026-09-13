@@ -42,7 +42,7 @@ Each agent opts in with a per-platform file under its directory:
 
 ```toml
 # connectors/telegram.toml  (or discord.toml)
-schema_version = 2                     # optional; absent ⇒ 2
+schema_version = 3                     # optional; absent ⇒ legacy 2 (still loads)
 enabled    = true
 allow_from = [123456789, 987654321]   # platform user ids; CLOSED BY DEFAULT
 
@@ -60,9 +60,11 @@ public             = false             # true ⇒ limited public mode (below)
 "/help"  = "DM me, or @mention me in a group."
 ```
 
-`schema_version` works on every connector file. Leave it out and the file reads
-as revision 2. If a file declares a newer revision than this build knows, the
-connector refuses to start and names `schema_version` in the error (fail closed).
+`schema_version` works on every connector file; the current revision is 3. Leave
+it out and the file reads as legacy revision 2: it still loads, with a warning
+naming `bwoc migrate`, which stamps `schema_version = 3` in place. If a file
+declares a newer revision than this build knows, the connector refuses to start
+and names `schema_version` in the error (fail closed).
 
 **`[bot]`** checks every message that would reach the agent. They run in this
 order, before any session starts:

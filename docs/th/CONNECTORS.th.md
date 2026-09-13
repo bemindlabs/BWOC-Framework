@@ -40,7 +40,7 @@ nav_order: 13
 
 ```toml
 # connectors/telegram.toml  (หรือ discord.toml)
-schema_version = 2                     # ไม่บังคับ; ถ้าไม่ใส่ = 2
+schema_version = 3                     # ไม่บังคับ; ถ้าไม่ใส่ = legacy 2 (ยังโหลดได้)
 enabled    = true
 allow_from = [123456789, 987654321]   # user id ของแพลตฟอร์ม; ปิดโดยปริยาย
 
@@ -58,9 +58,11 @@ public             = false             # true = โหมดสาธารณ�
 "/help"  = "DM me, or @mention me in a group."
 ```
 
-`schema_version` ใช้ได้กับไฟล์ connector ทุกไฟล์ ถ้าไม่ใส่ ไฟล์จะถูกอ่านเป็น
-revision 2 ถ้าไฟล์ประกาศ revision ที่ใหม่กว่าที่ build นี้รู้จัก connector จะไม่ยอม
-เริ่มทำงาน และ error จะระบุ `schema_version` (fail closed)
+`schema_version` ใช้ได้กับไฟล์ connector ทุกไฟล์ revision ปัจจุบันคือ 3 ถ้าไม่ใส่
+ไฟล์จะถูกอ่านเป็น revision 2 แบบ legacy คือยังโหลดได้ แต่มีคำเตือนที่ระบุ
+`bwoc migrate` ซึ่งจะประทับ `schema_version = 3` ลงในไฟล์ ถ้าไฟล์ประกาศ revision ที่
+ใหม่กว่าที่ build นี้รู้จัก connector จะไม่ยอมเริ่มทำงาน และ error จะระบุ
+`schema_version` (fail closed)
 
 **`[bot]`** ตรวจทุกข้อความที่จะไปถึง agent ตามลำดับนี้ ก่อนเริ่ม session ใด ๆ:
 

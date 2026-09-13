@@ -77,6 +77,7 @@ implemented once, in [`bwoc-core::schema`](../../crates/bwoc-core/src/schema.rs)
 | `.bwoc/interconnect/routes.toml` | `schema_version` |
 | `.bwoc/harness-policy.toml` | `schema_version` |
 | `.bwoc/peers.toml` | `schema_version` |
+| `connectors/<platform>.toml` (per agent) | `schema_version` |
 | `config.manifest.json` | `version` (the specification version — `3.0`), plus `trust.schemaVersion` for the Kalyāṇamitta-7 sub-spec, which is versioned independently |
 
 **Absent marker means schema 2** — everything BWOC 2.x wrote. That is what makes

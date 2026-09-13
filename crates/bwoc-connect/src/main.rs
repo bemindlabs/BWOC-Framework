@@ -59,6 +59,15 @@ async fn run() -> Result<(), ConnectError> {
     let raw = std::fs::read_to_string(&cfg_path)
         .map_err(|e| ConnectError::Config(format!("read {}: {e}", cfg_path.display())))?;
     let mut cfg = ConnectorConfig::parse(&raw)?;
+    if cfg.schema_version.is_legacy() {
+        eprintln!(
+            "[bwoc-connect] warning: {} is schema v{} (legacy, removed in 4.0) — run \
+             `bwoc migrate` to stamp schema_version = {}",
+            cfg_path.display(),
+            cfg.schema_version.0,
+            bwoc_core::schema::SchemaVersion::CURRENT.0
+        );
+    }
     if !cfg.enabled {
         return Err(ConnectError::Config(format!(
             "connector disabled (set enabled = true in {})",

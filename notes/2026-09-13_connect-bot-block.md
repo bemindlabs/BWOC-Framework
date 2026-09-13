@@ -5,7 +5,7 @@ Phase 1 of bwoc-bot, built on Phase 0 (per-chat session files, `Principal::Platf
 ## What changed
 
 - `TelegramConfig` (shared by all platforms):
-  - `schema_version: u32` (absent ⇒ 2). `parse` refuses a value above `CONNECTOR_SCHEMA_VERSION` and names `schema_version` in the error.
+  - `schema_version: SchemaVersion` (bwoc-core 3.0 type). Absent ⇒ LEGACY v2, which loads, and `main` warns naming `bwoc migrate`. CURRENT (3) is OK. `parse` refuses a future value and names `schema_version` in the error, the same as `harness-policy.toml`.
   - `bot: Option<BotConfig>`, with `commands` (BTreeMap), `rate_limit_per_min`, `max_input_chars`, `public`.
 - `run_bridge` pipeline:
   - The gate decides allow-listed vs public. A public sender must DM or @mention; their other group chatter is dropped, never peer-logged.
@@ -32,8 +32,8 @@ Phase 1 of bwoc-bot, built on Phase 0 (per-chat session files, `Principal::Platf
 
 ## Deviations from the brief
 
-- **No `SchemaVersion` type on this base.** `bwoc-core::schema`, `bwoc migrate`, and `docs/en/COMPATIBILITY.en.md` exist only on the unmerged `feat/v3-w1-schema-seam` (CURRENT = 3). Pulling that in would drag a 3.0 feature into this PR. The connector uses a local `u32` with the same TOML shape (`schema_version = N`, absent ⇒ 2, future ⇒ refuse). It becomes a one-line swap to `SchemaVersion` once v3 lands; at that point `CONNECTOR_SCHEMA_VERSION` must follow `CURRENT`, or v3-stamped files would be refused.
-- **`bwoc migrate` does not stamp connector files.** The command doesn't exist on this base.
+- **Schema marker, after the rebase onto 3.0.0.** The first draft used a local `u32` because `SchemaVersion` wasn't on the Phase 0 base. After rebasing onto `origin/main` (#500 merged), the connector uses `bwoc_core::schema::SchemaVersion` directly.
+- **`bwoc migrate` stamps connector files.** `connectors/{telegram,discord,line,imessage}.toml` were added to `AGENT_ARTIFACTS`, a four-line splice into the existing per-agent walk. They go through the same comment-preserving `plan_toml_marker`, and absent files are skipped.
 - **No per-turn token cap.** `--token-budget` feeds only the batch `run_loop` (`LoopConfig.max_tokens`); `ChatConfig` has no budget. Per the brief, no new budget system was built. Token-cost abuse is bounded by rate cap × senders and is recorded as a residual.
 
 ## Status / deferred
