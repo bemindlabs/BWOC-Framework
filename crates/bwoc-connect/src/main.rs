@@ -59,6 +59,15 @@ async fn run() -> Result<(), ConnectError> {
     let raw = std::fs::read_to_string(&cfg_path)
         .map_err(|e| ConnectError::Config(format!("read {}: {e}", cfg_path.display())))?;
     let mut cfg = ConnectorConfig::parse(&raw)?;
+    if cfg.schema_version.is_legacy() {
+        eprintln!(
+            "[bwoc-connect] warning: {} is schema v{} (legacy, removed in 4.0) — run \
+             `bwoc migrate` to stamp schema_version = {}",
+            cfg_path.display(),
+            cfg.schema_version.0,
+            bwoc_core::schema::SchemaVersion::CURRENT.0
+        );
+    }
     if !cfg.enabled {
         return Err(ConnectError::Config(format!(
             "connector disabled (set enabled = true in {})",
@@ -96,7 +105,12 @@ async fn run() -> Result<(), ConnectError> {
             .map(|h| bwoc_connect::imessage::hash_id(h))
             .collect();
     }
-    if cfg.allow_from.is_empty() {
+    if cfg.bot.as_ref().is_some_and(|b| b.public) {
+        eprintln!(
+            "[bwoc-connect] limited public mode: non-allow-listed senders are served \
+             (DM or @mention only) on read-only, rate- and length-capped sessions."
+        );
+    } else if cfg.allow_from.is_empty() {
         eprintln!(
             "[bwoc-connect] warning: allow_from is empty — the bridge will ignore \
              everyone (closed by default). Add platform user ids to {}.",
