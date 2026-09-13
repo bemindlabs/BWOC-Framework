@@ -3,7 +3,7 @@ name        = "memory-tier2-noop"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "No-op Tier 2 memory backend that forwards to Tier 1."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bwoc-plugin-memory-tier2-noop"
 
 # [config.schema] intentionally omitted — the no-op forwards every call to

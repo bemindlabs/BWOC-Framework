@@ -13,7 +13,7 @@ name        = "{{pluginName}}"
 kind        = "{{pluginKind}}"
 version     = "{{pluginVersion}}"
 description = "{{pluginDescription}}"
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bwoc-plugin-{{pluginName}}"
 
 # [config.schema] — author-defined. Omit the table entirely if the plugin

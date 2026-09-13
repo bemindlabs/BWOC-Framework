@@ -1,5 +1,18 @@
 # Security Policy
 
+## Supported Versions
+
+**The latest release only.** Fixes land on `main` and ship in the next release;
+there are no maintenance branches to backport onto — tags are cut directly on
+`main`, and `CONTRIBUTING.md` forbids `release/*` branches. A security fix is a
+reason to cut a release, not to open a support line for an older one.
+
+If you are running an older release, upgrading is the fix. See
+[`docs/en/COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) for what an upgrade
+can and cannot change under you, and
+[`docs/en/MIGRATION.en.md`](docs/en/MIGRATION.en.md) for the 2.x → 3.0
+step.
+
 ## Reporting a Vulnerability
 
 **Do not open a public issue or pull request for security vulnerabilities.**

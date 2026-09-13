@@ -10,6 +10,12 @@ use std::path::Path;
 use crate::i18n;
 
 /// Result of a single audit run. Each finding is a human-readable line.
+/// The specification version an agent declares once migrated to 3.x. Mirrors
+/// `VERSION.md` §Specification and `modules/agent-template/AGENTS.md`.
+const SPEC_VERSION_CURRENT: &str = "3.0";
+/// What a 2.x agent declares. Readable through 3.x; a violation in 4.0.
+const SPEC_VERSION_LEGACY: &str = "2.0";
+
 pub struct AuditReport {
     pub target: String,
     pub passes: Vec<String>,
@@ -72,6 +78,46 @@ const RUNTIME_PLACEHOLDERS: &[&str] = &["{{taskId}}"];
 pub enum AuditMode {
     Template,
     Incarnation,
+}
+
+/// Audit the specification version an agent declares — the `version` key in
+/// `config.manifest.json`, mirrored by the `| **Version** |` row in its
+/// `AGENTS.md`.
+///
+/// Through 2.x this key was written and never read, so an agent could claim any
+/// specification it liked. 3.0 reads it, but reads it *gently*: an agent still
+/// on 2.0 is a **warning**, not a violation. `check` exits non-zero on
+/// violations, and turning every existing fleet red the day an operator
+/// upgrades would be hostile when the fix is one command. It becomes a
+/// violation in 4.0, when 2.0 support goes away.
+fn audit_spec_version(
+    report: &mut AuditReport,
+    manifest: Option<&serde_json::Value>,
+    target: &Path,
+) {
+    let Some(declared) = manifest
+        .and_then(|m| m.get("version"))
+        .and_then(|v| v.as_str())
+    else {
+        // A manifest with no `version` at all is covered by the JSON/required-
+        // field audits above; nothing to add here.
+        return;
+    };
+
+    match declared {
+        SPEC_VERSION_CURRENT => report
+            .passes
+            .push(format!("specification version {SPEC_VERSION_CURRENT}")),
+        SPEC_VERSION_LEGACY => report.warnings.push(format!(
+            "specification version {SPEC_VERSION_LEGACY} — support ends in BWOC 4.0; \
+             run `bwoc migrate {}`",
+            target.display()
+        )),
+        other => report.violations.push(format!(
+            "specification version {other} is not one this bwoc knows \
+             (expected {SPEC_VERSION_CURRENT}, or {SPEC_VERSION_LEGACY} pending migration)"
+        )),
+    }
 }
 
 /// Decide audit mode from a parsed `config.manifest.json` value.
@@ -196,6 +242,8 @@ pub fn audit(target: &Path) -> AuditReport {
             .warnings
             .push("config.manifest.json missing (recommended for cloning readiness)".to_string());
     }
+    audit_spec_version(&mut report, manifest_value.as_ref(), target);
+
     let mode = detect_mode(manifest_value.as_ref());
 
     // Content-based checks on AGENTS.md
@@ -1011,14 +1059,21 @@ pub fn run(target: &Path, lang: &str, json: bool) -> i32 {
             Ok(s) => println!("{s}"),
             Err(e) => {
                 eprintln!("bwoc check: failed to serialize JSON: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
     } else {
         let bundle = i18n::bundle_for(lang);
         print_report(&report, &bundle);
     }
-    if report.violations.is_empty() { 0 } else { 1 }
+    // 3.0: violations are a negative-but-valid *finding* (exit 3, FINDINGS), not
+    // a command error (exit 1). This aligns `check` with `workspace validate` and
+    // `council`, and lets CI tell "check found violations" from "check crashed".
+    if report.violations.is_empty() {
+        crate::exit::OK
+    } else {
+        crate::exit::FINDINGS
+    }
 }
 
 /// Fleet-wide audit. Iterates the workspace's `agents.toml`, runs
@@ -1041,7 +1096,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
                             "bwoc check --all: no workspace found. Pass --workspace, set \
                              BWOC_WORKSPACE, or run from a workspace directory."
                         );
-                        return 2;
+                        return crate::exit::USAGE;
                     };
                     p
                 }
@@ -1051,7 +1106,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
                         "bwoc check --all: no workspace found. Pass --workspace, set \
                          BWOC_WORKSPACE, or run from a workspace directory."
                     );
-                    return 2;
+                    return crate::exit::USAGE;
                 };
                 p
             }
@@ -1061,7 +1116,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
         Ok(r) => r,
         Err(e) => {
             eprintln!("bwoc check --all: failed to read agents.toml: {e}");
-            return 1;
+            return crate::exit::ERROR;
         }
     };
     if registry.agents.is_empty() {
@@ -1070,7 +1125,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
              Run `bwoc new <name>` to incarnate one.",
             root.display()
         );
-        return 0;
+        return crate::exit::OK;
     }
 
     let mut total_violations = 0u32;
@@ -1185,7 +1240,7 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
             Ok(s) => println!("{s}"),
             Err(e) => {
                 eprintln!("bwoc check --all: failed to serialize JSON: {e}");
-                return 1;
+                return crate::exit::ERROR;
             }
         }
     } else {
@@ -1218,7 +1273,12 @@ pub fn run_all(workspace_path: Option<&Path>, lang: &str, json: bool) -> i32 {
         println!();
     }
 
-    if total_violations > 0 { 1 } else { 0 }
+    // 3.0: violations → FINDINGS (3), same as single-target `run` (see above).
+    if total_violations > 0 {
+        crate::exit::FINDINGS
+    } else {
+        crate::exit::OK
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1591,6 +1651,33 @@ pub fn audit_plugin_manifest(plugin_dir: &Path) -> AuditReport {
                 .passes
                 .push("[plugin].entry is a contained path (no traversal)".to_string()),
             Err(e) => report.violations.push(e),
+        }
+    }
+
+    // `[plugin].compat` is a semver range of framework versions, and
+    // `PLUGINS.en.md` §Validation has always specified that it must parse.
+    // A mismatch is a WARNING here, not a violation: `bwoc check` exits
+    // non-zero on violations, and a plugin that has simply not been re-declared
+    // for this major is a thing to fix, not a broken workspace. The *runtime*
+    // resolvers refuse it — that is where "refuses to load" belongs.
+    if let Some(compat) = plugin_table.get("compat").and_then(|v| v.as_str()) {
+        match crate::util::check_plugin_compat(compat, crate::util::FRAMEWORK_VERSION) {
+            Ok(()) => {
+                report
+                    .passes
+                    .push(format!("[plugin].compat {compat} matches this framework"));
+                if crate::util::compat_range_is_unbounded(compat) {
+                    report.warnings.push(format!(
+                        "[plugin].compat {compat} has no upper bound — it will keep claiming \
+                         compatibility with majors that break this plugin; declare a ceiling \
+                         (e.g. \">=X.0.0, <Y.0.0\")"
+                    ));
+                }
+            }
+            Err(e) if e.contains("not a valid semver range") => report.violations.push(e),
+            Err(e) => report.warnings.push(format!(
+                "{e} — this plugin will not load until it is re-declared"
+            )),
         }
     }
 
@@ -4289,6 +4376,67 @@ fn find_workspace_root_local() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
 
+    fn spec_report(version: Option<&str>) -> AuditReport {
+        let mut report = AuditReport {
+            target: "/ws/agents/agent-a".to_string(),
+            passes: Vec::new(),
+            warnings: Vec::new(),
+            violations: Vec::new(),
+        };
+        let manifest = version.map(|v| serde_json::json!({ "agentId": "agent-a", "version": v }));
+        audit_spec_version(
+            &mut report,
+            manifest.as_ref(),
+            Path::new("/ws/agents/agent-a"),
+        );
+        report
+    }
+
+    #[test]
+    fn current_spec_version_passes() {
+        let r = spec_report(Some("3.0"));
+        assert_eq!(r.violations.len(), 0);
+        assert_eq!(r.warnings.len(), 0);
+        assert!(r.passes.iter().any(|p| p.contains("3.0")));
+    }
+
+    #[test]
+    fn legacy_spec_version_warns_and_points_at_migrate() {
+        // Not a violation: `check` exits non-zero on violations, and turning
+        // every existing fleet red on upgrade day — when the fix is one
+        // command — would be hostile. This becomes a violation in 4.0.
+        let r = spec_report(Some("2.0"));
+        assert_eq!(r.violations.len(), 0, "{:?}", r.violations);
+        assert_eq!(r.warnings.len(), 1);
+        assert!(r.warnings[0].contains("bwoc migrate"), "{:?}", r.warnings);
+        assert!(r.warnings[0].contains("4.0"), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn an_unknown_spec_version_is_a_violation() {
+        let r = spec_report(Some("9.9"));
+        assert_eq!(r.warnings.len(), 0);
+        assert_eq!(r.violations.len(), 1, "{:?}", r.violations);
+    }
+
+    #[test]
+    fn a_manifest_without_a_version_key_adds_nothing_here() {
+        // Covered by the JSON / required-field audits; this one stays quiet
+        // rather than double-reporting.
+        let mut report = AuditReport {
+            target: "/ws".to_string(),
+            passes: Vec::new(),
+            warnings: Vec::new(),
+            violations: Vec::new(),
+        };
+        let manifest = serde_json::json!({ "agentId": "agent-a" });
+        audit_spec_version(&mut report, Some(&manifest), Path::new("/ws"));
+        assert!(report.passes.is_empty() && report.warnings.is_empty());
+        assert!(report.violations.is_empty());
+
+        assert!(spec_report(None).passes.is_empty());
+    }
+
     #[test]
     fn wikilink_detection() {
         assert!(contains_wikilink("see [[neutrality|Neutrality]]"));
@@ -4926,7 +5074,7 @@ name        = "memory-tier2-noop"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "No-op Tier 2 memory backend that forwards to Tier 1."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bwoc-plugin-memory-tier2-noop"
 "#,
         );
@@ -4935,6 +5083,99 @@ entry       = "bwoc-plugin-memory-tier2-noop"
             report.violations.is_empty(),
             "expected reference plugin manifest to pass, got: {:?}",
             report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    fn plugin_manifest_with_compat(label: &str, compat: &str) -> std::path::PathBuf {
+        write_plugin_manifest(
+            label,
+            "compat-probe",
+            &format!(
+                r#"[plugin]
+name        = "compat-probe"
+kind        = "memory-backend"
+version     = "0.1.0"
+description = "Probe manifest for the compat gate (kind chosen to avoid the audit-kind criteria.toml requirement)."
+compat      = "{compat}"
+entry       = "bwoc-plugin-compat-probe"
+"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_compat_mismatch_is_a_warning_not_a_violation() {
+        // `check` exits non-zero on violations. A plugin that simply has not
+        // been re-declared for this major is a thing to fix, not a broken
+        // workspace — the refusal belongs in the resolvers that run it.
+        let dir = plugin_manifest_with_compat("compat-mismatch", ">=99.0.0");
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "mismatch must not be a violation: {:?}",
+            report.violations
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.contains("will not load")),
+            "{:?}",
+            report.warnings
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn an_unparseable_compat_range_is_a_violation() {
+        // PLUGINS.en.md §Validation has always specified this gate.
+        let dir = plugin_manifest_with_compat("compat-garbage", "definitely not semver");
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.contains("not a valid semver range")),
+            "{:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn an_open_ended_compat_range_is_flagged() {
+        // It matches today, so it is not a refusal — but a range with no
+        // ceiling keeps claiming compatibility with majors that break the
+        // plugin, which is the failure the field exists to prevent.
+        let dir = plugin_manifest_with_compat(
+            "compat-open",
+            &format!(">={}", crate::util::FRAMEWORK_VERSION),
+        );
+        let report = audit_plugin_manifest(&dir);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("no upper bound")),
+            "{:?}",
+            report.warnings
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_bounded_range_covering_this_build_passes_clean() {
+        let major = crate::util::FRAMEWORK_VERSION
+            .split('.')
+            .next()
+            .and_then(|m| m.parse::<u64>().ok())
+            .expect("framework major");
+        let dir = plugin_manifest_with_compat(
+            "compat-bounded",
+            &format!(">={major}.0.0, <{}.0.0", major + 1),
+        );
+        let report = audit_plugin_manifest(&dir);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("upper bound")),
+            "{:?}",
+            report.warnings
         );
         let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
     }
@@ -4949,7 +5190,7 @@ name        = "weird-kind"
 kind        = "frobnicator"
 version     = "0.1.0"
 description = "Plugin with unknown kind."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -4978,7 +5219,7 @@ name        = "iso-29110"
 kind        = "audit"
 version     = "0.1.0"
 description = "ISO/IEC 29110 compliance audit."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bwoc-plugin-iso-29110"
 "#,
         );
@@ -5013,7 +5254,7 @@ name        = "jira-cloud-rest"
 kind        = "jira"
 version     = "0.1.0"
 description = "Jira Cloud REST v3 integration adapter."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "jira.sh"
 "#,
         );
@@ -5043,7 +5284,7 @@ name        = "council-sangha-7"
 kind        = "council"
 version     = "0.1.0"
 description = "Aparihaniya-dhamma 7 consensus council."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "protocol.sh"
 
 [council]
@@ -5077,7 +5318,7 @@ name        = "figma-rest"
 kind        = "figma"
 version     = "0.1.0"
 description = "Read-mostly Figma REST adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "figma.sh"
 
 [config.schema]
@@ -5130,7 +5371,7 @@ name        = "figma-rest"
 kind        = "figma"
 version     = "0.1.0"
 description = "Read-mostly Figma REST adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "figma.sh"
 "#;
 
@@ -5398,7 +5639,7 @@ name        = "gws-auth"
 kind        = "gws"
 version     = "0.1.0"
 description = "Google Workspace OAuth2 credential foundation."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 "#;
 
@@ -5412,7 +5653,7 @@ name        = "{name}"
 kind        = "gws"
 version     = "0.1.0"
 description = "Read-mostly Google Workspace adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 "#
         )
@@ -5451,7 +5692,7 @@ name        = "gws-drive"
 kind        = "gws"
 version     = "0.1.0"
 description = "Read-mostly Google Drive adapter."
-compat      = ">=2.10.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gws.sh"
 "#,
         );
@@ -5856,7 +6097,7 @@ name        = "jira-cloud-rest"
 kind        = "jira"
 version     = "0.1.0"
 description = "Jira Cloud REST v3 integration adapter."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "jira.sh"
 "#;
 
@@ -6029,7 +6270,7 @@ name        = "kimi-bridge"
 kind        = "llm-backend"
 version     = "0.1.0"
 description = "Bridge to the kimi backend (vendor name allowed here only)."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -6055,7 +6296,7 @@ name        = "neutral-name"
 kind        = "llm-backend"
 version     = "0.1.0"
 description = "A plugin."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "claude-cli-wrapper"
 "#,
         );
@@ -6110,7 +6351,7 @@ name        = "{name}"
 kind        = "workflow"
 version     = "0.1.0"
 description = "Path-traversal guard test."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "{entry}"
 "#
             ),
@@ -6217,7 +6458,7 @@ name        = "audit-iso-ref"
 kind        = "audit"
 version     = "0.1.0"
 description = "Reference audit plugin used in tests."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "audit.sh"
 "#;
 
@@ -6940,7 +7181,7 @@ name        = "memory-tier2-noop"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind — evidence-kind checks must not fire."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -6978,7 +7219,7 @@ name        = "memory-tier2-noop"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind."
-compat      = ">=2.5.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "bin"
 "#,
         );
@@ -7306,7 +7547,7 @@ name        = "gcloud-auth"
 kind        = "workflow"
 version     = "0.1.0"
 description = "gcloud credential-state adapter."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gcloud.sh"
 "#;
 
@@ -7433,7 +7674,7 @@ name        = "gcloud-compute"
 kind        = "workflow"
 version     = "0.1.0"
 description = "gcloud Compute Engine instance-lifecycle adapter."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "gcloud.sh"
 "#;
 
@@ -7633,7 +7874,7 @@ name        = "workspace-okrs"
 kind        = "okr"
 version     = "0.1.0"
 description = "Reference okr plugin tracking Objectives + Key Results."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "okr.sh"
 "#;
 
@@ -7948,7 +8189,7 @@ name        = "council-sangha-7"
 kind        = "council"
 version     = "0.1.0"
 description = "Aparihaniya-dhamma 7 consensus council reference plugin."
-compat      = ">=2.9.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "protocol.sh"
 
 [council]

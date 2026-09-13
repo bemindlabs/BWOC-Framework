@@ -3,7 +3,7 @@ name        = "audit-iso-29110"
 kind        = "audit"
 version     = "0.1.0"
 description = "ISO/IEC 29110 Basic profile audit — file-existence checks for the Very Small Entity (VSE) work products."
-compat      = ">=2.7.0"
+compat      = ">=3.0.0, <4.0.0"
 entry       = "audit.sh"
 
 # [config.schema] intentionally omitted. v1 reads every criterion from the

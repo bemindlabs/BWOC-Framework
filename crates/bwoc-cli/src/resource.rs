@@ -23,11 +23,11 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-const EXIT_OK: i32 = 0;
-const EXIT_LOCAL_ERROR: i32 = 1;
-const EXIT_USAGE: i32 = 2;
+const EXIT_OK: i32 = crate::exit::OK;
+const EXIT_LOCAL_ERROR: i32 = crate::exit::ERROR;
+const EXIT_USAGE: i32 = crate::exit::USAGE;
 /// Gateway/broker transport failure (network, non-2xx, non-JSON response).
-const EXIT_BROKER_ERROR: i32 = 255;
+const EXIT_BROKER_ERROR: i32 = crate::exit::INTERNAL;
 
 /// Resource kinds — one lease lifecycle, three typed resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
