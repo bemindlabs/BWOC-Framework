@@ -358,17 +358,23 @@ mod tests {
     #[cfg(unix)]
     mod subprocess {
         use super::*;
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
 
         /// Write an executable fake-CLI script and return its path.
         fn fake_cli(dir: &std::path::Path, body: &str) -> String {
+            // Write the script from a child process, never from this one. If this
+            // process held the writable fd, any test on another thread that forks
+            // in that window hands the child a copy, and our later exec fails with
+            // ETXTBSY until that child execs — SPAWN_SERIAL can't prevent it,
+            // because the forking test may live in any module.
             let path = dir.join("fake-cli");
-            let mut f = std::fs::File::create(&path).unwrap();
-            writeln!(f, "#!/bin/sh\n{body}").unwrap();
-            f.sync_all().unwrap();
-            drop(f); // close before exec — avoids ETXTBSY
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let ok = std::process::Command::new("/bin/sh")
+                .args(["-c", r#"printf '%s\n' "$1" > "$2" && chmod 755 "$2""#, "sh"])
+                .arg(format!("#!/bin/sh\n{body}"))
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "failed to write fake CLI");
             path.to_string_lossy().into_owned()
         }
 
