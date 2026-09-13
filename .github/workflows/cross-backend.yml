@@ -59,30 +59,32 @@ jobs:
           # installer is still piped to sh — an accepted tradeoff for an
           # ephemeral, secret-less CI runner; the pin keeps runs deterministic.
           curl -fsSL https://ollama.com/install.sh | sh
-          # The installer already starts a systemd `ollama` service on the
-          # runner. A second `ollama serve` only dies on the port collision and
-          # leaves an empty log while the crash evidence goes to journald — so
-          # start one ourselves only when no service exists. A unit that is
-          # still "activating" is not "active" yet, so test for the unit, not
-          # its state — the readiness loop below waits for it either way.
-          if ! systemctl list-unit-files ollama.service >/dev/null 2>&1; then
-            ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
-          fi
-          # Wait for the API to answer, then fail fast with the serve log if it
-          # never came up — otherwise `ollama pull` errors with a confusing
-          # message that masks the real cause (serve never started).
-          ready=""
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:11434/api/version >/dev/null 2>&1; then
-              echo "ollama up after ${i}s"; ready=1; break
+          # The installer normally starts a systemd `ollama` unit, but on some
+          # runner images the unit exists without starting, or activates slowly.
+          # Readiness, not the unit's existence, decides: wait for the API, try
+          # (re)starting the unit, and only then fall back to our own
+          # `ollama serve`. That fallback can't collide on the port, because at
+          # that point nothing answers it.
+          api_up() { curl -fsS http://localhost:11434/api/version >/dev/null 2>&1; }
+          wait_api() {
+            for i in $(seq 1 "$1"); do
+              if api_up; then echo "ollama up after ${i}s ($2)"; return 0; fi
+              sleep 1
+            done
+            return 1
+          }
+          if ! wait_api 30 "installer service"; then
+            sudo systemctl start ollama 2>/dev/null || true
+            if ! wait_api 30 "systemctl start"; then
+              echo "::warning::systemd ollama unit never answered — starting ollama serve directly"
+              ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+              if ! wait_api 30 "ollama serve"; then
+                echo "::error::Ollama API did not become ready (service, restart, and direct serve all failed)"
+                sudo journalctl -u ollama --no-pager 2>/dev/null || true
+                cat "$RUNNER_TEMP/ollama.log" 2>/dev/null || true
+                exit 1
+              fi
             fi
-            sleep 1
-          done
-          if [ -z "$ready" ]; then
-            echo "::error::Ollama API did not become ready within 30s"
-            sudo journalctl -u ollama --no-pager 2>/dev/null || true
-            cat "$RUNNER_TEMP/ollama.log" 2>/dev/null || true
-            exit 1
           fi
           ollama pull "$OLLAMA_MODEL"
 
