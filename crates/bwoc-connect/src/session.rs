@@ -179,9 +179,11 @@ pub fn prepare_public_workdir(
     Ok(dir)
 }
 
-/// Copy `src` → `dst` (through `transform`; `None` ⇒ skip) unless `dst` is
-/// already at least as new. `dst` is removed first so a pre-existing link there
-/// is replaced, never written through.
+/// Copy `src` → `dst` (through `transform`) unless `dst` is already at least as
+/// new. `dst` is removed first so a pre-existing link there is replaced, never
+/// written through. `transform` returning `None` (e.g. a malformed manifest)
+/// **removes** `dst` rather than leaving a stale copy, so the harness falls back
+/// to its defaults instead of reading an out-of-date file.
 fn copy_if_newer(
     src: &Path,
     dst: &Path,
@@ -194,11 +196,12 @@ fn copy_if_newer(
     if fresh {
         return Ok(());
     }
-    let Some(bytes) = transform(std::fs::read(src)?) else {
-        return Ok(());
-    };
+    let transformed = transform(std::fs::read(src)?);
     let _ = std::fs::remove_file(dst);
-    std::fs::write(dst, bytes)
+    match transformed {
+        Some(bytes) => std::fs::write(dst, bytes),
+        None => Ok(()),
+    }
 }
 
 /// Drop `deepMemoryCmd` from the public manifest copy: its wake-up would inject
@@ -454,6 +457,30 @@ impl Drop for HarnessSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manifest_that_no_longer_parses_removes_the_stale_public_copy() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dst_dir = tempfile::tempdir().unwrap();
+        let src = src_dir.path().join("config.manifest.json");
+        let dst = dst_dir.path().join("config.manifest.json");
+        std::fs::write(&src, br#"{"name":"x","deepMemoryCmd":"mine"}"#).unwrap();
+        copy_if_newer(&src, &dst, strip_deep_memory).unwrap();
+        assert!(dst.is_file());
+
+        // Make the source newer and malformed: the old copy must go.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&src, b"{ not json").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        copy_if_newer(&src, &dst, strip_deep_memory).unwrap();
+        assert!(!dst.exists(), "stale manifest copy must be removed");
+    }
     use bwoc_core::trust::TrustLevel;
 
     fn sessions_dir(agent: &Path) -> PathBuf {
