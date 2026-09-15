@@ -491,8 +491,9 @@ impl App {
             ChatEvent::PermissionRequest { id, tool, detail } => {
                 // Inline in the transcript, with the key affordance shown where
                 // the operator is already reading (the input border echoes it too).
-                self.conversation
-                    .push(format!("⚠ permission: {tool} — {detail}  [a]llow / [d]eny"));
+                self.conversation.push(format!(
+                    "⚠ permission: {tool} — {detail}  [a]llow / [d]eny on an empty input line"
+                ));
                 self.pending = Some(Pending {
                     id,
                     tool,
@@ -926,7 +927,14 @@ fn transcript_style(line: &str) -> Style {
 fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let (title, border) = match &app.pending {
         Some(p) => (
-            format!(" permission: {} ({}) — [a]llow / [d]eny ", p.tool, p.detail),
+            if app.input.is_empty() {
+                format!(" permission: {} ({}) — [a]llow / [d]eny ", p.tool, p.detail)
+            } else {
+                format!(
+                    " permission: {} ({}) — clear the input, then [a]llow / [d]eny ",
+                    p.tool, p.detail
+                )
+            },
             Style::default()
                 .fg(tone(design::color::WARNING))
                 .add_modifier(Modifier::BOLD),
