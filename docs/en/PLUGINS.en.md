@@ -518,7 +518,7 @@ modules/plugins/
 ```toml
 [plugin]
 name        = "memory-example"                  # required — must match the directory name (illustrative; not a shipped plugin)
-kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira | okr | council | figma | gws
+kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira | okr | council | figma | gws | okr | council | figma | gws
 version     = "0.1.0"                           # required — semver
 description = "Example Tier 2 memory backend."  # required — one-sentence summary
 compat      = ">=3.0.0, <4.0.0"                 # required — semver range, bounded above; framework versions this plugin works with
@@ -537,7 +537,7 @@ entry       = "bwoc-plugin-memory-example"      # required — binary on PATH (p
 | Section | Field | Required | Type | Meaning |
 |---|---|---|---|---|
 | `[plugin]` | `name` | yes | string (kebab-case) | Plugin identifier; must equal the directory name under `modules/plugins/` |
-| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`; immutable after `init` |
+| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`, `okr`, `council`, `figma`, `gws`; immutable after `init` |
 | `[plugin]` | `version` | yes | string (semver) | Semver of the plugin itself, separate from the framework version |
 | `[plugin]` | `description` | yes | string | One-sentence summary; the **only** manifest value where a vendor name is tolerated |
 | `[plugin]` | `compat` | yes | string (semver range, bounded above) | Framework versions this plugin is compatible with. Enforced since 3.0: a mismatch refuses the load, an unparseable range fails `bwoc check`, an open-ended range warns |
@@ -767,7 +767,7 @@ modules/plugin-template/
 
 Placeholders use the same `{{camelCase}}` convention as `modules/agent-template/` and `modules/skill-template/`. Required substitutions are listed in the template's own [`SPEC.md`](../../modules/plugin-template/SPEC.md).
 
-The `--kind` flag is required — there is no default. Valid values: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`. Future kinds extend this enum without changing the template layout. The flag forces the operator to declare intent up front and avoids producing a manifest with a missing or wrong `kind` field.
+The `--kind` flag is required — there is no default. Valid values: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`. Future kinds extend this enum without changing the template layout. The flag forces the operator to declare intent up front and avoids producing a manifest with a missing or wrong `kind` field.
 
 `bwoc plugin init` is the recommended way to start a new plugin — manual creation is supported but bypasses placeholder consistency.
 
@@ -804,7 +804,7 @@ A removed source is not auto-uninstalled from `.bwoc/installed-sources.toml`. Pa
 |---|---|
 | Manifest parseable | `manifest.toml` is valid TOML and matches the schema above |
 | Name matches directory | `[plugin].name == basename(directory)` |
-| Kind valid | `[plugin].kind` is one of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` (or a future kind added to the enum) |
+| Kind valid | `[plugin].kind` is one of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws` (or a future kind added to the enum) |
 | Neutrality | Vendor names only inside `description`; nowhere else |
 | `SPEC.md` present | A `SPEC.md` file exists alongside the manifest |
 | Required fields | `name`, `kind`, `version`, `description`, `compat`, `entry` all present |

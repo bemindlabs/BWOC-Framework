@@ -516,7 +516,7 @@ modules/plugins/
 ```toml
 [plugin]
 name        = "memory-example"                  # บังคับ — ต้องตรงกับชื่อไดเรกทอรี (ตัวอย่างเท่านั้น ไม่ใช่ปลั๊กอินที่ ship)
-kind        = "memory-backend"                  # บังคับ — หนึ่งใน: memory-backend | llm-backend | workflow | audit | jira
+kind        = "memory-backend"                  # บังคับ — หนึ่งใน: memory-backend | llm-backend | workflow | audit | jira | okr | council | figma | gws
 version     = "0.1.0"                           # บังคับ — semver
 description = "Example Tier 2 memory backend."  # บังคับ — สรุปหนึ่งประโยค
 compat      = ">=3.0.0, <4.0.0"                 # บังคับ — semver range มีขอบบน; เวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้
@@ -535,7 +535,7 @@ entry       = "bwoc-plugin-memory-example"      # บังคับ — binary 
 | Section | Field | บังคับ | ชนิดข้อมูล | ความหมาย |
 |---|---|---|---|---|
 | `[plugin]` | `name` | ใช่ | string (kebab-case) | ชื่อปลั๊กอิน; ต้องตรงกับชื่อไดเรกทอรีใต้ `modules/plugins/` |
-| `[plugin]` | `kind` | ใช่ | enum | หนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; เปลี่ยนไม่ได้หลัง `init` |
+| `[plugin]` | `kind` | ใช่ | enum | หนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`; เปลี่ยนไม่ได้หลัง `init` |
 | `[plugin]` | `version` | ใช่ | string (semver) | Semver ของปลั๊กอินเอง แยกจากเวอร์ชันเฟรมเวิร์ก |
 | `[plugin]` | `description` | ใช่ | string | สรุปหนึ่งประโยค; เป็นค่า **ที่เดียว** ใน manifest ที่ยอมให้มีชื่อ vendor |
 | `[plugin]` | `compat` | ใช่ | string (semver range มีขอบบน) | ช่วงเวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้ บังคับใช้ตั้งแต่ 3.0: ไม่ตรง = ปฏิเสธการ load, parse ไม่ได้ = `bwoc check` fail, ไม่มีขอบบน = เตือน |
@@ -765,7 +765,7 @@ modules/plugin-template/
 
 Placeholder ใช้รูปแบบ `{{camelCase}}` เดียวกับ `modules/agent-template/` และ `modules/skill-template/` รายการ substitute ที่บังคับอยู่ใน [`SPEC.md`](../../modules/plugin-template/SPEC.md) ของ template เอง
 
-flag `--kind` บังคับ — ไม่มี default ค่าที่ถูกต้อง: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` Kind ในอนาคตขยาย enum นี้โดยไม่เปลี่ยนโครงสร้าง template flag นี้ทำให้ operator ต้องระบุเจตนาตั้งแต่ต้น และเลี่ยง manifest ที่มี `kind` field หาย/ผิด
+flag `--kind` บังคับ — ไม่มี default ค่าที่ถูกต้อง: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws` Kind ในอนาคตขยาย enum นี้โดยไม่เปลี่ยนโครงสร้าง template flag นี้ทำให้ operator ต้องระบุเจตนาตั้งแต่ต้น และเลี่ยง manifest ที่มี `kind` field หาย/ผิด
 
 `bwoc plugin init` เป็นวิธีที่แนะนำสำหรับเริ่มปลั๊กอินใหม่ — สร้างเองด้วยมือทำได้แต่ข้าม consistency ของ placeholder
 
@@ -802,7 +802,7 @@ Source ที่ถูกลบไม่ถูก auto-uninstall จาก `.bwo
 |---|---|
 | Manifest parseable | `manifest.toml` เป็น TOML ที่ valid และตรง schema ด้านบน |
 | ชื่อตรงกับไดเรกทอรี | `[plugin].name == basename(directory)` |
-| Kind valid | `[plugin].kind` เป็นหนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` (หรือ kind ในอนาคตที่เพิ่มเข้า enum) |
+| Kind valid | `[plugin].kind` เป็นหนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws` (หรือ kind ในอนาคตที่เพิ่มเข้า enum) |
 | Neutrality | ชื่อ vendor ปรากฏเฉพาะใน `description`; ที่อื่นไม่ได้ |
 | มี `SPEC.md` | ไฟล์ `SPEC.md` อยู่ข้าง manifest |
 | ฟิลด์บังคับครบ | `name`, `kind`, `version`, `description`, `compat`, `entry` ครบ |
