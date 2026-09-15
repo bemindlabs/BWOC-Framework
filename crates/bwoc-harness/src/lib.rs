@@ -49,6 +49,7 @@ pub mod review;
 pub mod sandbox;
 pub mod seccomp;
 pub mod session_trust;
+pub mod system_prompt;
 pub mod telemetry;
 pub mod tools;
 pub mod turn_executor;

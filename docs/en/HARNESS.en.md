@@ -31,6 +31,56 @@ Before this crate, `bwoc spawn` worked by exec-ing a vendor agentic CLI (`claude
 
 ---
 
+## Quick start: `bwoc` in any repository
+
+Run `bwoc` with no arguments, in a terminal, in any directory. It opens the chat TUI on a coding session there, with no workspace, registered agent or manifest. Outside a terminal (a pipe, a script, CI) bare `bwoc` still prints the banner exactly as before, and `bwoc about` prints it on a terminal.
+
+**Providers and keys.** API keys or local models only:
+
+| Backend | Key |
+|---|---|
+| `anthropic` | `bwoc auth set anthropic`, or `ANTHROPIC_API_KEY` |
+| `openrouter` | `bwoc auth set openrouter`, or `OPENROUTER_API_KEY` |
+| `litellm` | optional: `bwoc auth set litellm`, or `LITELLM_API_KEY` |
+| `openai-compatible` | optional: `bwoc auth set openai-compatible` (no env var, so a generic key is never sent to an arbitrary endpoint) |
+| `ollama` | none |
+
+`bwoc auth set <provider>` reads the key from stdin (hidden on a terminal) or from `--from-env VAR`, and writes `[<provider>] api_key` into `~/.bwoc/secrets.toml`, creating the file `0600`. It refuses to write into a group- or world-readable file (run `chmod 600` first) and keeps every other section. `bwoc auth status` lists which providers have a key and where it comes from. It never prints a key or its length.
+
+**Choosing the runtime**, highest precedence first:
+
+1. flags: `bwoc --backend … --model … --endpoint …`
+2. env: `BWOC_BACKEND`, `BWOC_MODEL`, `BWOC_ENDPOINT`
+3. `.bwoc/config.toml` in the directory, or an ancestor up to the git root
+4. `~/.bwoc/config.toml`
+5. auto-detect: an Anthropic key selects `anthropic`; otherwise an Ollama answering on `localhost:11434` selects `ollama` and its first model; otherwise `bwoc` prints setup help and exits `2`
+
+A layer that names a different backend from the winning one contributes nothing else, so a model written for one provider is never sent to another.
+
+```toml
+schema_version = 3
+
+[runtime]
+backend    = "ollama"
+model      = "<model>"
+endpoint   = "http://localhost:11434/v1"   # optional
+max_tokens = 8192                          # optional
+```
+
+An absent `schema_version` is read as legacy; a newer one is refused with an error naming `schema_version`. Unknown keys are ignored.
+
+**What the session puts in its system prompt**, in order:
+
+1. A short built-in coding-agent preamble: the harness's tools, investigate → act → verify, and ask before destructive actions.
+2. An environment block: working directory, OS/arch, UTC date, and git state (branch, clean or uncommitted changes). A missing or hung `git` only removes detail.
+3. Project instructions: `AGENTS.md` (else `CLAUDE.md`) from each directory between the git root and the working directory, root first and nearest last, capped at 32 KB with the farthest directories cut first.
+
+The conversation is saved per directory under `~/.bwoc/sessions/`, never inside the repository. File tools stay confined to the working directory, and writes, edits and commands ask first (the chat default policy) unless `.bwoc/harness-policy.toml` says otherwise.
+
+**Agent sessions are unchanged.** When the workdir has `config.manifest.json` (`bwoc chat <agent>`), the prompt is still the agent's `AGENTS.md` plus its `MEMORY.md` index, now followed by a condensed persona and mindsets block: the `persona/README.md` body and each mindset's title and first paragraph, capped at 8 KB. A bwoc-connect public workdir (`.bwoc/public/…`) never reads instructions from above itself.
+
+---
+
 ## Architecture
 
 ```

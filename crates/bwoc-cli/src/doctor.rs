@@ -1125,7 +1125,7 @@ fn check_models_installed(root: &Path) -> Vec<CheckResult> {
 /// yields `host:port` (default port 11434). An `https://…` endpoint can't be
 /// checked with a plaintext `TcpStream`, so it's an `Err` the caller turns into a
 /// per-agent WARN (verify manually) rather than a false "unreachable".
-fn ollama_addr(base_url: Option<&str>) -> Result<String, String> {
+pub(crate) fn ollama_addr(base_url: Option<&str>) -> Result<String, String> {
     let url = base_url.unwrap_or("").trim();
     if url.is_empty() {
         return Ok("127.0.0.1:11434".to_string());
@@ -1162,10 +1162,10 @@ fn model_present(want: &str, installed: &[String]) -> bool {
     }
 }
 
-/// Fetch installed Ollama model names via a minimal raw HTTP/1.1 GET to
+/// Fetch installed Ollama model names via a minimal raw HTTP/1.0 GET to
 /// `/api/tags` (no HTTP crate — keeps bwoc-cli lean, like the rest of doctor).
 /// Returns `None` on any connect/read/parse failure (caller degrades to WARN).
-fn ollama_models(addr: &str) -> Option<Vec<String>> {
+pub(crate) fn ollama_models(addr: &str) -> Option<Vec<String>> {
     use std::io::{Read, Write};
     use std::net::{TcpStream, ToSocketAddrs};
     use std::time::Duration;
@@ -1177,8 +1177,10 @@ fn ollama_models(addr: &str) -> Option<Vec<String>> {
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream
         .write_all(
-            format!("GET /api/tags HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
+            // HTTP/1.0 on purpose: a server may not answer it with a chunked
+            // body, and a long model list over HTTP/1.1 comes back chunked,
+            // which the plain JSON parse below cannot read.
+            format!("GET /api/tags HTTP/1.0\r\nHost: {addr}\r\n\r\n").as_bytes(),
         )
         .ok()?;
     let mut raw = Vec::new();
@@ -1186,8 +1188,8 @@ fn ollama_models(addr: &str) -> Option<Vec<String>> {
     let text = String::from_utf8_lossy(&raw);
     // Split headers from body at the first blank line.
     let body = text.split_once("\r\n\r\n").map(|(_, b)| b)?;
-    // `/api/tags` returns Content-Length JSON (not chunked), so the body is the
-    // JSON object directly. Parse leniently from the first `{`.
+    // An HTTP/1.0 response body is never chunked, so the body is the JSON
+    // object directly. Parse leniently from the first `{`.
     let json_start = body.find('{')?;
     let v: serde_json::Value = serde_json::from_str(body[json_start..].trim()).ok()?;
     let models = v.get("models")?.as_array()?;
@@ -1377,6 +1379,35 @@ mod tests {
         assert!(!model_present("gemma4:9b", &installed));
         assert!(!model_present("llama3:70b", &installed));
         assert!(!model_present("mistral", &installed)); // absent
+    }
+
+    #[test]
+    fn ollama_models_speaks_http_1_0_so_the_body_is_never_chunked() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut header = String::new();
+            while reader.read_line(&mut header).unwrap() > 2 {
+                header.clear();
+            }
+            let body = r#"{"models":[{"name":"a:latest"},{"name":"b"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{body}"
+            )
+            .unwrap();
+            request_line
+        });
+        assert_eq!(
+            ollama_models(&addr),
+            Some(vec!["a:latest".to_string(), "b".to_string()])
+        );
+        assert!(server.join().unwrap().starts_with("GET /api/tags HTTP/1.0"));
     }
 
     #[test]

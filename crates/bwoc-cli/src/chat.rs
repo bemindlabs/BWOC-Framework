@@ -178,6 +178,7 @@ pub fn run(args: ChatArgs) -> i32 {
                 agent_path,
                 backend_name: backend.display_name().to_string(),
                 team_chat,
+                project: None,
             });
         }
         eprintln!(
@@ -227,6 +228,7 @@ pub fn run(args: ChatArgs) -> i32 {
                     agent_path,
                     backend_name: backend.display_name().to_string(),
                     team_chat,
+                    project: None,
                 });
             }
             HarnessChatRoute::Protocol => {

@@ -230,6 +230,12 @@ struct Args {
     /// `enforce` — refuse to run an unvetted primary model.
     #[arg(long, default_value = "warn")]
     vetted_mode: String,
+
+    /// Response token cap for `--chat` / `--headless`. Overrides the manifest's
+    /// `maxTokens`; unset = the manifest value, else the provider default. Bare
+    /// `bwoc` passes `[runtime] max_tokens` here.
+    #[arg(long)]
+    max_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1169,6 +1175,20 @@ fn build_provider(
             };
             Arc::new(client)
         }
+        "openai-compatible" => {
+            // Generic OpenAI-compatible server. The key is optional and comes only
+            // from `[openai-compatible] api_key` in ~/.bwoc/secrets.toml.
+            let key = oai::resolve_openai_compatible_api_key();
+            let client = OllamaClient::new(endpoint)
+                .with_reasoning_effort(reasoning_effort)
+                .with_max_tokens(max_tokens);
+            let client = if key.trim().is_empty() {
+                client
+            } else {
+                client.with_api_key(Some(key))
+            };
+            Arc::new(client)
+        }
         _ => Arc::new(
             OllamaClient::new(endpoint)
                 .with_reasoning_effort(reasoning_effort)
@@ -1225,6 +1245,7 @@ async fn run_chat_mode(
             }
             Err(_) => (None, None, true, false),
         };
+    let max_tokens = args.max_tokens.or(max_tokens);
     ensure_backend_credentials(&args.backend)?;
     let provider: Arc<dyn ProviderClient> = build_provider(
         &args.backend,
@@ -1275,14 +1296,26 @@ async fn run_chat_mode(
         provider.validate_model(&resolved_model).await?;
     }
 
-    // System prompt (AGENTS.md / CLAUDE.md), same as run().
-    let mut system_prompt = load_system_prompt(workdir).await;
+    // System prompt. Agent workdir (manifest present): AGENTS.md / CLAUDE.md as
+    // in run(), plus a condensed persona/mindsets block. Project workdir (bare
+    // `bwoc`): coding preamble + environment + AGENTS.md walked up to the git
+    // root. See `system_prompt`. File and git I/O block, so off the runtime.
+    let prompt_dir = workdir.to_path_buf();
+    let kind = bwoc_harness::system_prompt::session_kind(workdir);
+    let mut system_prompt = tokio::task::spawn_blocking(move || {
+        bwoc_harness::system_prompt::assemble_chat_prompt(&prompt_dir)
+    })
+    .await
+    .unwrap_or_default();
 
-    // Tier 1 memory recall — same as run(): MEMORY.md index into the system
-    // prompt, honoring the manifest's `memoryPath`.
+    // Tier 1 memory recall, agent sessions only (as in run()): MEMORY.md index
+    // into the system prompt, honoring the manifest's `memoryPath`. A project
+    // directory's own `memories/` is not the agent memory this block describes.
     let memory_dir = memory_dir_for(workdir);
-    if let Some(block) = tier1_recall_block(&memory_dir).await {
-        system_prompt.push_str(&block);
+    if kind == bwoc_harness::system_prompt::SessionKind::Agent {
+        if let Some(block) = tier1_recall_block(&memory_dir).await {
+            system_prompt.push_str(&block);
+        }
     }
 
     // Tier 2 deep memory (HV3-1) — same wiring as run(): wake-up into the
