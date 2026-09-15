@@ -191,8 +191,9 @@ pub fn run(args: ChatArgs) -> i32 {
     }
 
     if args.tmux || args.ghostty {
+        let bwoc_exe = spawn::bwoc_exe();
         let cmd = pane_command(&PaneLaunch {
-            bwoc_exe: &spawn::bwoc_exe(),
+            bwoc_exe: &bwoc_exe,
             backend,
             agent_id: &entry.id,
             agent_path: &agent_path,
