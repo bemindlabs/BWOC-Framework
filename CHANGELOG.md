@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.15-0] — 2026-09-15 — 3.2.0
+
+**BWOC as its own coding agent.** Run `bwoc` in any repository and, on a terminal, it opens a coding session over the current directory — no workspace, agent or manifest needed. The provider resolves from flags, env, a project or user `config.toml`, or auto-detect (an Anthropic key or a local Ollama), and `bwoc auth` stores API keys `0600`. Chat sessions now run the batch paths — retry and fallback, MCP, the capability gate and OS sandbox, a context budget sized to the model — and gain coding tools: `glob`, regex `grep`, `multi_edit`, `webfetch`, `todo`, `subagent` and a `run_command` timeout. A lean pass removes dead code, stub plugins and unused skills; the Kalyāṇamitta trust gate runs by default in warn mode; duplicate CLI entry points are deprecated (removed in 4.0). Nothing that worked in 3.1 breaks.
+
 ### Removed
 
 - **Dead code with no production caller** — the empty `bwoc-core` `identity` / `error` stubs and the unused `lifecycle` module; `TrustBlock::missing_in`; `git_worktree::{worktree_add, worktree_path, worktree_branch}`; `bwoc-agent` `i18n::t`; `ToolQueue::in_flight_count`; the never-read `Caps::max_leases` and `FleetSnapshot.workspace` fields. The Rust API is not a public surface ([`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md)); CLI behaviour is unchanged.
