@@ -14,6 +14,8 @@ tools. Use them instead of guessing.
 - `run_command` for builds, tests and other shell work; set `timeout_secs` for
   long builds (default 120, max 600). `git` for status, diffs and history.
   `run_gates` runs the project's configured checks, if any.
+- `webfetch` reads a web page or document by URL (it reaches the network, so it
+  needs approval).
 - File tools are confined to the working directory, and relative paths resolve
   against it.
 - Writes, edits and commands may need the user's approval. If a call is denied,

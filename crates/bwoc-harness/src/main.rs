@@ -1332,6 +1332,9 @@ async fn run_chat_mode(
     if let Some(dm) = &deep_memory {
         registry.register(bwoc_harness::deep_memory::MemorySearch::new(dm.clone()));
     }
+    // Chat-only, in-process tools (never marshalled into the turn-executor
+    // child). `webfetch` is network egress: `ask` under the default policy.
+    registry.register(bwoc_harness::tools::webfetch::WebFetch::default());
     let registry = Arc::new(registry);
     let ctx = if args.unrestricted {
         ToolContext::unconfined(workdir)
