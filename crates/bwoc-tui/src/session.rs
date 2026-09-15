@@ -30,13 +30,14 @@ pub struct AgentInfo {
 
 /// Whether the fleet can drive `backend` through `bwoc-harness --chat`. Mirrors
 /// `bwoc_cli::spawn::Backend::uses_harness` (the TUI must not depend on
-/// `bwoc-cli`): the OpenAI-compatible family speaks `chat_proto`, while vendor
-/// CLIs (claude / agy / codex / kimi / copilot) speak their own interactive
+/// `bwoc-cli`): the OpenAI-compatible family and `anthropic` (the harness's
+/// Anthropic Messages provider) speak `chat_proto`, while vendor CLIs
+/// (claude / agy / codex / kimi / copilot / grok) speak their own interactive
 /// protocol and must be opened with `bwoc chat` directly.
 pub fn is_harness_drivable(backend: &str) -> bool {
     matches!(
         backend,
-        "ollama" | "openai-compatible" | "openrouter" | "litellm"
+        "ollama" | "openai-compatible" | "openrouter" | "litellm" | "anthropic"
     )
 }
 
@@ -254,10 +255,18 @@ mod tests {
 
     #[test]
     fn harness_drivable_matches_uses_harness() {
-        for b in ["ollama", "openai-compatible", "openrouter", "litellm"] {
+        for b in [
+            "ollama",
+            "openai-compatible",
+            "openrouter",
+            "litellm",
+            "anthropic",
+        ] {
             assert!(is_harness_drivable(b), "{b} should be drivable");
         }
-        for b in ["claude", "agy", "codex", "kimi", "copilot", "cli", ""] {
+        for b in [
+            "claude", "agy", "codex", "kimi", "copilot", "grok", "cli", "",
+        ] {
             assert!(!is_harness_drivable(b), "{b} should not be drivable");
         }
     }

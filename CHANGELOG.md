@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 - **`bwoc check` accepts the bearer `[auth]` shape for workflow plugins.** The workflow `auth.toml` audit used to require gcloud's `[sources]` table (adc / service_account / env), so the shipped `workflow/accounting-api` plugin always failed `bwoc check --all`. The audit now also accepts `[auth]` with `scheme = "bearer"`, `env_var` set to an env-var NAME, and `key_file` set to a relative path under `.bwoc/secrets/` (absolute paths and `..` are rejected). `[auth]` gets the same fail-closed undeclared-key guard as `[sources]`, and values are never echoed. An `auth.toml` with neither table is still a violation.
 - **Dangling doc references** — links to `trust-model.md`, `interconnect/coordination.md`, `memories/memory.md`, and the never-shipped template companions (`FAILURE-MODES`, `LIFECYCLE`, `OBSERVABILITY`, `COORDINATION-PROTOCOL`, `ANTIPATTERNS`, template `GLOSSARY`) are repointed to files that exist or removed.
+- **`bwoc chat <agent>` without `--tui` works for harness backends.** It launched `bwoc-harness` with neither `--chat` nor `--task`, so ollama / openai-compatible / openrouter / litellm agents exited with "--task is required". On a terminal it now opens the chat TUI, with a one-line note, because raw `--chat` speaks JSON lines rather than a human REPL. With piped stdin or stdout it runs `bwoc-harness --chat --workdir <agent>`, the `chat_proto` endpoint, which `bwoc spawn`'s no-TTY guard now lets through. `--team` is honoured on both routes.
+- **`bwoc chat --tmux` / `--ghostty` work for harness backends.** The new pane or window relaunches `bwoc chat <id>` (carrying `--workspace`, `--lang`, `--tui`, `--team`) and so lands in the chat TUI, instead of re-running `bwoc spawn`, which failed with "--task is required". Vendor backends are unchanged.
+- **`bwoc chat` accepts `grok` agents.** `bwoc chat` and `bwoc run` now share one backend parser derived from the backend enum, so every backend `bwoc new` accepts is recognised by both.
 
 ### Changed
 
@@ -28,6 +31,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
   - `bwoc notes | retro | research <new|list|view>` → `bwoc doc <new|list|view> notes | retrospectives | research`
   - `bwoc tasks` → `bwoc task list --all` — `task list` gains `--all`, `--agent` and `--state`, and `<TEAM>` becomes optional with `--all`
   - `bwoc memory t2-search <query> <agent>` → `bwoc memory search <query> <agent> --tier 2` — `memory search` gains `--tier 1|2` (default 1)
+
+### Added
+
+- **`anthropic` backend: the harness route to Claude models.** `backend = "anthropic"` runs `bwoc-harness --backend anthropic` (Anthropic Messages API, key from `ANTHROPIC_API_KEY`, `baseUrl` optional) for `bwoc spawn`, `bwoc run` and `bwoc chat`, including `--tui` and `--fleet`. `claude` still execs the vendor Claude Code CLI everywhere. The manifest `backend` field is a string, so existing manifests are unaffected.
 
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 

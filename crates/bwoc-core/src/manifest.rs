@@ -105,7 +105,8 @@ pub struct Manifest {
     ///
     /// Accepted values: `"claude"` | `"agy"` | `"codex"` | `"kimi"` |
     /// `"copilot"` | `"grok"` | `"ollama"` | `"openai-compatible"` |
-    /// `"openrouter"` | `"litellm"` | `"cli"`
+    /// `"openrouter"` | `"litellm"` | `"anthropic"` (harness-driven Anthropic
+    /// Messages API; `"claude"` is the vendor CLI) | `"cli"`
     /// (subscription-authenticated local vendor CLI; see `cliCmd`).
     ///
     /// Required for `openai-compatible`; optional/ignored for vendor backends
