@@ -81,7 +81,7 @@
 **Vector:** Agent ซ่อน state นอก declared locations (เช่น git notes)
 **Mitigation:**
 - Declared state inventory ใน ARCHITECTURE
-- check-agent-neutrality.sh ตรวจ unauthorized files
+- `bwoc check` แจ้งเตือน script ใน `.claude/hooks/` ที่ผู้เขียนเพิ่มเอง
 - Worktree isolation = ไม่มีที่ซ่อน
 
 ### T-2.4 Cron / Scheduled Persistence

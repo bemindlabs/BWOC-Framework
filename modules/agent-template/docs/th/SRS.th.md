@@ -84,7 +84,7 @@
 |---|---|---|---|
 | FR-5.1 | M | `AGENTS.md` SHALL เป็นไฟล์ปกติ ; `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` SHALL เป็น symlinks ชี้ที่ `AGENTS.md` | T |
 | FR-5.2 | M | ไม่มีไฟล์คำสั่งใด SHALL contain backend-specific content ที่ขัด AGENTS.md | A |
-| FR-5.3 | M | `check-agent-neutrality.sh` SHALL fail ถ้า symlink พังหรือถูกแทนด้วยไฟล์ปกติ | T |
+| FR-5.3 | M | `bwoc check` SHALL fail ถ้า symlink พังหรือถูกแทนด้วยไฟล์ปกติ | T |
 | FR-5.4 | M | `trust-model.md` SHALL document security posture สำหรับการ clone agent ภายนอก | I |
 | FR-5.5 | S | Hook ใน `.claude/settings.json` SHOULD ป้องกัน destructive action | T |
 | FR-5.6 | M | ห้ามมี secret ใน memory file (สมานัตตตา + วินัย) | T |
@@ -148,11 +148,10 @@
 | FR-8.1 | M | `config.manifest.json` SHALL declare required placeholders ทั้งหมด | T |
 | FR-8.2 | M | Validation SHALL fail ถ้า required placeholder ไม่ถูกแทนที่ | T |
 | FR-8.3 | M | Default config SHALL include: `agentId`, `model`, `fallbackModel`, `maxConcurrentTasks`, `worktreeIsolation`, `worktreeBase`, `memory.*` | I |
-| FR-8.4 | M | `scripts/incarnate.sh <agent-name>` SHALL clone template เป็น agent ใหม่ | T |
-| FR-8.5 | M | `scripts/check-agent-neutrality.sh` SHALL ตรวจ structural conformance | T |
-| FR-8.6 | M | Scripts SHALL exit non-zero on failure | T |
-| FR-8.7 | S | Scripts SHOULD print human-readable summary | D |
-| FR-8.8 | S | `.claude/commands/new-agent` SHOULD invoke `incarnate.sh` จากใน Claude Code | T |
+| FR-8.4 | M | `bwoc new <agent-name>` SHALL incarnate template เป็น agent ใหม่ | T |
+| FR-8.5 | M | `bwoc check` SHALL ตรวจ structural conformance | T |
+| FR-8.6 | M | `bwoc new` และ `bwoc check` SHALL exit non-zero on failure | T |
+| FR-8.7 | S | ทั้งสองคำสั่ง SHOULD print human-readable summary | D |
 
 ---
 
@@ -189,15 +188,15 @@
 
 | ID | Requirement |
 |---|---|
-| NFR-2.1 | `incarnate.sh` SHALL complete ≤ 5 วินาทีบน developer laptop |
-| NFR-2.2 | `check-agent-neutrality.sh` SHALL complete ≤ 2 วินาที |
+| NFR-2.1 | `bwoc new` SHALL complete ≤ 5 วินาทีบน developer laptop |
+| NFR-2.2 | `bwoc check` SHALL complete ≤ 2 วินาที |
 | NFR-2.3 | Session start memory load SHALL complete ≤ 1 วินาทีเมื่อ MEMORY.md ≤ 200 บรรทัด |
 
 ### 3.3 Reliability (สัมมาสมาธิ — ตั้งมั่น)
 
 | ID | Requirement |
 |---|---|
-| NFR-3.1 | Scripts SHALL idempotent เว้นที่ explicit destructive |
+| NFR-3.1 | คำสั่ง CLI SHALL idempotent เว้นที่ explicit destructive |
 | NFR-3.2 | Failed incarnation SHALL ไม่ทิ้ง partial directory |
 | NFR-3.3 | Worktree creation failure SHALL rollback คลีน |
 
@@ -325,7 +324,7 @@ updated: <ISO 8601>                  # required
 
 | Placeholder | Type | Required | Resolved By |
 |---|---|---|---|
-| `{{name}}` | string | yes | `incarnate.sh` argument |
+| `{{name}}` | string | yes | `bwoc new` argument |
 | `{{agentId}}` | string | yes | derived from `{{name}}` |
 | `{{primaryModel}}` | string | yes | user edit |
 | `{{fallbackModel}}` | string | no | user edit |
@@ -342,15 +341,15 @@ updated: <ISO 8601>                  # required
 
 ## 6. Verification & Validation
 
-### 6.1 Automated Checks (`check-agent-neutrality.sh`)
+### 6.1 Automated Checks (`bwoc check`)
 1. `AGENTS.md` มีอยู่และเป็น regular file
-2. `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` เป็น symlink ชี้ `AGENTS.md`
-3. Required placeholders ถูกแทนหมด
+2. Backend entry file (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, …) เป็น symlink ชี้ `AGENTS.md`
+3. Template: มี required placeholder ครบ; agent ที่ incarnate แล้ว: placeholder ทุกตัวถูกแทนค่า ยกเว้น `{{taskId}}` ที่ใช้ตอน runtime
 4. `config.manifest.json` parse JSON ได้
-5. `task-log.jsonl` เป็น valid JSONL
+5. `task-log.jsonl` มีอยู่ (warning เท่านั้น; ไม่ parse เนื้อหา)
 6. Memory file ทุกไฟล์มี valid front-matter และ required `type`
-7. `MEMORY.md` ≤ 200 บรรทัด
-8. AGENTS.md ไม่มี backend-specific lock-in
+7. `MEMORY.md` ≤ 200 บรรทัด (warning)
+8. Template: `AGENTS.md` ไม่มี model ID, tool name ที่ hardcode หรือถ้อยคำเฉพาะ backend
 
 ### 6.2 Acceptance Criteria (per Magga)
 
@@ -403,7 +402,7 @@ Cleanup --> [*]       : (อนัตตา — release)
 | Part 4 — Magga / สัมมาอาชีวะ | FR-5.1–5.7 |
 | Part 4 — Magga / สัมมาวายามะ | FR-6.1–6.7 |
 | Part 4 — Magga / สัมมาสติ | FR-7.1–7.20 |
-| Part 4 — Magga / สัมมาสมาธิ | FR-8.1–8.8 |
+| Part 4 — Magga / สัมมาสมาธิ | FR-8.1–8.7 |
 | Part 7 — Iddhipāda | NFR-1 ถึง NFR-8 |
 | Part 8 — Tilakkhaṇa | Cross-cutting §2.2 |
 | ภาค 9 Out of scope | Cross-cutting §2.3 (มัตตัญญุตา) |

@@ -8,15 +8,15 @@ The agent's behavioral instructions are in `AGENTS.md`. All other LLM backends (
 
 ## What This Repo Is
 
-A **backend-neutral agent template** (BWOC — Buddhist Way of Coding). The philosophical foundation is in `docs/en/PHILOSOPHY.en.md`. This repo contains no application code — only Markdown documentation, shell scripts, and symlinks.
+A **backend-neutral agent template** (BWOC — Buddhist Way of Coding). The philosophical foundation is in `docs/en/PHILOSOPHY.en.md`. This repo contains no application code — only Markdown documentation, a manifest, and symlinks.
 
 This `CLAUDE.md` is a **standalone file**, not a symlink. It contains template-repo-specific guidance for Claude Code. When agents clone this template, their own `CLAUDE.md` becomes a symlink to their `AGENTS.md`.
 
 ## Validation
 
 ```bash
-./scripts/check-agent-neutrality.sh      # validates backend neutrality
-./scripts/incarnate.sh <agent-name>      # clones template to new agent
+bwoc check .                 # validates backend neutrality
+bwoc new <agent-name>        # incarnates the template into a new agent
 ```
 
 ## Architecture

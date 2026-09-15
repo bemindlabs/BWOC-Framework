@@ -227,7 +227,7 @@ AI coding agent ทุกตัวในองค์กรใช้โครง�
 | Symlink พังบน Windows | อนิจจัง — env เปลี่ยน | Document WSL workaround |
 | Agent ข้าม worktree isolation | ตัณหาในความเร็ว | Hook in `.claude/settings.json` ขัดขวาง |
 | Memory โตไม่หยุด | ตัณหาในการเก็บ | 200-line cap (มัตตัญญุตา) + Tier 2 |
-| Forked template เลือนออกจาก neutrality | สังขาร = เปลี่ยนแปลง | `check-agent-neutrality.sh` ใน CI |
+| Forked template เลือนออกจาก neutrality | สังขาร = เปลี่ยนแปลง | `bwoc check` ใน CI |
 | Placeholder ค้างไม่ถูกแทนที่ | ความประมาท | Manifest-driven validation |
 
 ---

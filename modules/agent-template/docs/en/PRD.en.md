@@ -227,7 +227,7 @@ The user is a developer or AI engineer familiar with git, markdown, shell, and J
 | Symlinks break on Windows | Aniccaṃ — environments change | Document WSL workaround |
 | Agents bypass worktree isolation | Craving for speed | Hooks in `.claude/settings.json` block it |
 | Memory grows unbounded | Craving to accumulate | 200-line cap (*mattaññutā*) + Tier 2 |
-| Forked templates drift from neutrality | Saṅkhāra — formations shift | `check-agent-neutrality.sh` in CI |
+| Forked templates drift from neutrality | Saṅkhāra — formations shift | `bwoc check` in CI |
 | Placeholders left unsubstituted | Carelessness | Manifest-driven validation |
 
 ---

@@ -84,7 +84,7 @@ The system under specification is a **template repository**, not a runtime.
 |---|---|---|---|
 | FR-5.1 | M | `AGENTS.md` SHALL be a regular file; `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` SHALL be symlinks pointing to `AGENTS.md` | T |
 | FR-5.2 | M | No instruction file SHALL contain backend-specific content contradicting AGENTS.md | A |
-| FR-5.3 | M | `check-agent-neutrality.sh` SHALL fail if any symlink is broken or replaced by a regular file | T |
+| FR-5.3 | M | `bwoc check` SHALL fail if any symlink is broken or replaced by a regular file | T |
 | FR-5.4 | M | `trust-model.md` SHALL document the security posture for cloning external agents | I |
 | FR-5.5 | S | Hooks in `.claude/settings.json` SHOULD restrict destructive actions | T |
 | FR-5.6 | M | No secrets SHALL be committed to memory files (*samānattatā* + discipline) | T |
@@ -148,11 +148,10 @@ Mapped onto the Four Padhāna.
 | FR-8.1 | M | `config.manifest.json` SHALL declare every required placeholder | T |
 | FR-8.2 | M | Validation SHALL fail if any required placeholder is unset | T |
 | FR-8.3 | M | The default config SHALL include: `agentId`, `model`, `fallbackModel`, `maxConcurrentTasks`, `worktreeIsolation`, `worktreeBase`, `memory.*` | I |
-| FR-8.4 | M | `scripts/incarnate.sh <agent-name>` SHALL clone the template into a new agent | T |
-| FR-8.5 | M | `scripts/check-agent-neutrality.sh` SHALL validate structural conformance | T |
-| FR-8.6 | M | Scripts SHALL exit non-zero on failure | T |
-| FR-8.7 | S | Scripts SHOULD print a human-readable summary | D |
-| FR-8.8 | S | `.claude/commands/new-agent` SHOULD invoke `incarnate.sh` from inside Claude Code | T |
+| FR-8.4 | M | `bwoc new <agent-name>` SHALL incarnate the template into a new agent | T |
+| FR-8.5 | M | `bwoc check` SHALL validate structural conformance | T |
+| FR-8.6 | M | `bwoc new` and `bwoc check` SHALL exit non-zero on failure | T |
+| FR-8.7 | S | Both commands SHOULD print a human-readable summary | D |
 
 ---
 
@@ -189,15 +188,15 @@ Every FR that reads from memory must verify against current state — covered ex
 
 | ID | Requirement |
 |---|---|
-| NFR-2.1 | `incarnate.sh` SHALL complete in ≤ 5 s on a developer laptop |
-| NFR-2.2 | `check-agent-neutrality.sh` SHALL complete in ≤ 2 s |
+| NFR-2.1 | `bwoc new` SHALL complete in ≤ 5 s on a developer laptop |
+| NFR-2.2 | `bwoc check` SHALL complete in ≤ 2 s |
 | NFR-2.3 | Session-start memory load SHALL complete in ≤ 1 s when MEMORY.md ≤ 200 lines |
 
 ### 3.3 Reliability (Sammā-samādhi — Steadiness)
 
 | ID | Requirement |
 |---|---|
-| NFR-3.1 | Scripts SHALL be idempotent unless explicitly destructive |
+| NFR-3.1 | CLI commands SHALL be idempotent unless explicitly destructive |
 | NFR-3.2 | A failed incarnation SHALL leave no partial directory |
 | NFR-3.3 | Worktree-creation failure SHALL roll back cleanly |
 
@@ -325,7 +324,7 @@ updated: <ISO 8601>                  # required
 
 | Placeholder | Type | Required | Resolved By |
 |---|---|---|---|
-| `{{name}}` | string | yes | `incarnate.sh` argument |
+| `{{name}}` | string | yes | `bwoc new` argument |
 | `{{agentId}}` | string | yes | derived from `{{name}}` |
 | `{{primaryModel}}` | string | yes | user edit |
 | `{{fallbackModel}}` | string | no | user edit |
@@ -342,15 +341,15 @@ updated: <ISO 8601>                  # required
 
 ## 6. Verification & Validation
 
-### 6.1 Automated Checks (`check-agent-neutrality.sh`)
+### 6.1 Automated Checks (`bwoc check`)
 1. `AGENTS.md` exists and is a regular file
-2. `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` are symlinks to `AGENTS.md`
-3. All required placeholders are substituted
+2. Backend entry files (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, …) are symlinks to `AGENTS.md`
+3. Template: required placeholders are present; incarnated agent: every placeholder except the runtime `{{taskId}}` is substituted
 4. `config.manifest.json` parses as JSON
-5. `task-log.jsonl` is valid JSONL
+5. `task-log.jsonl` exists (warning only; its contents are not parsed)
 6. Every memory file has valid front-matter and a required `type`
-7. `MEMORY.md` ≤ 200 lines
-8. `AGENTS.md` contains no backend-specific lock-in
+7. `MEMORY.md` ≤ 200 lines (warning)
+8. Template: `AGENTS.md` contains no hardcoded model IDs, tool names, or backend-specific phrasing
 
 ### 6.2 Acceptance Criteria (by Magga)
 
@@ -403,7 +402,7 @@ Cleanup --> [*]       : (anattā — release)
 | Part 4 — Magga / Sammā-ājīva | FR-5.1–5.7 |
 | Part 4 — Magga / Sammā-vāyāma | FR-6.1–6.7 |
 | Part 4 — Magga / Sammā-sati | FR-7.1–7.20 |
-| Part 4 — Magga / Sammā-samādhi | FR-8.1–8.8 |
+| Part 4 — Magga / Sammā-samādhi | FR-8.1–8.7 |
 | Part 7 — Iddhipāda | NFR-1 through NFR-8 |
 | Part 8 — Tilakkhaṇa | Cross-cutting §2.2 |
 | Part 9 — Out of scope | Cross-cutting §2.3 (Mattaññutā) |

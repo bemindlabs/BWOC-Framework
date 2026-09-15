@@ -77,7 +77,6 @@ The canonical blueprint copied into every new agent. Contains:
 - **Backend symlinks** — `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md`, `OPENAI.md` all point at `AGENTS.md`.
 - **`config.manifest.json`** — the placeholder schema (`{{agentId}}`, `{{primaryModel}}`, etc.).
 - **Slots** — `persona/`, `memories/`, `interconnect/`, `mindsets/`, `skills/`.
-- **`scripts/`** — `incarnate.sh`, `check-agent-neutrality.sh`.
 - **`bwoc-agent`** binary — shipped with each incarnated agent (Phase 1: liveness stub).
 
 ### 3. Incarnated Agents

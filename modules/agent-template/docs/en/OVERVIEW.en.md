@@ -50,11 +50,11 @@ See [PHILOSOPHY.en.md](PHILOSOPHY.en.md) for the full mapping.
 
 ### I'm an Agent Author (building a new agent)
 ```bash
-./scripts/incarnate.sh <agent-name>
-cd ../agent-<agent-name>
+bwoc new <agent-name>
+cd agents/agent-<agent-name>
 # Edit persona/README.md
-# Edit config.manifest.json
-./scripts/check-agent-neutrality.sh
+# Review config.manifest.json
+bwoc check .
 ```
 Read next: [LIFECYCLE.en.md](LIFECYCLE.en.md) → Kāya-bhāvanā section
 

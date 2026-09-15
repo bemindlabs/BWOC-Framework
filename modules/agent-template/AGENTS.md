@@ -191,16 +191,16 @@ This file contains no backend-specific content. Identical behavior is required o
 ### 5.2 Verification
 
 ```bash
-./scripts/check-agent-neutrality.sh
+bwoc check .
 ```
 
-This script verifies:
+This command verifies, among other things:
 - `AGENTS.md` is a regular file
-- All backend files (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`) are symlinks to `AGENTS.md`
-- No placeholder is unsubstituted
+- All backend entry files are symlinks to `AGENTS.md`
+- No placeholder is unsubstituted (runtime task identifiers excepted)
 - `config.manifest.json` parses as valid JSON
-- `task-log.jsonl` is valid JSONL
-- `MEMORY.md` is within 200 lines
+- Memory files carry valid front-matter
+- `MEMORY.md` is within 200 lines (warning)
 
 ### 5.3 Trust Model
 
@@ -443,7 +443,7 @@ After every task, apply the three roots of wisdom:
 
 | Placeholder | Required | Resolved By |
 |---|---|---|
-| `{{name}}` | yes | `incarnate.sh` argument |
+| `{{name}}` | yes | `bwoc new` argument |
 | `{{agentId}}` | yes | derived from `{{name}}` |
 | `{{agentRole}}` | yes | user edit |
 | `{{primaryCapability}}` | yes | user edit |
@@ -467,11 +467,10 @@ After every task, apply the three roots of wisdom:
 
 When incarnating a new agent from this template:
 
-- [ ] Run `./scripts/incarnate.sh <agent-name>`
-- [ ] Edit `config.manifest.json` — fill all placeholders
+- [ ] Run `bwoc new <agent-name>` — resolves the manifest and creates the backend symlinks
+- [ ] Review `config.manifest.json`
 - [ ] Edit persona section (section 1) in this file
-- [ ] Create `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` as symlinks to `AGENTS.md`
-- [ ] Run `./scripts/check-agent-neutrality.sh` — must pass
+- [ ] Run `bwoc check .` — must pass
 - [ ] Add first entry to `task-log.jsonl`
 - [ ] Create `memories/` directory and initial `MEMORY.md`
 

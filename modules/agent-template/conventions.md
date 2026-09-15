@@ -266,7 +266,7 @@ Before committing agent profile files:
 - [ ] No backend-specific language ("Claude will...", "Antigravity supports...")
 - [ ] All backend-varying config uses `{{camelCase}}` placeholders
 - [ ] Symlinks point to `AGENTS.md`
-- [ ] Run `scripts/check-agent-neutrality.sh` — 0 violations
+- [ ] Run `bwoc check` — 0 violations
 
 ---
 

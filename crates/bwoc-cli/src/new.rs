@@ -1,7 +1,7 @@
 //! `bwoc new` — incarnate a new agent from the template.
 //!
-//! Rust port of `modules/agent-template/scripts/incarnate.sh` with the
-//! manifest-input behavior spec'd in `docs/en/INCARNATION.en.md` §"Setting
+//! Replaced the template's former incarnation shell script (since removed),
+//! adding the manifest-input behavior spec'd in `docs/en/INCARNATION.en.md` §"Setting
 //! the Manifest". This iteration adds interactive TTY prompts for missing
 //! required fields (non-TTY = fail-fast). Unix symlinks only (Windows
 //! symlink handling deferred).

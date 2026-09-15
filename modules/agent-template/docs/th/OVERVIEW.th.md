@@ -50,11 +50,11 @@ Agent Base Profile คือ **template สำหรับสร้าง AI cod
 
 ### ผมเป็น Agent Author (จะสร้าง agent ใหม่)
 ```bash
-./scripts/incarnate.sh <agent-name>
-cd ../agent-<agent-name>
+bwoc new <agent-name>
+cd agents/agent-<agent-name>
 # แก้ persona/README.md
-# แก้ config.manifest.json
-./scripts/check-agent-neutrality.sh
+# ตรวจ config.manifest.json
+bwoc check .
 ```
 อ่านต่อ: [LIFECYCLE.th.md](LIFECYCLE.th.md) → กายภาวนา section
 

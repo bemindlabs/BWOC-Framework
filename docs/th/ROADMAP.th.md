@@ -30,7 +30,7 @@ nav_order: 6
 - เอกสารสเปก (bilingual EN/TH ทุกตัว): `PHILOSOPHY` §0.1 *วงรอบ*, `GLOSSARY`, `ARCHITECTURE`, `INCARNATION`, `WORKSPACE`, `NAMING`
 - Crate README (`bwoc-core`, `bwoc-cli`, `bwoc-agent`)
 - เครื่องมือ Claude Code: 4 project skills (`/incarnate`, `/check-neutrality`, `/check-bilingual`, `/task-log`); 2 PostToolUse hooks (`bilingual-reminder`, `auto-version`)
-- shell script `incarnate.sh` และ `check-agent-neutrality.sh` ใน template (ใช้ได้วันนี้; จะถูก port เป็น Rust)
+- shell script สำหรับ incarnate และ audit neutrality ใน template (ภายหลังถูกแทนด้วย `bwoc new` / `bwoc check` และลบออกแล้ว)
 
 ### ส่งมอบใน Phase 1 v2.0 (เสร็จแล้ว)
 
@@ -40,8 +40,8 @@ nav_order: 6
 |---|---|---|
 | `bwoc init [path]` | [`WORKSPACE.th.md`](WORKSPACE.th.md#cli-surface) | ✓ |
 | `bwoc workspace info` · `validate` | [`WORKSPACE.th.md`](WORKSPACE.th.md#cli-surface) | ✓ |
-| `bwoc new <name>` (port ของ `incarnate.sh`) | [`INCARNATION.th.md`](INCARNATION.th.md) | ✓ |
-| `bwoc check [path]` (port ของ `check-agent-neutrality.sh`) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
+| `bwoc new <name>` (แทน shell script เดิมของ template) | [`INCARNATION.th.md`](INCARNATION.th.md) | ✓ |
+| `bwoc check [path]` (แทน shell script เดิมของ template) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
 | `bwoc spawn <name>` (minimal `exec`) | [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md#การไหลของข้อมูล--bwoc-spawn-agent-foo) | ✓ |
 | `bwoc list` (อ่าน `.bwoc/agents.toml`) | [`WORKSPACE.th.md`](WORKSPACE.th.md) | ✓ |
 | flag `--lang` wired เข้ากับ Project Fluent (locale TH + EN) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ ครบ 8 surface (init/list/spawn/workspace info/workspace validate/check/new/bwoc-agent) |

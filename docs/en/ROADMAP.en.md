@@ -30,7 +30,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 - Spec docs (all bilingual EN/TH): `PHILOSOPHY` §0.1 *The Arc*, `GLOSSARY`, `ARCHITECTURE`, `INCARNATION`, `WORKSPACE`, `NAMING`.
 - Crate READMEs (`bwoc-core`, `bwoc-cli`, `bwoc-agent`).
 - Claude Code tooling: 4 project skills (`/incarnate`, `/check-neutrality`, `/check-bilingual`, `/task-log`); 2 PostToolUse hooks (`bilingual-reminder`, `auto-version`).
-- `incarnate.sh` and `check-agent-neutrality.sh` shell scripts in the template (work today; will be ported to Rust).
+- Template shell scripts for incarnation and the neutrality audit (later replaced by `bwoc new` / `bwoc check` and removed).
 
 ### Shipped in Phase 1 v2.0
 
@@ -40,8 +40,8 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 |---|---|---|
 | `bwoc init [path]` | [`WORKSPACE.en.md`](WORKSPACE.en.md#cli-surface) | ✓ |
 | `bwoc workspace info` · `validate` | [`WORKSPACE.en.md`](WORKSPACE.en.md#cli-surface) | ✓ |
-| `bwoc new <name>` (port of `incarnate.sh`) | [`INCARNATION.en.md`](INCARNATION.en.md) | ✓ |
-| `bwoc check [path]` (port of `check-agent-neutrality.sh`) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
+| `bwoc new <name>` (replaced the template shell script) | [`INCARNATION.en.md`](INCARNATION.en.md) | ✓ |
+| `bwoc check [path]` (replaced the template shell script) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
 | `bwoc spawn <name>` (minimal `exec`) | [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md#information-flow--bwoc-spawn-agent-foo) | ✓ |
 | `bwoc list` (reads `.bwoc/agents.toml`) | [`WORKSPACE.en.md`](WORKSPACE.en.md) | ✓ |
 | `--lang` flag wired to Project Fluent (TH + EN locales) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ all 8 surfaces (init/list/spawn/workspace info/workspace validate/check/new/bwoc-agent) |

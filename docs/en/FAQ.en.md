@@ -55,11 +55,10 @@ They evolve independently. `Software-Version` lives in `Cargo.toml` and tracks c
 ### How do I create a new agent?
 
 ```bash
-cd modules/agent-template
-./scripts/incarnate.sh <agent-name>
+bwoc new <agent-name>
 ```
 
-Then fill placeholders, define persona, run the neutrality check. Target: first commit in under 30 minutes. Full walkthrough in [`INCARNATION.en.md`](INCARNATION.en.md).
+Then review the manifest, define persona, run `bwoc check`. Target: first commit in under 30 minutes. Full walkthrough in [`INCARNATION.en.md`](INCARNATION.en.md).
 
 ### Where do incarnated agents actually live on disk?
 
@@ -85,7 +84,7 @@ One command, no code change:
 ln -s AGENTS.md <BACKEND>.md
 ```
 
-The backend reads `AGENTS.md` via its own symlink; no per-backend instructions exist by design (Samānattatā — equal treatment). Then re-run `./scripts/check-agent-neutrality.sh` to confirm. See [`INCARNATION.en.md` §Adding a Backend](INCARNATION.en.md#adding-a-backend).
+The backend reads `AGENTS.md` via its own symlink; no per-backend instructions exist by design (Samānattatā — equal treatment). Then re-run `bwoc check` to confirm. See [`INCARNATION.en.md` §Adding a Backend](INCARNATION.en.md#adding-a-backend).
 
 ### How do I add a new human language for docs?
 

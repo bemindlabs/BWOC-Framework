@@ -30,7 +30,7 @@ In BWOC, an agent (and each of its tasks, sessions, and worktrees) is a conditio
 
 | Phase | Pali | Engineering surface |
 |---|---|---|
-| Arising | **uppāda** | Incarnation (`incarnate.sh`), persona definition, capability declaration (Attanutata), manifest resolution. |
+| Arising | **uppāda** | Incarnation (`bwoc new`), persona definition, capability declaration (Attanutata), manifest resolution. |
 | Persisting (with change) | **ṭhiti** | Operation: task planning by Ariyasacca 4, action by Magga 8, memory by Sammā-sati, communication by Brahmavihāra 4. Change *within* persistence — not stasis. |
 | Passing-away | **vaya** | Cessation: worktree cleanup (Anattā), branch release, memory prune (Mattaññutā), task closure logged. |
 

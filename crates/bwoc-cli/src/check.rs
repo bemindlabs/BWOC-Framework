@@ -1,7 +1,7 @@
 //! `bwoc check` — backend-neutrality audit.
 //!
-//! Rust port of `modules/agent-template/scripts/check-agent-neutrality.sh`
-//! with feature parity. Pure-data audit + separate printer for testability.
+//! Replaced the template's former neutrality shell script (since removed).
+//! Pure-data audit + separate printer for testability.
 
 use std::collections::HashSet;
 use std::fs;
@@ -393,7 +393,7 @@ pub fn audit(target: &Path) -> AuditReport {
 }
 
 /// Framework-shipped Claude hooks that every incarnation carries from the
-/// template (via `incarnate.sh`). These are known/documented (their non-Claude
+/// template (via `bwoc new`). These are known/documented (their non-Claude
 /// equivalents are tracked as deferred in `interconnect/messaging.md`), so they
 /// are exempt — flagging them would warn on every agent and train operators to
 /// ignore the signal. An author-added hook beyond this baseline is the real gap.
