@@ -13,6 +13,7 @@ mod a2a;
 mod accounting;
 mod agent_run;
 mod audit;
+mod auth;
 mod banner;
 mod chat;
 mod check;
@@ -57,6 +58,7 @@ mod report;
 mod resource;
 mod retire;
 mod run;
+mod runtime;
 mod sangha;
 mod send;
 mod sessions;
@@ -91,6 +93,19 @@ struct Cli {
     /// Precedence: --lang flag > BWOC_LANG env > $LANG > en fallback.
     #[arg(long, global = true)]
     lang: Option<String>,
+
+    /// Bare `bwoc` only: provider backend for the coding session in the current
+    /// directory (overrides BWOC_BACKEND and `[runtime] backend`).
+    #[arg(long, value_name = "BACKEND")]
+    backend: Option<String>,
+
+    /// Bare `bwoc` only: model for the coding session (overrides BWOC_MODEL).
+    #[arg(long, value_name = "MODEL")]
+    model: Option<String>,
+
+    /// Bare `bwoc` only: provider endpoint URL (overrides BWOC_ENDPOINT).
+    #[arg(long, value_name = "URL")]
+    endpoint: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -232,6 +247,12 @@ enum Commands {
     Trust(TrustArgs),
     /// Append a message to an agent's inbox (`.bwoc/inbox.jsonl`).
     Send(SendArgs),
+    /// Provider API keys for `bwoc` sessions, kept in `~/.bwoc/secrets.toml`.
+    #[command(subcommand)]
+    Auth(auth::AuthCommand),
+    /// Print the startup banner (commands, backends, what's new): what bare
+    /// `bwoc` prints when it is not attached to a terminal.
+    About,
     /// Interactive session with a registered agent by name: resolves its dir, backend
     /// and model, then launches it here, in `--tmux`, `--ghostty`, or the `--tui`.
     Chat(ChatArgs),
@@ -2832,6 +2853,19 @@ fn main() -> ExitCode {
     }
 
     let cli = Cli::parse();
+    let session_flags = runtime::RuntimeLayer {
+        backend: cli.backend.clone(),
+        model: cli.model.clone(),
+        endpoint: cli.endpoint.clone(),
+        max_tokens: None,
+    };
+    if cli.command.is_some() && !session_flags.is_empty() {
+        eprintln!(
+            "bwoc: --backend / --model / --endpoint apply only to bare `bwoc` (a coding \
+             session), not to subcommands"
+        );
+        return ExitCode::from(2);
+    }
     let lang = resolve_lang(cli.lang);
     let bundle = i18n::bundle_for(&lang);
 
@@ -3061,6 +3095,11 @@ fn main() -> ExitCode {
                 }
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Auth(cmd)) => ExitCode::from(u8::try_from(auth::run(cmd)).unwrap_or(1)),
+        Some(Commands::About) => {
+            banner::print();
+            ExitCode::SUCCESS
         }
         Some(Commands::Chat(args)) => {
             let code = chat::run(args.into_runtime(lang.clone()));
@@ -3583,11 +3622,32 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         None => {
-            // No subcommand — print the startup banner. Banner already
-            // includes a `bwoc --help` hint at the bottom.
+            // No subcommand. On an interactive terminal: a coding session in the
+            // current directory. Otherwise the startup banner, byte-for-byte as
+            // before, so scripts that run bare `bwoc` keep their output.
+            use std::io::IsTerminal;
             let _ = &bundle; // banner is lang-agnostic for now
-            banner::print();
-            ExitCode::SUCCESS
+            match runtime::bare_route(
+                std::io::stdin().is_terminal(),
+                std::io::stdout().is_terminal(),
+                !session_flags.is_empty(),
+            ) {
+                runtime::BareRoute::Session => {
+                    let code = runtime::run_session(session_flags);
+                    ExitCode::from(u8::try_from(code).unwrap_or(1))
+                }
+                runtime::BareRoute::Banner => {
+                    banner::print();
+                    ExitCode::SUCCESS
+                }
+                runtime::BareRoute::NeedsTerminal => {
+                    eprintln!(
+                        "bwoc: --backend / --model / --endpoint open an interactive session \
+                         and need a terminal (stdin and stdout must be a TTY)"
+                    );
+                    ExitCode::from(2)
+                }
+            }
         }
     }
 }

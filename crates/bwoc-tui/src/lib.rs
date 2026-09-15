@@ -74,6 +74,21 @@ pub struct TuiArgs {
     /// <path>` to the harness so this session joins a team's shared channel;
     /// `None` keeps it solo. The caller (`bwoc chat --team`) resolves the path.
     pub team_chat: Option<PathBuf>,
+    /// Project mode (bare `bwoc`): `Some` when `agent_path` is a plain working
+    /// directory, not an incarnated agent. The runtime comes from here instead
+    /// of a manifest, and `agent_id` is only a display name.
+    pub project: Option<ProjectSession>,
+}
+
+/// Runtime for a project session, resolved by the caller (`bwoc`).
+pub struct ProjectSession {
+    pub model: String,
+    /// `None` lets the harness use the backend's default endpoint.
+    pub endpoint: Option<String>,
+    pub max_tokens: Option<u32>,
+    /// Where the harness persists the conversation. `None` keeps the harness
+    /// default, `<workdir>/.bwoc/chat-session.json`.
+    pub session_file: Option<PathBuf>,
 }
 
 pub fn run(args: TuiArgs) -> i32 {
@@ -88,30 +103,52 @@ pub fn run(args: TuiArgs) -> i32 {
 
     // Resolve the harness binary (sibling of the running `bwoc`, then
     // CARGO_BIN_EXE, then PATH) — same shared rule `bwoc spawn` uses.
+    let label = if args.project.is_some() {
+        "bwoc"
+    } else {
+        "bwoc chat --tui"
+    };
     let Some(harness) = bwoc_core::exec::sibling_binary("bwoc-harness") else {
         eprintln!(
-            "bwoc chat --tui: bwoc-harness binary not found; install it \
+            "{label}: bwoc-harness binary not found; install it \
              (`cargo install --path crates/bwoc-harness`) or add it to PATH."
         );
         return 2;
     };
 
-    // Model + endpoint come from the agent's manifest (best-effort). A missing
+    // Project session: the caller already resolved the runtime. Agent session:
+    // model + endpoint come from the agent's manifest (best-effort). A missing
     // manifest is not fatal — the harness falls back to its own defaults.
-    let manifest = Manifest::load_from_path(&args.agent_path.join("config.manifest.json")).ok();
-    let model = manifest.as_ref().map(|m| m.primary_model.clone());
-    let endpoint = manifest
-        .as_ref()
-        .and_then(|m| m.base_url.clone())
-        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+    let (model, endpoint) = match &args.project {
+        Some(p) => (
+            Some(p.model.clone()),
+            p.endpoint
+                .clone()
+                .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string()),
+        ),
+        None => {
+            let manifest =
+                Manifest::load_from_path(&args.agent_path.join("config.manifest.json")).ok();
+            (
+                manifest.as_ref().map(|m| m.primary_model.clone()),
+                manifest
+                    .as_ref()
+                    .and_then(|m| m.base_url.clone())
+                    .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string()),
+            )
+        }
+    };
 
-    let argv = harness_argv(
+    let mut argv = harness_argv(
         &args.agent_path,
         model.as_deref(),
         &endpoint,
         &args.backend_name,
         args.team_chat.as_deref(),
     );
+    if let Some(p) = &args.project {
+        argv.extend(project_argv(&args.agent_id, p));
+    }
 
     let mut child = match Command::new(&harness)
         .args(&argv)
@@ -226,6 +263,22 @@ fn harness_argv(
     if let Some(log) = team_chat {
         argv.push("--team-chat".to_string());
         argv.push(log.to_string_lossy().into_owned());
+    }
+    argv
+}
+
+/// Extra harness argv for a project session: `--agent <name>` (display name in
+/// the `Ready` status), optional `--max-tokens`, and the per-directory
+/// `--session-file` so the conversation is not written into the repository.
+fn project_argv(name: &str, p: &ProjectSession) -> Vec<String> {
+    let mut argv = vec!["--agent".to_string(), name.to_string()];
+    if let Some(n) = p.max_tokens {
+        argv.push("--max-tokens".to_string());
+        argv.push(n.to_string());
+    }
+    if let Some(file) = &p.session_file {
+        argv.push("--session-file".to_string());
+        argv.push(file.to_string_lossy().into_owned());
     }
     argv
 }
@@ -1488,6 +1541,34 @@ fn draw_fleet_sidebar(f: &mut ratatui::Frame, area: Rect, fleet: &Fleet) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn project_argv_carries_name_max_tokens_and_session_file() {
+        let p = super::ProjectSession {
+            model: "m".into(),
+            endpoint: None,
+            max_tokens: Some(4096),
+            session_file: Some(std::path::PathBuf::from("/h/.bwoc/sessions/abc.json")),
+        };
+        assert_eq!(
+            super::project_argv("repo", &p),
+            [
+                "--agent",
+                "repo",
+                "--max-tokens",
+                "4096",
+                "--session-file",
+                "/h/.bwoc/sessions/abc.json"
+            ]
+        );
+        let bare = super::ProjectSession {
+            model: "m".into(),
+            endpoint: None,
+            max_tokens: None,
+            session_file: None,
+        };
+        assert_eq!(super::project_argv("repo", &bare), ["--agent", "repo"]);
+    }
+
     use super::*;
 
     #[test]
