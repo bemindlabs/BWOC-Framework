@@ -826,7 +826,7 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = app
         .conversation
         .iter()
-        .map(|l| Line::from(Span::styled(l.clone(), transcript_style(l))))
+        .flat_map(|l| styled_lines(l, transcript_style(l)))
         .collect();
     // Reasoning still arriving: one dimmed progress line (collapsed later).
     if app.streaming.is_empty() && !app.thinking.is_empty() {
@@ -837,10 +837,10 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     // Show the in-flight streamed turn live, below the committed history.
     if !app.streaming.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("assistant: {}", app.streaming),
+        lines.extend(styled_lines(
+            &format!("assistant: {}", app.streaming),
             Style::default().add_modifier(Modifier::DIM),
-        )));
+        ));
     }
 
     // The view is anchored to the tail; `app.scroll` (lines up from the bottom)
@@ -870,6 +870,20 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .block(block)
         .wrap(Wrap { trim: false });
     f.render_widget(p, area);
+}
+
+/// One transcript entry as display lines: split on `\n` (a trailing `\r` is
+/// dropped) so multi-line assistant text and tool output keep their line
+/// breaks. Every line takes the entry's style.
+fn styled_lines(text: &str, style: Style) -> Vec<Line<'static>> {
+    text.split('\n')
+        .map(|part| {
+            Line::from(Span::styled(
+                part.strip_suffix('\r').unwrap_or(part).to_string(),
+                style,
+            ))
+        })
+        .collect()
 }
 
 /// Per-line style for the transcript: color the inline tool-action markers
@@ -1757,6 +1771,18 @@ mod tests {
             transcript_style(collapsed[0]),
             Style::default().add_modifier(Modifier::DIM)
         );
+    }
+
+    #[test]
+    fn styled_lines_keep_line_breaks() {
+        let style = transcript_style("✓ list_dir");
+        let lines = styled_lines("✓ list_dir: .git/\nAGENTS.md\r\nnotes.txt", style);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans[0].content.to_string())
+            .collect();
+        assert_eq!(text, ["✓ list_dir: .git/", "AGENTS.md", "notes.txt"]);
+        assert!(lines.iter().all(|l| l.spans[0].style == style));
     }
 
     #[test]
