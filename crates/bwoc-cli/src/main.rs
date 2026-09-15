@@ -256,8 +256,8 @@ enum Commands {
     /// Manage a team's shared task list (add / list / claim / complete / reopen).
     #[command(subcommand)]
     Task(TaskCommand),
-    /// Query task status across **every** team (fleet-wide): filter by `--agent`
-    /// (claimant) / `--state` (pending|in_progress|completed), table or `--json`.
+    /// (deprecated → `bwoc task list --all`) Task status across every team,
+    /// filtered by `--agent` / `--state`.
     Tasks(TasksCliArgs),
     /// Query read receipts — "was my message consumed?" — across recipients'
     /// triage logs: filter by `--message-id` / `--from` / `--agent`, table or `--json` (#299).
@@ -1012,10 +1012,21 @@ enum TaskCommand {
         #[arg(long)]
         json: bool,
     },
-    /// List a team's tasks with state + claimant.
+    /// List a team's tasks with state + claimant; `--all` lists every team's
+    /// (fleet-wide, filterable by `--agent` / `--state`).
     List {
-        /// Team id.
-        team: String,
+        /// Team id. Omit when passing `--all`.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        team: Option<String>,
+        /// List tasks across every team, with a TEAM column.
+        #[arg(long)]
+        all: bool,
+        /// With `--all`: only tasks claimed by this agent (id or bare name).
+        #[arg(long, conflicts_with = "team")]
+        agent: Option<String>,
+        /// With `--all`: only tasks in this state: `pending` | `in_progress` | `completed`.
+        #[arg(long, conflicts_with = "team")]
+        state: Option<String>,
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
         #[arg(long)]
@@ -3130,9 +3141,24 @@ fn main() -> ExitCode {
                 } => sangha::run_task_add(workspace, team, title, deps, id, !no_plan, json),
                 TaskCommand::List {
                     team,
+                    all,
+                    agent,
+                    state,
                     workspace,
                     json,
-                } => sangha::run_task_list(workspace, team, json),
+                } => match (team, all) {
+                    (_, true) => tasks::run(tasks::TasksArgs {
+                        workspace,
+                        agent,
+                        state,
+                        json,
+                    }),
+                    (Some(team), false) => sangha::run_task_list(workspace, team, json),
+                    (None, false) => {
+                        eprintln!("bwoc task list: pass a <TEAM> or --all");
+                        2
+                    }
+                },
                 TaskCommand::Claim {
                     team,
                     task,
@@ -3192,9 +3218,8 @@ fn main() -> ExitCode {
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
-        Some(Commands::Tasks(args)) => {
-            let code = tasks::run(args.into());
-            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        Some(Commands::Tasks(_)) => {
+            unreachable!("`bwoc tasks` is rewritten by canonicalize()")
         }
         Some(Commands::Receipts(args)) => {
             let code = receipts::run(args.into());
@@ -3585,6 +3610,18 @@ fn canonicalize(command: Commands) -> Canonical {
         Commands::Notes(sub) => doc_alias("notes", "notes", sub),
         Commands::Retro(sub) => doc_alias("retro", "retrospectives", sub),
         Commands::Research(sub) => doc_alias("research", "research", sub),
+        Commands::Tasks(a) => Canonical::rewritten(
+            Commands::Task(TaskCommand::List {
+                team: None,
+                all: true,
+                agent: a.agent,
+                state: a.state,
+                workspace: a.workspace,
+                json: a.json,
+            }),
+            "tasks".into(),
+            "task list --all".into(),
+        ),
         command => Canonical {
             command,
             deprecated: None,
@@ -3861,6 +3898,52 @@ mod deprecation_tests {
             "research view",
             "doc view research",
         );
+    }
+
+    #[test]
+    fn tasks_routes_to_task_list_all() {
+        assert_routes_like(
+            &["tasks"],
+            &["task", "list", "--all"],
+            "tasks",
+            "task list --all",
+        );
+        assert_routes_like(
+            &[
+                "tasks",
+                "--agent",
+                "pi",
+                "--state",
+                "pending",
+                "--json",
+                "--workspace",
+                "/w",
+            ],
+            &[
+                "task",
+                "list",
+                "--all",
+                "--agent",
+                "pi",
+                "--state",
+                "pending",
+                "--json",
+                "--workspace",
+                "/w",
+            ],
+            "tasks",
+            "task list --all",
+        );
+    }
+
+    #[test]
+    fn task_list_needs_a_team_or_all_and_filters_need_all() {
+        let bad = |a: &[&str]| {
+            Cli::try_parse_from(std::iter::once("bwoc").chain(a.iter().copied())).is_err()
+        };
+        assert!(bad(&["task", "list"]));
+        assert!(bad(&["task", "list", "t", "--all"]));
+        assert!(bad(&["task", "list", "t", "--agent", "pi"]));
     }
 
     #[test]
