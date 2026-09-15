@@ -158,6 +158,18 @@ pub fn resolve_litellm_api_key() -> String {
     super::anthropic::resolve_provider_api_key(LITELLM_API_KEY_ENV, "litellm")
 }
 
+/// Resolve the optional key for the generic `openai-compatible` backend from the
+/// per-user `~/.bwoc/secrets.toml` `[openai-compatible] api_key` (chmod-600
+/// guarded; written by `bwoc auth set openai-compatible`). No env var on
+/// purpose: a generic `OPENAI_API_KEY` would be sent to whatever endpoint the
+/// session points at. Empty when unset.
+pub fn resolve_openai_compatible_api_key() -> String {
+    super::anthropic::home_dir()
+        .map(|home| home.join(".bwoc").join("secrets.toml"))
+        .and_then(|p| super::anthropic::api_key_from_secrets(&p, "openai-compatible"))
+        .unwrap_or_default()
+}
+
 /// Per-request timeout applied to every HTTP call the client makes.
 ///
 /// Without it, `reqwest::Client::new()` has no request timeout, so a hung
