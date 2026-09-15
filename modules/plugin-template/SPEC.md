@@ -38,7 +38,7 @@ Optional implementation files (Rust crate, binary on `PATH` matching `entry`, co
 | Placeholder | Required | Replaced by | Example |
 |---|---|---|---|
 | `{{pluginName}}` | yes | `bwoc plugin init <name>` argument; kebab-case; must equal the new directory name under `modules/plugins/` | `gcloud-auth` |
-| `{{pluginKind}}` | yes | `--kind <kind>` flag on `init`; one of `memory-backend`, `llm-backend`, `workflow` (or a future kind added to the enum) | `workflow` |
+| `{{pluginKind}}` | yes | `--kind <kind>` flag on `init`; one of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws` (or a future kind added to the enum) | `workflow` |
 | `{{pluginVersion}}` | yes | Author edit; semver of the plugin itself, separate from the framework version | `0.1.0` |
 | `{{pluginDescription}}` | yes | Author edit; one-sentence summary; the **only** manifest value where a vendor name is tolerated | `Google Cloud (gcloud) credential-state adapter.` |
 

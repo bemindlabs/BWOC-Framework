@@ -5066,17 +5066,17 @@ exposes     = ["op"]
     #[test]
     fn audit_plugin_manifest_reference_passes() {
         // Inline sample of a minimal valid memory-backend manifest (the shape of
-        // the former memory-tier2-noop stub; no plugin directory is read).
+        // an illustrative minimal memory-backend manifest; no plugin directory is read).
         let dir = write_plugin_manifest(
             "ref",
-            "memory-tier2-noop",
+            "memory-example",
             r#"[plugin]
-name        = "memory-tier2-noop"
+name        = "memory-example"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "No-op Tier 2 memory backend that forwards to Tier 1."
 compat      = ">=3.0.0, <4.0.0"
-entry       = "bwoc-plugin-memory-tier2-noop"
+entry       = "bwoc-plugin-memory-example"
 "#,
         );
         let report = audit_plugin_manifest(&dir);
@@ -7176,9 +7176,9 @@ required = ["signer", 42]
         // expected_evidence_kind checks even if criteria.toml were present.
         let dir = write_plugin_manifest(
             "non-audit-evidence",
-            "memory-tier2-noop",
+            "memory-example",
             r#"[plugin]
-name        = "memory-tier2-noop"
+name        = "memory-example"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind — evidence-kind checks must not fire."
@@ -7214,9 +7214,9 @@ expected_evidence_kind  = "frobnicator"
         // — criteria.toml is an audit-kind-only contract.
         let dir = write_plugin_manifest(
             "non-audit",
-            "memory-tier2-noop",
+            "memory-example",
             r#"[plugin]
-name        = "memory-tier2-noop"
+name        = "memory-example"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind."

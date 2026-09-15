@@ -518,7 +518,7 @@ modules/plugins/
 ```toml
 [plugin]
 name        = "memory-example"                  # required — must match the directory name (illustrative; not a shipped plugin)
-kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira
+kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira | okr | council | figma | gws
 version     = "0.1.0"                           # required — semver
 description = "Example Tier 2 memory backend."  # required — one-sentence summary
 compat      = ">=3.0.0, <4.0.0"                 # required — semver range, bounded above; framework versions this plugin works with
@@ -537,7 +537,7 @@ entry       = "bwoc-plugin-memory-example"      # required — binary on PATH (p
 | Section | Field | Required | Type | Meaning |
 |---|---|---|---|---|
 | `[plugin]` | `name` | yes | string (kebab-case) | Plugin identifier; must equal the directory name under `modules/plugins/` |
-| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; immutable after `init` |
+| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`; immutable after `init` |
 | `[plugin]` | `version` | yes | string (semver) | Semver of the plugin itself, separate from the framework version |
 | `[plugin]` | `description` | yes | string | One-sentence summary; the **only** manifest value where a vendor name is tolerated |
 | `[plugin]` | `compat` | yes | string (semver range, bounded above) | Framework versions this plugin is compatible with. Enforced since 3.0: a mismatch refuses the load, an unparseable range fails `bwoc check`, an open-ended range warns |
