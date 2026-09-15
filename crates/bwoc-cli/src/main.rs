@@ -148,7 +148,8 @@ enum Commands {
     },
     /// Incarnate a new agent from the template (uppāda).
     New(Box<NewArgs>),
-    /// Exec the configured LLM backend CLI in an agent's directory (uppāda → ṭhiti).
+    /// Low-level launcher: exec a backend CLI in the agent dir given by `--path`,
+    /// with an explicit `--backend` and extra args after `--` (`chat` resolves these for you).
     Spawn(SpawnArgs),
     /// Initialize a BWOC workspace at the given path (uppāda).
     Init(InitArgs),
@@ -231,12 +232,14 @@ enum Commands {
     Trust(TrustArgs),
     /// Append a message to an agent's inbox (`.bwoc/inbox.jsonl`).
     Send(SendArgs),
-    /// Chat with an agent — exec backend CLI with manifest-driven model.
+    /// Interactive session with a registered agent by name: resolves its dir, backend
+    /// and model, then launches it here, in `--tmux`, `--ghostty`, or the `--tui`.
     Chat(ChatArgs),
-    /// Run a single task non-interactively and capture the result (headless mode).
+    /// Headless: deliver one `--task` to an agent, wait, and capture output + exit
+    /// code (`--json`) — for CI and orchestrators; no TTY.
     Run(RunCliArgs),
-    /// Agent host operations (e.g. launch a session as an unprivileged user on a
-    /// root-only VPS — `bwoc agent run --as-user <user> <agent>`).
+    /// Root host operations: `agent run --as-user <user> <agent>` drops to an
+    /// unprivileged user and runs the daemon (or a command) — root-only VPS pattern.
     #[command(subcommand)]
     Agent(AgentCommand),
     /// Read messages from an agent's inbox (`.bwoc/inbox.jsonl`).
