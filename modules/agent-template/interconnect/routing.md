@@ -73,7 +73,7 @@ Cross-workspace delivery and the trust gate compose into a **safe default** with
 
 - The recipient daemon's trust check resolves the envelope's `from` against **its own** registry ([`trust.md` §Refusal Semantics](trust.md)).
 - A cross-workspace sender is not in the recipient's registry → resolves as `unknown_sender` → refused to `inbox.refusals.jsonl` (the envelope is preserved, never deleted).
-- So with `BWOC_TRUST_GATING=1`, cross-workspace messages from unknown senders are **refused by default** — exactly the conservative posture you want before identity is provable. With gating off (the framework default), they deliver.
+- So with `BWOC_TRUST_GATING=1`, cross-workspace messages from unknown senders are **refused by default** — exactly the conservative posture you want before identity is provable. Without `=1` (the framework default is warn-only gating), the quality gate never refuses them.
 
 Routing therefore does **not** block on [Trust v2](trust.md): the two features are orthogonal and their interaction is correct as-is.
 
@@ -83,7 +83,7 @@ Routing therefore does **not** block on [Trust v2](trust.md): the two features a
 
 - **Network transport.** Local-filesystem peers only. ssh/http/queue transports are deferred (Trust v2 cross-workspace).
 - **Discovery.** No automatic peer discovery, broadcast, or gossip. Peers are declared by hand.
-- **Cross-workspace trust.** Routing delivers; *trusting* a cross-workspace sender is Trust v2 (see seam above). Until then, cross-ws senders are strangers (refused under gating).
+- **Cross-workspace trust.** Routing delivers; *trusting* a cross-workspace sender is Trust v2 (see seam above). Until then, cross-ws senders are strangers (refused under `BWOC_TRUST_GATING=1`).
 - **Loop / cycle protection.** v1 does a single hop (local → one peer). Multi-hop forwarding (A→B→C) is out of scope; a route resolves to a terminal workspace, not another routing table.
 - **Routing the read side.** `bwoc inbox` still reads the local agent's own inbox. Routing governs `send` (delivery), not cross-workspace reads.
 

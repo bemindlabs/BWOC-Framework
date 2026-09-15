@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **Kalyāṇamitta trust gate on by default, warn-only** — with `BWOC_TRUST_GATING` unset the daemon used to skip the quality gate entirely, and no fleet host set it, so `requiredTrust` was never evaluated at runtime. Unset now means the gate runs in **warn** mode: a sender missing a required quality is still delivered and a `trust_warn` line is logged, once per `(sender, missing)` per daemon run. Nothing newly refuses: a manifest `trust.mode` of `refuse` (or absent with non-empty `requiredTrust`) is capped at warn unless `BWOC_TRUST_GATING=1`, which keeps its exact prior semantics; `0`/`off`/`false` disables the gate; manifest `mode: "off"` is honoured; with `BWOC_SIGNING_MODE=off` the default does not engage. Signature verification, replay defense and `inbox.refusals.jsonl` are unchanged. See [`trust.md` §Daemon gating](modules/agent-template/interconnect/trust.md#daemon-gating-bwoc_trust_gating).
+
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 
 **bwoc-bot, phase 1 — one agent, one bot.** Chat connectors gain a `[bot]` block: fixed slash-command replies that never reach the model, per-sender rate and message-length caps, and an opt-in **limited public mode** that lets strangers reach the agent by DM or @mention — read-only tools, a separate workdir with no memories or other chats, and an Untrusted principal. File-tool confinement is now symlink-safe for every agent, and connector configs carry a `schema_version` that `bwoc migrate` stamps.

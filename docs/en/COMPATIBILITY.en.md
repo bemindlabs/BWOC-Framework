@@ -136,6 +136,12 @@ says it is going away.
    removal with extra steps.
 3. **Remove at the next major**, where it becomes a violation or an error.
 
+A **default may tighten within a major only as far as a warning.** Anything that
+starts *refusing* (a message, a command, a load) needs an explicit opt-in until
+the next major. Example: since 3.2 the daemon's Kalyāṇamitta trust gate runs by
+default, but only in warn mode — refusal still requires `BWOC_TRUST_GATING=1`
+(see [`trust.md` §Daemon gating](../../modules/agent-template/interconnect/trust.md#daemon-gating-bwoc_trust_gating)).
+
 Plugins carry their own version of this contract: `[plugin].compat` is a bounded
 semver range of framework versions, enforced since 3.0. See
 [`PLUGINS.en.md` §Stability](PLUGINS.en.md#stability).

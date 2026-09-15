@@ -211,7 +211,16 @@ where
     // before parsing any envelopes. Built once here so env reads + the
     // ancestor workspace walk happen only once per daemon lifetime.
     let trust_ctx = trust::TrustContext::build(manifest, cwd);
-    if trust_ctx.gating_enabled {
+    if trust_ctx.gating_default {
+        if !trust_ctx.is_inert() {
+            eprintln!(
+                "bwoc-agent --serve: trust gating WARN (default) — logging, never \
+                 refusing, senders missing {:?}; BWOC_TRUST_GATING=1 enforces \
+                 trust.mode, =0 disables",
+                trust_ctx.required
+            );
+        }
+    } else if trust_ctx.gating_enabled {
         if trust_ctx.is_inert() {
             eprintln!(
                 "bwoc-agent --serve: trust gating ON (BWOC_TRUST_GATING=1) but \
@@ -555,7 +564,12 @@ fn check_inbox_for_new(
                     ref missing,
                 } => {
                     announce(trimmed);
-                    announce_warned(from, missing);
+                    // Deduped per (sender, missing): a busy inbox must not
+                    // repeat the same gap on every envelope. Never recorded in
+                    // `inbox.refusals.jsonl` — a warning is not a refusal.
+                    if trust_ctx.first_warning(from, missing) {
+                        announce_warned(from, missing);
+                    }
                 }
                 trust::TrustOutcome::Refuse(ref refusal) => {
                     record_refusal(refusals_path, refusal);

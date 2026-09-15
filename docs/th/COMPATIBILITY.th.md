@@ -127,6 +127,12 @@ public surface จะถูกลบก็ต่อเมื่อผ่าน r
    ไม่ใช่ deprecation แต่คือการลบทิ้งที่มีขั้นตอนเพิ่ม
 3. **ลบที่ major ถัดไป** ซึ่งมันจะกลายเป็น violation หรือ error
 
+**default เข้มขึ้นภายใน major เดียวกันได้แค่ระดับ warning** อะไรก็ตามที่เริ่ม *refuse*
+(ข้อความ คำสั่ง หรือการ load) ต้องมี opt-in ชัดเจนจนถึง major ถัดไป ตัวอย่าง: ตั้งแต่ 3.2
+trust gate Kalyāṇamitta ของ daemon ทำงานโดย default แต่เป็น warn เท่านั้น — การ refuse
+ยังต้องตั้ง `BWOC_TRUST_GATING=1`
+(ดู [`trust.th.md` §Gating ของ daemon](../../modules/agent-template/interconnect/trust.th.md#gating-ของ-daemon-bwoc_trust_gating))
+
 ปลั๊กอินมี contract รุ่นของตัวเอง: `[plugin].compat` เป็น semver range ที่มีขอบบน
 บังคับใช้ตั้งแต่ 3.0 ดู [`PLUGINS.th.md` §Stability](PLUGINS.th.md#stability)
 
