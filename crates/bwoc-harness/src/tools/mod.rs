@@ -14,9 +14,13 @@ pub mod computer;
 pub mod extra_tools;
 pub mod impls;
 pub mod registry;
+pub mod session;
+pub mod webfetch;
 
 pub use auth::{CredentialBroker, CredentialRequest, InMemoryCredentialStore, ResolvedCredentials};
-pub use extra_tools::{BwocSend, BwocTask, EditFile, Git, Grep, MemoryRead, MemoryWrite, RunGates};
+pub use extra_tools::{
+    BwocSend, BwocTask, EditFile, Git, Glob, Grep, MemoryRead, MemoryWrite, MultiEdit, RunGates,
+};
 pub use impls::{ListDir, ReadFile, RunCommand, WriteFile};
 pub use registry::ToolRegistry;
 

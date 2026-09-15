@@ -72,7 +72,7 @@ use bwoc_core::trust::TrustLevel;
 ///
 /// Adding a tool here is a deliberate act: it must survive the behavioral proof
 /// on Linux and the static floor everywhere, or the test suite fails.
-pub const PURE_READ_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "memory_read"];
+pub const PURE_READ_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "glob", "memory_read"];
 
 /// Layer-0 capability tier, **graded by blast radius** (Phase 5 t3 — saṃvara,
 /// yudi's ruling (a)). This REPLACES t2's flat "deny every effectful tool on an
@@ -207,7 +207,7 @@ fn classify_capability(tool_name: &str, arguments_json: &str) -> Capability {
         return Capability::PureRead;
     }
     match tool_name {
-        "write_file" | "edit_file" => Capability::WorktreeWrite {
+        "write_file" | "edit_file" | "multi_edit" => Capability::WorktreeWrite {
             path: arg_str(arguments_json, "path"),
         },
         // memory_write targets `memories/<name>` under the worktree; confine on

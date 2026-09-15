@@ -259,6 +259,22 @@ const BLOCKED_COMMANDS: &[&str] = &[
     "git push -f",
 ];
 
+/// Default and maximum `run_command` wall-clock budget, in seconds.
+const RUN_COMMAND_DEFAULT_TIMEOUT_SECS: u64 = 120;
+const RUN_COMMAND_MAX_TIMEOUT_SECS: u64 = 600;
+
+/// `run_command`'s effective timeout from its arguments: `timeout_secs`, else
+/// the default, clamped to 1..=max. Shared with the turn executor, which runs
+/// the command itself on unix.
+pub(crate) fn run_command_timeout(args: &Value) -> std::time::Duration {
+    std::time::Duration::from_secs(
+        args["timeout_secs"]
+            .as_u64()
+            .unwrap_or(RUN_COMMAND_DEFAULT_TIMEOUT_SECS)
+            .clamp(1, RUN_COMMAND_MAX_TIMEOUT_SECS),
+    )
+}
+
 #[async_trait]
 impl ToolImpl for RunCommand {
     fn name(&self) -> &'static str {
@@ -266,7 +282,7 @@ impl ToolImpl for RunCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command inside the working directory. The command runs as a subprocess with the working directory set to the agent worktree. Some dangerous commands are blocked."
+        "Run a shell command inside the working directory. The command runs as a subprocess with the working directory set to the agent worktree. Some dangerous commands are blocked. The command is killed (with every process it started) after `timeout_secs` (default 120, max 600)."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -276,6 +292,12 @@ impl ToolImpl for RunCommand {
                 "command": {
                     "type": "string",
                     "description": "Shell command to run (runs via sh -c)."
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": RUN_COMMAND_MAX_TIMEOUT_SECS,
+                    "description": "Kill the command after this many seconds. Default 120, capped at 600."
                 }
             },
             "required": ["command"]
@@ -300,14 +322,49 @@ impl ToolImpl for RunCommand {
             }
         }
 
-        let output = shell_command(cmd)
+        let timeout_secs = run_command_timeout(&args).as_secs();
+
+        let mut command = shell_command(cmd);
+        command
             .current_dir(&ctx.workdir)
-            .output()
-            .await
-            .map_err(|e| HarnessError::ToolExecution {
+            // `spawn` inherits stdin by default (unlike `output`); in chat mode
+            // stdin is the frontend protocol, so the child must never read it.
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        // Own process group, so a timeout can kill everything the shell started.
+        #[cfg(unix)]
+        command.process_group(0);
+        let child = command.spawn().map_err(|e| HarnessError::ToolExecution {
+            tool: self.name().to_string(),
+            reason: format!("failed to spawn command: {e}"),
+        })?;
+        let pid = child.id();
+
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            child.wait_with_output(),
+        )
+        .await;
+        let output = match waited {
+            Ok(res) => res.map_err(|e| HarnessError::ToolExecution {
                 tool: self.name().to_string(),
-                reason: format!("failed to spawn command: {e}"),
-            })?;
+                reason: format!("failed to wait for command: {e}"),
+            })?,
+            Err(_) => {
+                // The timed-out future (and the child, via kill_on_drop) is
+                // already dropped; now take down the rest of its group.
+                kill_process_group(pid);
+                return Err(HarnessError::ToolExecution {
+                    tool: self.name().to_string(),
+                    reason: format!(
+                        "command timed out after {timeout_secs}s and was killed \
+                         (output discarded): `{cmd}`"
+                    ),
+                });
+            }
+        };
 
         let mut result = String::new();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -332,6 +389,23 @@ impl ToolImpl for RunCommand {
         Ok(result)
     }
 }
+
+/// SIGKILL the process group led by `pid` (spawned with `process_group(0)`).
+#[cfg(unix)]
+pub(crate) fn kill_process_group(pid: Option<u32>) {
+    if let Some(pgid) = pid.and_then(|p| libc::pid_t::try_from(p).ok()) {
+        // SAFETY: `killpg` only sends a signal; it touches no memory. `pgid` is
+        // the group this call created for the child, so no unrelated group is hit.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+}
+
+/// Non-unix: no process groups here; `kill_on_drop` already killed the direct
+/// child. Grandchildren may outlive a timeout on these platforms.
+#[cfg(not(unix))]
+pub(crate) fn kill_process_group(_pid: Option<u32>) {}
 
 #[cfg(test)]
 mod tests {
@@ -468,6 +542,66 @@ mod tests {
             let out = runner.execute(args, &ctx).await.unwrap();
             assert!(out.contains("hello"));
         });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_timeout_kills_the_process_group() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ctx_for_tmp(&tmp);
+        let started = std::time::Instant::now();
+        // A background grandchild records its pid, then the shell waits on it.
+        let err = RunCommand
+            .execute(
+                json!({ "command": "sleep 30 & echo $! > bg.pid; wait", "timeout_secs": 1 }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out after 1s"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+
+        #[cfg(target_os = "linux")]
+        {
+            let pid = std::fs::read_to_string(tmp.path().join("bg.pid")).unwrap();
+            let stat = format!("/proc/{}/stat", pid.trim());
+            // Gone, or a zombie awaiting its reaper, counts as killed.
+            let dead = || {
+                std::fs::read_to_string(&stat)
+                    .map(|s| {
+                        s.rsplit(')')
+                            .next()
+                            .unwrap_or("")
+                            .trim_start()
+                            .starts_with('Z')
+                    })
+                    .unwrap_or(true)
+            };
+            let mut killed = dead();
+            for _ in 0..50 {
+                if killed {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                killed = dead();
+            }
+            assert!(killed, "grandchild {} survived the timeout", pid.trim());
+        }
+    }
+
+    #[tokio::test]
+    async fn run_command_timeout_is_clamped_and_stdin_is_closed() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ctx_for_tmp(&tmp);
+        // timeout_secs 0 clamps to 1, which is plenty for `cat` on a null stdin.
+        let out = RunCommand
+            .execute(
+                json!({ "command": "cat; echo done", "timeout_secs": 0 }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("done"), "{out}");
     }
 
     #[test]

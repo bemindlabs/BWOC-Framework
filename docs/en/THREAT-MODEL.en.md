@@ -130,7 +130,7 @@ adversarial input. See `CONNECTORS` for the config.
 
 | Threat | Mitigation |
 |---|---|
-| A stranger steers the agent into writing files, running commands, or reaching the network | The session is locked to harness `plan` mode, a fixed read-only allow-list (`read_file`, `list_dir`, `grep`, `memory_read`), before any user text is sent. If the harness doesn't confirm the mode, the session is not created (fail closed). |
+| A stranger steers the agent into writing files, running commands, or reaching the network | The session is locked to harness `plan` mode, a fixed read-only allow-list (`read_file`, `list_dir`, `grep`, `glob`, `memory_read`; `webfetch`, `todo` and `subagent` are excluded), before any user text is sent. If the harness doesn't confirm the mode, the session is not created (fail closed). |
 | Flooding or oversized prompts | The per-sender rate cap and input-length cap always apply to public senders; `0` means the default, never "off". |
 | A stranger reads the agent's private state or a member's context | Public sessions run in their own workdir (`.bwoc/public/<platform>-<chat_id>/`) that holds only copies of `AGENTS.md` and `config.manifest.json` (minus `deepMemoryCmd`) plus their own session file. There are no memories, connectors, skills or other chats. Tool paths are confined to that workdir after canonicalization (the deepest existing ancestor must stay inside the canonical workdir), so a symlink can't reach out. Public sessions never join team chat, and unaddressed stranger chatter is dropped, not logged. |
 | A stranger's text is mistaken for operator authority | Every bridged turn is `Principal::Platform`, which is untrusted. |

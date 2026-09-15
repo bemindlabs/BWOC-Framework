@@ -70,6 +70,10 @@ async-trait = "0.1"
 # TOML config parsing for .bwoc/harness-policy.toml
 toml = "0.8"
 
+# `grep` patterns and `glob` matching (a glob compiles to a regex). Already a
+# workspace dependency, so no new crate enters the lockfile.
+regex = { workspace = true }
+
 # Per-turn throwaway cwd for the isolated turn-executor child (Phase 5 t5).
 # Promoted from dev-dependency: the parent now creates a tempdir at runtime.
 tempfile = "3"

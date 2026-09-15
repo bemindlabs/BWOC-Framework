@@ -78,7 +78,7 @@ max_context = 32768                        # ไม่บังคับ: contex
 
 บทสนทนาถูกบันทึกแยกตาม directory ไว้ใต้ `~/.bwoc/sessions/` ไม่เคยเขียนลงใน repository file tool ถูกจำกัดอยู่ใน working directory และการเขียน แก้ไฟล์ หรือรันคำสั่งจะถามก่อน (chat default policy) เว้นแต่ `.bwoc/harness-policy.toml` กำหนดไว้เป็นอย่างอื่น
 
-**Session ใช้เส้นทางเดียวกับ batch** การเรียก provider จะ retry เมื่อเจอ error ชั่วคราว และถ้า tool call ผิดรูปแบบซ้ำ ๆ จะย้ายไปใช้ fallback ถัดไปจาก `autoModels` server ของ `--mcp` / `--mcp-http` ถูกลงทะเบียนเหมือนใน `bwoc run` ทุก tool call ผ่าน capability gate, guardrail และ permission policy แล้วรันผ่าน turn executor และ OS sandbox เมื่อมีเนื้อหาที่ไม่น่าเชื่อถือ (output ของ tool หรือข้อความจาก connector) อยู่ในบทสนทนาแล้ว call ที่ถูก gate เช่น `run_command` ต้องได้ Allow อย่างชัดแจ้งแม้อยู่ใน bypass mode ส่วน session แบบ `--headless` จะปฏิเสธเหมือน batch การ compact คำนวณจาก context window ของ model: `max_context` (`--max-context`) ถ้าไม่มีใช้ค่าที่ provider รายงาน ถ้าไม่มีใช้ 200k token สำหรับ `anthropic` ไม่เช่นนั้นใช้ 8,000 token ข้อความ reasoning ที่ provider stream มาจะแสดงเป็นบรรทัดสีจางและยุบลงเมื่อคำตอบเริ่ม
+**Session ใช้เส้นทางเดียวกับ batch** การเรียก provider จะ retry เมื่อเจอ error ชั่วคราว และถ้า tool call ผิดรูปแบบซ้ำ ๆ จะย้ายไปใช้ fallback ถัดไปจาก `autoModels` server ของ `--mcp` / `--mcp-http` ถูกลงทะเบียนเหมือนใน `bwoc run` ทุก tool call ผ่าน capability gate, guardrail และ permission policy แล้วรันผ่าน turn executor และ OS sandbox ยกเว้น tool เฉพาะ chat สามตัวด้านล่าง (`webfetch`, `todo`, `subagent`) ที่รันใน process หลักหลังผ่านการตรวจชุดเดียวกัน เมื่อมีเนื้อหาที่ไม่น่าเชื่อถือ (output ของ tool หรือข้อความจาก connector) อยู่ในบทสนทนาแล้ว call ที่ถูก gate เช่น `run_command` ต้องได้ Allow อย่างชัดแจ้งแม้อยู่ใน bypass mode ส่วน session แบบ `--headless` จะปฏิเสธเหมือน batch การ compact คำนวณจาก context window ของ model: `max_context` (`--max-context`) ถ้าไม่มีใช้ค่าที่ provider รายงาน ถ้าไม่มีใช้ 200k token สำหรับ `anthropic` ไม่เช่นนั้นใช้ 8,000 token ข้อความ reasoning ที่ provider stream มาจะแสดงเป็นบรรทัดสีจางและยุบลงเมื่อคำตอบเริ่ม
 
 **Agent session ไม่เปลี่ยน** เมื่อ workdir มี `config.manifest.json` (`bwoc chat <agent>`) prompt ยังคงเป็น `AGENTS.md` ของ agent ตามด้วย index ของ `MEMORY.md` และตอนนี้ต่อท้ายด้วยบล็อก persona และ mindsets แบบย่อ: เนื้อหา `persona/README.md` และชื่อกับย่อหน้าแรกของแต่ละ mindset จำกัด 8 KB ส่วน public workdir ของ bwoc-connect (`.bwoc/public/…`) จะไม่อ่านคำสั่งจาก directory ที่อยู่เหนือตัวเองเลย
 
@@ -202,16 +202,29 @@ Tool ทุกตัวลงทะเบียนใน `tools/registry.rs` แ
 |---|---|
 | `read_file` | อ่านไฟล์จาก worktree |
 | `write_file` | เขียน / overwrite ไฟล์ |
-| `edit_file` | แทนที่ string แบบเจาะจง (`old_string` → `new_string`) |
+| `edit_file` | แทนที่ string แบบเจาะจง (`old_string` → `new_string`); `replace_all` แทนที่ทุกจุดที่ตรงแบบ exact |
+| `multi_edit` | ชุดการแทนที่แบบ `edit_file` หลายรายการบนไฟล์เดียว ตามลำดับ เขียนไฟล์ก็ต่อเมื่อทุกรายการสำเร็จ |
 | `list_dir` | แสดงเนื้อหา directory |
-| `grep` | ค้นหาใน file contents ด้วย regex pattern |
-| `run_command` | รัน shell command (sandboxed: cwd ล็อก, env scrub, arg scan) |
+| `grep` | ค้นหาใน file contents ด้วย regex; มี `fixed_strings`, `case_insensitive` และตัวกรองไฟล์ `glob` ข้ามไฟล์ binary และ directory ที่ซ่อนอยู่; regex ที่ไม่ถูกต้องจะค้นแบบ literal แทน |
+| `glob` | หาไฟล์ด้วย glob (`*`, `**`, `?`, `[..]`, `{a,b}`) อ่านอย่างเดียว ข้าม directory ที่ซ่อนอยู่ และไม่อ่าน `.gitignore` |
+| `run_command` | รัน shell command (sandboxed: cwd ล็อก, env scrub, arg scan) `timeout_secs` (ค่าเริ่มต้น 120, สูงสุด 600) kill ทั้ง process group ของคำสั่ง |
 | `git` | git operation แบบ structured (`subcommand` + `args` array) |
 | `run_gates` | รัน lint / fmt / test / build gates จาก manifest |
 | `bwoc_task` | claim / complete task ใน Saṅgha team list |
 | `bwoc_send` | ส่ง message ไป agent อื่นผ่าน `interconnect/` |
 | `memory_read` | อ่านจาก `memories/` ของ agent |
 | `memory_write` | เขียนไปที่ `memories/` ของ agent |
+| `memory_search` | ค้นหาเชิงความหมายใน Tier 2 deep-memory store (ลงทะเบียนเฉพาะเมื่อ manifest กำหนด `deepMemoryCmd`; อ่านอย่างเดียว) |
+
+session แบบ `--chat` และ `--headless` ลงทะเบียน tool อีกสามตัวที่ไม่อยู่ใน `default_registry` ทั้งสามรันใน process เดียวกัน และไม่ถูกส่งไปยัง turn-executor child:
+
+| Tool | คำอธิบาย | Chat default policy | Plan mode |
+|---|---|---|---|
+| `webfetch` | GET URL แบบ http(s) แล้วคืนข้อความ (แปลง HTML เป็นข้อความ) timeout 30 วินาที, body 1 MB, redirect ไม่เกิน 5 ครั้ง; ปฏิเสธ localhost และ address แบบ loopback, private, link-local และ CGNAT รวมถึงตอน redirect | `ask` (ออก network) | ถูกบล็อก |
+| `todo` | รายการงานของ session เก็บในหน่วยความจำ (`read` / `write`) | `allow` | ถูกบล็อก |
+| `subagent` | child session แบบอ่านอย่างเดียว: provider และ model เดียวกัน, context ใหม่, ใช้ได้เฉพาะ `read_file` / `list_dir` / `grep` / `glob`, เรียก model ไม่เกิน 15 ครั้ง, เปิด subagent ต่อไม่ได้ คืนคำตอบสุดท้าย | `allow` | ถูกบล็อก |
+
+`webfetch`, `todo` และ `subagent` ไม่อยู่ใน plan mode เพราะ session สาธารณะของ connector รันใน plan mode และทุก tool ใน plan mode ต้องผ่าน capability gate บน turn ที่ไม่น่าเชื่อถือ ซึ่งมีแค่ `PURE_READ_TOOLS` ที่ผ่าน และไม่มี `apply_patch`: `multi_edit` ครอบคลุมการแก้หลายจุดโดยไม่ต้องมีไวยากรณ์ patch
 
 ---
 

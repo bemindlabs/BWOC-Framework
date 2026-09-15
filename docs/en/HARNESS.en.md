@@ -78,7 +78,7 @@ An absent `schema_version` is read as legacy; a newer one is refused with an err
 
 The conversation is saved per directory under `~/.bwoc/sessions/`, never inside the repository. File tools stay confined to the working directory, and writes, edits and commands ask first (the chat default policy) unless `.bwoc/harness-policy.toml` says otherwise.
 
-**A session runs the batch paths.** Provider calls retry transient errors, and repeated malformed tool calls move to the next `autoModels` fallback. `--mcp` / `--mcp-http` servers register as in `bwoc run`. Every tool call passes the capability gate, guardrails and permission policy, then runs through the turn executor and OS sandbox. Once untrusted content (a tool output, a connector message) is in the conversation, a gated call such as `run_command` needs an explicit Allow, even in bypass mode; a `--headless` session denies it, as batch does. Compaction is sized from the model's context window: `max_context` (`--max-context`), else what the provider reports, else 200k tokens for `anthropic`, else 8,000 tokens. Reasoning text streamed by the provider shows as a dimmed line that collapses when the answer starts.
+**A session runs the batch paths.** Provider calls retry transient errors, and repeated malformed tool calls move to the next `autoModels` fallback. `--mcp` / `--mcp-http` servers register as in `bwoc run`. Every tool call passes the capability gate, guardrails and permission policy, then runs through the turn executor and OS sandbox — except the three chat-only tools below (`webfetch`, `todo`, `subagent`), which run in-process after the same checks. Once untrusted content (a tool output, a connector message) is in the conversation, a gated call such as `run_command` needs an explicit Allow, even in bypass mode; a `--headless` session denies it, as batch does. Compaction is sized from the model's context window: `max_context` (`--max-context`), else what the provider reports, else 200k tokens for `anthropic`, else 8,000 tokens. Reasoning text streamed by the provider shows as a dimmed line that collapses when the answer starts.
 
 **Agent sessions are unchanged.** When the workdir has `config.manifest.json` (`bwoc chat <agent>`), the prompt is still the agent's `AGENTS.md` plus its `MEMORY.md` index, now followed by a condensed persona and mindsets block: the `persona/README.md` body and each mindset's title and first paragraph, capped at 8 KB. A bwoc-connect public workdir (`.bwoc/public/…`) never reads instructions from above itself.
 
@@ -202,10 +202,12 @@ All tools are registered in `tools/registry.rs` and dispatched through the safet
 |---|---|
 | `read_file` | Read a file from the worktree |
 | `write_file` | Write / overwrite a file |
-| `edit_file` | Targeted string replacement (`old_string` → `new_string`) |
+| `edit_file` | Targeted string replacement (`old_string` → `new_string`); `replace_all` replaces every exact occurrence |
+| `multi_edit` | An ordered list of `edit_file` replacements on one file, written only if every edit succeeds |
 | `list_dir` | List directory contents |
-| `grep` | Search file contents with a regex pattern |
-| `run_command` | Run a shell command (sandboxed: cwd locked, env scrubbed, arg scanned) |
+| `grep` | Search file contents with a regex; `fixed_strings`, `case_insensitive` and a `glob` file filter. Binary files and hidden directories are skipped; an invalid regex falls back to a literal search |
+| `glob` | Find files by glob (`*`, `**`, `?`, `[..]`, `{a,b}`). Read-only; hidden directories skipped, `.gitignore` not read |
+| `run_command` | Run a shell command (sandboxed: cwd locked, env scrubbed, arg scanned). `timeout_secs` (default 120, max 600) kills the command's process group |
 | `git` | Structured git operations (`subcommand` + `args` array) |
 | `run_gates` | Run lint / fmt / test / build gates from the manifest |
 | `bwoc_task` | Claim / complete tasks in the Saṅgha team list |
@@ -213,6 +215,16 @@ All tools are registered in `tools/registry.rs` and dispatched through the safet
 | `memory_read` | Read from the agent's `memories/` |
 | `memory_write` | Write to the agent's `memories/` |
 | `memory_search` | Semantic search over the Tier 2 deep-memory store (registered only when the manifest configures `deepMemoryCmd`; read-only) |
+
+`--chat` and `--headless` sessions also register three tools that are not in `default_registry`. They run in-process and are never sent to the turn-executor child:
+
+| Tool | Description | Chat default policy | Plan mode |
+|---|---|---|---|
+| `webfetch` | GET an http(s) URL and return text (HTML converted). 30 s timeout, 1 MB body, at most 5 redirects; localhost and loopback, private, link-local and CGNAT addresses are refused, including on redirect | `ask` (network egress) | blocked |
+| `todo` | The session's task list, held in memory (`read` / `write`) | `allow` | blocked |
+| `subagent` | A read-only child session: same provider and model, fresh context, `read_file` / `list_dir` / `grep` / `glob` only, at most 15 model calls, cannot start another subagent. Returns its final answer | `allow` | blocked |
+
+`webfetch`, `todo` and `subagent` stay out of plan mode: public connector sessions run in plan mode, and every plan-mode tool must pass the capability gate on an untrusted turn, which only `PURE_READ_TOOLS` do. There is no `apply_patch`: `multi_edit` covers multi-site edits without a patch grammar.
 
 ---
 

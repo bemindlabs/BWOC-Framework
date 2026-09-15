@@ -102,7 +102,7 @@ allow_handles = ["+15551234567", "friend@icloud.com"]  # CLOSED BY DEFAULT
 
 > [!warning] **Closed by default; `public = true` opts into limited public mode.** An empty or absent allow-list lets **nobody** in, and senders not on the list are ignored completely (Sīla over completeness). The only way to open a bot is `[bot] public = true`. A non-allow-listed sender is then served **only** in a DM or when they @mention the bot in a group; other group chatter from them is dropped and never logged. Every such turn is limited as follows:
 >
-> - The session is locked to **read-only tools** (the harness `plan` mode: `read_file`, `list_dir`, `grep`, `memory_read`). Writes, `run_command`, git, delegation and MCP tools are refused. If the harness doesn't confirm the mode, the session is not created.
+> - The session is locked to **read-only tools** (the harness `plan` mode: `read_file`, `list_dir`, `grep`, `glob`, `memory_read`). Writes, `run_command`, git, delegation, `webfetch`, `todo`, `subagent` and MCP tools are refused. If the harness doesn't confirm the mode, the session is not created.
 > - The rate and length caps always apply, even when set to `0`; `0` falls back to the default for public senders.
 > - The session runs in its **own workdir**, `<agent>/.bwoc/public/<platform>-<chat_id>/`. That workdir holds only a copy of `AGENTS.md` and `config.manifest.json` (without `deepMemoryCmd`), plus its own session file. It has no memories, connectors, skills or other chats, and it never joins a team chat. File tools are confined to it after symlinks are resolved, so a link can't reach out.
 > - The turn stays tagged `Principal::Platform`, which is untrusted.

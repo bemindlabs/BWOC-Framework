@@ -80,6 +80,12 @@ fn input_cases(tool: &str) -> Vec<(&'static str, Expect)> {
                 Expect::Contains("code.rs"),
             ),
         ],
+        "glob" => vec![
+            (r#"{"pattern":"*.rs"}"#, Expect::Contains("sub/code.rs")),
+            (r#"{"pattern":"sub/*.rs"}"#, Expect::Contains("code.rs")),
+            (r#"{"pattern":"*.absent"}"#, Expect::Contains("no files")),
+            (r#"{"pattern":"*","path":"../"}"#, Expect::Runs), // out-of-confinement
+        ],
         "memory_read" => vec![
             (r#"{}"#, Expect::Contains("Memory Index")),
             (

@@ -172,7 +172,19 @@ enum SessionMode {
 /// **allow-list**, not a deny-list: anything not here (writes, shell, git,
 /// task/peer/run delegation, gates, memory writes — and any future tool) is
 /// refused so the model observes and plans without acting or spawning processes.
-const PLAN_READ_ONLY_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "memory_read"];
+///
+/// `todo` only touches the session's in-memory list. `webfetch` (egress) and
+/// `subagent` (multiplies model calls) stay out: public connector sessions run
+/// in plan mode.
+/// Chat-only tools that run in the parent rather than the isolated turn
+/// executor. They hold session state (the todo list, the subagent's provider
+/// handle) or need the network (`webfetch`, which the executor's seccomp filter
+/// forbids), so they cannot be marshalled. Each still passes the capability
+/// gate, guardrails and the permission prompt first; none spawns a process or
+/// writes to disk. Keep this list closed.
+const CHAT_IN_PROCESS_TOOLS: &[&str] = &["webfetch", "todo", "subagent"];
+
+const PLAN_READ_ONLY_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "glob", "memory_read"];
 
 impl SessionMode {
     fn parse(s: &str) -> Option<Self> {
@@ -199,7 +211,7 @@ impl SessionMode {
     fn auto_allows(self, tool: &str) -> bool {
         match self {
             Self::Default | Self::Plan => false,
-            Self::AcceptEdits => matches!(tool, "edit_file" | "write_file"),
+            Self::AcceptEdits => matches!(tool, "edit_file" | "multi_edit" | "write_file"),
             Self::Bypass => true,
         }
     }
@@ -1032,6 +1044,12 @@ where
         },
     )
     .await?;
+    if CHAT_IN_PROCESS_TOOLS.contains(&name.as_str()) {
+        let result = crate::tools::registry::dispatch_rich(registry, name, args, ctx).await;
+        let ok = !result.content.starts_with("error:");
+        emit_tool_result(out, call, ok, &result.content).await?;
+        return Ok((result.content, result.images));
+    }
     let os_sandbox = crate::sandbox::make_os_sandbox(&ctx.workdir);
     let result = crate::turn_executor::execute_proceeded(
         name,
@@ -1207,6 +1225,7 @@ mod tests {
         // accept_edits auto-allows write/edit only.
         assert!(SessionMode::AcceptEdits.auto_allows("edit_file"));
         assert!(SessionMode::AcceptEdits.auto_allows("write_file"));
+        assert!(SessionMode::AcceptEdits.auto_allows("multi_edit"));
         assert!(!SessionMode::AcceptEdits.auto_allows("run_command"));
         // bypass auto-allows anything.
         assert!(SessionMode::Bypass.auto_allows("run_command"));
@@ -1232,6 +1251,12 @@ mod tests {
         assert!(SessionMode::Plan.plan_block("list_dir").is_none());
         assert!(SessionMode::Plan.plan_block("grep").is_none());
         assert!(SessionMode::Plan.plan_block("memory_read").is_none());
+        assert!(SessionMode::Plan.plan_block("glob").is_none());
+        assert!(SessionMode::Plan.plan_block("todo").is_some());
+        // Egress and model-call fan-out stay blocked (public sessions run in plan).
+        assert!(SessionMode::Plan.plan_block("webfetch").is_some());
+        assert!(SessionMode::Plan.plan_block("subagent").is_some());
+        assert!(SessionMode::Plan.plan_block("multi_edit").is_some());
         // Other modes never plan-block.
         assert!(SessionMode::Default.plan_block("write_file").is_none());
         assert!(SessionMode::Bypass.plan_block("run_command").is_none());
@@ -2502,5 +2527,27 @@ mod tests {
             Some("first answer")
         );
         assert!(last_assistant_text(&[ChatMessage::system("only sys")]).is_none());
+    }
+
+    #[test]
+    fn chat_in_process_tools_are_exactly_the_unmarshallable_chat_tools() {
+        for tool in CHAT_IN_PROCESS_TOOLS {
+            assert!(
+                !crate::turn_executor::is_marshallable_tool(tool),
+                "{tool} is a default-registry tool; it must go through the executor"
+            );
+        }
+        for tool in [
+            "run_command",
+            "write_file",
+            "edit_file",
+            "multi_edit",
+            "read_file",
+        ] {
+            assert!(
+                !CHAT_IN_PROCESS_TOOLS.contains(&tool),
+                "{tool} must stay isolated"
+            );
+        }
     }
 }

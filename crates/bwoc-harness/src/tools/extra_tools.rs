@@ -140,6 +140,56 @@ fn apply_edit(content: &str, old: &str, new: &str) -> EditOutcome {
     }
 }
 
+/// Apply one edit to in-memory `content`. Returns the new content and a short
+/// "replaced …" summary, or the refusal reason. `replace_all` replaces every
+/// exact occurrence (no whitespace-tolerant pass: a bulk rewrite must not
+/// guess); otherwise [`apply_edit`]'s unique-match rules apply.
+fn apply_one(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<(String, String), String> {
+    if old.is_empty() {
+        return Err("`old_string` must not be empty".to_string());
+    }
+    if replace_all {
+        let count = content.matches(old).count();
+        if count == 0 {
+            return Err(
+                "`old_string` not found (`replace_all` matches exactly). Read the file \
+                 first and ensure the text matches."
+                    .to_string(),
+            );
+        }
+        return Ok((
+            content.replace(old, new),
+            format!("replaced {count} occurrence(s) (exact match, replace_all)"),
+        ));
+    }
+    match apply_edit(content, old, new) {
+        EditOutcome::Replaced { content, how } => {
+            Ok((content, format!("replaced 1 occurrence ({how} match)")))
+        }
+        EditOutcome::NotFound => Err(
+            "`old_string` not found (tried exact and whitespace-tolerant matching). \
+             Read the file first and ensure the lines match."
+                .to_string(),
+        ),
+        EditOutcome::Ambiguous { count } => Err(format!(
+            "`old_string` matches {count} places. Provide more surrounding context so \
+             the match is unique, or set `replace_all`."
+        )),
+    }
+}
+
+fn tool_error(tool: &str, reason: impl Into<String>) -> HarnessError {
+    HarnessError::ToolExecution {
+        tool: tool.to_string(),
+        reason: reason.into(),
+    }
+}
+
 #[async_trait]
 impl ToolImpl for EditFile {
     fn name(&self) -> &'static str {
@@ -152,7 +202,8 @@ impl ToolImpl for EditFile {
          whitespace-tolerant line match (indentation/trailing-space differences \
          are forgiven and the replacement is re-indented to the file). Fails if \
          `old_string` is not found, or matches more than one place (provide more \
-         surrounding context to disambiguate). The file must already exist."
+         surrounding context to disambiguate). Set `replace_all` to replace every \
+         exact occurrence instead. The file must already exist."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -170,6 +221,10 @@ impl ToolImpl for EditFile {
                 "new_string": {
                     "type": "string",
                     "description": "The replacement string."
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every exact occurrence of `old_string` (e.g. a rename). Default: false."
                 }
             },
             "required": ["path", "old_string", "new_string"]
@@ -177,70 +232,151 @@ impl ToolImpl for EditFile {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
-        let raw = args["path"]
-            .as_str()
-            .ok_or_else(|| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: "missing `path` argument".to_string(),
-            })?;
-        let old = args["old_string"]
-            .as_str()
-            .ok_or_else(|| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: "missing `old_string` argument".to_string(),
-            })?;
-        let new = args["new_string"]
-            .as_str()
-            .ok_or_else(|| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: "missing `new_string` argument".to_string(),
-            })?;
+        let arg = |key: &str| {
+            args[key]
+                .as_str()
+                .ok_or_else(|| tool_error(self.name(), format!("missing `{key}` argument")))
+        };
+        let raw = arg("path")?;
+        let old = arg("old_string")?;
+        let new = arg("new_string")?;
+        let replace_all = args["replace_all"].as_bool().unwrap_or(false);
 
         let path = ctx.resolve_path(raw)?;
+        let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot read `{}`: {e}", path.display()),
+            )
+        })?;
 
-        let content =
-            tokio::fs::read_to_string(&path)
-                .await
-                .map_err(|e| HarnessError::ToolExecution {
-                    tool: self.name().to_string(),
-                    reason: format!("cannot read `{}`: {e}", path.display()),
-                })?;
+        let (updated, summary) = apply_one(&content, old, new, replace_all).map_err(|reason| {
+            tool_error(self.name(), format!("{reason} (`{}`)", path.display()))
+        })?;
 
-        let (updated, how) = match apply_edit(&content, old, new) {
-            EditOutcome::Replaced { content, how } => (content, how),
-            EditOutcome::NotFound => {
-                return Err(HarnessError::ToolExecution {
-                    tool: self.name().to_string(),
-                    reason: format!(
-                        "`old_string` not found in `{}` (tried exact and \
-                         whitespace-tolerant matching). Read the file first and \
-                         ensure the lines match.",
+        tokio::fs::write(&path, &updated).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot write `{}`: {e}", path.display()),
+            )
+        })?;
+
+        Ok(format!("edited `{}`: {summary}", path.display()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// multi_edit — several replacements in one file, all or nothing
+// ---------------------------------------------------------------------------
+
+/// Apply an ordered list of `edit_file`-style replacements to one file. Every
+/// edit runs against the result of the previous one, in memory; the file is
+/// written once, and only if every edit succeeded.
+pub struct MultiEdit;
+
+/// Upper bound on edits per call — a runaway list is a model fault, not a patch.
+const MULTI_EDIT_MAX: usize = 100;
+
+#[async_trait]
+impl ToolImpl for MultiEdit {
+    fn name(&self) -> &'static str {
+        "multi_edit"
+    }
+
+    fn description(&self) -> &'static str {
+        "Apply several string replacements to one file, in order, all or nothing. \
+         Each entry in `edits` has `old_string`, `new_string` and optional \
+         `replace_all`, with the same matching rules as `edit_file`, and sees the \
+         result of the edits before it. If any edit fails, nothing is written. \
+         The file must already exist."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to edit (relative to working directory)."
+                },
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Replacements applied in order.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": { "type": "string" },
+                            "new_string": { "type": "string" },
+                            "replace_all": { "type": "boolean" }
+                        },
+                        "required": ["old_string", "new_string"]
+                    }
+                }
+            },
+            "required": ["path", "edits"]
+        })
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
+        let raw = args["path"]
+            .as_str()
+            .ok_or_else(|| tool_error(self.name(), "missing `path` argument"))?;
+        let edits = args["edits"]
+            .as_array()
+            .filter(|e| !e.is_empty())
+            .ok_or_else(|| tool_error(self.name(), "`edits` must be a non-empty array"))?;
+        if edits.len() > MULTI_EDIT_MAX {
+            return Err(tool_error(
+                self.name(),
+                format!("too many edits ({}; max {MULTI_EDIT_MAX})", edits.len()),
+            ));
+        }
+
+        let path = ctx.resolve_path(raw)?;
+        let mut content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot read `{}`: {e}", path.display()),
+            )
+        })?;
+
+        let mut summaries = Vec::with_capacity(edits.len());
+        for (i, edit) in edits.iter().enumerate() {
+            let n = i + 1;
+            let (Some(old), Some(new)) = (edit["old_string"].as_str(), edit["new_string"].as_str())
+            else {
+                return Err(tool_error(
+                    self.name(),
+                    format!("edit #{n}: needs `old_string` and `new_string`; no changes written"),
+                ));
+            };
+            let replace_all = edit["replace_all"].as_bool().unwrap_or(false);
+            let (next, summary) = apply_one(&content, old, new, replace_all).map_err(|reason| {
+                tool_error(
+                    self.name(),
+                    format!(
+                        "edit #{n}: {reason} (`{}`); no changes written",
                         path.display()
                     ),
-                });
-            }
-            EditOutcome::Ambiguous { count } => {
-                return Err(HarnessError::ToolExecution {
-                    tool: self.name().to_string(),
-                    reason: format!(
-                        "`old_string` matches {count} places in `{}`. \
-                         Provide more surrounding context so the match is unique.",
-                        path.display()
-                    ),
-                });
-            }
-        };
-
-        tokio::fs::write(&path, &updated)
-            .await
-            .map_err(|e| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: format!("cannot write `{}`: {e}", path.display()),
+                )
             })?;
+            content = next;
+            summaries.push(format!("#{n}: {summary}"));
+        }
+
+        tokio::fs::write(&path, &content).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot write `{}`: {e}", path.display()),
+            )
+        })?;
 
         Ok(format!(
-            "edited `{}`: replaced 1 occurrence ({how} match)",
-            path.display()
+            "edited `{}`: applied {} edit(s)\n{}",
+            path.display(),
+            summaries.len(),
+            summaries.join("\n")
         ))
     }
 }
@@ -249,19 +385,22 @@ impl ToolImpl for EditFile {
 // grep — search file contents by pattern under the worktree
 // ---------------------------------------------------------------------------
 
-/// Walk the worktree (or a sub-path) and search for lines matching a pattern.
+/// Walk the worktree (or a sub-path) and search for lines matching a regex.
 ///
-/// Uses a pure-Rust walk + `str::contains` (substring, case-sensitive by
-/// default) so no external binary is required.  The `regex` crate is NOT
-/// added as a dep (dep-quarantine: bwoc-harness is already the heaviest
-/// crate; a simple substring search covers the primary use-case and the
-/// model can shell out to `rg` via `run_command` for advanced regex).
+/// Pure-Rust walk + the `regex` crate, so no external binary is required.
+/// `fixed_strings` searches the pattern literally. A pattern that is not a
+/// valid regex falls back to a literal search (with a note), so a caller that
+/// relied on the earlier substring-only behaviour (`foo(`) keeps working.
+/// Binary files (a NUL byte in the first 8 KB, or non-UTF-8) are skipped.
 ///
 /// Output: matching lines in `<relative-path>:<line-no>:<line>` format,
 /// capped at 1000 matches to prevent context overflow.
 pub struct Grep;
 
 const GREP_MAX_MATCHES: usize = 1_000;
+
+/// Bytes inspected for a NUL when deciding a file is binary (git's heuristic).
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 #[async_trait]
 impl ToolImpl for Grep {
@@ -270,11 +409,12 @@ impl ToolImpl for Grep {
     }
 
     fn description(&self) -> &'static str {
-        "Search file contents for lines containing a pattern under the working directory. \
-         Returns matching lines in `<path>:<line>:<content>` format. \
-         `pattern` is a case-sensitive substring by default; set `case_insensitive` to true \
-         for case-insensitive matching. Results are capped at 1000 matches. \
-         The search is confined to the working directory (worktree-safe)."
+        "Search file contents under the working directory for lines matching a \
+         regular expression (Rust regex syntax). Returns matching lines as \
+         `<path>:<line>:<content>`. Set `fixed_strings` to search the pattern \
+         literally, `case_insensitive` to ignore case, and `glob` (e.g. `*.rs`) to \
+         restrict which files are searched. Binary files and hidden directories are \
+         skipped. Results are capped at 1000 matches. Confined to the working directory."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -283,15 +423,23 @@ impl ToolImpl for Grep {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Substring to search for."
+                    "description": "Regular expression to search for (a literal string when `fixed_strings` is true)."
                 },
                 "path": {
                     "type": "string",
                     "description": "Directory or file to search (relative to working directory). Defaults to working directory root."
                 },
+                "glob": {
+                    "type": "string",
+                    "description": "Only search files matching this glob (same syntax as the `glob` tool), e.g. `*.rs`."
+                },
                 "case_insensitive": {
                     "type": "boolean",
                     "description": "If true, matching is case-insensitive. Default: false."
+                },
+                "fixed_strings": {
+                    "type": "boolean",
+                    "description": "If true, `pattern` is a literal string, not a regex. Default: false."
                 }
             },
             "required": ["pattern"]
@@ -307,25 +455,31 @@ impl ToolImpl for Grep {
             })?;
         let raw = args["path"].as_str().unwrap_or(".");
         let case_insensitive = args["case_insensitive"].as_bool().unwrap_or(false);
+        let fixed = args["fixed_strings"].as_bool().unwrap_or(false);
 
         let search_root = ctx.resolve_path(raw)?;
+        let (matcher, fallback_note) = grep_matcher(pattern, fixed, case_insensitive)?;
+        let include = match args["glob"].as_str() {
+            Some(g) => Some(glob_to_regex(g).map_err(|e| HarnessError::ToolExecution {
+                tool: self.name().to_string(),
+                reason: format!("invalid glob `{g}`: {e}"),
+            })?),
+            None => None,
+        };
 
-        // Tokio's fs::read_dir is async but walking is inherently recursive;
-        // use blocking spawn to avoid blocking the async runtime.
+        // Walking is blocking I/O; keep it off the async runtime.
         let workdir = ctx.workdir.clone();
-        let pattern_owned = pattern.to_string();
-        let pattern_display = pattern_owned.clone();
         let results = tokio::task::spawn_blocking(move || {
-            grep_walk(&search_root, &workdir, &pattern_owned, case_insensitive)
+            grep_walk(&search_root, &workdir, &matcher, include.as_ref())
         })
         .await
         .map_err(|e| HarnessError::ToolExecution {
             tool: "grep".to_string(),
             reason: format!("grep task panicked: {e}"),
-        })??;
+        })?;
 
-        if results.is_empty() {
-            Ok(format!("no matches for `{pattern_display}` in `{raw}`"))
+        let mut out = if results.is_empty() {
+            format!("no matches for `{pattern}` in `{raw}`")
         } else {
             let truncated = results.len() >= GREP_MAX_MATCHES;
             let mut out = results.join("\n");
@@ -334,8 +488,49 @@ impl ToolImpl for Grep {
                     "\n[truncated at {GREP_MAX_MATCHES} matches — narrow your search path or pattern]"
                 ));
             }
-            Ok(out)
+            out
+        };
+        if let Some(note) = fallback_note {
+            out.push_str(&note);
         }
+        Ok(out)
+    }
+}
+
+/// Build the line matcher. An invalid regex (when `fixed` is false) degrades to
+/// a literal search and returns a note saying so, rather than failing the call.
+fn grep_matcher(
+    pattern: &str,
+    fixed: bool,
+    case_insensitive: bool,
+) -> Result<(regex::Regex, Option<String>), HarnessError> {
+    let build = |p: &str| {
+        regex::RegexBuilder::new(p)
+            .case_insensitive(case_insensitive)
+            .build()
+    };
+    let literal = regex::escape(pattern);
+    if fixed {
+        return build(&literal).map(|r| (r, None)).map_err(grep_regex_error);
+    }
+    match build(pattern) {
+        Ok(r) => Ok((r, None)),
+        Err(e) => {
+            let note = format!(
+                "\n[note: `pattern` is not a valid regex ({}); searched it as a literal string]",
+                e.to_string().lines().last().unwrap_or("parse error").trim()
+            );
+            build(&literal)
+                .map(|r| (r, Some(note)))
+                .map_err(grep_regex_error)
+        }
+    }
+}
+
+fn grep_regex_error(e: regex::Error) -> HarnessError {
+    HarnessError::ToolExecution {
+        tool: "grep".to_string(),
+        reason: format!("cannot compile pattern: {e}"),
     }
 }
 
@@ -343,72 +538,265 @@ impl ToolImpl for Grep {
 fn grep_walk(
     root: &std::path::Path,
     workdir: &std::path::Path,
-    pattern: &str,
-    case_insensitive: bool,
-) -> Result<Vec<String>, HarnessError> {
-    let pattern_lower = pattern.to_lowercase();
+    matcher: &regex::Regex,
+    include: Option<&regex::Regex>,
+) -> Vec<String> {
     let mut matches = Vec::new();
 
-    // Simple recursive walker using std::fs.
-    let mut dirs: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    walk_files(root, workdir, &mut |p| {
+        if let Some(include) = include {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !include.is_match(&name) && !include.is_match(&rel_slash(p, root)) {
+                return true;
+            }
+        }
+        let Ok(bytes) = std::fs::read(p) else {
+            return true;
+        };
+        if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+            return true;
+        }
+        let Ok(content) = std::str::from_utf8(&bytes) else {
+            return true;
+        };
+        let rel = rel_slash(p, workdir);
+        for (lineno, line) in content.lines().enumerate() {
+            if matcher.is_match(line) {
+                matches.push(format!("{}:{}:{}", rel, lineno + 1, line));
+                if matches.len() >= GREP_MAX_MATCHES {
+                    return false;
+                }
+            }
+        }
+        true
+    });
 
+    matches
+}
+
+/// Visit every regular file under `root` (or `root` itself when it is a file),
+/// calling `visit` until it returns `false`. Shared by `grep` and `glob`.
+///
+/// - Confined: a directory outside `workdir` is never read, and a symlink is
+///   followed only when its target stays inside the workdir (canonical check).
+/// - Hidden directories (`.git`, `.bwoc`, …) are not descended into.
+/// - `.gitignore` is **not** honoured — no ignore-matcher dependency is carried;
+///   callers narrow with a `path` (or `glob`) instead.
+fn walk_files(
+    root: &std::path::Path,
+    workdir: &std::path::Path,
+    visit: &mut dyn FnMut(&std::path::Path) -> bool,
+) {
+    if root.is_file() {
+        visit(root);
+        return;
+    }
+    let mut dirs: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
-        // Confinement: every dir must be inside workdir.
         if !dir.starts_with(workdir) {
             continue;
         }
-        let rd = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
         };
-        for entry in rd.flatten() {
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
             let p = entry.path();
-            // Confinement check. A symlink is followed only if its target stays
-            // inside the workdir (canonical check) — never out through a link.
             if !p.starts_with(workdir)
                 || (entry.file_type().is_ok_and(|t| t.is_symlink())
                     && !crate::sandbox::is_confined(&p, workdir))
             {
                 continue;
             }
-            // Skip hidden directories (.git, .bwoc, …).
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') && p.is_dir() {
-                    continue;
-                }
-            }
             if p.is_dir() {
-                dirs.push(p);
-            } else if p.is_file() {
-                // Best-effort: skip binary-looking files (non-UTF-8).
-                let content = match std::fs::read_to_string(&p) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                let rel = p
-                    .strip_prefix(workdir)
-                    .unwrap_or(&p)
-                    .to_string_lossy()
-                    .to_string();
-
-                for (lineno, line) in content.lines().enumerate() {
-                    let hit = if case_insensitive {
-                        line.to_lowercase().contains(&pattern_lower)
-                    } else {
-                        line.contains(pattern)
-                    };
-                    if hit {
-                        matches.push(format!("{}:{}:{}", rel, lineno + 1, line));
-                        if matches.len() >= GREP_MAX_MATCHES {
-                            return Ok(matches);
-                        }
-                    }
+                let hidden = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'));
+                if !hidden {
+                    dirs.push(p);
                 }
+            } else if p.is_file() && !visit(&p) {
+                return;
             }
         }
     }
+}
 
-    Ok(matches)
+/// `p` relative to `base`, with `/` separators on every platform.
+fn rel_slash(p: &std::path::Path, base: &std::path::Path) -> String {
+    p.strip_prefix(base)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+// ---------------------------------------------------------------------------
+// glob — find paths by glob pattern under the worktree
+// ---------------------------------------------------------------------------
+
+/// List files whose path matches a glob pattern. Read-only; shares the confined
+/// walker with `grep` (hidden dirs skipped, `.gitignore` not honoured).
+pub struct Glob;
+
+const GLOB_MAX_RESULTS: usize = 1_000;
+
+#[async_trait]
+impl ToolImpl for Glob {
+    fn name(&self) -> &'static str {
+        "glob"
+    }
+
+    fn description(&self) -> &'static str {
+        "Find files by glob pattern under the working directory. `*` matches within \
+         one path segment, `**` across segments, `?` one character, `[abc]` a class, \
+         `{a,b}` alternatives. A pattern without `/` matches the file name at any \
+         depth (`*.rs`); a pattern with `/` matches the path relative to `path` \
+         (`src/**/*.rs`). Returns sorted paths relative to the working directory, \
+         capped at 1000. Hidden directories are skipped; `.gitignore` is not read."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern, e.g. `*.toml` or `crates/**/src/*.rs`."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search (relative to working directory). Defaults to the working directory root."
+                }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
+        let pattern = args["pattern"]
+            .as_str()
+            .ok_or_else(|| HarnessError::ToolExecution {
+                tool: self.name().to_string(),
+                reason: "missing `pattern` argument".to_string(),
+            })?;
+        let raw = args["path"].as_str().unwrap_or(".");
+        let base = ctx.resolve_path(raw)?;
+        let matcher = glob_to_regex(pattern).map_err(|e| HarnessError::ToolExecution {
+            tool: self.name().to_string(),
+            reason: format!("invalid glob `{pattern}`: {e}"),
+        })?;
+        let by_name = !pattern.contains('/');
+
+        let workdir = ctx.workdir.clone();
+        let (paths, truncated) =
+            tokio::task::spawn_blocking(move || glob_walk(&base, &workdir, &matcher, by_name))
+                .await
+                .map_err(|e| HarnessError::ToolExecution {
+                    tool: "glob".to_string(),
+                    reason: format!("glob task panicked: {e}"),
+                })?;
+
+        if paths.is_empty() {
+            return Ok(format!("no files match `{pattern}` in `{raw}`"));
+        }
+        let mut out = paths.join("\n");
+        if truncated {
+            out.push_str(&format!(
+                "\n[truncated at {GLOB_MAX_RESULTS} paths — narrow the pattern or path]"
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// Synchronous glob walk (runs in spawn_blocking). Returns sorted
+/// workdir-relative paths and whether the result cap was hit.
+fn glob_walk(
+    base: &std::path::Path,
+    workdir: &std::path::Path,
+    matcher: &regex::Regex,
+    by_name: bool,
+) -> (Vec<String>, bool) {
+    let mut paths = Vec::new();
+    let mut truncated = false;
+    walk_files(base, workdir, &mut |p| {
+        let subject = if by_name {
+            p.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            rel_slash(p, base)
+        };
+        if matcher.is_match(&subject) {
+            if paths.len() >= GLOB_MAX_RESULTS {
+                truncated = true;
+                return false;
+            }
+            paths.push(rel_slash(p, workdir));
+        }
+        true
+    });
+    paths.sort();
+    (paths, truncated)
+}
+
+/// Compile a glob into an anchored regex. `**/` spans zero or more directories,
+/// `**` anything, `*` / `?` stay within one segment, `[..]` (with `!` negation)
+/// is a character class, `{a,b}` an alternation; everything else is literal.
+fn glob_to_regex(glob: &str) -> Result<regex::Regex, regex::Error> {
+    let chars: Vec<char> = glob.chars().collect();
+    let mut re = String::from("^");
+    let mut braces = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                if chars.get(i + 2) == Some(&'/') {
+                    re.push_str("(?:[^/]*/)*");
+                    i += 3;
+                } else {
+                    re.push_str(".*");
+                    i += 2;
+                }
+                continue;
+            }
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            '{' => {
+                braces += 1;
+                re.push_str("(?:");
+            }
+            '}' if braces > 0 => {
+                braces -= 1;
+                re.push(')');
+            }
+            ',' if braces > 0 => re.push('|'),
+            '[' => {
+                if let Some(len) = chars[i + 1..].iter().position(|&c| c == ']') {
+                    let body: String = chars[i + 1..i + 1 + len].iter().collect();
+                    let body = match body.strip_prefix('!') {
+                        Some(rest) => format!("^{rest}"),
+                        None => body,
+                    };
+                    re.push('[');
+                    re.push_str(&body.replace('\\', "\\\\"));
+                    re.push(']');
+                    i += len + 2;
+                    continue;
+                }
+                re.push_str("\\[");
+            }
+            c => re.push_str(&regex::escape(c.encode_utf8(&mut [0u8; 4]))),
+        }
+        i += 1;
+    }
+    re.push('$');
+    regex::Regex::new(&re)
 }
 
 // ---------------------------------------------------------------------------
@@ -1530,6 +1918,127 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn edit_file_replace_all() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("f.rs"), "old();\nold();\nkeep();\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        let msg = EditFile
+            .execute(
+                json!({"path": "f.rs", "old_string": "old", "new_string": "new", "replace_all": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(msg.contains("replaced 2 occurrence"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("f.rs")).unwrap(),
+            "new();\nnew();\nkeep();\n"
+        );
+        // replace_all is exact-only: nothing matches → error, file untouched.
+        let err = EditFile
+            .execute(
+                json!({"path": "f.rs", "old_string": "absent", "new_string": "x", "replace_all": true}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
+        // An empty old_string is refused (it would match everywhere).
+        let err = EditFile
+            .execute(
+                json!({"path": "f.rs", "old_string": "", "new_string": "x", "replace_all": true}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    // ── multi_edit ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn multi_edit_applies_in_order() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("m.txt"), "a b\nc\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        let msg = MultiEdit
+            .execute(
+                json!({"path": "m.txt", "edits": [
+                    {"old_string": "a", "new_string": "x"},
+                    // Sees the first edit's result.
+                    {"old_string": "x b", "new_string": "y"},
+                    {"old_string": "c", "new_string": "z", "replace_all": true}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(msg.contains("applied 3 edit(s)"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("m.txt")).unwrap(),
+            "y\nz\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_edit_is_all_or_nothing() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("m.txt"), "one\ntwo\ntwo\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        for edits in [
+            json!([{"old_string": "one", "new_string": "1"}, {"old_string": "missing", "new_string": "x"}]),
+            json!([{"old_string": "one", "new_string": "1"}, {"old_string": "two", "new_string": "2"}]),
+            json!([{"old_string": "one"}]),
+            json!([]),
+        ] {
+            let err = MultiEdit
+                .execute(json!({"path": "m.txt", "edits": edits}), &ctx)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, HarnessError::ToolExecution { .. }), "{err}");
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join("m.txt")).unwrap(),
+                "one\ntwo\ntwo\n",
+                "a failed batch must leave the file untouched"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_edit_path_escape_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let err = MultiEdit
+            .execute(
+                json!({"path": "../x.txt", "edits": [{"old_string": "a", "new_string": "b"}]}),
+                &ctx_for(&tmp),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HarnessError::PathEscape(_)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn multi_edit_refuses_a_symlink_escape() {
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("t.txt"), "a").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("link")).unwrap();
+        let err = MultiEdit
+            .execute(
+                json!({"path": "link/t.txt", "edits": [{"old_string": "a", "new_string": "b"}]}),
+                &ctx_for(&tmp),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HarnessError::PathEscape(_)));
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("t.txt")).unwrap(),
+            "a"
+        );
+    }
+
     // ── grep ──────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1591,6 +2100,143 @@ mod tests {
             let err = tool.execute(args, &ctx).await.unwrap_err();
             assert!(matches!(err, HarnessError::PathEscape(_)));
         });
+    }
+
+    #[tokio::test]
+    async fn grep_accepts_a_file_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("one.txt"), "needle\n").unwrap();
+        let out = Grep
+            .execute(
+                json!({"pattern": "needle", "path": "one.txt"}),
+                &ctx_for(&tmp),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out, "one.txt:1:needle");
+    }
+
+    #[tokio::test]
+    async fn grep_regex_fixed_strings_and_invalid_fallback() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.rs"), "fn alpha() {}\nlet x = foo(1);\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        let out = Grep
+            .execute(json!({"pattern": r"fn \w+\(\)"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "a.rs:1:fn alpha() {}");
+        // `.` is literal under fixed_strings — no line contains "o.o".
+        let out = Grep
+            .execute(json!({"pattern": "o.o", "fixed_strings": true}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.starts_with("no matches"), "{out}");
+        // An invalid regex degrades to a literal search, with a note.
+        let out = Grep
+            .execute(json!({"pattern": "foo("}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.starts_with("a.rs:2:let x = foo(1);"), "{out}");
+        assert!(out.contains("not a valid regex"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn grep_glob_filter_and_binary_skip() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.rs"), "needle\n").unwrap();
+        std::fs::write(tmp.path().join("a.md"), "needle\n").unwrap();
+        std::fs::write(tmp.path().join("blob.bin"), b"needle\0\x01\x02").unwrap();
+        let ctx = ctx_for(&tmp);
+        let out = Grep
+            .execute(json!({"pattern": "needle", "glob": "*.rs"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "a.rs:1:needle");
+        let out = Grep
+            .execute(json!({"pattern": "needle"}), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.contains("blob.bin"), "binary skipped: {out}");
+        assert!(out.contains("a.md") && out.contains("a.rs"), "{out}");
+    }
+
+    // ── glob ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn glob_to_regex_semantics() {
+        let m = |g: &str, s: &str| glob_to_regex(g).unwrap().is_match(s);
+        assert!(m("*.rs", "main.rs"));
+        assert!(!m("*.rs", "src/main.rs"), "`*` stays in one segment");
+        assert!(m("src/**/*.rs", "src/main.rs"), "`**/` spans zero dirs");
+        assert!(m("src/**/*.rs", "src/a/b/lib.rs"));
+        assert!(m("?.md", "a.md") && !m("?.md", "ab.md"));
+        assert!(m("*.{toml,json}", "x.json") && !m("*.{toml,json}", "x.yaml"));
+        assert!(m("[ab].txt", "a.txt") && !m("[!ab].txt", "a.txt"));
+        assert!(m("a+b(1).txt", "a+b(1).txt"), "regex metachars are literal");
+        assert!(glob_to_regex("[]").is_err());
+    }
+
+    fn glob_fixture() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/nested")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("src/nested/lib.rs"), "").unwrap();
+        std::fs::write(tmp.path().join(".git/config.rs"), "").unwrap();
+        tmp
+    }
+
+    #[tokio::test]
+    async fn glob_by_name_and_by_path() {
+        let tmp = glob_fixture();
+        let ctx = ctx_for(&tmp);
+        let out = Glob
+            .execute(json!({"pattern": "*.rs"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "src/main.rs\nsrc/nested/lib.rs", "hidden dir skipped");
+        let out = Glob
+            .execute(json!({"pattern": "nested/*.rs", "path": "src"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "src/nested/lib.rs");
+        let out = Glob
+            .execute(json!({"pattern": "*.none"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.starts_with("no files match"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn glob_rejects_escape_and_bad_pattern() {
+        let tmp = glob_fixture();
+        let ctx = ctx_for(&tmp);
+        let err = Glob
+            .execute(json!({"pattern": "*", "path": "../"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HarnessError::PathEscape(_)));
+        let err = Glob
+            .execute(json!({"pattern": "[]"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid glob"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn glob_never_lists_through_an_escaping_symlink() {
+        let tmp = glob_fixture();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), "").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("link")).unwrap();
+        let out = Glob
+            .execute(json!({"pattern": "*.rs"}), &ctx_for(&tmp))
+            .await
+            .unwrap();
+        assert!(!out.contains("secret"), "{out}");
     }
 
     // ── git ───────────────────────────────────────────────────────────────────
@@ -1931,7 +2577,9 @@ mod tests {
     fn all_new_tools_have_schemas() {
         let tools: Vec<Box<dyn ToolImpl + Send + Sync>> = vec![
             Box::new(EditFile),
+            Box::new(MultiEdit),
             Box::new(Grep),
+            Box::new(Glob),
             Box::new(Git),
             Box::new(RunGates),
             Box::new(BwocTask),

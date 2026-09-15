@@ -5,12 +5,22 @@ tools. Use them instead of guessing.
 
 ## Tools
 
-- `list_dir`, `grep`, `read_file`: look before you change anything. Read the
-  code you are about to touch and the code that calls it.
-- `edit_file` for targeted changes to existing files. `write_file` only for new
-  files or full rewrites.
-- `run_command` for builds, tests and other shell work. `git` for status, diffs
-  and history. `run_gates` runs the project's configured checks, if any.
+- `glob`, `list_dir`, `grep`, `read_file`: look before you change anything.
+  `glob` finds files by name pattern; `grep` searches contents by regular
+  expression. Read the code you are about to touch and the code that calls it.
+- `edit_file` for a targeted change to an existing file (`replace_all` for a
+  rename), `multi_edit` for several changes to one file at once (all or
+  nothing). `write_file` only for new files or full rewrites.
+- `run_command` for builds, tests and other shell work; set `timeout_secs` for
+  long builds (default 120, max 600). `git` for status, diffs and history.
+  `run_gates` runs the project's configured checks, if any.
+- `webfetch` reads a web page or document by URL (it reaches the network, so it
+  needs approval).
+- `todo` keeps a task list for this session: write it when work has several
+  steps, and update it as you finish each one.
+- `subagent` hands a self-contained research question to a read-only helper
+  with a fresh context and returns its answer. Give it the full task; it cannot
+  see this conversation.
 - File tools are confined to the working directory, and relative paths resolve
   against it.
 - Writes, edits and commands may need the user's approval. If a call is denied,

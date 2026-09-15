@@ -290,31 +290,35 @@ fn check_destruction_argv(tokens: &[&str], worktree_root: &Path) -> Result<(), G
 /// Sīla 2 — Adinnādāna: block writing content that contains patterns
 /// characteristic of secrets (API tokens, private keys, credentials).
 ///
-/// Applies to `write_file` and `edit_file`.  Checks the `content` field.
+/// Applies to `write_file`, `edit_file` and `multi_edit`.  Checks the
+/// `content` / `new_string` field and every `edits[].new_string`.
 fn check_secret_write(tool_name: &str, args: &serde_json::Value) -> Result<(), GuardrailViolation> {
-    if !matches!(tool_name, "write_file" | "edit_file") {
+    if !matches!(tool_name, "write_file" | "edit_file" | "multi_edit") {
         return Ok(());
     }
 
-    let content = match args["content"]
+    let mut texts: Vec<&str> = args["content"]
         .as_str()
         .or_else(|| args["new_string"].as_str())
-    {
-        Some(c) => c,
-        None => return Ok(()),
-    };
+        .into_iter()
+        .collect();
+    if let Some(edits) = args["edits"].as_array() {
+        texts.extend(edits.iter().filter_map(|e| e["new_string"].as_str()));
+    }
 
-    for pattern in SECRET_PATTERNS {
-        if content_contains_secret(content, pattern) {
-            return Err(GuardrailViolation {
-                rule: "sila_adinnadana",
-                reason: format!(
-                    "content matches secret pattern `{pattern}`. \
-                     Writing credentials to tracked files is blocked by \
-                     Adinnādāna guardrail. Use environment variables or a \
-                     credential manager instead."
-                ),
-            });
+    for content in texts {
+        for pattern in SECRET_PATTERNS {
+            if content_contains_secret(content, pattern) {
+                return Err(GuardrailViolation {
+                    rule: "sila_adinnadana",
+                    reason: format!(
+                        "content matches secret pattern `{pattern}`. \
+                         Writing credentials to tracked files is blocked by \
+                         Adinnādāna guardrail. Use environment variables or a \
+                         credential manager instead."
+                    ),
+                });
+            }
         }
     }
 
@@ -986,6 +990,22 @@ mod tests {
             r#"{"path": "config.toml", "content": "access_key_id = \"AKIAIOSFODNN7EXAMPLE\""}"#;
         let err = check("write_file", args, &wt()).unwrap_err();
         assert_eq!(err.rule, "sila_adinnadana");
+    }
+
+    #[test]
+    fn blocks_secret_in_any_multi_edit_entry() {
+        let args = serde_json::json!({
+            "path": ".env",
+            "edits": [
+                {"old_string": "a", "new_string": "fine"},
+                {"old_string": "b", "new_string": "TOKEN=ghp_1234567890abcdef"}
+            ]
+        })
+        .to_string();
+        let err = check("multi_edit", &args, &wt()).unwrap_err();
+        assert_eq!(err.rule, "sila_adinnadana");
+        let clean = r#"{"path": "a.rs", "edits": [{"old_string": "a", "new_string": "b"}]}"#;
+        assert!(check("multi_edit", clean, &wt()).is_ok());
     }
 
     #[test]
