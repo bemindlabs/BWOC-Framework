@@ -199,10 +199,12 @@ All tools are registered in `tools/registry.rs` and dispatched through the safet
 |---|---|
 | `read_file` | Read a file from the worktree |
 | `write_file` | Write / overwrite a file |
-| `edit_file` | Targeted string replacement (`old_string` → `new_string`) |
+| `edit_file` | Targeted string replacement (`old_string` → `new_string`); `replace_all` replaces every exact occurrence |
+| `multi_edit` | An ordered list of `edit_file` replacements on one file, written only if every edit succeeds |
 | `list_dir` | List directory contents |
-| `grep` | Search file contents with a regex pattern |
-| `run_command` | Run a shell command (sandboxed: cwd locked, env scrubbed, arg scanned) |
+| `grep` | Search file contents with a regex; `fixed_strings`, `case_insensitive` and a `glob` file filter. Binary files and hidden directories are skipped; an invalid regex falls back to a literal search |
+| `glob` | Find files by glob (`*`, `**`, `?`, `[..]`, `{a,b}`). Read-only; hidden directories skipped, `.gitignore` not read |
+| `run_command` | Run a shell command (sandboxed: cwd locked, env scrubbed, arg scanned). `timeout_secs` (default 120, max 600) kills the command's process group |
 | `git` | Structured git operations (`subcommand` + `args` array) |
 | `run_gates` | Run lint / fmt / test / build gates from the manifest |
 | `bwoc_task` | Claim / complete tasks in the Saṅgha team list |
@@ -210,6 +212,16 @@ All tools are registered in `tools/registry.rs` and dispatched through the safet
 | `memory_read` | Read from the agent's `memories/` |
 | `memory_write` | Write to the agent's `memories/` |
 | `memory_search` | Semantic search over the Tier 2 deep-memory store (registered only when the manifest configures `deepMemoryCmd`; read-only) |
+
+`--chat` and `--headless` sessions also register three tools that are not in `default_registry`. They run in-process and are never sent to the turn-executor child:
+
+| Tool | Description | Chat default policy | Plan mode |
+|---|---|---|---|
+| `webfetch` | GET an http(s) URL and return text (HTML converted). 30 s timeout, 1 MB body, at most 5 redirects; localhost and loopback, private, link-local and CGNAT addresses are refused, including on redirect | `ask` (network egress) | blocked |
+| `todo` | The session's task list, held in memory (`read` / `write`) | `allow` | allowed |
+| `subagent` | A read-only child session: same provider and model, fresh context, `read_file` / `list_dir` / `grep` / `glob` only, at most 15 model calls, cannot start another subagent. Returns its final answer | `allow` | blocked |
+
+`webfetch` and `subagent` stay out of plan mode because public connector sessions run in plan mode. There is no `apply_patch`: `multi_edit` covers multi-site edits without a patch grammar.
 
 ---
 

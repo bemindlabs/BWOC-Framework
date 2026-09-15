@@ -199,16 +199,29 @@ Tool ทุกตัวลงทะเบียนใน `tools/registry.rs` แ
 |---|---|
 | `read_file` | อ่านไฟล์จาก worktree |
 | `write_file` | เขียน / overwrite ไฟล์ |
-| `edit_file` | แทนที่ string แบบเจาะจง (`old_string` → `new_string`) |
+| `edit_file` | แทนที่ string แบบเจาะจง (`old_string` → `new_string`); `replace_all` แทนที่ทุกจุดที่ตรงแบบ exact |
+| `multi_edit` | ชุดการแทนที่แบบ `edit_file` หลายรายการบนไฟล์เดียว ตามลำดับ เขียนไฟล์ก็ต่อเมื่อทุกรายการสำเร็จ |
 | `list_dir` | แสดงเนื้อหา directory |
-| `grep` | ค้นหาใน file contents ด้วย regex pattern |
-| `run_command` | รัน shell command (sandboxed: cwd ล็อก, env scrub, arg scan) |
+| `grep` | ค้นหาใน file contents ด้วย regex; มี `fixed_strings`, `case_insensitive` และตัวกรองไฟล์ `glob` ข้ามไฟล์ binary และ directory ที่ซ่อนอยู่; regex ที่ไม่ถูกต้องจะค้นแบบ literal แทน |
+| `glob` | หาไฟล์ด้วย glob (`*`, `**`, `?`, `[..]`, `{a,b}`) อ่านอย่างเดียว ข้าม directory ที่ซ่อนอยู่ และไม่อ่าน `.gitignore` |
+| `run_command` | รัน shell command (sandboxed: cwd ล็อก, env scrub, arg scan) `timeout_secs` (ค่าเริ่มต้น 120, สูงสุด 600) kill ทั้ง process group ของคำสั่ง |
 | `git` | git operation แบบ structured (`subcommand` + `args` array) |
 | `run_gates` | รัน lint / fmt / test / build gates จาก manifest |
 | `bwoc_task` | claim / complete task ใน Saṅgha team list |
 | `bwoc_send` | ส่ง message ไป agent อื่นผ่าน `interconnect/` |
 | `memory_read` | อ่านจาก `memories/` ของ agent |
 | `memory_write` | เขียนไปที่ `memories/` ของ agent |
+| `memory_search` | ค้นหาเชิงความหมายใน Tier 2 deep-memory store (ลงทะเบียนเฉพาะเมื่อ manifest กำหนด `deepMemoryCmd`; อ่านอย่างเดียว) |
+
+session แบบ `--chat` และ `--headless` ลงทะเบียน tool อีกสามตัวที่ไม่อยู่ใน `default_registry` ทั้งสามรันใน process เดียวกัน และไม่ถูกส่งไปยัง turn-executor child:
+
+| Tool | คำอธิบาย | Chat default policy | Plan mode |
+|---|---|---|---|
+| `webfetch` | GET URL แบบ http(s) แล้วคืนข้อความ (แปลง HTML เป็นข้อความ) timeout 30 วินาที, body 1 MB, redirect ไม่เกิน 5 ครั้ง; ปฏิเสธ localhost และ address แบบ loopback, private, link-local และ CGNAT รวมถึงตอน redirect | `ask` (ออก network) | ถูกบล็อก |
+| `todo` | รายการงานของ session เก็บในหน่วยความจำ (`read` / `write`) | `allow` | ใช้ได้ |
+| `subagent` | child session แบบอ่านอย่างเดียว: provider และ model เดียวกัน, context ใหม่, ใช้ได้เฉพาะ `read_file` / `list_dir` / `grep` / `glob`, เรียก model ไม่เกิน 15 ครั้ง, เปิด subagent ต่อไม่ได้ คืนคำตอบสุดท้าย | `allow` | ถูกบล็อก |
+
+`webfetch` และ `subagent` ไม่อยู่ใน plan mode เพราะ session สาธารณะของ connector รันใน plan mode และไม่มี `apply_patch`: `multi_edit` ครอบคลุมการแก้หลายจุดโดยไม่ต้องมีไวยากรณ์ patch
 
 ---
 
