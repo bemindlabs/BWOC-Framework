@@ -41,6 +41,8 @@ You are **`{{agentId}}`**, an AI coding agent built on the BWOC Agent Base Profi
 - **Scope:** `{{scopeDescription}}`
 - **What you do not do:** `{{outOfScope}}`
 
+Your `persona/`, `mindsets/`, and `skills/` directories are reference material. No backend loads them into your context automatically; read them when a task calls for them.
+
 ### 1.2 Thinking Basis
 
 Your decisions are grounded in the 22 Buddhist frameworks documented in `docs/en/PHILOSOPHY.en.md`. These are engineering thinking aids, not religious doctrine.
@@ -77,7 +79,7 @@ For every non-trivial task, apply this cycle before writing code:
 
 ### 2.2 Task Record
 
-Every task MUST be logged in `task-log.jsonl` (append-only):
+Every task MUST be logged in `task-log.jsonl` (append-only). This is a convention you maintain yourself: no framework component writes or parses the file, and `bwoc check` only warns when it is missing.
 
 ```json
 {
@@ -191,16 +193,16 @@ This file contains no backend-specific content. Identical behavior is required o
 ### 5.2 Verification
 
 ```bash
-./scripts/check-agent-neutrality.sh
+bwoc check .
 ```
 
-This script verifies:
+This command verifies, among other things:
 - `AGENTS.md` is a regular file
-- All backend files (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`) are symlinks to `AGENTS.md`
-- No placeholder is unsubstituted
+- All backend entry files are symlinks to `AGENTS.md`
+- No placeholder is unsubstituted (runtime task identifiers excepted)
 - `config.manifest.json` parses as valid JSON
-- `task-log.jsonl` is valid JSONL
-- `MEMORY.md` is within 200 lines
+- Memory files carry valid front-matter
+- `MEMORY.md` is within 200 lines (warning)
 
 ### 5.3 Trust Model
 
@@ -310,30 +312,24 @@ end    → update task-log → save memories → cleanup worktree
 
 ### 8.2 Configuration
 
-All behavior is driven by `config.manifest.json`. Required fields:
+Agent configuration lives in `config.manifest.json`. Core fields:
 
 ```json
 {
-  "agentId":            "agent-{{name}}",
-  "model":              "{{primaryModel}}",
-  "fallbackModel":      "{{fallbackModel}}",
-  "maxConcurrentTasks": 3,
-  "worktreeIsolation":  true,
-  "worktreeBase":       "/tmp",
-  "memory": {
-    "fileBasedPath":       "memories/",
-    "deepMemoryCmd":       "{{deepMemoryCmd}}",
-    "wakeUpOnStart":       true,
-    "maxMemoryIndexLines": 200
-  }
+  "agentId":       "agent-{{name}}",
+  "primaryModel":  "{{primaryModel}}",
+  "fallbackModel": "{{fallbackModel}}",
+  "memoryPath":    "{{memoryPath}}",
+  "deepMemoryCmd": "{{deepMemoryCmd}}",
+  "worktreeBase":  "{{worktreeBase}}",
+  "lintCmd":       "{{lintCmd}}",
+  "formatCmd":     "{{formatCmd}}",
+  "testCmd":       "{{testCmd}}",
+  "buildCmd":      "{{buildCmd}}"
 }
 ```
 
-Validation fails if any required placeholder is unsubstituted.
-
-### 8.3 Concurrent Tasks
-
-Maximum concurrent tasks: `{{maxConcurrentTasks}}` (default 3). Each task has its own worktree. They do not share directories.
+`fallbackModel` is metadata only (not a runtime fallback; use `primaryModel = auto` with `autoModels`). `bwoc check` fails if a placeholder in this file is left unsubstituted.
 
 ---
 
@@ -443,7 +439,7 @@ After every task, apply the three roots of wisdom:
 
 | Placeholder | Required | Resolved By |
 |---|---|---|
-| `{{name}}` | yes | `incarnate.sh` argument |
+| `{{name}}` | yes | `bwoc new` argument |
 | `{{agentId}}` | yes | derived from `{{name}}` |
 | `{{agentRole}}` | yes | user edit |
 | `{{primaryCapability}}` | yes | user edit |
@@ -467,11 +463,10 @@ After every task, apply the three roots of wisdom:
 
 When incarnating a new agent from this template:
 
-- [ ] Run `./scripts/incarnate.sh <agent-name>`
-- [ ] Edit `config.manifest.json` — fill all placeholders
+- [ ] Run `bwoc new <agent-name>` — resolves the manifest and creates the backend symlinks
+- [ ] Review `config.manifest.json`
 - [ ] Edit persona section (section 1) in this file
-- [ ] Create `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` as symlinks to `AGENTS.md`
-- [ ] Run `./scripts/check-agent-neutrality.sh` — must pass
+- [ ] Run `bwoc check .` — must pass
 - [ ] Add first entry to `task-log.jsonl`
 - [ ] Create `memories/` directory and initial `MEMORY.md`
 

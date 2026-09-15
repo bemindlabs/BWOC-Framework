@@ -1,6 +1,6 @@
 # `modules/plugins/` — Framework Plugins
 
-**Status:** shipped. 28 plugins across 9 kinds, and all of them target **BWOC 3.x**.
+**Status:** shipped. 25 plugins across 7 kinds, and all of them target **BWOC 3.x**.
 
 A plugin extends the framework with a capability the **workspace** turns on once for everyone. It is not the same as:
 
@@ -19,8 +19,6 @@ The full contract (kinds, manifest, lifecycle, trust gate) is in [`docs/en/PLUGI
 | `figma` | 1 | [`figma-rest`](figma/figma-rest/) |
 | `gws` | 7 | [`gws-auth`](gws/gws-auth/) · [`gws-calendar`](gws/gws-calendar/) · [`gws-docs`](gws/gws-docs/) · [`gws-drive`](gws/gws-drive/) · [`gws-gmail`](gws/gws-gmail/) · [`gws-sheets`](gws/gws-sheets/) · [`gws-slides`](gws/gws-slides/) |
 | `jira` | 1 | [`jira-cloud-rest`](jira-cloud-rest/) |
-| `llm-backend` | 2 | [`hermes`](llm-backend/hermes/) · [`openclaw`](llm-backend/openclaw/) |
-| `memory-backend` | 1 | [`memory-tier2-noop`](memory-tier2-noop/) |
 | `okr` | 1 | [`workspace-okrs`](okr/workspace-okrs/) |
 | `workflow` | 7 | [`accounting-api`](workflow/accounting-api/) · [`gcloud-auth`](workflow/gcloud-auth/) · [`gcloud-compute`](workflow/gcloud-compute/) · [`gcloud-iam`](workflow/gcloud-iam/) · [`gcloud-project`](workflow/gcloud-project/) · [`gcloud-run`](workflow/gcloud-run/) · [`gcloud-storage`](workflow/gcloud-storage/) |
 

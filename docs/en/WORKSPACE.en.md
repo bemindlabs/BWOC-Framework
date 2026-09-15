@@ -186,7 +186,7 @@ The workspace participates in every phase of the BWOC arc:
 ## See Also
 
 - [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md) — how the CLI, workspace, agents, and runtime fit at runtime.
-- [`INCARNATION.en.md`](INCARNATION.en.md) — step-by-step agent creation (Phase 1 still uses the template's `incarnate.sh`; Phase 2+ wraps it in `bwoc new` which writes to `agents.toml`).
+- [`INCARNATION.en.md`](INCARNATION.en.md) — step-by-step agent creation with `bwoc new` (registers the agent in `agents.toml`).
 - [`GLOSSARY.en.md`](GLOSSARY.en.md) — Pali term lookup.
 - [`modules/agent-template/memories/README.md`](../../modules/agent-template/memories/README.md) — memory format spec (applies to per-agent, per-workspace, and per-user memory).
 - [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) — CLI install and current command status.

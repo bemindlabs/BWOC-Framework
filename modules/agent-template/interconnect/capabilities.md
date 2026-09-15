@@ -11,7 +11,7 @@ tags:
 
 # Agent Capabilities
 
-> [!abstract] Machine-readable skill and expertise declaration for multi-agent routing and discovery.
+> [!abstract] Skill and expertise declaration for multi-agent routing and discovery. Reference material: no framework code parses this file — the A2A agent card is built from `config.manifest.json` fields.
 
 ## Capability Manifest Format
 
@@ -31,8 +31,7 @@ tags:
   "vetoDomains": [],
   "votingWeight": 1,
   "canDelegate": false,
-  "canReview": true,
-  "maxConcurrentTasks": 3
+  "canReview": true
 }
 ```
 
@@ -63,7 +62,7 @@ tags:
 
 ## Usage
 
-Orchestrators and fleet dashboards read capabilities to:
+Human or agent orchestrators can consult capabilities to:
 - Route tasks to the best-matched agent
 - Determine review authority
 - Enforce veto rights on architectural decisions
@@ -72,4 +71,4 @@ Orchestrators and fleet dashboards read capabilities to:
 ## See Also
 
 - [[README|Agent Template]]
-- [[coordination|Coordination Protocol]]
+- [[sangha|Saṅgha]] · [[messaging|Messaging]]

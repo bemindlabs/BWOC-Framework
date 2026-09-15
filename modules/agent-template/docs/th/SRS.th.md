@@ -33,6 +33,21 @@
 
 ## 1. Functional Requirements (จัดตามมรรค 8)
 
+### สถานะการ Implement
+
+สิ่งที่เฟรมเวิร์กบังคับใช้วันนี้ *Convention* หมายถึง agent ควรทำตามเอง ไม่มีอะไรตรวจ
+
+| กลุ่ม FR | สถานะ | บังคับใช้โดย / ช่องว่าง |
+|---|---|---|
+| FR-1 Persona & identity | บางส่วน | `bwoc new` กรอก `AGENTS.md` §1 และ `persona/README.md`; slot `persona/`, `mindsets/`, `skills/` ไม่เคยถูกโหลดเข้า prompt |
+| FR-2 Goal setting & task log | ไม่ถูกบังคับใช้ | วงจรอริยสัจ 4 และ `task-log.jsonl` เป็น convention; `bwoc check` แค่เตือนเมื่อไม่มีไฟล์ log |
+| FR-3 Inter-agent communication | บางส่วน | มีการส่งข้อความผ่าน `bwoc send` / inbox; ไม่มีการ parse `capabilities.md`; คุณภาพข้อความและ bilingual parity เป็นกฎตอน review |
+| FR-4 Worktree & commit discipline | บางส่วน | sandbox ของ harness จำกัด tool ไว้ใน worktree และ guardrail บล็อก force-push / `--no-verify`; worktree ต่อ task, ห้าม stash และ rebase-only เป็น convention |
+| FR-5 Trust & neutrality | Implement แล้ว | `bwoc check` (symlink, neutrality, trust evidence, hook neutrality) และ guardrail ของ harness |
+| FR-6 Verification gates | บางส่วน | `run_gates` ของ harness รัน gate จาก manifest; backend แบบ vendor CLI พึ่งให้ agent รันเอง |
+| FR-7 Memory system | บางส่วน | harness inject index `MEMORY.md`, มี memory tool และ Tier-2 wake-up/search/mine; `bwoc check` validate front-matter ของ memory และเตือนเมื่อเกิน 200 บรรทัด; การ prune และ verify-before-act เป็น convention |
+| FR-8 Configuration & tooling | Implement แล้ว | `bwoc new` / `bwoc check`; `fallbackModel` เป็น metadata เท่านั้น |
+
 ### หมวด 1 — สัมมาทิฏฐิ (Right View) : Persona & Identity
 
 | ID | P | Requirement | V |
@@ -49,7 +64,7 @@
 |---|---|---|---|
 | FR-2.1 | M | ทุก task SHALL เริ่มด้วยกระบวนการอริยสัจ (ทุกข์→สมุทัย→นิโรธ→มรรค) | A |
 | FR-2.2 | M | Task SHALL มี `taskId` และ `goal` ที่วัดได้ | T |
-| FR-2.3 | M | Task SHALL ถูก track ใน `task-log.jsonl` (one JSON ต่อบรรทัด) | T |
+| FR-2.3 | M | Task SHALL ถูก track ใน `task-log.jsonl` (one JSON ต่อบรรทัด) — convention ที่ agent ดูแลเอง; framework ไม่เขียนและไม่ parse (`bwoc check` ตรวจแค่ว่ามีไฟล์) | A |
 | FR-2.4 | M | Status field SHALL เป็นหนึ่งใน: `pending`, `in_progress`, `blocked`, `completed`, `failed` | T |
 | FR-2.5 | M | `task-log.jsonl` SHALL append-only | A |
 | FR-2.6 | S | Task SHOULD declare scope boundaries (มัตตัญญุตา) ก่อนเริ่ม | I |
@@ -58,8 +73,8 @@
 
 | ID | P | Requirement | V |
 |---|---|---|---|
-| FR-3.1 | M | `interconnect/capabilities.md` SHALL ประกาศ skills แบบ machine-readable | T |
-| FR-3.2 | S | `interconnect/coordination.md` SHALL กำหนด phases, messaging, consensus | I |
+| FR-3.1 | M | `interconnect/capabilities.md` SHALL อธิบาย skills ของ agent ให้คนและ agent อ่าน (ไม่มี code ใด parse ไฟล์นี้; A2A agent card สร้างจาก field ใน `config.manifest.json`) | I |
+| FR-3.2 | S | `interconnect/messaging.md` และ `interconnect/sangha.md` SHALL กำหนด messaging, phases, consensus | I |
 | FR-3.3 | S | Message ระหว่าง agent SHALL ตรงประเด็น มี context ครบ (ปิยวาจา) | A |
 | FR-3.4 | M | Error message SHALL ระบุ root cause และวิธีแก้ ไม่เพียงแค่บอกว่าผิด | A |
 | FR-3.5 | C | Agent COULD publish capabilities ไปยัง shared registry | D |
@@ -84,8 +99,8 @@
 |---|---|---|---|
 | FR-5.1 | M | `AGENTS.md` SHALL เป็นไฟล์ปกติ ; `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` SHALL เป็น symlinks ชี้ที่ `AGENTS.md` | T |
 | FR-5.2 | M | ไม่มีไฟล์คำสั่งใด SHALL contain backend-specific content ที่ขัด AGENTS.md | A |
-| FR-5.3 | M | `check-agent-neutrality.sh` SHALL fail ถ้า symlink พังหรือถูกแทนด้วยไฟล์ปกติ | T |
-| FR-5.4 | M | `trust-model.md` SHALL document security posture สำหรับการ clone agent ภายนอก | I |
+| FR-5.3 | M | `bwoc check` SHALL fail ถ้า symlink พังหรือถูกแทนด้วยไฟล์ปกติ | T |
+| FR-5.4 | M | `interconnect/trust.md` และ `THREAT-MODEL.th.md` SHALL document trust และ security posture สำหรับ agent ภายนอก | I |
 | FR-5.5 | S | Hook ใน `.claude/settings.json` SHOULD ป้องกัน destructive action | T |
 | FR-5.6 | M | ห้ามมี secret ใน memory file (สมานัตตตา + วินัย) | T |
 | FR-5.7 | M | ระบบ SHALL รองรับเพิ่ม backend ใหม่ด้วย symlink ใหม่ ไม่ต้องแก้ code | I |
@@ -135,9 +150,9 @@
 
 | ID | P | Requirement | V |
 |---|---|---|---|
-| FR-7.16 | M | Session start SHALL load `MEMORY.md`, relevant memories, `task-log.jsonl` | T |
+| FR-7.16 | M | Session start SHALL load `MEMORY.md`, relevant memories, `task-log.jsonl` (harness inject index `MEMORY.md` ให้; memory file และ `task-log.jsonl` agent อ่านเอง) | T |
 | FR-7.17 | M | Session start SHALL verify memory claims กับ current code | A |
-| FR-7.18 | M | Session end SHALL update `task-log.jsonl` | T |
+| FR-7.18 | M | Session end SHALL update `task-log.jsonl` (agent ดูแลเอง; ไม่ถูกบังคับใช้) | A |
 | FR-7.19 | M | Session end SHALL persist new discoveries เป็น Tier 1 memories | A |
 | FR-7.20 | S | Session end SHOULD remove stale memories (อนิจจัง) | A |
 
@@ -147,12 +162,11 @@
 |---|---|---|---|
 | FR-8.1 | M | `config.manifest.json` SHALL declare required placeholders ทั้งหมด | T |
 | FR-8.2 | M | Validation SHALL fail ถ้า required placeholder ไม่ถูกแทนที่ | T |
-| FR-8.3 | M | Default config SHALL include: `agentId`, `model`, `fallbackModel`, `maxConcurrentTasks`, `worktreeIsolation`, `worktreeBase`, `memory.*` | I |
-| FR-8.4 | M | `scripts/incarnate.sh <agent-name>` SHALL clone template เป็น agent ใหม่ | T |
-| FR-8.5 | M | `scripts/check-agent-neutrality.sh` SHALL ตรวจ structural conformance | T |
-| FR-8.6 | M | Scripts SHALL exit non-zero on failure | T |
-| FR-8.7 | S | Scripts SHOULD print human-readable summary | D |
-| FR-8.8 | S | `.claude/commands/new-agent` SHOULD invoke `incarnate.sh` จากใน Claude Code | T |
+| FR-8.3 | M | Default config SHALL include: `agentId`, `primaryModel`, `memoryPath`, `worktreeBase` และ gate command ทั้งสี่ `fallbackModel` เป็น metadata เท่านั้น (ไม่ใช่ runtime fallback; ใช้ `primaryModel = auto` + `autoModels`) | I |
+| FR-8.4 | M | `bwoc new <agent-name>` SHALL incarnate template เป็น agent ใหม่ | T |
+| FR-8.5 | M | `bwoc check` SHALL ตรวจ structural conformance | T |
+| FR-8.6 | M | `bwoc new` และ `bwoc check` SHALL exit non-zero on failure | T |
+| FR-8.7 | S | ทั้งสองคำสั่ง SHOULD print human-readable summary | D |
 
 ---
 
@@ -189,15 +203,15 @@
 
 | ID | Requirement |
 |---|---|
-| NFR-2.1 | `incarnate.sh` SHALL complete ≤ 5 วินาทีบน developer laptop |
-| NFR-2.2 | `check-agent-neutrality.sh` SHALL complete ≤ 2 วินาที |
+| NFR-2.1 | `bwoc new` SHALL complete ≤ 5 วินาทีบน developer laptop |
+| NFR-2.2 | `bwoc check` SHALL complete ≤ 2 วินาที |
 | NFR-2.3 | Session start memory load SHALL complete ≤ 1 วินาทีเมื่อ MEMORY.md ≤ 200 บรรทัด |
 
 ### 3.3 Reliability (สัมมาสมาธิ — ตั้งมั่น)
 
 | ID | Requirement |
 |---|---|
-| NFR-3.1 | Scripts SHALL idempotent เว้นที่ explicit destructive |
+| NFR-3.1 | คำสั่ง CLI SHALL idempotent เว้นที่ explicit destructive |
 | NFR-3.2 | Failed incarnation SHALL ไม่ทิ้ง partial directory |
 | NFR-3.3 | Worktree creation failure SHALL rollback คลีน |
 
@@ -228,14 +242,14 @@
 
 | ID | Requirement |
 |---|---|
-| NFR-7.1 | ระบบ SHALL รองรับ `maxConcurrentTasks` ≥ 3 default |
+| NFR-7.1 | *ไม่ถูกบังคับใช้:* ไม่มี runtime ใดอ่านเพดาน concurrency ต่อ agent (`maxConcurrentTasks` เดิมไม่เคยถูกใช้) |
 | NFR-7.2 | Worktree isolation SHALL allow N concurrent tasks bounded only by disk/CPU |
 
 ### 3.8 Auditability (วิมังสา)
 
 | ID | Requirement |
 |---|---|
-| NFR-8.1 | `task-log.jsonl` SHALL append-only audit trail |
+| NFR-8.1 | `task-log.jsonl` SHALL append-only audit trail (convention ที่ agent ดูแลเอง; framework ไม่บังคับใช้) |
 | NFR-8.2 | Memory file SHALL มี `created` และ `updated` ISO timestamps |
 
 ---
@@ -306,26 +320,27 @@ updated: <ISO 8601>                  # required
 
 ```json
 {
-  "agentId":            "agent-{{name}}",
-  "model":              "{{primaryModel}}",
-  "fallbackModel":      "{{fallbackModel}}",
-  "maxConcurrentTasks": 3,
-  "worktreeIsolation":  true,
-  "worktreeBase":       "/tmp",
-  "memory": {
-    "fileBasedPath":      "{{memoryPath}}",
-    "deepMemoryCmd":      "{{deepMemoryCmd}}",
-    "wakeUpOnStart":      true,
-    "maxMemoryIndexLines": 200
-  }
+  "agentId":       "agent-{{name}}",
+  "primaryModel":  "{{primaryModel}}",
+  "fallbackModel": "{{fallbackModel}}",
+  "autoModels":    [],
+  "memoryPath":    "{{memoryPath}}",
+  "deepMemoryCmd": "{{deepMemoryCmd}}",
+  "worktreeBase":  "{{worktreeBase}}",
+  "lintCmd":       "{{lintCmd}}",
+  "formatCmd":     "{{formatCmd}}",
+  "testCmd":       "{{testCmd}}",
+  "buildCmd":      "{{buildCmd}}"
 }
 ```
+
+Key ตรงกับ `crates/bwoc-core/src/manifest.rs`. `fallbackModel` เป็น metadata เท่านั้น (ไม่ใช่ runtime fallback; ใช้ `primaryModel = auto` + `autoModels`) `sessionsPath` สงวนไว้ ยังไม่มีการใช้งาน
 
 ### 5.4 Required Placeholders
 
 | Placeholder | Type | Required | Resolved By |
 |---|---|---|---|
-| `{{name}}` | string | yes | `incarnate.sh` argument |
+| `{{name}}` | string | yes | `bwoc new` argument |
 | `{{agentId}}` | string | yes | derived from `{{name}}` |
 | `{{primaryModel}}` | string | yes | user edit |
 | `{{fallbackModel}}` | string | no | user edit |
@@ -342,15 +357,15 @@ updated: <ISO 8601>                  # required
 
 ## 6. Verification & Validation
 
-### 6.1 Automated Checks (`check-agent-neutrality.sh`)
+### 6.1 Automated Checks (`bwoc check`)
 1. `AGENTS.md` มีอยู่และเป็น regular file
-2. `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` เป็น symlink ชี้ `AGENTS.md`
-3. Required placeholders ถูกแทนหมด
+2. Backend entry file (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, …) เป็น symlink ชี้ `AGENTS.md`
+3. Template: มี required placeholder ครบ; agent ที่ incarnate แล้ว: placeholder ทุกตัวถูกแทนค่า ยกเว้น `{{taskId}}` ที่ใช้ตอน runtime
 4. `config.manifest.json` parse JSON ได้
-5. `task-log.jsonl` เป็น valid JSONL
+5. `task-log.jsonl` มีอยู่ (warning เท่านั้น; ไม่ parse เนื้อหา)
 6. Memory file ทุกไฟล์มี valid front-matter และ required `type`
-7. `MEMORY.md` ≤ 200 บรรทัด
-8. AGENTS.md ไม่มี backend-specific lock-in
+7. `MEMORY.md` ≤ 200 บรรทัด (warning)
+8. Template: `AGENTS.md` ไม่มี model ID, tool name ที่ hardcode หรือถ้อยคำเฉพาะ backend
 
 ### 6.2 Acceptance Criteria (per Magga)
 
@@ -403,7 +418,7 @@ Cleanup --> [*]       : (อนัตตา — release)
 | Part 4 — Magga / สัมมาอาชีวะ | FR-5.1–5.7 |
 | Part 4 — Magga / สัมมาวายามะ | FR-6.1–6.7 |
 | Part 4 — Magga / สัมมาสติ | FR-7.1–7.20 |
-| Part 4 — Magga / สัมมาสมาธิ | FR-8.1–8.8 |
+| Part 4 — Magga / สัมมาสมาธิ | FR-8.1–8.7 |
 | Part 7 — Iddhipāda | NFR-1 ถึง NFR-8 |
 | Part 8 — Tilakkhaṇa | Cross-cutting §2.2 |
 | ภาค 9 Out of scope | Cross-cutting §2.3 (มัตตัญญุตา) |
@@ -415,15 +430,9 @@ Cleanup --> [*]       : (อนัตตา — release)
 ### v2.0 (2026-05-22)
 - **แก้ไข forced metaphors:** เปลี่ยน `อจินไตย` → `มัตตัญญุตา` ในจุดที่หมายถึง "รู้ประมาณของขอบเขตงาน" (อจินไตย คงไว้เฉพาะ 4 กรณีต้นฉบับ — Buddha-visaya, Jhāna-visaya, Kamma-vipāka, Loka-cintā)
 - **เพิ่มเอกสารคู่ขนาน:**
-  - `FAILURE-MODES.md` (ปฏิจจสมุปบาท) — failure analysis
-  - `LIFECYCLE.md` (ภาวนา 4 + อริยทรัพย์ 7) — agent lifecycle
-  - `OBSERVABILITY.md` (สติปัฏฐาน 4 + กรรม 3) — monitoring + audit
-  - `COORDINATION-PROTOCOL.md` (กัลยาณมิตร 7 + สาราณียธรรม 6) — inter-agent
   - `FLEET-GOVERNANCE.md` (อปริหานิยธรรม 7) — org-level governance
   - `SELF-IMPROVEMENT.md` (ปัญญา 3) — learning loop
   - `THREAT-MODEL.md` (ตัณหา 3 + สีล 5) — security
-  - `ANTIPATTERNS.md` (มิจฉาตามมรรค 8) — wrong-path catalog
-  - `GLOSSARY.md` — Pali + technical terms reference
   - `OVERVIEW.md` — entry-point document
 - **ขยาย PHILOSOPHY.md** ให้ครอบคลุม 22 หลักธรรม (เดิม 13) ใน 6 หมวด
 

@@ -22,38 +22,28 @@ agent ใหม่เกิดขึ้นโดยการ copy [`modules/agen
 
 ## สิ่งที่ต้องมีก่อน
 
-- Shell (bash, zsh, หรือ PowerShell + Git Bash บน Windows)
+- `bwoc` CLI บน PATH (ดู [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md))
 - `git` บน PATH
-- `rsync`, `ln`, `python3` บน PATH (ใช้โดย `incarnate.sh` และ `check-agent-neutrality.sh`)
 - (เสริม) Backend CLI ที่เลือก — `claude`, `agy`, `codex`, `kimi`, หรือ `ollama` (ผ่าน `bwoc-harness`) — ติดตั้งที่จุดที่จะใช้งาน agent
 
-`bwoc` Rust CLI กำลังอยู่ใน Phase 1 v2.0 เส้นทาง canonical วันนี้ใช้ shell scripts ที่แนบมากับ template เมื่อ `bwoc new` port logic ของ script เสร็จ คำสั่งจะเหลือเพียง invocation เดียว
-
 ---
 
-## เส้นทาง Canonical (วันนี้)
-
-จาก framework root:
+## เส้นทาง Canonical
 
 ```bash
-cd modules/agent-template
-./scripts/incarnate.sh <agent-name> [target-path]
+bwoc new <agent-name>
 ```
 
-ค่าเริ่มต้น:
+- **`<agent-name>`** — ตัวพิมพ์เล็ก คั่นด้วย hyphen (เช่น `database-schema`); directory จะชื่อ `agent-<agent-name>`
+- **`--target <path>`** — ทางเลือก ค่าเริ่มต้น: `<workspace>/agents/agent-<agent-name>` เมื่อ resolve workspace ได้; ไม่เช่นนั้นวางข้าง template หรือใต้ directory ปัจจุบัน
 
-- **`<agent-name>`** — ตัวพิมพ์เล็ก คั่นด้วย hyphen (เช่น `agent-database-schema`)
-- **`[target-path]`** — ทางเลือก ค่าเริ่มต้น: `../agent-<agent-name>/` ที่สัมพัทธ์กับ template
-
-Script จะ copy template, สร้าง backend symlinks (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md` → `AGENTS.md`), init git, commit แรก, แล้วรัน neutrality check Output จะระบุทุกขั้นและจบด้วย block "Next steps"
+`bwoc new` copy template (auto-detect `modules/agent-template/` หรือใช้ชุดที่ embed ใน binary), เขียน `config.manifest.json` ที่ resolve แล้ว, แทนค่า field ของ manifest ลงใน `AGENTS.md` และ `persona/README.md`, สร้าง backend symlinks (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md`, … → `AGENTS.md`), register agent ใน `.bwoc/agents.toml` เมื่อ resolve workspace ได้ แล้วพิมพ์ขั้นตอนถัดไป ไม่รัน `git init` และไม่ commit
 
 ---
 
-## การตั้ง Manifest — ปัจจุบัน vs แผน
+## การตั้ง Manifest
 
-**วันนี้ (ผ่าน `incarnate.sh`):** script copy template แล้วหยุด คุณแก้ `config.manifest.json` เองเพื่อ resolve placeholder
-
-**กับ `bwoc new` (Phase 1 v2.0 กำลังดำเนินการ):** CLI รับ field ของ manifest เป็น input, validate, แล้วเขียน manifest ที่ resolve แล้วแบบ atomic โหมด input สองแบบ:
+`bwoc new` รับ field ของ manifest เป็น input, validate, แล้วเขียน manifest ที่ resolve แล้ว โหมด input สองแบบ:
 
 - **Flags** — field ที่จำเป็นทุกตัวมี flag ตัวอย่าง:
   ```bash
@@ -78,39 +68,26 @@ Phase 2 อาจเพิ่ม `bwoc manifest set <key> <value>` และ `bw
 
 ## ทีละขั้น
 
-### 1. รัน `incarnate.sh`
+### 1. รัน `bwoc new`
 
 ```bash
-./scripts/incarnate.sh agent-foo
+bwoc new foo
 ```
 
-ผลลัพธ์:
+directory ใหม่ (เช่น `agents/agent-foo/`) มี agent ที่กำหนดค่าแล้ว: symlinks เป็นของจริง และ manifest มีค่าที่คุณกรอกหรือยอมรับ
 
-```
-+ CLAUDE.md -> AGENTS.md
-+ AGY.md    -> AGENTS.md
-+ CODEX.md  -> AGENTS.md
-+ KIMI.md   -> AGENTS.md
-+ OLLAMA.md -> AGENTS.md
-+ git initialized
-...
-Done in 3s
-```
-
-directory ใหม่ `../agent-foo/` มี agent ที่ใช้ได้แต่ยังไม่ได้กำหนดค่า Symlinks เป็นของจริง manifest ยังมี `{{placeholders}}`
-
-### 2. แก้ `config.manifest.json`
+### 2. ตรวจ `config.manifest.json`
 
 ```bash
-cd ../agent-foo
+cd agents/agent-foo
 $EDITOR config.manifest.json
 ```
 
-Resolve ทุก placeholder ที่จำเป็น อย่างน้อย:
+ยืนยัน field ที่ resolve แล้ว อย่างน้อย:
 
-- `agentId` — ตรงกับชื่อ directory ไม่มี prefix `agent-`
+- `agentId` — `agent-<name>` ตรงกับชื่อ directory
 - `agentRole` — คำอธิบาย role หนึ่งบรรทัด (เช่น `database schema reviewer`)
-- `primaryModel` / `fallbackModel` — key ของ model selector ที่เป็นกลางต่อ backend (backend CLI จะ resolve เป็นชื่อ native ของตน)
+- `primaryModel` — model ID ที่ backend ใช้ หรือ `auto` เพื่อเลือกจาก `autoModels` ส่วน `fallbackModel` เป็น metadata เท่านั้น (ไม่ใช่ runtime fallback)
 - `memoryPath`, `deepMemoryCmd` — ถ้าใช้ memory Tier 2 (ดู [`memories/README.md`](../../modules/agent-template/memories/README.md))
 
 เอกสาร schema อยู่ที่ [`modules/agent-template/conventions.md`](../../modules/agent-template/conventions.md)
@@ -138,15 +115,15 @@ Resolve ทุก placeholder ที่จำเป็น อย่างน้�
 ### 5. Verify Backend Neutrality
 
 ```bash
-./scripts/check-agent-neutrality.sh
+bwoc check .
 ```
 
-ต้อง exit 0 Script ตรวจ:
+ต้อง exit 0 ตรวจ (บางส่วน):
 
 - `AGENTS.md` เป็น plain Markdown (ไม่มี YAML frontmatter, ไม่มี wikilinks)
 - Backend symlinks มีอยู่และชี้ไปที่ `AGENTS.md`
 - `config.manifest.json` parse เป็น JSON ที่ถูกต้อง
-- ไม่มี model IDs ที่ hardcode หรือคำพูดเฉพาะ vendor ใน `AGENTS.md`
+- ไม่มี `{{placeholders}}` ค้างใน `AGENTS.md` (ยกเว้น `{{taskId}}` ที่ใช้ตอน runtime)
 
 ทุก FAIL บรรทัดจะระบุการละเมิด แก้แล้วรันใหม่
 
@@ -157,7 +134,7 @@ git add -A
 git commit -m "feat(agent): incarnate agent-foo from BWOC template v2"
 ```
 
-`incarnate.sh` ได้สร้าง commit scaffold แรกไปแล้ว นี่คือ commit แรกที่ **กำหนดค่าแล้ว** ของคุณ
+`bwoc new` ไม่ commit ให้; รัน `git init` ก่อนถ้า directory ของ agent ยังไม่อยู่ใน repository
 
 **เป้าหมาย: ขั้น 1–6 ภายในไม่ถึง 30 นาที**
 
@@ -171,7 +148,7 @@ git commit -m "feat(agent): incarnate agent-foo from BWOC template v2"
 ln -s AGENTS.md <BACKEND>.md
 ```
 
-ไม่ต้องเปลี่ยนอะไรอีก รัน `check-agent-neutrality.sh` เพื่อยืนยัน
+ไม่ต้องเปลี่ยนอะไรอีก รัน `bwoc check` เพื่อยืนยัน
 
 นี่คือ **สมานัตตตา** — การปฏิบัติเท่าเทียม — บังคับใช้ที่ระดับ filesystem
 
@@ -196,7 +173,7 @@ mkdir docs/ja
 
 ก่อนประกาศว่า agent พร้อม:
 
-- [ ] `./scripts/check-agent-neutrality.sh` exit 0
+- [ ] `bwoc check` exit 0
 - [ ] `config.manifest.json` ไม่มี `{{placeholders}}` ที่ยังไม่ resolve
 - [ ] `AGENTS.md` Section 1 สะท้อน agent นี้ (ไม่ใช่ค่าเริ่มต้นของ template)
 - [ ] `persona/README.md` ระบุ domains และขอบเขต

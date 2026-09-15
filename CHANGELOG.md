@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Removed
+
+- **Dead code with no production caller** — the empty `bwoc-core` `identity` / `error` stubs and the unused `lifecycle` module; `TrustBlock::missing_in`; `git_worktree::{worktree_add, worktree_path, worktree_branch}`; `bwoc-agent` `i18n::t`; `ToolQueue::in_flight_count`; the never-read `Caps::max_leases` and `FleetSnapshot.workspace` fields. The Rust API is not a public surface ([`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md)); CLI behaviour is unchanged.
+- **`bwoc-harness` `browser` feature** — the headless-Chromium `computer` executor (`tools/browser.rs`, optional `chromiumoxide` dependency). Nothing enabled it: no CI job, script or Formula built with `--features browser`. The `computer` tool model and Anthropic tool spec remain.
+- **Three stub plugins with no runtime.** `modules/plugins/memory-tier2-noop/` and `modules/plugins/llm-backend/{hermes,openclaw}/` named entry binaries (`bwoc-plugin-memory-tier2-noop`, `bwoc-llm-hermes`, `bwoc-llm-openclaw`) that nothing builds and no code path loads. The `memory-backend` and `llm-backend` kinds stay in the spec, but no plugin of either kind ships. Tier 2 memory keeps working through the agent's `deepMemoryCmd` (`bwoc-core::deep_memory`). The framework now ships 25 plugins across 7 kinds.
+- **Template shell scripts** — `modules/agent-template/scripts/incarnate.sh` and `check-agent-neutrality.sh` are gone; `bwoc new` and `bwoc check` replaced them long ago. Every live doc, the `/incarnate` and `/check-neutrality` skills, and root `CLAUDE.md` now point at the CLI.
+
+### Fixed
+
+- **`bwoc check` accepts the bearer `[auth]` shape for workflow plugins.** The workflow `auth.toml` audit used to require gcloud's `[sources]` table (adc / service_account / env), so the shipped `workflow/accounting-api` plugin always failed `bwoc check --all`. The audit now also accepts `[auth]` with `scheme = "bearer"`, `env_var` set to an env-var NAME, and `key_file` set to a relative path under `.bwoc/secrets/` (absolute paths and `..` are rejected). `[auth]` gets the same fail-closed undeclared-key guard as `[sources]`, and values are never echoed. An `auth.toml` with neither table is still a violation.
+- **Dangling doc references** — links to `trust-model.md`, `interconnect/coordination.md`, `memories/memory.md`, and the never-shipped template companions (`FAILURE-MODES`, `LIFECYCLE`, `OBSERVABILITY`, `COORDINATION-PROTOCOL`, `ANTIPATTERNS`, template `GLOSSARY`) are repointed to files that exist or removed.
+
+### Changed
+
+- **Docs stop promising what the code doesn't do.** `fallbackModel` is documented as metadata only (the harness fallback chain comes from `autoModels`); `sessionsPath` is marked reserved/unused; the manifest schema in `AGENTS.md` §8.2, SRS §5.3 and `conventions.md` uses the real keys (`primaryModel`, flat `memoryPath`); unenforced `maxConcurrentTasks` / `worktreeIsolation` / `memory.wakeUpOnStart` / `maxMemoryIndexLines` defaults are dropped from the template manifest. HARNESS no longer claims `context_limit` or persona come from the manifest. `interconnect/capabilities.md` is no longer called machine-readable, the `persona/` / `mindsets/` / `skills/` slots and `task-log.jsonl` are described as reference material / agent conventions, and the SKILLS / PLUGINS lifecycle and spawn- or startup-time resolution are labelled "specified, not enforced by the runtime". The SRS gains a per-FR-group implementation status table. INCARNATION (EN/TH) describes `bwoc new` as shipped, and ROADMAP's `task-claimed` hook no longer claims to run `git worktree add`.
+
 ### Deprecated
 
 - **Duplicate CLI entry points** — each still works exactly as before (same handler; byte-identical stdout, `--json` and exit code) and prints one line to stderr naming its replacement. `BWOC_NO_DEPRECATION_WARNINGS=1` silences it. Removed in 4.0; see [`COMPATIBILITY.en.md` §Deprecated in 3.2](docs/en/COMPATIBILITY.en.md#deprecated-in-32-removed-in-40).

@@ -237,8 +237,7 @@ bwoc-framework/
 │   └── agent-template/          ← Core template (cloned per agent — see B)
 │       ├── AGENTS.md              • single source of truth (backend entry files symlink to it — see neutrality.md)
 │       ├── docs/{en,th}/          • PHILOSOPHY · PRD · SRS · SELF-IMPROVEMENT · THREAT-MODEL · OVERVIEW
-│       ├── persona/ · mindsets/ · skills/ · interconnect/ · memories/
-│       └── scripts/               • check-agent-neutrality.sh · incarnate.sh (legacy — use `bwoc new`)
+│       └── persona/ · mindsets/ · skills/ · interconnect/ · memories/
 ├── docs/{en,th}/                ← Framework-level docs (bilingual pair)
 │                                    ARCHITECTURE · COMPATIBILITY · MIGRATION · INCARNATION · WORKSPACE · NAMING · GLOSSARY · ROADMAP · FAQ
 ├── examples/                    ← howto · showcases · usecases (illustrative)
@@ -406,8 +405,6 @@ bwoc retire alpha            # removes from registry (+ optional file delete)
 ```
 
 Run `bwoc help` for the topic index. Ten guides ship in-binary: `getting-started`, `backends`, `workspace`, `manifest`, `arc`, `lifecycle`, `daemon`, `messaging`, `persona`, `memory`. Run `bwoc help <topic>` for any specific one.
-
-Legacy: `modules/agent-template/scripts/incarnate.sh` still copies the raw template, but `bwoc new` is the supported path.
 
 **Target: from clone to first configured commit in under 30 minutes.**
 

@@ -8,9 +8,9 @@ nav_order: 12
 
 A **framework plugin** extends the framework with capabilities that do not belong in every agent but should be available to agents and workspaces that need them. Plugins are loaded by the **framework runtime** — they are operator-facing, not agent-facing.
 
-This spec defines the plugin kinds, manifest format, lifecycle hooks, loading mechanism, and verification gates. The first reference plugin (`memory-tier2-noop`) ships alongside this spec — both lands and proves the format together.
+This spec defines the plugin kinds, manifest format, lifecycle hooks, loading mechanism, and verification gates. The shipped plugins are listed in [`modules/plugins/README.md`](../../modules/plugins/README.md). No reference plugin ships for the `memory-backend` or `llm-backend` kinds. The kinds stay in the spec, but Tier 2 memory is wired through the agent's `deepMemoryCmd` (`bwoc-core::deep_memory`), not through a plugin.
 
-> [!abstract] Status: initial scaffold. Manifest tables and lifecycle hooks below are normative; prose may be refined as story BWOC-1..3 work refines the contract. The first reference plugin lands in BWOC-7.
+> [!abstract] Status: initial scaffold. Manifest tables and lifecycle hooks below are normative; prose may be refined as story BWOC-1..3 work refines the contract.
 
 ---
 
@@ -517,12 +517,12 @@ modules/plugins/
 
 ```toml
 [plugin]
-name        = "memory-tier2-noop"               # required — must match the directory name
-kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira
+name        = "memory-example"                  # required — must match the directory name (illustrative; not a shipped plugin)
+kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira | okr | council | figma | gws
 version     = "0.1.0"                           # required — semver
-description = "No-op Tier 2 memory backend that forwards to Tier 1."   # required — one-sentence summary
+description = "Example Tier 2 memory backend."  # required — one-sentence summary
 compat      = ">=3.0.0, <4.0.0"                 # required — semver range, bounded above; framework versions this plugin works with
-entry       = "bwoc-plugin-memory-tier2-noop"   # required — binary on PATH (preferred) or sibling Rust crate name
+entry       = "bwoc-plugin-memory-example"      # required — binary on PATH (preferred) or sibling Rust crate name
 
 [config.schema]                                 # optional — omit the table entirely if the plugin takes no config
 # Plugin-defined; JSON-schema-lite. The workspace's [plugins.<name>] table is validated against this.
@@ -537,7 +537,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # required — binary on PATH (p
 | Section | Field | Required | Type | Meaning |
 |---|---|---|---|---|
 | `[plugin]` | `name` | yes | string (kebab-case) | Plugin identifier; must equal the directory name under `modules/plugins/` |
-| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; immutable after `init` |
+| `[plugin]` | `kind` | yes | enum | One of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`; immutable after `init` |
 | `[plugin]` | `version` | yes | string (semver) | Semver of the plugin itself, separate from the framework version |
 | `[plugin]` | `description` | yes | string | One-sentence summary; the **only** manifest value where a vendor name is tolerated |
 | `[plugin]` | `compat` | yes | string (semver range, bounded above) | Framework versions this plugin is compatible with. Enforced since 3.0: a mismatch refuses the load, an unparseable range fails `bwoc check`, an open-ended range warns |
@@ -551,6 +551,8 @@ A `memory-backend` plugin must work for any agent regardless of backend. An `llm
 ---
 
 ## Lifecycle
+
+> [!warning] Specified, not enforced by the runtime. No framework code dispatches `init` / `configure` / `teardown`, validates `[config.schema]`, or refuses to load a plugin whose `entry` binary or directory is missing. Enforced today: the `[plugin] compat` range (see Stability) and the `bwoc check` manifest audit.
 
 ```
 init  → configure → invoke (many) → teardown
@@ -573,6 +575,8 @@ Idempotency is a **hard requirement at every phase**. The framework may retry an
 | `audit` | `bwoc audit` CLI | First `bwoc audit run` that selects this plugin in the current invocation | Per `bwoc audit run [--plugin <name>]` operator invocation; never implicit |
 
 ### Hook contract — success, failure, partial state
+
+*(Specified, not enforced by the runtime — see [Lifecycle](#lifecycle).)*
 
 Plugins integrate via the `entry` field — either a binary on `PATH` or a sibling Rust crate. The contract is therefore expressed in both exit-code (binary) and return-value (crate) forms; the framework treats them as equivalent. For each hook, "success" and "failure" are the dispatch result the framework observes; "partial state" is the plugin author's responsibility to bound.
 
@@ -625,7 +629,7 @@ The operator declares which plugins this workspace uses by adding entries to `wo
 ```toml
 [plugins]
 
-[plugins.memory-tier2-noop]
+[plugins.memory-example]
 enabled      = true
 storage_path = "memories/tier2"
 
@@ -637,11 +641,11 @@ Schema for each `[plugins.<name>]` table:
 
 - `<name>` (table key, string, required) — the installed plugin's directory name under `modules/plugins/`. The key is the plugin name; `kind` is **not** declared in `workspace.toml` — it is owned by the plugin's own `manifest.toml` `[plugin].kind` field and read from there at load time.
 - `enabled` (bool, required) — gates whether the plugin is loaded at framework startup. Set `false` to keep the entry as documented intent without loading. Mirrors the `config.manifest.json skills.framework[] enabled` pattern in [`SKILLS.en.md`](SKILLS.en.md#discovery); flip with `bwoc plugin disable <name>` to preserve the entry.
-- All other keys (plugin-defined) — validated against the plugin's `[config.schema]` at framework startup. Refused on schema violation; never half-applied (see [Lifecycle](#lifecycle)).
+- All other keys (plugin-defined) — validated against the plugin's `[config.schema]` at framework startup (specified, not enforced). Refused on schema violation; never half-applied (see [Lifecycle](#lifecycle)).
 
 A missing `enabled` field is a manifest error — `bwoc check` rejects entries that omit it. There is no implicit default; explicit intent is the contract.
 
-At framework startup the runtime:
+At framework startup the runtime is specified to (**not enforced by the runtime** apart from the `compat` check — no startup loader validates `[config.schema]`, dispatches `init` / `configure`, or refuses a missing plugin today):
 
 1. Reads the `[plugins]` table from `workspace.toml`.
 2. Filters to entries where `enabled` is `true`. Entries with `enabled = false` are kept in `workspace.toml` (as documented intent) but skipped at load.
@@ -767,7 +771,7 @@ modules/plugin-template/
 
 Placeholders use the same `{{camelCase}}` convention as `modules/agent-template/` and `modules/skill-template/`. Required substitutions are listed in the template's own [`SPEC.md`](../../modules/plugin-template/SPEC.md).
 
-The `--kind` flag is required — there is no default. Valid values: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`. Future kinds extend this enum without changing the template layout. The flag forces the operator to declare intent up front and avoids producing a manifest with a missing or wrong `kind` field.
+The `--kind` flag is required — there is no default. Valid values: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`. Future kinds extend this enum without changing the template layout. The flag forces the operator to declare intent up front and avoids producing a manifest with a missing or wrong `kind` field.
 
 `bwoc plugin init` is the recommended way to start a new plugin — manual creation is supported but bypasses placeholder consistency.
 
@@ -804,7 +808,7 @@ A removed source is not auto-uninstalled from `.bwoc/installed-sources.toml`. Pa
 |---|---|
 | Manifest parseable | `manifest.toml` is valid TOML and matches the schema above |
 | Name matches directory | `[plugin].name == basename(directory)` |
-| Kind valid | `[plugin].kind` is one of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` (or a future kind added to the enum) |
+| Kind valid | `[plugin].kind` is one of `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws` (or a future kind added to the enum) |
 | Neutrality | Vendor names only inside `description`; nowhere else |
 | `SPEC.md` present | A `SPEC.md` file exists alongside the manifest |
 | Required fields | `name`, `kind`, `version`, `description`, `compat`, `entry` all present |
@@ -824,7 +828,7 @@ A failed check exits non-zero on the workspace audit — same surface, same exit
 
 - **Skills** — see [`SKILLS.en.md`](SKILLS.en.md). Skills are agent-invoked; plugins are framework-loaded.
 - **The ten declared backends** (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`, `ollama`, `openai-compatible`, `openrouter`, `litellm`) — they are first-class, not plugins. See [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md).
-- **The first reference plugin itself** — see story `BWOC-7` and (once landed) `modules/plugins/memory-tier2-noop/SPEC.md`.
+- **A reference `memory-backend` or `llm-backend` plugin** — none ships. Tier 2 memory runs through the agent's `deepMemoryCmd` (`bwoc-core::deep_memory`).
 - **Trust v2 / signing of plugin binaries** — deferred. Plugin binaries today are trusted by virtue of being installed under `modules/plugins/`; richer trust gating lands with the broader Trust v2 work.
 
 ---

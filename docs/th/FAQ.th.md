@@ -55,11 +55,10 @@ Documents-first คือหลักการ Code ตามสเปก ไม
 ### สร้าง agent ใหม่อย่างไร?
 
 ```bash
-cd modules/agent-template
-./scripts/incarnate.sh <agent-name>
+bwoc new <agent-name>
 ```
 
-แล้วกรอก placeholder, กำหนด persona, รัน neutrality check เป้าหมาย: commit แรกภายในไม่ถึง 30 นาที walkthrough เต็มใน [`INCARNATION.th.md`](INCARNATION.th.md)
+แล้วตรวจ manifest, กำหนด persona, รัน `bwoc check` เป้าหมาย: commit แรกภายในไม่ถึง 30 นาที walkthrough เต็มใน [`INCARNATION.th.md`](INCARNATION.th.md)
 
 ### Agent ที่ incarnate แล้วอยู่ที่ใดบนดิสก์?
 
@@ -85,7 +84,7 @@ State ระดับ user ระดับเครื่องที่อิ�
 ln -s AGENTS.md <BACKEND>.md
 ```
 
-Backend อ่าน `AGENTS.md` ผ่าน symlink ของตน; ไม่มี instruction แยกตาม backend โดยการออกแบบ (สมานัตตตา — การปฏิบัติเท่าเทียม) แล้วรัน `./scripts/check-agent-neutrality.sh` ใหม่เพื่อยืนยัน ดู [`INCARNATION.th.md` §เพิ่ม Backend](INCARNATION.th.md#เพิ่ม-backend)
+Backend อ่าน `AGENTS.md` ผ่าน symlink ของตน; ไม่มี instruction แยกตาม backend โดยการออกแบบ (สมานัตตตา — การปฏิบัติเท่าเทียม) แล้วรัน `bwoc check` ใหม่เพื่อยืนยัน ดู [`INCARNATION.th.md` §เพิ่ม Backend](INCARNATION.th.md#เพิ่ม-backend)
 
 ### เพิ่มภาษามนุษย์ใหม่สำหรับเอกสารอย่างไร?
 
