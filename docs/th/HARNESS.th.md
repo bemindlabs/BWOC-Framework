@@ -38,7 +38,7 @@ bwoc spawn --backend ollama
   │
   └─▶  bwoc-harness binary
          │
-         ├─ โหลด: AGENTS.md (system prompt) + persona + manifest + memory
+         ├─ โหลด: AGENTS.md (หรือ CLAUDE.md) + index MEMORY.md + Tier-2 wake-up (ถ้ามี)
          ├─ เชื่อมต่อ: OpenAI-compat endpoint (ค่าเริ่มต้น: http://localhost:11434/v1)
          │
          └─ agentic loop (อิทธิบาท 4 — เครื่องยนต์ของงาน)
@@ -221,7 +221,7 @@ bwoc spawn --backend ollama --path agents/my-agent
 `bwoc spawn` ตรวจจับ backend `ollama` และ launch binary `bwoc-harness` แทน vendor CLI harness จะ:
 
 1. อ่าน `AGENTS.md` (ผ่าน symlink `OLLAMA.md → AGENTS.md`) เป็น system prompt
-2. อ่าน `config.manifest.json` เพื่อชื่อ model และ `context_limit`
+2. อ่าน `config.manifest.json` เพื่อชื่อ model (`context_limit` ไม่ใช่ field ใน manifest: harness hardcode เป็น `0` คือไม่ compact และมี limit ต่อ model เฉพาะจากการเลือกแบบ `auto`)
 3. เชื่อมต่อ `http://localhost:11434/v1` (หรือ `$OLLAMA_BASE_URL` ถ้าตั้งไว้)
 4. ตรวจสอบว่า model มีอยู่จริงบน Ollama instance ก่อน turn แรก
 5. รัน agentic loop
@@ -263,7 +263,7 @@ ln -s AGENTS.md OLLAMA.md
 }
 ```
 
-`fallbackModel` จะถูกลองใช้ถ้า primary model สร้าง tool call ผิดรูปแบบซ้ำๆ เกินสองครั้ง (ส่วน history compaction และ context limit ต่อ model ตั้งบน `LoopConfig` ของ harness ไม่ใช่ field ใน `config.manifest.json`)
+`fallbackModel` เป็น metadata เท่านั้น — harness ไม่อ่านค่านี้ fallback chain ที่ลองเมื่อ tool call ผิดรูปแบบซ้ำมาจาก `autoModels` เมื่อ `primaryModel` เป็น `"auto"` (ส่วน history compaction และ context limit ต่อ model ตั้งบน `LoopConfig` ของ harness ไม่ใช่ field ใน `config.manifest.json`)
 
 สำหรับ endpoint แบบ OpenAI-compatible ที่ serve GPT-5.5 ให้ใช้ model ชัดเจน
 หรือ pool สำหรับเลือกตอน runtime:

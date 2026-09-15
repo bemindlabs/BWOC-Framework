@@ -147,7 +147,7 @@ Mapped onto the Four Padhāna.
 |---|---|---|---|
 | FR-8.1 | M | `config.manifest.json` SHALL declare every required placeholder | T |
 | FR-8.2 | M | Validation SHALL fail if any required placeholder is unset | T |
-| FR-8.3 | M | The default config SHALL include: `agentId`, `model`, `fallbackModel`, `maxConcurrentTasks`, `worktreeIsolation`, `worktreeBase`, `memory.*` | I |
+| FR-8.3 | M | The default config SHALL include: `agentId`, `primaryModel`, `memoryPath`, `worktreeBase`, and the four gate commands. `fallbackModel` is metadata only (not a runtime fallback; use `primaryModel = auto` + `autoModels`) | I |
 | FR-8.4 | M | `bwoc new <agent-name>` SHALL incarnate the template into a new agent | T |
 | FR-8.5 | M | `bwoc check` SHALL validate structural conformance | T |
 | FR-8.6 | M | `bwoc new` and `bwoc check` SHALL exit non-zero on failure | T |
@@ -227,7 +227,7 @@ Every FR that reads from memory must verify against current state — covered ex
 
 | ID | Requirement |
 |---|---|
-| NFR-7.1 | The system SHALL support `maxConcurrentTasks` ≥ 3 by default |
+| NFR-7.1 | *Not enforced:* no runtime reads a per-agent concurrency cap (the former `maxConcurrentTasks` default was never consumed) |
 | NFR-7.2 | Worktree isolation SHALL allow N concurrent tasks bounded only by host disk and CPU |
 
 ### 3.8 Auditability (Vīmaṃsā)
@@ -305,20 +305,21 @@ updated: <ISO 8601>                  # required
 
 ```json
 {
-  "agentId":            "agent-{{name}}",
-  "model":              "{{primaryModel}}",
-  "fallbackModel":      "{{fallbackModel}}",
-  "maxConcurrentTasks": 3,
-  "worktreeIsolation":  true,
-  "worktreeBase":       "/tmp",
-  "memory": {
-    "fileBasedPath":      "{{memoryPath}}",
-    "deepMemoryCmd":      "{{deepMemoryCmd}}",
-    "wakeUpOnStart":      true,
-    "maxMemoryIndexLines": 200
-  }
+  "agentId":       "agent-{{name}}",
+  "primaryModel":  "{{primaryModel}}",
+  "fallbackModel": "{{fallbackModel}}",
+  "autoModels":    [],
+  "memoryPath":    "{{memoryPath}}",
+  "deepMemoryCmd": "{{deepMemoryCmd}}",
+  "worktreeBase":  "{{worktreeBase}}",
+  "lintCmd":       "{{lintCmd}}",
+  "formatCmd":     "{{formatCmd}}",
+  "testCmd":       "{{testCmd}}",
+  "buildCmd":      "{{buildCmd}}"
 }
 ```
+
+Keys match `crates/bwoc-core/src/manifest.rs`. `fallbackModel` is metadata only (not a runtime fallback; use `primaryModel = auto` + `autoModels`). `sessionsPath` is reserved and unused.
 
 ### 5.4 Required Placeholders
 

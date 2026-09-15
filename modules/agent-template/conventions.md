@@ -103,10 +103,10 @@ Double curly braces, camelCase:
 | `{{branchName}}` | Git branch | `feat/PROJ-42` |
 | `{{worktreePath}}` | Worktree directory | `/tmp/proj-42` |
 | `{{memoryPath}}` | File-based memory dir | `memories/` |
-| `{{sessionsPath}}` | Session data dir | `~/.claude/projects/` |
+| `{{sessionsPath}}` | Reserved / unused (written, never read) | — |
 | `{{deepMemoryCmd}}` | Tier 2 memory CLI | resolved at runtime |
 | `{{primaryModel}}` | Primary LLM model ID | resolved at runtime |
-| `{{fallbackModel}}` | Fallback LLM model ID | resolved at runtime |
+| `{{fallbackModel}}` | Fallback model ID — metadata only, not a runtime fallback | set at incarnation |
 | `{{lintCmd}}` | Lint command | resolved at runtime |
 | `{{formatCmd}}` | Format command | resolved at runtime |
 | `{{testCmd}}` | Test command | resolved at runtime |
@@ -198,20 +198,15 @@ MemoryType:
 ### AgentConfig
 
 ```yaml
-AgentConfig:
+AgentConfig:                    # crates/bwoc-core/src/manifest.rs
   agentId: string
-  model: string
-  fallbackModel?: string
-  maxConcurrentTasks: number    # default: 3
-  worktreeIsolation: boolean    # default: true
-  worktreeBase: string          # default: "/tmp"
-  memory: MemoryConfig
-
-MemoryConfig:
-  fileBasedPath: string
+  primaryModel: string          # model ID, or "auto" (picks from autoModels)
+  fallbackModel?: string        # metadata only — not a runtime fallback
+  autoModels?: string[]
+  memoryPath: string            # default: "memories/"
   deepMemoryCmd?: string
-  wakeUpOnStart: boolean        # default: true
-  maxMemoryIndexLines: number   # default: 200
+  worktreeBase?: string         # default: "/tmp"
+  sessionsPath?: string         # reserved / unused
 ```
 
 ### SessionMetrics

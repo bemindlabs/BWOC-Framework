@@ -87,7 +87,7 @@ Confirm the resolved fields. At minimum:
 
 - `agentId` — `agent-<name>`, matching the directory name.
 - `agentRole` — one-line role description (e.g. `database schema reviewer`).
-- `primaryModel` / `fallbackModel` — backend-agnostic model selector keys (the backend's own CLI resolves these to its native names).
+- `primaryModel` — the model ID the backend runs, or `auto` to pick from `autoModels`. `fallbackModel` is metadata only (not a runtime fallback).
 - `memoryPath`, `deepMemoryCmd` — if Tier 2 memory is in use (see [`memories/README.md`](../../modules/agent-template/memories/README.md)).
 
 The schema documentation lives in [`modules/agent-template/conventions.md`](../../modules/agent-template/conventions.md).

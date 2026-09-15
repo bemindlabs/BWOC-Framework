@@ -310,30 +310,24 @@ end    → update task-log → save memories → cleanup worktree
 
 ### 8.2 Configuration
 
-All behavior is driven by `config.manifest.json`. Required fields:
+Agent configuration lives in `config.manifest.json`. Core fields:
 
 ```json
 {
-  "agentId":            "agent-{{name}}",
-  "model":              "{{primaryModel}}",
-  "fallbackModel":      "{{fallbackModel}}",
-  "maxConcurrentTasks": 3,
-  "worktreeIsolation":  true,
-  "worktreeBase":       "/tmp",
-  "memory": {
-    "fileBasedPath":       "memories/",
-    "deepMemoryCmd":       "{{deepMemoryCmd}}",
-    "wakeUpOnStart":       true,
-    "maxMemoryIndexLines": 200
-  }
+  "agentId":       "agent-{{name}}",
+  "primaryModel":  "{{primaryModel}}",
+  "fallbackModel": "{{fallbackModel}}",
+  "memoryPath":    "{{memoryPath}}",
+  "deepMemoryCmd": "{{deepMemoryCmd}}",
+  "worktreeBase":  "{{worktreeBase}}",
+  "lintCmd":       "{{lintCmd}}",
+  "formatCmd":     "{{formatCmd}}",
+  "testCmd":       "{{testCmd}}",
+  "buildCmd":      "{{buildCmd}}"
 }
 ```
 
-Validation fails if any required placeholder is unsubstituted.
-
-### 8.3 Concurrent Tasks
-
-Maximum concurrent tasks: `{{maxConcurrentTasks}}` (default 3). Each task has its own worktree. They do not share directories.
+`fallbackModel` is metadata only (not a runtime fallback; use `primaryModel = auto` with `autoModels`). `bwoc check` fails if a placeholder in this file is left unsubstituted.
 
 ---
 

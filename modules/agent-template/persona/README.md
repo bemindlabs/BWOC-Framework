@@ -19,7 +19,7 @@ tags:
 | **Agent ID** | `agent-{{name}}` |
 | **Role** | `{{agentRole}}` |
 | **Model** | `{{primaryModel}}` |
-| **Fallback** | `{{fallbackModel}}` |
+| **Fallback** (metadata only) | `{{fallbackModel}}` |
 
 ## Primary Role
 

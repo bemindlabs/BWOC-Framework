@@ -87,7 +87,7 @@ $EDITOR config.manifest.json
 
 - `agentId` — `agent-<name>` ตรงกับชื่อ directory
 - `agentRole` — คำอธิบาย role หนึ่งบรรทัด (เช่น `database schema reviewer`)
-- `primaryModel` / `fallbackModel` — key ของ model selector ที่เป็นกลางต่อ backend (backend CLI จะ resolve เป็นชื่อ native ของตน)
+- `primaryModel` — model ID ที่ backend ใช้ หรือ `auto` เพื่อเลือกจาก `autoModels` ส่วน `fallbackModel` เป็น metadata เท่านั้น (ไม่ใช่ runtime fallback)
 - `memoryPath`, `deepMemoryCmd` — ถ้าใช้ memory Tier 2 (ดู [`memories/README.md`](../../modules/agent-template/memories/README.md))
 
 เอกสาร schema อยู่ที่ [`modules/agent-template/conventions.md`](../../modules/agent-template/conventions.md)

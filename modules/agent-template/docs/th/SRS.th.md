@@ -147,7 +147,7 @@
 |---|---|---|---|
 | FR-8.1 | M | `config.manifest.json` SHALL declare required placeholders ทั้งหมด | T |
 | FR-8.2 | M | Validation SHALL fail ถ้า required placeholder ไม่ถูกแทนที่ | T |
-| FR-8.3 | M | Default config SHALL include: `agentId`, `model`, `fallbackModel`, `maxConcurrentTasks`, `worktreeIsolation`, `worktreeBase`, `memory.*` | I |
+| FR-8.3 | M | Default config SHALL include: `agentId`, `primaryModel`, `memoryPath`, `worktreeBase` และ gate command ทั้งสี่ `fallbackModel` เป็น metadata เท่านั้น (ไม่ใช่ runtime fallback; ใช้ `primaryModel = auto` + `autoModels`) | I |
 | FR-8.4 | M | `bwoc new <agent-name>` SHALL incarnate template เป็น agent ใหม่ | T |
 | FR-8.5 | M | `bwoc check` SHALL ตรวจ structural conformance | T |
 | FR-8.6 | M | `bwoc new` และ `bwoc check` SHALL exit non-zero on failure | T |
@@ -227,7 +227,7 @@
 
 | ID | Requirement |
 |---|---|
-| NFR-7.1 | ระบบ SHALL รองรับ `maxConcurrentTasks` ≥ 3 default |
+| NFR-7.1 | *ไม่ถูกบังคับใช้:* ไม่มี runtime ใดอ่านเพดาน concurrency ต่อ agent (`maxConcurrentTasks` เดิมไม่เคยถูกใช้) |
 | NFR-7.2 | Worktree isolation SHALL allow N concurrent tasks bounded only by disk/CPU |
 
 ### 3.8 Auditability (วิมังสา)
@@ -305,20 +305,21 @@ updated: <ISO 8601>                  # required
 
 ```json
 {
-  "agentId":            "agent-{{name}}",
-  "model":              "{{primaryModel}}",
-  "fallbackModel":      "{{fallbackModel}}",
-  "maxConcurrentTasks": 3,
-  "worktreeIsolation":  true,
-  "worktreeBase":       "/tmp",
-  "memory": {
-    "fileBasedPath":      "{{memoryPath}}",
-    "deepMemoryCmd":      "{{deepMemoryCmd}}",
-    "wakeUpOnStart":      true,
-    "maxMemoryIndexLines": 200
-  }
+  "agentId":       "agent-{{name}}",
+  "primaryModel":  "{{primaryModel}}",
+  "fallbackModel": "{{fallbackModel}}",
+  "autoModels":    [],
+  "memoryPath":    "{{memoryPath}}",
+  "deepMemoryCmd": "{{deepMemoryCmd}}",
+  "worktreeBase":  "{{worktreeBase}}",
+  "lintCmd":       "{{lintCmd}}",
+  "formatCmd":     "{{formatCmd}}",
+  "testCmd":       "{{testCmd}}",
+  "buildCmd":      "{{buildCmd}}"
 }
 ```
+
+Key ตรงกับ `crates/bwoc-core/src/manifest.rs`. `fallbackModel` เป็น metadata เท่านั้น (ไม่ใช่ runtime fallback; ใช้ `primaryModel = auto` + `autoModels`) `sessionsPath` สงวนไว้ ยังไม่มีการใช้งาน
 
 ### 5.4 Required Placeholders
 
