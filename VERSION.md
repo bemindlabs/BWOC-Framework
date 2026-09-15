@@ -1,13 +1,13 @@
 # Version
 
-> **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
+> **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — ordinary feature branches leave these shared lines alone (so concurrent PRs never collide on the version); release and version-bump PRs are the ones that edit them. The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `3.1.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `3.2.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.14.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 7 — *anicca* (versioned change & the compatibility contract), **in progress** — producing 3.0. Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** *(t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature — see `reports/retro/t32-deep-memory-design.md`)*. **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant)*; Phase 3 vaya + Phase 4 fleet-governance also met
-**Latest release:** [`v2026.9.13-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.13-2) *(2026-09-13 — **3.1.0** — bwoc-bot phase 1: connector `[bot]` block (commands, rate/length caps), opt-in limited public mode (read-only tools, isolated workdir), symlink-safe file-tool confinement, connector `schema_version`. Prior: `v2026.9.13-1` 3.0.1 — fleet-rollout fixes; `v2026.9.13-0` 3.0.0 — **BWOC 3.0, the compatibility contract**)*
+**Latest release:** [`v2026.9.15-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.15-0) *(2026-09-15 — **3.2.0** — BWOC as its own coding agent: bare `bwoc` opens a zero-setup coding session, `bwoc auth`, chat on the batch retry/MCP/sandbox paths, coding tools (`glob`, regex `grep`, `multi_edit`, `webfetch`, `todo`, `subagent`, `run_command` timeout); lean pass; trust gate warn-by-default; CLI deprecations toward 4.0. Prior: `v2026.9.13-2` 3.1.0 — bwoc-bot phase 1; `v2026.9.13-0` 3.0.0 — **BWOC 3.0, the compatibility contract**)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v3.0
-**Last-Updated:** `2026-09-13T14:07:30Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-09-15T09:30:56Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
