@@ -285,11 +285,6 @@ impl TaskQueue {
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
-
-    /// Number of worktrees currently in flight.
-    pub fn in_flight_count(&self) -> usize {
-        self.in_flight.lock().unwrap().len()
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -61,8 +61,6 @@ fn is_safe_relative_path(path: &str) -> bool {
 #[derive(Debug, Deserialize)]
 struct FleetSnapshot {
     agents: Vec<AgentInfo>,
-    #[allow(dead_code)]
-    workspace: String,
 }
 
 /// Run `<bwoc> list --json` and parse the fleet. Returns an empty list on any
