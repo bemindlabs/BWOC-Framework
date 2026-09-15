@@ -5,8 +5,9 @@ tools. Use them instead of guessing.
 
 ## Tools
 
-- `list_dir`, `grep`, `read_file`: look before you change anything. Read the
-  code you are about to touch and the code that calls it.
+- `glob`, `list_dir`, `grep`, `read_file`: look before you change anything.
+  `glob` finds files by name pattern. Read the code you are about to touch and
+  the code that calls it.
 - `edit_file` for targeted changes to existing files. `write_file` only for new
   files or full rewrites.
 - `run_command` for builds, tests and other shell work. `git` for status, diffs

@@ -349,66 +349,251 @@ fn grep_walk(
     let pattern_lower = pattern.to_lowercase();
     let mut matches = Vec::new();
 
-    // Simple recursive walker using std::fs.
-    let mut dirs: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    walk_files(root, workdir, &mut |p| {
+        // Best-effort: skip binary-looking files (non-UTF-8).
+        let Ok(content) = std::fs::read_to_string(p) else {
+            return true;
+        };
+        let rel = rel_slash(p, workdir);
+        for (lineno, line) in content.lines().enumerate() {
+            let hit = if case_insensitive {
+                line.to_lowercase().contains(&pattern_lower)
+            } else {
+                line.contains(pattern)
+            };
+            if hit {
+                matches.push(format!("{}:{}:{}", rel, lineno + 1, line));
+                if matches.len() >= GREP_MAX_MATCHES {
+                    return false;
+                }
+            }
+        }
+        true
+    });
 
+    Ok(matches)
+}
+
+/// Visit every regular file under `root` (or `root` itself when it is a file),
+/// calling `visit` until it returns `false`. Shared by `grep` and `glob`.
+///
+/// - Confined: a directory outside `workdir` is never read, and a symlink is
+///   followed only when its target stays inside the workdir (canonical check).
+/// - Hidden directories (`.git`, `.bwoc`, …) are not descended into.
+/// - `.gitignore` is **not** honoured — no ignore-matcher dependency is carried;
+///   callers narrow with a `path` (or `glob`) instead.
+fn walk_files(
+    root: &std::path::Path,
+    workdir: &std::path::Path,
+    visit: &mut dyn FnMut(&std::path::Path) -> bool,
+) {
+    if root.is_file() {
+        visit(root);
+        return;
+    }
+    let mut dirs: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
-        // Confinement: every dir must be inside workdir.
         if !dir.starts_with(workdir) {
             continue;
         }
-        let rd = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
         };
-        for entry in rd.flatten() {
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
             let p = entry.path();
-            // Confinement check. A symlink is followed only if its target stays
-            // inside the workdir (canonical check) — never out through a link.
             if !p.starts_with(workdir)
                 || (entry.file_type().is_ok_and(|t| t.is_symlink())
                     && !crate::sandbox::is_confined(&p, workdir))
             {
                 continue;
             }
-            // Skip hidden directories (.git, .bwoc, …).
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') && p.is_dir() {
-                    continue;
-                }
-            }
             if p.is_dir() {
-                dirs.push(p);
-            } else if p.is_file() {
-                // Best-effort: skip binary-looking files (non-UTF-8).
-                let content = match std::fs::read_to_string(&p) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                let rel = p
-                    .strip_prefix(workdir)
-                    .unwrap_or(&p)
-                    .to_string_lossy()
-                    .to_string();
-
-                for (lineno, line) in content.lines().enumerate() {
-                    let hit = if case_insensitive {
-                        line.to_lowercase().contains(&pattern_lower)
-                    } else {
-                        line.contains(pattern)
-                    };
-                    if hit {
-                        matches.push(format!("{}:{}:{}", rel, lineno + 1, line));
-                        if matches.len() >= GREP_MAX_MATCHES {
-                            return Ok(matches);
-                        }
-                    }
+                let hidden = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'));
+                if !hidden {
+                    dirs.push(p);
                 }
+            } else if p.is_file() && !visit(&p) {
+                return;
             }
         }
     }
+}
 
-    Ok(matches)
+/// `p` relative to `base`, with `/` separators on every platform.
+fn rel_slash(p: &std::path::Path, base: &std::path::Path) -> String {
+    p.strip_prefix(base)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+// ---------------------------------------------------------------------------
+// glob — find paths by glob pattern under the worktree
+// ---------------------------------------------------------------------------
+
+/// List files whose path matches a glob pattern. Read-only; shares the confined
+/// walker with `grep` (hidden dirs skipped, `.gitignore` not honoured).
+pub struct Glob;
+
+const GLOB_MAX_RESULTS: usize = 1_000;
+
+#[async_trait]
+impl ToolImpl for Glob {
+    fn name(&self) -> &'static str {
+        "glob"
+    }
+
+    fn description(&self) -> &'static str {
+        "Find files by glob pattern under the working directory. `*` matches within \
+         one path segment, `**` across segments, `?` one character, `[abc]` a class, \
+         `{a,b}` alternatives. A pattern without `/` matches the file name at any \
+         depth (`*.rs`); a pattern with `/` matches the path relative to `path` \
+         (`src/**/*.rs`). Returns sorted paths relative to the working directory, \
+         capped at 1000. Hidden directories are skipped; `.gitignore` is not read."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern, e.g. `*.toml` or `crates/**/src/*.rs`."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search (relative to working directory). Defaults to the working directory root."
+                }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
+        let pattern = args["pattern"]
+            .as_str()
+            .ok_or_else(|| HarnessError::ToolExecution {
+                tool: self.name().to_string(),
+                reason: "missing `pattern` argument".to_string(),
+            })?;
+        let raw = args["path"].as_str().unwrap_or(".");
+        let base = ctx.resolve_path(raw)?;
+        let matcher = glob_to_regex(pattern).map_err(|e| HarnessError::ToolExecution {
+            tool: self.name().to_string(),
+            reason: format!("invalid glob `{pattern}`: {e}"),
+        })?;
+        let by_name = !pattern.contains('/');
+
+        let workdir = ctx.workdir.clone();
+        let (paths, truncated) =
+            tokio::task::spawn_blocking(move || glob_walk(&base, &workdir, &matcher, by_name))
+                .await
+                .map_err(|e| HarnessError::ToolExecution {
+                    tool: "glob".to_string(),
+                    reason: format!("glob task panicked: {e}"),
+                })?;
+
+        if paths.is_empty() {
+            return Ok(format!("no files match `{pattern}` in `{raw}`"));
+        }
+        let mut out = paths.join("\n");
+        if truncated {
+            out.push_str(&format!(
+                "\n[truncated at {GLOB_MAX_RESULTS} paths — narrow the pattern or path]"
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// Synchronous glob walk (runs in spawn_blocking). Returns sorted
+/// workdir-relative paths and whether the result cap was hit.
+fn glob_walk(
+    base: &std::path::Path,
+    workdir: &std::path::Path,
+    matcher: &regex::Regex,
+    by_name: bool,
+) -> (Vec<String>, bool) {
+    let mut paths = Vec::new();
+    let mut truncated = false;
+    walk_files(base, workdir, &mut |p| {
+        let subject = if by_name {
+            p.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            rel_slash(p, base)
+        };
+        if matcher.is_match(&subject) {
+            if paths.len() >= GLOB_MAX_RESULTS {
+                truncated = true;
+                return false;
+            }
+            paths.push(rel_slash(p, workdir));
+        }
+        true
+    });
+    paths.sort();
+    (paths, truncated)
+}
+
+/// Compile a glob into an anchored regex. `**/` spans zero or more directories,
+/// `**` anything, `*` / `?` stay within one segment, `[..]` (with `!` negation)
+/// is a character class, `{a,b}` an alternation; everything else is literal.
+fn glob_to_regex(glob: &str) -> Result<regex::Regex, regex::Error> {
+    let chars: Vec<char> = glob.chars().collect();
+    let mut re = String::from("^");
+    let mut braces = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                if chars.get(i + 2) == Some(&'/') {
+                    re.push_str("(?:[^/]*/)*");
+                    i += 3;
+                } else {
+                    re.push_str(".*");
+                    i += 2;
+                }
+                continue;
+            }
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            '{' => {
+                braces += 1;
+                re.push_str("(?:");
+            }
+            '}' if braces > 0 => {
+                braces -= 1;
+                re.push(')');
+            }
+            ',' if braces > 0 => re.push('|'),
+            '[' => {
+                if let Some(len) = chars[i + 1..].iter().position(|&c| c == ']') {
+                    let body: String = chars[i + 1..i + 1 + len].iter().collect();
+                    let body = match body.strip_prefix('!') {
+                        Some(rest) => format!("^{rest}"),
+                        None => body,
+                    };
+                    re.push('[');
+                    re.push_str(&body.replace('\\', "\\\\"));
+                    re.push(']');
+                    i += len + 2;
+                    continue;
+                }
+                re.push_str("\\[");
+            }
+            c => re.push_str(&regex::escape(c.encode_utf8(&mut [0u8; 4]))),
+        }
+        i += 1;
+    }
+    re.push('$');
+    regex::Regex::new(&re)
 }
 
 // ---------------------------------------------------------------------------
@@ -1593,6 +1778,98 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn grep_accepts_a_file_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("one.txt"), "needle\n").unwrap();
+        let out = Grep
+            .execute(
+                json!({"pattern": "needle", "path": "one.txt"}),
+                &ctx_for(&tmp),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out, "one.txt:1:needle");
+    }
+
+    // ── glob ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn glob_to_regex_semantics() {
+        let m = |g: &str, s: &str| glob_to_regex(g).unwrap().is_match(s);
+        assert!(m("*.rs", "main.rs"));
+        assert!(!m("*.rs", "src/main.rs"), "`*` stays in one segment");
+        assert!(m("src/**/*.rs", "src/main.rs"), "`**/` spans zero dirs");
+        assert!(m("src/**/*.rs", "src/a/b/lib.rs"));
+        assert!(m("?.md", "a.md") && !m("?.md", "ab.md"));
+        assert!(m("*.{toml,json}", "x.json") && !m("*.{toml,json}", "x.yaml"));
+        assert!(m("[ab].txt", "a.txt") && !m("[!ab].txt", "a.txt"));
+        assert!(m("a+b(1).txt", "a+b(1).txt"), "regex metachars are literal");
+        assert!(glob_to_regex("[]").is_err());
+    }
+
+    fn glob_fixture() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/nested")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("src/nested/lib.rs"), "").unwrap();
+        std::fs::write(tmp.path().join(".git/config.rs"), "").unwrap();
+        tmp
+    }
+
+    #[tokio::test]
+    async fn glob_by_name_and_by_path() {
+        let tmp = glob_fixture();
+        let ctx = ctx_for(&tmp);
+        let out = Glob
+            .execute(json!({"pattern": "*.rs"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "src/main.rs\nsrc/nested/lib.rs", "hidden dir skipped");
+        let out = Glob
+            .execute(json!({"pattern": "nested/*.rs", "path": "src"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "src/nested/lib.rs");
+        let out = Glob
+            .execute(json!({"pattern": "*.none"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.starts_with("no files match"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn glob_rejects_escape_and_bad_pattern() {
+        let tmp = glob_fixture();
+        let ctx = ctx_for(&tmp);
+        let err = Glob
+            .execute(json!({"pattern": "*", "path": "../"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HarnessError::PathEscape(_)));
+        let err = Glob
+            .execute(json!({"pattern": "[]"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid glob"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn glob_never_lists_through_an_escaping_symlink() {
+        let tmp = glob_fixture();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), "").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("link")).unwrap();
+        let out = Glob
+            .execute(json!({"pattern": "*.rs"}), &ctx_for(&tmp))
+            .await
+            .unwrap();
+        assert!(!out.contains("secret"), "{out}");
+    }
+
     // ── git ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1932,6 +2209,7 @@ mod tests {
         let tools: Vec<Box<dyn ToolImpl + Send + Sync>> = vec![
             Box::new(EditFile),
             Box::new(Grep),
+            Box::new(Glob),
             Box::new(Git),
             Box::new(RunGates),
             Box::new(BwocTask),

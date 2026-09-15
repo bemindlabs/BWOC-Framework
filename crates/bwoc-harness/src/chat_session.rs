@@ -136,7 +136,7 @@ enum SessionMode {
 /// **allow-list**, not a deny-list: anything not here (writes, shell, git,
 /// task/peer/run delegation, gates, memory writes — and any future tool) is
 /// refused so the model observes and plans without acting or spawning processes.
-const PLAN_READ_ONLY_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "memory_read"];
+const PLAN_READ_ONLY_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "glob", "memory_read"];
 
 impl SessionMode {
     fn parse(s: &str) -> Option<Self> {

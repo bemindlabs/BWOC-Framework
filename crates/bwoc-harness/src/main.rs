@@ -1408,6 +1408,7 @@ fn chat_default_policy() -> Policy {
         "read_file",
         "list_dir",
         "grep",
+        "glob",
         "memory_read",
         "memory_search",
     ];
