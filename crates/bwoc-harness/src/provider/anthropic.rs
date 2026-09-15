@@ -657,7 +657,12 @@ fn build_anthropic_body(
                 // The `computer` tool is a *provider-defined* native tool keyed by
                 // `type` (not a custom function), and the request must also carry
                 // the computer-use beta header (see `anthropic_beta_for`). The
-                // display geometry is the tool's advertised viewport.
+                // display geometry advertised here is fixed at
+                // `tools::computer::DEFAULT_VIEWPORT`: no build registers a live
+                // computer executor today, so any executor a host adds MUST report
+                // exactly this `display_size()` or the model will reason in the
+                // wrong coordinate space. Wire the executor's size through here
+                // before registering one with a different viewport.
                 if t.function.name == "computer" {
                     let (w, h) = crate::tools::computer::DEFAULT_VIEWPORT;
                     crate::tools::computer::anthropic_tool_spec(w, h, None)

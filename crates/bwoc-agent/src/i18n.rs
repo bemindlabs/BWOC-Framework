@@ -97,6 +97,16 @@ mod tests {
     }
 
     #[test]
+    fn missing_key_returns_visible_marker() {
+        // The documented user-visible fallback: an unknown key renders as a
+        // `«missing key: …»` marker instead of panicking or returning empty.
+        let b = bundle_for("en");
+        let s = t_with(&b, "bwoc-no-such-key", &[]);
+        assert!(s.contains("missing key"), "got: {s:?}");
+        assert!(s.contains("bwoc-no-such-key"), "got: {s:?}");
+    }
+
+    #[test]
     fn unknown_lang_falls_back_to_en() {
         let b = bundle_for("zz");
         let s = t_with(&b, "liveness-alive", &[("agent_id", "demo")]);
