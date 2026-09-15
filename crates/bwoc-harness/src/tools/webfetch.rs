@@ -187,6 +187,12 @@ async fn fetch(url: reqwest::Url, allow_local: bool) -> Result<String, HarnessEr
         body.extend_from_slice(&chunk);
     }
 
+    // A missing or wrong content-type can still carry binary: sniff for NUL.
+    if body[..body.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+        return Ok(format!(
+            "[{status}] {final_url}\n\n[bwoc: body looks binary (NUL bytes); not shown]"
+        ));
+    }
     let raw = String::from_utf8_lossy(&body);
     let text = if ctype.contains("html") {
         html_to_text(&raw)
@@ -200,6 +206,9 @@ async fn fetch(url: reqwest::Url, allow_local: bool) -> Result<String, HarnessEr
     };
     Ok(format!("[{status}] {final_url}\n\n{text}{note}"))
 }
+
+/// Leading bytes checked for NUL before a body is treated as text.
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 fn is_textual(ctype: &str) -> bool {
     ctype.is_empty()
@@ -388,5 +397,12 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("is not text"), "{out}");
+        // Binary under a textual (or missing) content-type is sniffed out.
+        let lying = serve(b"GIF89a\x00\x01\x02 not text".to_vec(), "text/plain").await;
+        let out = tool
+            .execute(json!({ "url": format!("{}/doc", lying.uri()) }), &ctx())
+            .await
+            .unwrap();
+        assert!(out.contains("looks binary"), "{out}");
     }
 }

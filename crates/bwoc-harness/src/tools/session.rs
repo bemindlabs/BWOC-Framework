@@ -146,6 +146,10 @@ fn render_todos(items: &[(String, &'static str)]) -> String {
 pub struct Subagent {
     provider: Arc<dyn ProviderClient>,
     model: String,
+    /// The parent session's permission policy. A child cannot prompt the
+    /// operator, so any inner call the policy does not `allow` outright is
+    /// refused rather than run.
+    policy: Option<crate::policy::permission::Policy>,
 }
 
 /// Provider calls one subagent run may make before it is stopped.
@@ -162,8 +166,32 @@ impl Subagent {
         Self {
             provider,
             model: model.into(),
+            policy: None,
         }
     }
+
+    /// Bind the parent session's permission policy (see [`Subagent::policy`]).
+    pub fn with_policy(mut self, policy: crate::policy::permission::Policy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+}
+
+/// Why the parent's policy refuses an inner subagent call, or `None` when it
+/// allows it. `ask` counts as a refusal: nobody can answer a prompt here.
+fn policy_refusal(
+    policy: Option<&crate::policy::permission::Policy>,
+    tool: &str,
+    arguments: &str,
+) -> Option<String> {
+    use crate::policy::permission::{Mode, resolve_effective_mode};
+    let mode = resolve_effective_mode(policy?, tool, arguments);
+    (mode != Mode::Allow).then(|| {
+        format!(
+            "DENIED by policy: `{tool}` is `{mode}` for this session, and a subagent \
+             cannot ask the operator"
+        )
+    })
 }
 
 /// The child's tool set: read-only, and without `subagent` (depth limit 1).
@@ -242,7 +270,10 @@ impl ToolImpl for Subagent {
                 let (name, arguments) = (&call.function.name, &call.function.arguments);
                 let result = match crate::policy::guardrail_check(name, arguments, &ctx.workdir) {
                     Err(v) => format!("BLOCKED by safety guardrail [{}]: {}", v.rule, v.reason),
-                    Ok(()) => dispatch(&registry, name, arguments, ctx).await,
+                    Ok(()) => match policy_refusal(self.policy.as_ref(), name, arguments) {
+                        Some(refusal) => refusal,
+                        None => dispatch(&registry, name, arguments, ctx).await,
+                    },
                 };
                 messages.push(ChatMessage::tool_result(
                     call.id.clone(),
@@ -445,6 +476,30 @@ mod tests {
             .unwrap();
         assert_eq!(out, "done");
         assert!(!tmp.path().join("x.txt").exists(), "write tool unavailable");
+    }
+
+    #[test]
+    fn subagent_inner_calls_follow_the_parent_policy() {
+        use crate::policy::permission::{Mode, Policy};
+        let mut policy = Policy {
+            default_mode: Mode::Allow,
+            ..Default::default()
+        };
+        policy.tools.insert("read_file".into(), Mode::Deny);
+        policy.tools.insert("grep".into(), Mode::Ask);
+        let args = r#"{"path":"a.txt"}"#;
+        assert!(
+            policy_refusal(Some(&policy), "read_file", args)
+                .unwrap()
+                .contains("`deny`")
+        );
+        assert!(
+            policy_refusal(Some(&policy), "grep", args)
+                .unwrap()
+                .contains("`ask`")
+        );
+        assert_eq!(policy_refusal(Some(&policy), "list_dir", args), None);
+        assert_eq!(policy_refusal(None, "read_file", args), None);
     }
 
     #[tokio::test]

@@ -1355,33 +1355,6 @@ async fn run_chat_mode(
         }
     }
 
-    // Tool registry + context, same as run(), including `--mcp` / `--mcp-http`
-    // servers. Status goes to stderr: stdout is the chat_proto stream.
-    let mut registry = default_registry();
-    if let Some(dm) = &deep_memory {
-        registry.register(bwoc_harness::deep_memory::MemorySearch::new(dm.clone()));
-    }
-    // Chat-only, in-process tools (never marshalled into the turn-executor
-    // child). `webfetch` is network egress: `ask` under the default policy.
-    registry.register(bwoc_harness::tools::webfetch::WebFetch::default());
-    // Session state: the todo list lives as long as this process; the subagent
-    // reuses this session's provider and model with read-only tools.
-    registry.register(bwoc_harness::tools::session::Todo::default());
-    registry.register(bwoc_harness::tools::session::Subagent::new(
-        provider.clone(),
-        resolved_model.clone(),
-    ));
-    for line in register_mcp_servers(&mut registry, &args.mcp, &args.mcp_http).await {
-        eprintln!("[bwoc-harness] mcp: {line}");
-    }
-    let registry = Arc::new(registry);
-    let ctx = if args.unrestricted {
-        ToolContext::unconfined(workdir)
-    } else {
-        ToolContext::new(workdir)
-    }
-    .with_memory_dir(memory_dir.clone());
-
     // Permission policy. A `.bwoc/harness-policy.toml` wins; otherwise — unlike
     // the batch path's fail-safe deny — chat defaults to **ask** (reads free,
     // writes/edits/run prompt the frontend's Allow/Deny), because an interactive
@@ -1400,6 +1373,34 @@ async fn run_chat_mode(
     } else {
         chat_default_policy()
     };
+
+    // Tool registry + context, same as run(), including `--mcp` / `--mcp-http`
+    // servers. Status goes to stderr: stdout is the chat_proto stream.
+    let mut registry = default_registry();
+    if let Some(dm) = &deep_memory {
+        registry.register(bwoc_harness::deep_memory::MemorySearch::new(dm.clone()));
+    }
+    // Chat-only, in-process tools (never marshalled into the turn-executor
+    // child). `webfetch` is network egress: `ask` under the default policy.
+    registry.register(bwoc_harness::tools::webfetch::WebFetch::default());
+    // Session state: the todo list lives as long as this process; the subagent
+    // reuses this session's provider and model with read-only tools.
+    registry.register(bwoc_harness::tools::session::Todo::default());
+    // The subagent runs its inner reads under this same policy (it cannot prompt).
+    registry.register(
+        bwoc_harness::tools::session::Subagent::new(provider.clone(), resolved_model.clone())
+            .with_policy(policy.clone()),
+    );
+    for line in register_mcp_servers(&mut registry, &args.mcp, &args.mcp_http).await {
+        eprintln!("[bwoc-harness] mcp: {line}");
+    }
+    let registry = Arc::new(registry);
+    let ctx = if args.unrestricted {
+        ToolContext::unconfined(workdir)
+    } else {
+        ToolContext::new(workdir)
+    }
+    .with_memory_dir(memory_dir.clone());
 
     // Context budget from the real window: `--max-context`, else what the
     // provider reports, else a known backend window, else the default.
