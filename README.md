@@ -332,6 +332,7 @@ The `bwoc` CLI and `bwoc-agent` daemon read and respect the following environmen
 | `BWOC_AUTO_CLAIM` | Opt-in flag for `bwoc-agent --serve` to automatically claim and wake up the agent when a new task becomes claimable. | `1` to enable, otherwise disabled |
 | `BWOC_WARM` | Opt-in flag for `bwoc-agent --serve` to run an auto-claimed task in a resident `bwoc-harness --headless` (warm — no per-task cold-start) instead of tmux-waking a session. Confined (harness) backends only; `requires_plan` tasks fall back to the wake path. | `1` to enable, otherwise disabled |
 | `BWOC_DISABLE_TMUX_WAKEUP` | Opt-out flag to suppress tmux wakeup pings during `bwoc send` (useful in CI or testing). | `1` to suppress |
+| `BWOC_NO_DEPRECATION_WARNINGS` | Suppresses the one-line stderr warning printed when a deprecated CLI command is used (e.g. `bwoc notes` → `bwoc doc`). stdout, `--json` and exit codes are never affected. | `1` to suppress |
 | `BWOC_NO_WHATSNEW` | Suppresses the one-line "you upgraded" notice printed to stderr on the first run of a new `MAJOR.MINOR` version. | `1` to suppress |
 | `BWOC_NO_UPDATE_CHECK` | Opts out of the startup update-check (the network drift guard that compares the running version against the latest release). | Set to any value to opt out |
 

@@ -641,6 +641,7 @@ Commands:
   bwoc memory show --all --json       same as a JSON array of {name, content}
   bwoc memory put <name>              write from stdin (or `--file <p>`); `--force` overwrites
   bwoc memory search <query>          substring match across entries (case-insensitive)
+  bwoc memory search <q> <agent> --tier 2   query the agent's Tier 2 deep-memory backend
   bwoc memory rm <name>               delete an entry; TTY-confirms unless `--yes` / `-y`
 
 Entry name in `show` / `put` accepts `<name>` or `<name>.md`
