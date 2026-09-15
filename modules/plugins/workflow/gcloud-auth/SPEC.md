@@ -24,7 +24,7 @@ maturity: L1
 | Operation | Direction | Auth | Side effect |
 |---|---|---|---|
 | `status` | read | none required | None — reads local config + file presence only; **never** prints a token or credential value. |
-| `login` | write (local) | none required | Streams `gcloud auth login` to the operator's TTY. **Operator-driven only**; never auto-invoked by an agent (excluded from the `gcloud-ops` skill — BWOC-54 / design note §Decision 5). |
+| `login` | write (local) | none required | Streams `gcloud auth login` to the operator's TTY. **Operator-driven only**; never auto-invoked by an agent (BWOC-54 / design note §Decision 5). |
 
 `status` is the canonical agent-facing read. `login` is a thin pass-through to the `gcloud` CLI.
 

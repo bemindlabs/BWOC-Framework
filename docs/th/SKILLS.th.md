@@ -8,9 +8,9 @@ nav_order: 11
 
 **Framework skill** คือความสามารถที่เฟรมเวิร์กแนะนำให้เป็น baseline ที่ agent สามารถเลือก opt-in ได้ เป็น "standard library" ของพฤติกรรม agent — มี contract ที่ชัดเจน, ทดสอบได้, เป็นกลางต่อทุก backend, ค้นพบได้ผ่าน manifest format เดียวกัน
 
-เอกสารนี้กำหนดรูปแบบ manifest, สัญญาการ invoke, กลไกการค้นพบ, และ verification gates Reference skill ตัวแรก (`worktree-discipline`) จะลงพร้อมกับ spec นี้ — ทั้ง spec และ implementation พิสูจน์รูปแบบไปด้วยกัน
+เอกสารนี้กำหนดรูปแบบ manifest, สัญญาการ invoke, กลไกการค้นพบ, และ verification gates เฟรมเวิร์กมี skill ห้าตัวใต้ [`modules/skills/`](../../modules/skills/README.md); แต่ละตัวเป็นแนวทางแบบ prose ที่ agent เลือก opt-in
 
-> [!abstract] สถานะ: scaffold เริ่มต้น ตาราง manifest ด้านล่างเป็น normative และ audit โดย `bwoc check`; lifecycle init/invoke/teardown และการ resolve ตอน spawn เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime; ส่วน prose อาจปรับเมื่องาน story BWOC-1..3 ทำให้ contract ละเอียดขึ้น Reference skill ตัวแรกจะมาใน BWOC-6
+> [!abstract] สถานะ: scaffold เริ่มต้น ตาราง manifest ด้านล่างเป็น normative และ audit โดย `bwoc check`; lifecycle init/invoke/teardown และการ resolve ตอน spawn เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime; ส่วน prose อาจปรับเมื่องาน story BWOC-1..3 ทำให้ contract ละเอียดขึ้น
 
 ---
 
@@ -44,20 +44,20 @@ modules/skills/
 
 ```toml
 [skill]
-name        = "worktree-discipline"             # บังคับ — ต้องตรงกับชื่อไดเรกทอรี
+name        = "documenter"                      # บังคับ — ต้องตรงกับชื่อไดเรกทอรี
 version     = "0.1.0"                           # บังคับ — semver
-description = "Create, isolate, cleanup worktrees per Anatta."   # บังคับ — สรุปหนึ่งประโยค
+description = "Capture how a system actually works."   # บังคับ — สรุปหนึ่งประโยค
 maturity    = "L1"                              # บังคับ — ดู "Maturity"
 
 [contract]
 requires         = []                              # ไม่บังคับ (default []) — framework skill อื่นที่ skill นี้พึ่งพา
 requires_plugins = []                              # ไม่บังคับ (default []) — KIND ของ plugin ที่ skill นี้ต้องการให้ enable
-exposes          = ["claim_task", "release_task"]  # บังคับ — operations ที่ skill เปิดให้ผู้เรียก
+exposes          = ["document", "sync"]            # บังคับ — operations ที่ skill เปิดให้ผู้เรียก
                                                    #   (ต้องเป็น array ที่ไม่ว่าง; ถ้าว่างคือ skill ไม่เปิดอะไรเลย
                                                    #    ก็ไม่ควรมีอยู่ — ดู "อ้างอิงฟิลด์")
 
 [gates]
-verify      = "bwoc skill verify worktree-discipline"   # ไม่บังคับ — shell command; exit 0 ถ้า skill ทำงานได้
+verify      = "<shell command>"   # ไม่บังคับ — exit 0 ถ้า skill ทำงานได้; ห้ามเรียก `bwoc skill verify`
 ```
 
 ### อ้างอิงฟิลด์
@@ -71,7 +71,7 @@ verify      = "bwoc skill verify worktree-discipline"   # ไม่บังค�
 | `[contract]` | `requires` | ไม่ (default `[]`) | array of strings | ชื่อ framework **skill** ที่ติดตั้งแล้วและ skill นี้พึ่งพา; การ resolve ตอน spawn เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime |
 | `[contract]` | `requires_plugins` | ไม่ (default `[]`) | array of strings | **kind** ของ plugin ที่ skill นี้ต้องการให้ enable ใน workspace; ตรวจโดย `bwoc skill verify` (การ resolve ตอน spawn เป็นสเปก ยังไม่ถูกบังคับใช้) (ดู [Skill-on-plugin dependency](#skill-on-plugin-dependency)) |
 | `[contract]` | `exposes` | ใช่ (ไม่ว่าง) | array of strings | operations ที่ skill เปิดให้ผู้เรียก; array ว่างจะไม่ผ่าน `bwoc check` |
-| `[gates]` | `verify` | ไม่ | string (shell command) | คำสั่งที่ `bwoc skill verify <name>` รัน; exit 0 ถ้า skill ทำงานได้ในสภาพแวดล้อมนี้ |
+| `[gates]` | `verify` | ไม่ | string (shell command) | คำสั่งที่ `bwoc skill verify <name> --run-gates` รัน; exit 0 ถ้า skill ทำงานได้ในสภาพแวดล้อมนี้ ห้ามเรียก `bwoc skill verify` เอง — recursion guard ปฏิเสธการเรียกซ้อน ดังนั้น `bwoc check` รายงานเป็น violation |
 
 ### ข้อจำกัดเรื่องความเป็นกลาง (HARD)
 
@@ -145,7 +145,7 @@ Skills เป็น **opt-in ต่อ agent** ไม่ใช่ใช้ได
 {
   "skills": {
     "framework": [
-      { "name": "worktree-discipline", "version": ">=0.1.0", "enabled": true }
+      { "name": "documenter", "version": ">=0.1.0", "enabled": true }
     ]
   }
 }
@@ -174,11 +174,11 @@ Entry ที่ไม่มีฟิลด์ `enabled` ถือเป็น ma
 
 ## Skill-on-plugin dependency
 
-Skill อาจพึ่งพาไม่เพียงแค่ **skill** อื่น (`[contract] requires`) แต่พึ่งพา **plugin** ได้ (`[contract] requires_plugins`) Skill เป็น capability ของ agent; plugin เป็น integration ของเฟรมเวิร์ก ([`PLUGINS.th.md`](PLUGINS.th.md#skill-กับ-plugin)) เมื่อ skill เป็นเพียง wrapper บาง ๆ ด้วยคำศัพท์ scrum/agent บน integration ที่ workspace โหลดอยู่แล้ว มันจะประกาศ integration นั้นเป็น dependency แทนที่จะ reimplement ใหม่ Skill แบบนี้ตัวแรกคือ [`scrum-via-jira`](../../modules/skills/scrum-via-jira/SPEC.md) ซึ่งห่อ verb `bwoc jira` ของ plugin kind `jira`
+Skill อาจพึ่งพาไม่เพียงแค่ **skill** อื่น (`[contract] requires`) แต่พึ่งพา **plugin** ได้ (`[contract] requires_plugins`) Skill เป็น capability ของ agent; plugin เป็น integration ของเฟรมเวิร์ก ([`PLUGINS.th.md`](PLUGINS.th.md#skill-กับ-plugin)) เมื่อ skill เป็นเพียง wrapper บาง ๆ ด้วยคำศัพท์ scrum/agent บน integration ที่ workspace โหลดอยู่แล้ว มันจะประกาศ integration นั้นเป็น dependency แทนที่จะ reimplement ใหม่ ตัวอย่างเช่น skill ที่ห่อ verb `bwoc jira` ของ plugin kind `jira` จะประกาศ dependency ตามด้านล่าง ปัจจุบันยังไม่มี skill ที่ ship ตัวใดประกาศ plugin dependency
 
 ```toml
 [contract]
-requires         = ["worktree-discipline"]   # ชื่อ framework SKILL
+requires         = ["documenter"]            # ชื่อ framework SKILL
 requires_plugins = ["jira"]                   # KIND ของ plugin — ไม่ใช่ชื่อ plugin
 exposes          = ["transition-story", "..."]
 ```
@@ -199,7 +199,7 @@ Skill เรียก verb ของ plugin; plugin ไม่รู้จัก 
 
 ### Skill-on-multiple-plugins
 
-Skill อาจประกอบ plugin **มากกว่าหนึ่งตัว** เมื่อ plugin เหล่านั้นใช้ kind เดียวกัน `requires_plugins` ระบุ kind นั้น **ครั้งเดียว** และ SPEC ของ skill ระบุ instance ของ plugin เฉพาะที่มันขับ skill ตัวแรกแบบนี้คือ [`gcloud-ops`](../../modules/skills/gcloud-ops/SPEC.md) ซึ่งประกอบทั้ง `gcloud-auth` และ `gcloud-project` — เป็น kind `workflow` ทั้งคู่ — ดังนั้น manifest ของมันประกาศ `requires_plugins = ["workflow"]` (kind, ครั้งเดียว) ขณะที่ [สัญญา Operation](../../modules/skills/gcloud-ops/SPEC.th.md#สัญญา-operation) ระบุ plugin สองตัวที่มันเรียก
+Skill อาจประกอบ plugin **มากกว่าหนึ่งตัว** เมื่อ plugin เหล่านั้นใช้ kind เดียวกัน `requires_plugins` ระบุ kind นั้น **ครั้งเดียว** และ SPEC ของ skill ระบุ instance ของ plugin เฉพาะที่มันขับ ตัวอย่างเช่น skill ที่ประกอบทั้ง `gcloud-auth` และ `gcloud-project` — เป็น kind `workflow` ทั้งคู่ — ประกาศ `requires_plugins = ["workflow"]` (kind, ครั้งเดียว) ขณะที่สัญญา operation ใน SPEC ของมันระบุ plugin สองตัวที่มันเรียก
 
 นี่ตามมาจากกฎ kind-based ข้างต้นโดยตรง: `requires_plugins` เป็นการพึ่งพา **kind** ไม่ใช่ **ชื่อ** ผลที่ตามมาสำหรับ skill หลาย plugin คือข้อจำกัด L1 ที่จงใจ — การ resolve ระดับ kind ยืนยันว่ามี plugin `workflow` *สักตัว* เปิดอยู่ ไม่ใช่ว่า plugin *เฉพาะทุกตัว* ที่ skill ประกอบมีครบ:
 
@@ -318,8 +318,8 @@ Registry ของการ install ต่อ workspace สร้างตอน
 ["abc123def456..."]
 url             = "https://github.com/org/skill.git#v0.1.0"   # argument เดิม
 kind            = "skill"                                      # "skill" | "plugin"
-name            = "worktree-discipline"                        # จาก manifest ที่ติดตั้ง
-target          = "modules/skills/worktree-discipline"          # path relative ของ workspace
+name            = "documenter"                                 # จาก manifest ที่ติดตั้ง
+target          = "modules/skills/documenter"                  # path relative ของ workspace
 installed_at    = "2026-05-26T10:23:00Z"                       # ISO 8601 UTC
 installed_hash  = "<SHA-256 ของ tree ที่ติดตั้ง>"                # สำหรับ drift detection
 last_verified   = "2026-05-26T10:23:00Z"                       # set โดย bwoc check
@@ -391,6 +391,7 @@ Skill ขยับ maturity ในการเปลี่ยน `version` ข�
 | มี `SPEC.md` | ไฟล์ `SPEC.md` อยู่ข้าง manifest |
 | ฟิลด์บังคับครบ | `name`, `version`, `description`, `maturity`, `[contract] exposes` ครบ |
 | kind ใน `requires_plugins` valid | ทุกค่าใน `[contract] requires_plugins` (ถ้ามี) เป็น kind enum ของ plugin ที่ valid (ไม่ต้องการให้ plugin enable — นั่นเป็นการตรวจตอน spawn) |
+| Gate ไม่เรียกซ้อน | `[gates].verify` (ถ้ามี) ไม่เรียก `bwoc skill verify` |
 | Source registry parseable | `.bwoc/installed-sources.toml` เป็น TOML ที่ valid ถ้ามี |
 | ไม่มี orphan source record | ทุก entry ที่ `kind = "skill"` ใน registry มี `modules/skills/<name>/` ที่ match |
 | ไม่มี orphan installation | ทุก `modules/skills/<name>/` มี registry entry หรือมี marker file `.authored-in-place` (skill ที่เขียนเองในที่เลือก opt out จาก registry tracking) |
@@ -405,7 +406,7 @@ Check ที่ไม่ผ่าน exit non-zero ใน workspace audit — su
 - **Per-agent skill slot** — ดู [`modules/agent-template/skills/SPEC.md`](../../modules/agent-template/skills/SPEC.md) คนละชั้น คนละ contract
 - **Claude Code session skill** — ดู `.claude/skills/` แนวคิดฝั่ง tool ไม่ใช่ความกังวลของเฟรมเวิร์ก
 - **การโหลด plugin** — ดู [`PLUGINS.th.md`](PLUGINS.th.md) Skill ถูก agent invoke; plugin ถูก framework load
-- **Reference skill ตัวแรกเอง** — ดู story `BWOC-6` และ (เมื่อลงแล้ว) `modules/skills/worktree-discipline/SPEC.md`
+- **Skill แต่ละตัว** — skill ที่ ship แต่ละตัวอธิบายตัวเองใน `modules/skills/<name>/SPEC.md`
 
 ---
 

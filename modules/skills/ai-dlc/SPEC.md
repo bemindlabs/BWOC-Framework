@@ -40,7 +40,7 @@ intent ──plan_increment──▶ [PLAN]  ⟵ human APPROVES intent + plan (c
 Working rules:
 
 1. **Agree intent before building.** No construction until the plan is approved (checkpoint 1).
-2. **Small increments.** One bounded unit at a time; a big intent becomes several increments (compose `manager`).
+2. **Small increments.** One bounded unit at a time; a big intent becomes several increments.
 3. **Human at the irreversible gates, not the keystrokes.** Confirm merges/deploys/destructive ops; automate the rest.
 4. **Every phase verifies.** Build isn't done until gates + acceptance bar pass (Yoniso Manasikāra, Sīla).
 5. **Record as you go.** Documentation and decisions land with the increment, not "later" (`documenter`).
@@ -52,12 +52,11 @@ AI-DLC orchestrates the craft skills rather than re-implementing them — the ph
 
 | Phase | Leans on |
 |---|---|
-| Inception / plan | [[../manager/SPEC\|manager]] (decompose + right-size) |
 | Build | [[../engineering/SPEC\|engineering]] (implement + harden, in an isolated worktree) |
 | Verify | [[../auditor/SPEC\|auditor]] (audit + adversarially verify against the bar) |
 | Document | [[../documenter/SPEC\|documenter]] (capture + keep in sync) |
 
-An agent enabling `ai-dlc` typically enables those four too.
+Inception / plan (decompose + right-size) stays inside `plan_increment`. An agent enabling `ai-dlc` typically enables those three too.
 
 ## Operations Contract
 
@@ -78,7 +77,7 @@ teardown   → close the increment (vaya); spawn the next or stop (no clinging)
 
 ## Maturity
 
-**L1**. → L2 once two intents have gone intent→operate with the checkpoints honored and gates green; → L3 once `bwoc skill verify ai-dlc` is wired + green in CI.
+**L1**. → L2 once two intents have gone intent→operate with the checkpoints honored and gates green; → L3 once a concrete `[gates].verify` check is wired + green in CI.
 
 ## Neutrality
 
@@ -86,7 +85,6 @@ Names no backend/model/vendor; the gates are the repo's own and the checkpoints 
 
 ## See Also
 
-- [[../engineering/SPEC|engineering]] · [[../auditor/SPEC|auditor]] · [[../documenter/SPEC|documenter]] · [[../manager/SPEC|manager]] — the craft skills AI-DLC sequences.
-- [[../worktree-discipline/SPEC|worktree-discipline]] — the Anattā isolation each increment builds in.
+- [[../engineering/SPEC|engineering]] · [[../auditor/SPEC|auditor]] · [[../documenter/SPEC|documenter]] — the craft skills AI-DLC sequences.
 - [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — uppāda/ṭhiti/vaya, Sīla, deferred-control framing.
 - [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.

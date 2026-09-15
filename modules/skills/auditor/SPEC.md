@@ -51,7 +51,7 @@ teardown   → no-op
 
 ## Maturity
 
-**L1**. → L2 once two audits have shipped zero false positives against real targets; → L3 once `bwoc skill verify auditor` is wired + green.
+**L1**. → L2 once two audits have shipped zero false positives against real targets; → L3 once a concrete `[gates].verify` check is wired + green.
 
 ## Neutrality
 
@@ -60,5 +60,4 @@ Names no backend/model/vendor; the standard is supplied per audit. Satisfies **S
 ## See Also
 
 - [[../engineering/SPEC|engineering]] — builds the work this skill checks (gates ↔ audit).
-- [[../manager/SPEC|manager]] — audits confirm delegated work met its bar.
 - [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sacca.
