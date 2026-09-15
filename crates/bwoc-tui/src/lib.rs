@@ -58,7 +58,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 /// Default OpenAI-compatible endpoint when the agent's manifest has no
 /// `baseUrl` (Ollama). Mirrors the harness's own `DEFAULT_ENDPOINT`; defined
@@ -863,6 +863,10 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     // from the front, scaled up by the scroll offset; both are clamped, so the
     // window can never run past either end.
     let inner_height = area.height.saturating_sub(2) as usize; // borders
+    // Window over the rows actually drawn, not transcript lines: one long tool
+    // result wraps to several rows, and counting it as one pushed the newest
+    // rows (the answer) below the box.
+    let lines = hard_wrap(lines, area.width.saturating_sub(2) as usize);
     let total = lines.len();
     let scroll = app.scroll.min(total.saturating_sub(inner_height.max(1)));
     let skip = total.saturating_sub(inner_height.max(1) + scroll);
@@ -881,10 +885,42 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .title(title)
         .border_style(Style::default().fg(tone(design::color::ACCENT)));
-    let p = Paragraph::new(visible)
-        .block(block)
-        .wrap(Wrap { trim: false });
+    let p = Paragraph::new(visible).block(block);
     f.render_widget(p, area);
+}
+
+/// Hard-wrap display lines to `width` terminal columns (wide characters count
+/// double), keeping each span's style, so every returned line is one screen row.
+fn hard_wrap(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    let width = width.max(1);
+    let mut rows = Vec::with_capacity(lines.len());
+    for line in lines {
+        let line_style = line.style;
+        let mut row: Vec<Span<'static>> = Vec::new();
+        let mut used = 0usize;
+        for span in line.spans {
+            let style = span.style;
+            let mut buf = String::new();
+            for ch in span.content.chars() {
+                let w = ch.width().unwrap_or(0);
+                if used > 0 && used + w > width {
+                    if !buf.is_empty() {
+                        row.push(Span::styled(std::mem::take(&mut buf), style));
+                    }
+                    rows.push(Line::from(std::mem::take(&mut row)).style(line_style));
+                    used = 0;
+                }
+                buf.push(ch);
+                used += w;
+            }
+            if !buf.is_empty() {
+                row.push(Span::styled(buf, style));
+            }
+        }
+        rows.push(Line::from(row).style(line_style));
+    }
+    rows
 }
 
 /// One transcript entry as display lines: split on `\n` (a trailing `\r` is
@@ -2227,5 +2263,47 @@ mod tests {
             None
         );
         assert_eq!(permission_answer(KeyCode::Char('x'), true, late), None);
+    }
+
+    #[test]
+    fn hard_wrap_counts_columns_and_keeps_styles() {
+        let style = Style::default().add_modifier(Modifier::BOLD);
+        let rows = hard_wrap(vec![Line::from(Span::styled("abcdefg", style))], 3);
+        let text: Vec<String> = rows.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text, ["abc", "def", "g"]);
+        assert!(
+            rows.iter()
+                .all(|l| l.spans.iter().all(|s| s.style == style))
+        );
+        // Wide characters take two columns; an empty line stays one row.
+        let rows = hard_wrap(vec![Line::from("日本語"), Line::from("")], 4);
+        let text: Vec<String> = rows.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text, ["日本", "語", ""]);
+    }
+
+    #[test]
+    fn e2e_long_tool_output_never_hides_the_answer() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new("agent-pi".into(), "ollama");
+        let long = "x".repeat(400);
+        let result = format!(
+            r#"{{"type":"tool_result","id":"c1","name":"webfetch","ok":true,"output":"{long}"}}"#
+        );
+        let mut wire = vec![
+            r#"{"type":"ready","agent":"agent-pi","model":"m","backend":"ollama","tools":[]}"#,
+        ];
+        for _ in 0..3 {
+            wire.push(result.as_str());
+        }
+        wire.push(r#"{"type":"message","text":"FINAL-ANSWER"}"#);
+        wire.push(r#"{"type":"turn_end","prompt_tokens":1,"completion_tokens":1}"#);
+        feed_wire(&mut app, &wire);
+
+        let (w, h) = (60u16, 20u16);
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+        term.draw(|f| draw_frame(f, &app)).expect("draw");
+        let screen = rendered_text(&term, w, h);
+        assert!(screen.contains("FINAL-ANSWER"), "answer hidden:\n{screen}");
     }
 }
