@@ -657,10 +657,9 @@ fn build_anthropic_body(
                 // The `computer` tool is a *provider-defined* native tool keyed by
                 // `type` (not a custom function), and the request must also carry
                 // the computer-use beta header (see `anthropic_beta_for`). The
-                // display geometry matches the headless-browser executor viewport
-                // so the model reasons in the right coordinate space.
+                // display geometry is the tool's advertised viewport.
                 if t.function.name == "computer" {
-                    let (w, h) = crate::tools::browser::DEFAULT_VIEWPORT;
+                    let (w, h) = crate::tools::computer::DEFAULT_VIEWPORT;
                     crate::tools::computer::anthropic_tool_spec(w, h, None)
                 } else {
                     json!({
@@ -1404,7 +1403,7 @@ mod tests {
         let comp = arr.iter().find(|t| t["name"] == "computer").unwrap();
         assert_eq!(comp["type"], "computer_20250124");
         assert!(comp.get("input_schema").is_none());
-        let (w, h) = crate::tools::browser::DEFAULT_VIEWPORT;
+        let (w, h) = crate::tools::computer::DEFAULT_VIEWPORT;
         assert_eq!(comp["display_width_px"], w);
         assert_eq!(comp["display_height_px"], h);
         // The sibling custom function is untouched.
