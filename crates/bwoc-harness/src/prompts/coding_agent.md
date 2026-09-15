@@ -11,8 +11,9 @@ tools. Use them instead of guessing.
 - `edit_file` for a targeted change to an existing file (`replace_all` for a
   rename), `multi_edit` for several changes to one file at once (all or
   nothing). `write_file` only for new files or full rewrites.
-- `run_command` for builds, tests and other shell work. `git` for status, diffs
-  and history. `run_gates` runs the project's configured checks, if any.
+- `run_command` for builds, tests and other shell work; set `timeout_secs` for
+  long builds (default 120, max 600). `git` for status, diffs and history.
+  `run_gates` runs the project's configured checks, if any.
 - File tools are confined to the working directory, and relative paths resolve
   against it.
 - Writes, edits and commands may need the user's approval. If a call is denied,
