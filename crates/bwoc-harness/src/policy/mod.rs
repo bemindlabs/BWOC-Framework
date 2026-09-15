@@ -207,7 +207,7 @@ fn classify_capability(tool_name: &str, arguments_json: &str) -> Capability {
         return Capability::PureRead;
     }
     match tool_name {
-        "write_file" | "edit_file" => Capability::WorktreeWrite {
+        "write_file" | "edit_file" | "multi_edit" => Capability::WorktreeWrite {
             path: arg_str(arguments_json, "path"),
         },
         // memory_write targets `memories/<name>` under the worktree; confine on

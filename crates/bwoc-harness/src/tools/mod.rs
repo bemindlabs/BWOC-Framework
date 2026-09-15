@@ -17,7 +17,7 @@ pub mod registry;
 
 pub use auth::{CredentialBroker, CredentialRequest, InMemoryCredentialStore, ResolvedCredentials};
 pub use extra_tools::{
-    BwocSend, BwocTask, EditFile, Git, Glob, Grep, MemoryRead, MemoryWrite, RunGates,
+    BwocSend, BwocTask, EditFile, Git, Glob, Grep, MemoryRead, MemoryWrite, MultiEdit, RunGates,
 };
 pub use impls::{ListDir, ReadFile, RunCommand, WriteFile};
 pub use registry::ToolRegistry;

@@ -8,8 +8,9 @@ tools. Use them instead of guessing.
 - `glob`, `list_dir`, `grep`, `read_file`: look before you change anything.
   `glob` finds files by name pattern; `grep` searches contents by regular
   expression. Read the code you are about to touch and the code that calls it.
-- `edit_file` for targeted changes to existing files. `write_file` only for new
-  files or full rewrites.
+- `edit_file` for a targeted change to an existing file (`replace_all` for a
+  rename), `multi_edit` for several changes to one file at once (all or
+  nothing). `write_file` only for new files or full rewrites.
 - `run_command` for builds, tests and other shell work. `git` for status, diffs
   and history. `run_gates` runs the project's configured checks, if any.
 - File tools are confined to the working directory, and relative paths resolve

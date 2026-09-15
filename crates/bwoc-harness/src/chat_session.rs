@@ -163,7 +163,7 @@ impl SessionMode {
     fn auto_allows(self, tool: &str) -> bool {
         match self {
             Self::Default | Self::Plan => false,
-            Self::AcceptEdits => matches!(tool, "edit_file" | "write_file"),
+            Self::AcceptEdits => matches!(tool, "edit_file" | "multi_edit" | "write_file"),
             Self::Bypass => true,
         }
     }
@@ -1117,6 +1117,7 @@ mod tests {
         // accept_edits auto-allows write/edit only.
         assert!(SessionMode::AcceptEdits.auto_allows("edit_file"));
         assert!(SessionMode::AcceptEdits.auto_allows("write_file"));
+        assert!(SessionMode::AcceptEdits.auto_allows("multi_edit"));
         assert!(!SessionMode::AcceptEdits.auto_allows("run_command"));
         // bypass auto-allows anything.
         assert!(SessionMode::Bypass.auto_allows("run_command"));

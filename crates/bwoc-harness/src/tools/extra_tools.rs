@@ -140,6 +140,56 @@ fn apply_edit(content: &str, old: &str, new: &str) -> EditOutcome {
     }
 }
 
+/// Apply one edit to in-memory `content`. Returns the new content and a short
+/// "replaced …" summary, or the refusal reason. `replace_all` replaces every
+/// exact occurrence (no whitespace-tolerant pass: a bulk rewrite must not
+/// guess); otherwise [`apply_edit`]'s unique-match rules apply.
+fn apply_one(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<(String, String), String> {
+    if old.is_empty() {
+        return Err("`old_string` must not be empty".to_string());
+    }
+    if replace_all {
+        let count = content.matches(old).count();
+        if count == 0 {
+            return Err(
+                "`old_string` not found (`replace_all` matches exactly). Read the file \
+                 first and ensure the text matches."
+                    .to_string(),
+            );
+        }
+        return Ok((
+            content.replace(old, new),
+            format!("replaced {count} occurrence(s) (exact match, replace_all)"),
+        ));
+    }
+    match apply_edit(content, old, new) {
+        EditOutcome::Replaced { content, how } => {
+            Ok((content, format!("replaced 1 occurrence ({how} match)")))
+        }
+        EditOutcome::NotFound => Err(
+            "`old_string` not found (tried exact and whitespace-tolerant matching). \
+             Read the file first and ensure the lines match."
+                .to_string(),
+        ),
+        EditOutcome::Ambiguous { count } => Err(format!(
+            "`old_string` matches {count} places. Provide more surrounding context so \
+             the match is unique, or set `replace_all`."
+        )),
+    }
+}
+
+fn tool_error(tool: &str, reason: impl Into<String>) -> HarnessError {
+    HarnessError::ToolExecution {
+        tool: tool.to_string(),
+        reason: reason.into(),
+    }
+}
+
 #[async_trait]
 impl ToolImpl for EditFile {
     fn name(&self) -> &'static str {
@@ -152,7 +202,8 @@ impl ToolImpl for EditFile {
          whitespace-tolerant line match (indentation/trailing-space differences \
          are forgiven and the replacement is re-indented to the file). Fails if \
          `old_string` is not found, or matches more than one place (provide more \
-         surrounding context to disambiguate). The file must already exist."
+         surrounding context to disambiguate). Set `replace_all` to replace every \
+         exact occurrence instead. The file must already exist."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -170,6 +221,10 @@ impl ToolImpl for EditFile {
                 "new_string": {
                     "type": "string",
                     "description": "The replacement string."
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every exact occurrence of `old_string` (e.g. a rename). Default: false."
                 }
             },
             "required": ["path", "old_string", "new_string"]
@@ -177,70 +232,151 @@ impl ToolImpl for EditFile {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
-        let raw = args["path"]
-            .as_str()
-            .ok_or_else(|| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: "missing `path` argument".to_string(),
-            })?;
-        let old = args["old_string"]
-            .as_str()
-            .ok_or_else(|| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: "missing `old_string` argument".to_string(),
-            })?;
-        let new = args["new_string"]
-            .as_str()
-            .ok_or_else(|| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: "missing `new_string` argument".to_string(),
-            })?;
+        let arg = |key: &str| {
+            args[key]
+                .as_str()
+                .ok_or_else(|| tool_error(self.name(), format!("missing `{key}` argument")))
+        };
+        let raw = arg("path")?;
+        let old = arg("old_string")?;
+        let new = arg("new_string")?;
+        let replace_all = args["replace_all"].as_bool().unwrap_or(false);
 
         let path = ctx.resolve_path(raw)?;
+        let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot read `{}`: {e}", path.display()),
+            )
+        })?;
 
-        let content =
-            tokio::fs::read_to_string(&path)
-                .await
-                .map_err(|e| HarnessError::ToolExecution {
-                    tool: self.name().to_string(),
-                    reason: format!("cannot read `{}`: {e}", path.display()),
-                })?;
+        let (updated, summary) = apply_one(&content, old, new, replace_all).map_err(|reason| {
+            tool_error(self.name(), format!("{reason} (`{}`)", path.display()))
+        })?;
 
-        let (updated, how) = match apply_edit(&content, old, new) {
-            EditOutcome::Replaced { content, how } => (content, how),
-            EditOutcome::NotFound => {
-                return Err(HarnessError::ToolExecution {
-                    tool: self.name().to_string(),
-                    reason: format!(
-                        "`old_string` not found in `{}` (tried exact and \
-                         whitespace-tolerant matching). Read the file first and \
-                         ensure the lines match.",
+        tokio::fs::write(&path, &updated).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot write `{}`: {e}", path.display()),
+            )
+        })?;
+
+        Ok(format!("edited `{}`: {summary}", path.display()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// multi_edit — several replacements in one file, all or nothing
+// ---------------------------------------------------------------------------
+
+/// Apply an ordered list of `edit_file`-style replacements to one file. Every
+/// edit runs against the result of the previous one, in memory; the file is
+/// written once, and only if every edit succeeded.
+pub struct MultiEdit;
+
+/// Upper bound on edits per call — a runaway list is a model fault, not a patch.
+const MULTI_EDIT_MAX: usize = 100;
+
+#[async_trait]
+impl ToolImpl for MultiEdit {
+    fn name(&self) -> &'static str {
+        "multi_edit"
+    }
+
+    fn description(&self) -> &'static str {
+        "Apply several string replacements to one file, in order, all or nothing. \
+         Each entry in `edits` has `old_string`, `new_string` and optional \
+         `replace_all`, with the same matching rules as `edit_file`, and sees the \
+         result of the edits before it. If any edit fails, nothing is written. \
+         The file must already exist."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to edit (relative to working directory)."
+                },
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Replacements applied in order.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": { "type": "string" },
+                            "new_string": { "type": "string" },
+                            "replace_all": { "type": "boolean" }
+                        },
+                        "required": ["old_string", "new_string"]
+                    }
+                }
+            },
+            "required": ["path", "edits"]
+        })
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String, HarnessError> {
+        let raw = args["path"]
+            .as_str()
+            .ok_or_else(|| tool_error(self.name(), "missing `path` argument"))?;
+        let edits = args["edits"]
+            .as_array()
+            .filter(|e| !e.is_empty())
+            .ok_or_else(|| tool_error(self.name(), "`edits` must be a non-empty array"))?;
+        if edits.len() > MULTI_EDIT_MAX {
+            return Err(tool_error(
+                self.name(),
+                format!("too many edits ({}; max {MULTI_EDIT_MAX})", edits.len()),
+            ));
+        }
+
+        let path = ctx.resolve_path(raw)?;
+        let mut content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot read `{}`: {e}", path.display()),
+            )
+        })?;
+
+        let mut summaries = Vec::with_capacity(edits.len());
+        for (i, edit) in edits.iter().enumerate() {
+            let n = i + 1;
+            let (Some(old), Some(new)) = (edit["old_string"].as_str(), edit["new_string"].as_str())
+            else {
+                return Err(tool_error(
+                    self.name(),
+                    format!("edit #{n}: needs `old_string` and `new_string`; no changes written"),
+                ));
+            };
+            let replace_all = edit["replace_all"].as_bool().unwrap_or(false);
+            let (next, summary) = apply_one(&content, old, new, replace_all).map_err(|reason| {
+                tool_error(
+                    self.name(),
+                    format!(
+                        "edit #{n}: {reason} (`{}`); no changes written",
                         path.display()
                     ),
-                });
-            }
-            EditOutcome::Ambiguous { count } => {
-                return Err(HarnessError::ToolExecution {
-                    tool: self.name().to_string(),
-                    reason: format!(
-                        "`old_string` matches {count} places in `{}`. \
-                         Provide more surrounding context so the match is unique.",
-                        path.display()
-                    ),
-                });
-            }
-        };
-
-        tokio::fs::write(&path, &updated)
-            .await
-            .map_err(|e| HarnessError::ToolExecution {
-                tool: self.name().to_string(),
-                reason: format!("cannot write `{}`: {e}", path.display()),
+                )
             })?;
+            content = next;
+            summaries.push(format!("#{n}: {summary}"));
+        }
+
+        tokio::fs::write(&path, &content).await.map_err(|e| {
+            tool_error(
+                self.name(),
+                format!("cannot write `{}`: {e}", path.display()),
+            )
+        })?;
 
         Ok(format!(
-            "edited `{}`: replaced 1 occurrence ({how} match)",
-            path.display()
+            "edited `{}`: applied {} edit(s)\n{}",
+            path.display(),
+            summaries.len(),
+            summaries.join("\n")
         ))
     }
 }
@@ -1782,6 +1918,127 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn edit_file_replace_all() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("f.rs"), "old();\nold();\nkeep();\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        let msg = EditFile
+            .execute(
+                json!({"path": "f.rs", "old_string": "old", "new_string": "new", "replace_all": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(msg.contains("replaced 2 occurrence"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("f.rs")).unwrap(),
+            "new();\nnew();\nkeep();\n"
+        );
+        // replace_all is exact-only: nothing matches → error, file untouched.
+        let err = EditFile
+            .execute(
+                json!({"path": "f.rs", "old_string": "absent", "new_string": "x", "replace_all": true}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
+        // An empty old_string is refused (it would match everywhere).
+        let err = EditFile
+            .execute(
+                json!({"path": "f.rs", "old_string": "", "new_string": "x", "replace_all": true}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    // ── multi_edit ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn multi_edit_applies_in_order() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("m.txt"), "a b\nc\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        let msg = MultiEdit
+            .execute(
+                json!({"path": "m.txt", "edits": [
+                    {"old_string": "a", "new_string": "x"},
+                    // Sees the first edit's result.
+                    {"old_string": "x b", "new_string": "y"},
+                    {"old_string": "c", "new_string": "z", "replace_all": true}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(msg.contains("applied 3 edit(s)"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("m.txt")).unwrap(),
+            "y\nz\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_edit_is_all_or_nothing() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("m.txt"), "one\ntwo\ntwo\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        for edits in [
+            json!([{"old_string": "one", "new_string": "1"}, {"old_string": "missing", "new_string": "x"}]),
+            json!([{"old_string": "one", "new_string": "1"}, {"old_string": "two", "new_string": "2"}]),
+            json!([{"old_string": "one"}]),
+            json!([]),
+        ] {
+            let err = MultiEdit
+                .execute(json!({"path": "m.txt", "edits": edits}), &ctx)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, HarnessError::ToolExecution { .. }), "{err}");
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join("m.txt")).unwrap(),
+                "one\ntwo\ntwo\n",
+                "a failed batch must leave the file untouched"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_edit_path_escape_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let err = MultiEdit
+            .execute(
+                json!({"path": "../x.txt", "edits": [{"old_string": "a", "new_string": "b"}]}),
+                &ctx_for(&tmp),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HarnessError::PathEscape(_)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn multi_edit_refuses_a_symlink_escape() {
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("t.txt"), "a").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("link")).unwrap();
+        let err = MultiEdit
+            .execute(
+                json!({"path": "link/t.txt", "edits": [{"old_string": "a", "new_string": "b"}]}),
+                &ctx_for(&tmp),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HarnessError::PathEscape(_)));
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("t.txt")).unwrap(),
+            "a"
+        );
+    }
+
     // ── grep ──────────────────────────────────────────────────────────────────
 
     #[test]
@@ -2320,6 +2577,7 @@ mod tests {
     fn all_new_tools_have_schemas() {
         let tools: Vec<Box<dyn ToolImpl + Send + Sync>> = vec![
             Box::new(EditFile),
+            Box::new(MultiEdit),
             Box::new(Grep),
             Box::new(Glob),
             Box::new(Git),

@@ -63,7 +63,8 @@ impl Default for ToolRegistry {
 /// `bwoc_send`, `bwoc_run`, `memory_read`, `memory_write`
 pub fn default_registry() -> ToolRegistry {
     use super::extra_tools::{
-        BwocRun, BwocSend, BwocTask, EditFile, Git, Glob, Grep, MemoryRead, MemoryWrite, RunGates,
+        BwocRun, BwocSend, BwocTask, EditFile, Git, Glob, Grep, MemoryRead, MemoryWrite, MultiEdit,
+        RunGates,
     };
     use super::impls::{ListDir, ReadFile, RunCommand, WriteFile};
     let mut reg = ToolRegistry::new();
@@ -74,6 +75,7 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(RunCommand);
     // Complete tool set
     reg.register(EditFile);
+    reg.register(MultiEdit);
     reg.register(Grep);
     reg.register(Glob);
     reg.register(Git);
@@ -171,6 +173,7 @@ mod tests {
         assert!(names.contains(&"run_command"));
         // Complete tool set
         assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"multi_edit"));
         assert!(names.contains(&"grep"));
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"git"));
