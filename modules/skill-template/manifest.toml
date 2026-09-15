@@ -13,5 +13,7 @@ maturity    = "L1"
 requires    = []
 exposes     = ["{{skillOperation}}"]
 
-[gates]
-verify      = "bwoc skill verify {{skillName}}"
+# Optional: add a [gates] table with `verify = "<shell command>"` when the
+# skill has something concrete to check. The gate runs inside
+# `bwoc skill verify --run-gates`, so it must not call `bwoc skill verify`
+# itself — `bwoc check` rejects that.

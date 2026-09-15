@@ -7,6 +7,3 @@ maturity    = "L1"
 [contract]
 requires    = []
 exposes     = ["implement", "harden"]
-
-[gates]
-verify      = "bwoc skill verify engineering"
