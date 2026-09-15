@@ -713,6 +713,7 @@ where
         while let Some(delta) = rx.recv().await {
             let event = match delta {
                 LiveDelta::Content(text) => ChatEvent::Token { text },
+                LiveDelta::Thinking(text) => ChatEvent::Thinking { text },
             };
             emit(out, &event).await?;
         }
@@ -1326,6 +1327,8 @@ mod tests {
                         role: None,
                         content,
                         tool_calls: (!tc_deltas.is_empty()).then_some(tc_deltas),
+                        reasoning_content: None,
+                        reasoning: None,
                     },
                     finish_reason: Some(FinishReason::Stop),
                 }],

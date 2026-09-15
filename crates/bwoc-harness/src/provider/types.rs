@@ -524,6 +524,17 @@ pub struct Delta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
+    /// Reasoning / thinking text, as OpenAI-compatible reasoning servers stream
+    /// it (`reasoning_content`); the Anthropic client maps `thinking_delta` here
+    /// too. Display-only: surfaced to a live frontend, never accumulated into
+    /// the message.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    /// The same, under the `reasoning` name other OpenAI-compatible servers use.
+    /// A separate field rather than a serde alias, so a chunk carrying both
+    /// names still parses.
+    #[serde(default)]
+    pub reasoning: Option<String>,
 }
 
 /// Incremental tool call in a streaming delta (index-keyed for accumulation).

@@ -158,6 +158,8 @@ pub(super) struct ToolCallResult {
 pub(crate) enum LiveDelta {
     /// Assistant content text.
     Content(String),
+    /// Reasoning / thinking text, when the provider streams it.
+    Thinking(String),
 }
 
 /// A sink for [`LiveDelta`]s. `None` everywhere except the chat driver.
@@ -209,6 +211,14 @@ pub(super) async fn stream_and_accumulate_live(
         }
         for delta_choice in chunk.choices {
             let delta = delta_choice.delta;
+
+            if let Some(sink) = live.as_deref_mut() {
+                if let Some(text) = delta.reasoning_content.or(delta.reasoning) {
+                    if !text.is_empty() {
+                        sink(LiveDelta::Thinking(text));
+                    }
+                }
+            }
 
             if let Some(content) = delta.content {
                 content_buf.push_str(&content);

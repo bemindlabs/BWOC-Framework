@@ -310,6 +310,9 @@ struct App {
     /// Accumulator for the in-flight streamed assistant turn. Flushed to
     /// `conversation` on `Message`/`TurnEnd`.
     streaming: String,
+    /// Reasoning text streamed for the current step. Shown dimmed while it
+    /// arrives, then collapsed to one `∴` line when anything else follows.
+    thinking: String,
     /// The current input buffer (one line).
     input: String,
     /// A permission request awaiting `a`/`d`. Only one at a time.
@@ -353,6 +356,7 @@ impl App {
             status: None,
             conversation: vec!["(waiting for harness to become ready…)".to_string()],
             streaming: String::new(),
+            thinking: String::new(),
             input: String::new(),
             pending: None,
             usage: None,
@@ -397,10 +401,29 @@ impl App {
         }
     }
 
+    /// Collapse streamed reasoning into one dimmed transcript line: its size and
+    /// a whitespace-flattened preview.
+    fn flush_thinking(&mut self) {
+        const PREVIEW_CHARS: usize = 80;
+        let text = std::mem::take(&mut self.thinking);
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.is_empty() {
+            return;
+        }
+        let chars = flat.chars().count();
+        let preview: String = flat.chars().take(PREVIEW_CHARS).collect();
+        let more = if chars > PREVIEW_CHARS { "…" } else { "" };
+        self.conversation
+            .push(format!("∴ thinking ({chars} chars): {preview}{more}"));
+    }
+
     /// Fold one harness event into the app state. Pure w.r.t. I/O — returns
     /// nothing; the loop redraws after applying. Factored so the event→state
     /// mapping is unit-testable without a terminal.
     fn apply(&mut self, ev: ChatEvent) {
+        if !matches!(ev, ChatEvent::Thinking { .. }) {
+            self.flush_thinking();
+        }
         match ev {
             ChatEvent::Ready {
                 agent,
@@ -420,6 +443,9 @@ impl App {
             ChatEvent::Restored { role, text } => {
                 // A replayed turn from a persisted session.
                 self.conversation.push(format!("{role}: {text}"));
+            }
+            ChatEvent::Thinking { text } => {
+                self.thinking.push_str(&text);
             }
             ChatEvent::Token { text } => {
                 self.streaming.push_str(&text);
@@ -802,6 +828,13 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .iter()
         .map(|l| Line::from(Span::styled(l.clone(), transcript_style(l))))
         .collect();
+    // Reasoning still arriving: one dimmed progress line (collapsed later).
+    if app.streaming.is_empty() && !app.thinking.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("∴ thinking… ({} chars)", app.thinking.chars().count()),
+            Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
+        )));
+    }
     // Show the in-flight streamed turn live, below the committed history.
     if !app.streaming.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -851,7 +884,11 @@ fn transcript_style(line: &str) -> Style {
         Style::default().fg(tone(design::color::DANGER))
     } else if line.starts_with('✓') {
         Style::default().fg(tone(design::color::SUCCESS))
-    } else if line.starts_with('→') || line.starts_with('●') || line.starts_with('📢') {
+    } else if line.starts_with('→')
+        || line.starts_with('●')
+        || line.starts_with('📢')
+        || line.starts_with('∴')
+    {
         Style::default().add_modifier(Modifier::DIM)
     } else {
         Style::default()
@@ -1692,6 +1729,34 @@ mod tests {
         assert!(s.contains("agent-pi"));
         assert!(s.contains("openai-compatible"));
         assert!(s.contains("connecting"));
+    }
+
+    #[test]
+    fn thinking_streams_then_collapses_to_one_dim_line() {
+        let mut app = App::new("a".into(), "anthropic");
+        app.apply(ChatEvent::Thinking {
+            text: "Let me\nthink ".into(),
+        });
+        app.apply(ChatEvent::Thinking {
+            text: "about it.".into(),
+        });
+        assert_eq!(app.thinking, "Let me\nthink about it.");
+        // The first non-thinking event collapses it.
+        app.apply(ChatEvent::Token {
+            text: "Answer".into(),
+        });
+        assert!(app.thinking.is_empty());
+        let collapsed: Vec<_> = app
+            .conversation
+            .iter()
+            .filter(|l| l.starts_with('∴'))
+            .collect();
+        assert_eq!(collapsed, ["∴ thinking (22 chars): Let me think about it."]);
+        assert_eq!(app.streaming, "Answer");
+        assert_eq!(
+            transcript_style(collapsed[0]),
+            Style::default().add_modifier(Modifier::DIM)
+        );
     }
 
     #[test]
