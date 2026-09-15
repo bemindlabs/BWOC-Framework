@@ -13,11 +13,15 @@
 //!
 //! The per-turn shape mirrors [`crate::agent_loop::run_loop`]: same provider
 //! ([`ProviderClient::complete`]), same [`ToolRegistry`] / [`ToolContext`], and
-//! the same safety pipeline — guardrails ([`policy::guardrail_check`]) then the
-//! permission policy ([`policy::permission`]). The one difference is `ask`-mode:
-//! `run_loop` prompts the controlling TTY, whereas here an `ask` decision is
-//! routed to the frontend via a [`ChatEvent::PermissionRequest`] and answered
-//! with a [`ChatInput::Permission`].
+//! the same safety pipeline — the capability gate
+//! ([`policy::capability_gate`]), guardrails ([`policy::guardrail_check`]), the
+//! permission policy ([`policy::permission`]), then execution through
+//! [`crate::turn_executor::execute_proceeded`] (OS sandbox, isolated
+//! turn-executor process on unix). The difference is who answers: `run_loop`
+//! prompts the controlling TTY, whereas here an `ask` decision — and, in an
+//! interactive session, a capability-gate refusal — is routed to the frontend
+//! via a [`ChatEvent::PermissionRequest`] and answered with a
+//! [`ChatInput::Permission`].
 //!
 //! # Scope
 //!
@@ -34,10 +38,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 
 use crate::error::{HarnessError, HarnessResult};
 use crate::policy::permission::{self, Mode};
-use crate::policy::{Policy, guardrail_check};
+use crate::policy::{Policy, PolicyOutcome, guardrail_check};
+use crate::provider::types::ImageBlock;
 use crate::provider::{ChatMessage, ProviderClient, Role, ToolCall};
-use crate::tools::registry::dispatch;
+use crate::session_trust::SessionTrust;
 use crate::tools::{ToolContext, ToolRegistry};
+use bwoc_core::trust::TrustLevel;
 
 /// Everything the driver needs to run a session, mirroring the locals
 /// `main.rs::run()` assembles for the batch path.
@@ -298,6 +304,11 @@ where
 
     let mut models = ModelChain::new(&config);
 
+    // Phase 5 t2 trust latch, as in `run_loop`: once untrusted ingress (a
+    // connector message, a tool output) is in the window, later turns are
+    // Untrusted and the capability gate applies.
+    let mut session_trust = SessionTrust::default();
+
     // Sorted so the `Ready.tools` list is stable across runs (the registry is a
     // HashMap → non-deterministic iteration order).
     let mut tool_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
@@ -465,6 +476,7 @@ where
                         &mut session_mode,
                         &mut interjection,
                         &mut models,
+                        &mut session_trust,
                     )
                     .await?;
                     // Persist the conversation after the turn settles (incl. tool
@@ -719,6 +731,7 @@ async fn run_turn<R, W>(
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
     models: &mut ModelChain,
+    session_trust: &mut SessionTrust,
 ) -> HarnessResult<()>
 where
     R: AsyncBufReadExt + Unpin,
@@ -833,11 +846,15 @@ where
         // Append the assistant(tool_calls) message before its results (OpenAI
         // ordering), then run each call through the pipeline.
         history.push(message);
+        // Fold this step's history into the trust latch before dispatch, exactly
+        // where `run_loop` does.
+        let turn_trust = session_trust.observe(history);
         for call in &tool_calls {
-            let result = dispatch_call(
+            let (result, images) = dispatch_call(
                 registry,
                 ctx,
-                &config.policy,
+                config,
+                turn_trust,
                 call,
                 lines,
                 out,
@@ -845,11 +862,10 @@ where
                 interjection,
             )
             .await?;
-            history.push(ChatMessage::tool_result(
-                call.id.clone(),
-                call.function.name.clone(),
-                result,
-            ));
+            history.push(
+                ChatMessage::tool_result(call.id.clone(), call.function.name.clone(), result)
+                    .with_images(images),
+            );
         }
         // If the operator interjected with a message mid-prompt, stop the turn at
         // this batch boundary (every tool_call now has a matching tool_result, so
@@ -863,29 +879,51 @@ where
     }
 }
 
-/// Pass one tool call through GUARDRAILS → PERMISSION, then dispatch it.
+/// Pass one tool call through the batch safety pipeline — CAPABILITY GATE →
+/// GUARDRAILS → PERMISSION — then execute it as `run_loop` does
+/// ([`crate::turn_executor::execute_proceeded`]).
 ///
-/// Returns the string that becomes the `tool` result message (a denial reason
-/// when blocked — fed back to the model exactly like `run_loop` does, never a
-/// hard error). Emits `ToolCall` / `ToolResult`, and on an `ask`-mode tool the
-/// `PermissionRequest` + blocking read of the matching `Permission` answer.
+/// Who decides differs from batch: an `ask`, and in an interactive session a
+/// capability-gate refusal, go to the operator as a
+/// [`ChatEvent::PermissionRequest`]. A gated call can only run on an explicit
+/// approval — no session mode and no `allow` rule approves it silently. With no
+/// operator (`headless`) the gate denies exactly as in batch.
+///
+/// Returns the tool-result text (a denial reason when blocked — fed back to the
+/// model like `run_loop` does, never a hard error) and any images the tool
+/// produced.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_call<R, W>(
     registry: &ToolRegistry,
     ctx: &ToolContext,
-    policy: &Policy,
+    config: &ChatConfig,
+    turn_trust: TrustLevel,
     call: &ToolCall,
     lines: &mut Lines<R>,
     out: &mut W,
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
-) -> HarnessResult<String>
+) -> HarnessResult<(String, Vec<ImageBlock>)>
 where
     R: AsyncBufReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
 {
     let name = &call.function.name;
     let args = &call.function.arguments;
+    let policy = &config.policy;
+
+    // ── Layer 0: Capability gate (Phase 5 t3) ────────────────────────────────
+    let gated = crate::policy::capability_gate(name, args, &ctx.workdir, turn_trust, None).err();
+    if let (Some(reason), true) = (&gated, config.headless) {
+        let msg = PolicyOutcome::CapabilityDenied {
+            tool: name.clone(),
+            reason: reason.clone(),
+        }
+        .into_tool_result()
+        .unwrap_or_else(|| "blocked".to_string());
+        emit_tool_result(out, call, false, &msg).await?;
+        return Ok((msg, Vec::new()));
+    }
 
     // ── Layer 1: Guardrails (non-overridable) ────────────────────────────────
     if let Err(violation) = guardrail_check(name, args, &ctx.workdir) {
@@ -895,75 +933,71 @@ where
             reason = violation.reason,
         );
         emit_tool_result(out, call, false, &msg).await?;
-        return Ok(msg);
+        return Ok((msg, Vec::new()));
     }
 
     // ── Plan mode: refuse mutating tools before the permission gate ──────────
     if let Some(reason) = session_mode.plan_block(name) {
         emit_tool_result(out, call, false, &reason).await?;
-        return Ok(reason);
+        return Ok((reason, Vec::new()));
     }
 
     // ── Layer 2: Permission ──────────────────────────────────────────────────
     // Resolve the bare mode so `ask` can be routed to the frontend rather than
     // the TTY that `permission::evaluate` assumes.
-    match permission::resolve_effective_mode(policy, name, args) {
-        Mode::Allow => {}
-        Mode::Deny => {
-            // Re-run evaluate to reuse its reason string (pattern/tool/default).
-            let msg = match permission::evaluate(policy, name, args, false) {
-                permission::PermissionDecision::Deny { reason } => {
-                    format!("DENIED by permission policy: {reason}")
-                }
-                permission::PermissionDecision::Allow => {
-                    // Shouldn't happen (mode was Deny), but stay safe.
-                    "DENIED by permission policy".to_string()
-                }
-            };
-            emit_tool_result(out, call, false, &msg).await?;
-            return Ok(msg);
-        }
-        Mode::Ask => {
-            // The session permission mode may auto-approve this `ask` (e.g.
-            // accept_edits for write/edit tools, or bypass for everything) —
-            // skip the prompt. `deny`/guardrails already handled above, so the
-            // mode never widens past `ask`.
-            if !session_mode.auto_allows(name) {
-                // Route to the frontend: emit a request, block for the answer.
-                emit(
-                    out,
-                    &ChatEvent::PermissionRequest {
-                        id: call.id.clone(),
-                        tool: name.clone(),
-                        detail: args.clone(),
-                    },
-                )
-                .await?;
-                match read_permission(lines, &call.id, session_mode).await? {
-                    PermissionOutcome::Allow => {}
-                    PermissionOutcome::Deny => {
-                        let msg = format!("DENIED by operator: `{name}` was declined");
-                        emit_tool_result(out, call, false, &msg).await?;
-                        return Ok(msg);
-                    }
-                    PermissionOutcome::DenyWithUserText { text, principal } => {
-                        // The operator typed a message instead of answering: deny
-                        // the tool (fail-safe) AND hand the text back so the loop
-                        // replays it as the next user turn — never a silent drop.
-                        *interjection = Some((text, principal));
-                        let msg = format!(
-                            "DENIED by operator: `{name}` was declined (operator sent a message \
-                             instead — handling it as the next turn)"
-                        );
-                        emit_tool_result(out, call, false, &msg).await?;
-                        return Ok(msg);
-                    }
-                }
+    let mode = permission::resolve_effective_mode(policy, name, args);
+    if matches!(mode, Mode::Deny) {
+        // Re-run evaluate to reuse its reason string (pattern/tool/default).
+        let msg = match permission::evaluate(policy, name, args, false) {
+            permission::PermissionDecision::Deny { reason } => {
+                format!("DENIED by permission policy: {reason}")
+            }
+            // Shouldn't happen (mode was Deny), but stay safe.
+            permission::PermissionDecision::Allow => "DENIED by permission policy".to_string(),
+        };
+        emit_tool_result(out, call, false, &msg).await?;
+        return Ok((msg, Vec::new()));
+    }
+    // A session mode may auto-approve an `ask` (accept_edits for write/edit,
+    // bypass for everything); it never approves a capability-gated call.
+    let ask = matches!(mode, Mode::Ask) && !session_mode.auto_allows(name);
+    if gated.is_some() || ask {
+        let detail = match &gated {
+            Some(reason) => format!("untrusted turn, capability gate: {reason} — {args}"),
+            None => args.clone(),
+        };
+        emit(
+            out,
+            &ChatEvent::PermissionRequest {
+                id: call.id.clone(),
+                tool: name.clone(),
+                detail,
+            },
+        )
+        .await?;
+        match read_permission(lines, &call.id, session_mode).await? {
+            PermissionOutcome::Allow => {}
+            PermissionOutcome::Deny => {
+                let msg = format!("DENIED by operator: `{name}` was declined");
+                emit_tool_result(out, call, false, &msg).await?;
+                return Ok((msg, Vec::new()));
+            }
+            PermissionOutcome::DenyWithUserText { text, principal } => {
+                // The operator typed a message instead of answering: deny the
+                // tool (fail-safe) AND hand the text back so the loop replays it
+                // as the next user turn — never a silent drop.
+                *interjection = Some((text, principal));
+                let msg = format!(
+                    "DENIED by operator: `{name}` was declined (operator sent a message \
+                     instead — handling it as the next turn)"
+                );
+                emit_tool_result(out, call, false, &msg).await?;
+                return Ok((msg, Vec::new()));
             }
         }
     }
 
-    // ── Dispatch (approved) ──────────────────────────────────────────────────
+    // ── Execute (approved): sandbox + turn executor, as in `run_loop` ────────
     emit(
         out,
         &ChatEvent::ToolCall {
@@ -973,13 +1007,22 @@ where
         },
     )
     .await?;
-    let output = dispatch(registry, name, args, ctx).await;
+    let os_sandbox = crate::sandbox::make_os_sandbox(&ctx.workdir);
+    let result = crate::turn_executor::execute_proceeded(
+        name,
+        args,
+        ctx,
+        registry,
+        &*os_sandbox,
+        turn_trust,
+    )
+    .await;
     // The registry/dispatch convention: an "error:"-prefixed string is a failed
-    // tool. Surface that as ok=false so the frontend can render it distinctly,
-    // while still feeding the same text back to the model as the tool result.
-    let ok = !output.starts_with("error:");
-    emit_tool_result(out, call, ok, &output).await?;
-    Ok(output)
+    // tool. Surface that (and an executor denial) as ok=false so the frontend
+    // renders it distinctly, while feeding the same text back to the model.
+    let ok = !result.denied && !result.content.starts_with("error:");
+    emit_tool_result(out, call, ok, &result.content).await?;
+    Ok((result.content, result.images))
 }
 
 /// The outcome of a blocking permission read.
@@ -1844,6 +1887,106 @@ mod tests {
             assert_eq!(chain.observe(&bad), None);
         }
         assert_eq!(chain.active(), "mock");
+    }
+
+    #[tokio::test]
+    async fn headless_untrusted_turn_is_capability_gated_like_batch() {
+        // A connector turn (no principal → Untrusted) in served mode: run_command
+        // is refused by the capability gate before anything runs, as in batch.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_call_response("run_command", r#"{"command":"touch pwned"}"#),
+            final_response("done"),
+        ]));
+        let cfg = ChatConfig {
+            headless: true,
+            ..config(allow_all())
+        };
+        let events = drive_events(provider, cfg, HI_THEN_QUIT, tmp.path()).await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ChatEvent::ToolResult { ok, output, .. } if !*ok && output.contains("capability gate")
+            )),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolCall { .. }))
+        );
+        assert!(!tmp.path().join("pwned").exists());
+    }
+
+    #[tokio::test]
+    async fn interactive_gated_call_needs_the_operator_even_in_bypass() {
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_call_response("run_command", r#"{"command":"touch pwned"}"#),
+            final_response("ok"),
+        ]));
+        let stdin = concat!(
+            "{\"type\":\"set_mode\",\"mode\":\"bypass\"}\n",
+            "{\"type\":\"user\",\"text\":\"run it\"}\n",
+            "{\"type\":\"permission\",\"id\":\"call-1\",\"allow\":false}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let events = drive_events(provider, config(allow_all()), stdin, tmp.path()).await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ChatEvent::PermissionRequest { tool, detail, .. }
+                    if tool == "run_command" && detail.contains("capability gate")
+            )),
+            "bypass must not auto-approve a gated call: {events:?}"
+        );
+        assert!(!tmp.path().join("pwned").exists());
+    }
+
+    #[tokio::test]
+    async fn trusted_operator_turn_is_not_gated() {
+        // The local TUI's first step (LocalOperator ingress only) is Trusted: an
+        // allowed run_command goes straight to execution, no gate prompt.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_call_response("run_command", r#"{"command":"true"}"#),
+            final_response("ok"),
+        ]));
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"run it\",\"principal\":{\"kind\":\"local_operator\"}}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let events = drive_events(provider, config(allow_all()), stdin, tmp.path()).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::PermissionRequest { .. })),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolCall { name, .. } if name == "run_command"))
+        );
+    }
+
+    #[test]
+    fn plan_mode_tools_pass_the_capability_gate() {
+        // Plan mode (and the public connector's read-only lock) must stay usable
+        // on an Untrusted turn: every plan-mode tool is a pure read.
+        for tool in PLAN_READ_ONLY_TOOLS {
+            assert!(
+                crate::policy::capability_gate(
+                    tool,
+                    r#"{"path":"a.txt","pattern":"x","query":"x"}"#,
+                    std::path::Path::new("/tmp/bwoc-plan-wt"),
+                    TrustLevel::Untrusted,
+                    None,
+                )
+                .is_ok(),
+                "plan-mode tool `{tool}` is refused by the capability gate"
+            );
+        }
     }
 
     #[tokio::test]
