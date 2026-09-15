@@ -891,6 +891,8 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 /// Hard-wrap display lines to `width` terminal columns (wide characters count
 /// double), keeping each span's style, so every returned line is one screen row.
+/// A glyph wider than the whole pane gets a row to itself; the unwrapped
+/// paragraph clips it rather than spilling onto another row.
 fn hard_wrap(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     use unicode_width::UnicodeWidthChar;
     let width = width.max(1);
@@ -2279,6 +2281,10 @@ mod tests {
         let rows = hard_wrap(vec![Line::from("日本語"), Line::from("")], 4);
         let text: Vec<String> = rows.iter().map(|l| l.to_string()).collect();
         assert_eq!(text, ["日本", "語", ""]);
+        // A glyph wider than the pane still takes exactly one row each.
+        let rows = hard_wrap(vec![Line::from("日本")], 1);
+        let text: Vec<String> = rows.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text, ["日", "本"]);
     }
 
     #[test]
