@@ -1335,6 +1335,13 @@ async fn run_chat_mode(
     // Chat-only, in-process tools (never marshalled into the turn-executor
     // child). `webfetch` is network egress: `ask` under the default policy.
     registry.register(bwoc_harness::tools::webfetch::WebFetch::default());
+    // Session state: the todo list lives as long as this process; the subagent
+    // reuses this session's provider and model with read-only tools.
+    registry.register(bwoc_harness::tools::session::Todo::default());
+    registry.register(bwoc_harness::tools::session::Subagent::new(
+        provider.clone(),
+        resolved_model.clone(),
+    ));
     let registry = Arc::new(registry);
     let ctx = if args.unrestricted {
         ToolContext::unconfined(workdir)
@@ -1414,6 +1421,9 @@ fn chat_default_policy() -> Policy {
         "glob",
         "memory_read",
         "memory_search",
+        // Session-only effects: an in-memory list; a read-only child session.
+        "todo",
+        "subagent",
     ];
     let tools = read_only
         .iter()

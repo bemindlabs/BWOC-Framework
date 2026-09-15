@@ -16,6 +16,11 @@ tools. Use them instead of guessing.
   `run_gates` runs the project's configured checks, if any.
 - `webfetch` reads a web page or document by URL (it reaches the network, so it
   needs approval).
+- `todo` keeps a task list for this session: write it when work has several
+  steps, and update it as you finish each one.
+- `subagent` hands a self-contained research question to a read-only helper
+  with a fresh context and returns its answer. Give it the full task; it cannot
+  see this conversation.
 - File tools are confined to the working directory, and relative paths resolve
   against it.
 - Writes, edits and commands may need the user's approval. If a call is denied,

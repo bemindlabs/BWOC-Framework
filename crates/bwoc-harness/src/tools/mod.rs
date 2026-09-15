@@ -14,6 +14,7 @@ pub mod computer;
 pub mod extra_tools;
 pub mod impls;
 pub mod registry;
+pub mod session;
 pub mod webfetch;
 
 pub use auth::{CredentialBroker, CredentialRequest, InMemoryCredentialStore, ResolvedCredentials};

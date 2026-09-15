@@ -136,7 +136,18 @@ enum SessionMode {
 /// **allow-list**, not a deny-list: anything not here (writes, shell, git,
 /// task/peer/run delegation, gates, memory writes — and any future tool) is
 /// refused so the model observes and plans without acting or spawning processes.
-const PLAN_READ_ONLY_TOOLS: &[&str] = &["read_file", "list_dir", "grep", "glob", "memory_read"];
+///
+/// `todo` only touches the session's in-memory list. `webfetch` (egress) and
+/// `subagent` (multiplies model calls) stay out: public connector sessions run
+/// in plan mode.
+const PLAN_READ_ONLY_TOOLS: &[&str] = &[
+    "read_file",
+    "list_dir",
+    "grep",
+    "glob",
+    "memory_read",
+    "todo",
+];
 
 impl SessionMode {
     fn parse(s: &str) -> Option<Self> {
@@ -1143,6 +1154,12 @@ mod tests {
         assert!(SessionMode::Plan.plan_block("list_dir").is_none());
         assert!(SessionMode::Plan.plan_block("grep").is_none());
         assert!(SessionMode::Plan.plan_block("memory_read").is_none());
+        assert!(SessionMode::Plan.plan_block("glob").is_none());
+        assert!(SessionMode::Plan.plan_block("todo").is_none());
+        // Egress and model-call fan-out stay blocked (public sessions run in plan).
+        assert!(SessionMode::Plan.plan_block("webfetch").is_some());
+        assert!(SessionMode::Plan.plan_block("subagent").is_some());
+        assert!(SessionMode::Plan.plan_block("multi_edit").is_some());
         // Other modes never plan-block.
         assert!(SessionMode::Default.plan_block("write_file").is_none());
         assert!(SessionMode::Bypass.plan_block("run_command").is_none());
