@@ -18,7 +18,9 @@
 //!     current shell stays put. macOS-only (Ghostty's CLI entry-point
 //!     on macOS is `open -na Ghostty.app`).
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::io::{self, IsTerminal};
+use std::path::{Path, PathBuf};
 
 use bwoc_core::workspace::AgentsRegistry;
 
@@ -76,13 +78,20 @@ pub fn run(args: ChatArgs) -> i32 {
         return 2;
     };
 
-    let backend = match parse_backend(&entry.backend) {
+    let backend = match Backend::from_registry_name(&entry.backend) {
         Some(b) => b,
         None => {
+            use clap::ValueEnum;
+            let known: Vec<&str> = Backend::value_variants()
+                .iter()
+                .map(|b| b.display_name())
+                .collect();
             eprintln!(
                 "bwoc chat: agent '{}' has unknown backend '{}' in registry — \
-                 edit .bwoc/agents.toml to one of: claude, agy, codex, kimi, copilot, ollama",
-                entry.id, entry.backend
+                 edit .bwoc/agents.toml to one of: {}",
+                entry.id,
+                entry.backend,
+                known.join(", ")
             );
             return 1;
         }
@@ -114,10 +123,12 @@ pub fn run(args: ChatArgs) -> i32 {
             }
         },
     };
-    if team_chat.is_some() && !(args.tui && backend.uses_harness()) {
+    // Team chat rides on the harness chat session, which every harness route
+    // below reaches (`--tmux` / `--ghostty` relaunch `bwoc chat --team` in the pane).
+    if team_chat.is_some() && !backend.uses_harness() {
         eprintln!(
-            "bwoc chat: --team needs --tui with a harness backend \
-             (ollama / openai-compatible / openrouter); running this session solo."
+            "bwoc chat: --team needs a harness backend (ollama / openai-compatible / \
+             openrouter / litellm / anthropic); running this session solo."
         );
     }
 
@@ -171,45 +182,157 @@ pub fn run(args: ChatArgs) -> i32 {
         }
         eprintln!(
             "bwoc chat --tui: agent '{}' uses the '{}' backend, which the TUI can't drive \
-             (it only renders the bwoc-harness chat stream for ollama / openai-compatible / openrouter). \
-             Launching the backend CLI directly instead.",
+             (it only renders the bwoc-harness chat stream for ollama / openai-compatible / \
+             openrouter / litellm / anthropic — use backend `anthropic` for the harness route \
+             to Claude models). Launching the backend CLI directly instead.",
             entry.id,
             backend.display_name()
         );
     }
 
-    if args.tmux {
-        return open_in_tmux(&entry.id, &agent_path, backend);
+    if args.tmux || args.ghostty {
+        let bwoc_exe = spawn::bwoc_exe();
+        let cmd = pane_command(&PaneLaunch {
+            bwoc_exe: &bwoc_exe,
+            backend,
+            agent_id: &entry.id,
+            agent_path: &agent_path,
+            workspace: &workspace,
+            lang: &args.lang,
+            tui: args.tui,
+            team: args.team.as_deref(),
+        });
+        return if args.tmux {
+            open_in_tmux(&entry.id, backend, &cmd)
+        } else {
+            open_in_ghostty(&entry.id, &agent_path, backend, &cmd)
+        };
     }
 
-    if args.ghostty {
-        return open_in_ghostty(&entry.id, &agent_path, backend);
+    // Harness backends: `bwoc-harness` with no `--chat`/`--task` just exits
+    // "--task is required", and raw `--chat` speaks JSON lines (a frontend
+    // protocol, not a human REPL). So a human at a terminal gets the TUI, and a
+    // pipe/redirect gets the protocol endpoint.
+    let mut extra: Vec<OsString> = Vec::new();
+    if backend.uses_harness() {
+        match harness_chat_route(io::stdin().is_terminal(), io::stdout().is_terminal()) {
+            HarnessChatRoute::Tui => {
+                eprintln!(
+                    "bwoc chat: '{}' is a harness backend — opening the chat TUI \
+                     (pipe stdin for the raw JSON-lines protocol).",
+                    backend.display_name()
+                );
+                return bwoc_tui::run(bwoc_tui::TuiArgs {
+                    agent_id: entry.id.clone(),
+                    agent_path,
+                    backend_name: backend.display_name().to_string(),
+                    team_chat,
+                });
+            }
+            HarnessChatRoute::Protocol => {
+                extra = harness_protocol_extra(&agent_path, team_chat.as_deref());
+            }
+        }
     }
 
     // Default mode: hand off to spawn::run, which exec's the backend CLI
-    // in the agent's directory. Standard error messages from spawn are
-    // good enough — no special framing here.
+    // (or `bwoc-harness --chat` for the protocol route) in the agent's
+    // directory. Standard error messages from spawn are good enough.
     spawn::run(spawn::SpawnArgs {
         path: Some(agent_path),
         backend,
-        extra: Vec::new(),
+        extra,
         lang: args.lang,
     })
 }
 
-fn open_in_tmux(agent_id: &str, agent_path: &std::path::Path, backend: Backend) -> i32 {
+/// How non-TUI `bwoc chat` drives a harness backend.
+#[derive(Debug, PartialEq, Eq)]
+enum HarnessChatRoute {
+    /// Human at a terminal: the ratatui client (the only human-usable harness
+    /// chat frontend).
+    Tui,
+    /// Piped/redirected: `bwoc-harness --chat` speaking `chat_proto` JSON lines.
+    Protocol,
+}
+
+/// The TUI needs a terminal on both ends; anything else is a machine frontend.
+fn harness_chat_route(stdin_tty: bool, stdout_tty: bool) -> HarnessChatRoute {
+    if stdin_tty && stdout_tty {
+        HarnessChatRoute::Tui
+    } else {
+        HarnessChatRoute::Protocol
+    }
+}
+
+/// Extra harness args for the protocol route. `spawn` adds `--backend`,
+/// `--endpoint` and `--model` from the manifest.
+fn harness_protocol_extra(agent_path: &Path, team_chat: Option<&Path>) -> Vec<OsString> {
+    let mut extra: Vec<OsString> = vec![
+        "--chat".into(),
+        "--workdir".into(),
+        agent_path.as_os_str().to_owned(),
+    ];
+    if let Some(log) = team_chat {
+        extra.push("--team-chat".into());
+        extra.push(log.as_os_str().to_owned());
+    }
+    extra
+}
+
+/// Everything the pane/window command needs.
+struct PaneLaunch<'a> {
+    bwoc_exe: &'a str,
+    backend: Backend,
+    agent_id: &'a str,
+    agent_path: &'a Path,
+    workspace: &'a Path,
+    lang: &'a str,
+    tui: bool,
+    team: Option<&'a str>,
+}
+
+/// The command a `--tmux` / `--ghostty` pane runs.
+///
+/// - **Harness backend** → `bwoc chat <id> --workspace <ws> --lang <l>
+///   [--tui] [--team <t>]`. The pane has a TTY, so it lands on the chat TUI;
+///   re-exec'ing `bwoc spawn` would run the harness with no `--chat`/`--task`.
+/// - **Vendor backend** → `bwoc spawn --path <agent> --backend <b>` (unchanged).
+fn pane_command(p: &PaneLaunch) -> Vec<String> {
+    let mut cmd = vec![p.bwoc_exe.to_string()];
+    if p.backend.uses_harness() {
+        cmd.extend([
+            "chat".into(),
+            p.agent_id.into(),
+            "--workspace".into(),
+            p.workspace.to_string_lossy().into_owned(),
+            "--lang".into(),
+            p.lang.into(),
+        ]);
+        if p.tui {
+            cmd.push("--tui".into());
+        }
+        if let Some(team) = p.team {
+            cmd.extend(["--team".into(), team.into()]);
+        }
+    } else {
+        cmd.extend([
+            "spawn".into(),
+            "--path".into(),
+            p.agent_path.to_string_lossy().into_owned(),
+            "--backend".into(),
+            p.backend.display_name().into(),
+        ]);
+    }
+    cmd
+}
+
+fn open_in_tmux(agent_id: &str, backend: Backend, cmd: &[String]) -> i32 {
     // Auto-start tmux when needed: inside a session we add a window; outside
     // one we create+attach a dedicated session instead of refusing with a
     // "run tmux new-session first" hint.
     let inside_tmux = std::env::var_os("TMUX").is_some();
-    let path_str = agent_path.to_string_lossy().to_string();
-    let args = tmux_launch_args(
-        inside_tmux,
-        agent_id,
-        &path_str,
-        backend.display_name(),
-        &spawn::bwoc_exe(),
-    );
+    let args = tmux_launch_args(inside_tmux, agent_id, cmd);
 
     // The outside-tmux branch attaches and blocks until the user detaches, so a
     // post-`status()` message would only surface after they've left — announce
@@ -252,20 +375,14 @@ fn open_in_tmux(agent_id: &str, agent_path: &std::path::Path, backend: Backend) 
     }
 }
 
-/// Build the `tmux` argument vector (excluding the `tmux` program name) for
-/// launching `bwoc spawn` against `agent_id`.
+/// Build the `tmux` argument vector (excluding the `tmux` program name) that
+/// runs `cmd` (from [`pane_command`]) for `agent_id`.
 ///
 /// - **Inside** a tmux session → `new-window` in the current session.
 /// - **Outside** one → `new-session -A -s bwoc-<id>` (attach-or-create), so a
 ///   bare `bwoc chat --tmux` from a plain shell still lands in tmux. `-A`
 ///   reattaches if a session for this agent already exists.
-fn tmux_launch_args(
-    inside_tmux: bool,
-    agent_id: &str,
-    path: &str,
-    backend_name: &str,
-    bwoc_exe: &str,
-) -> Vec<String> {
+fn tmux_launch_args(inside_tmux: bool, agent_id: &str, cmd: &[String]) -> Vec<String> {
     let mut args: Vec<String> = if inside_tmux {
         vec!["new-window".into(), "-n".into(), agent_id.into()]
     } else {
@@ -278,25 +395,18 @@ fn tmux_launch_args(
             agent_id.into(),
         ]
     };
-    args.extend([
-        "--".into(),
-        bwoc_exe.into(),
-        "spawn".into(),
-        "--path".into(),
-        path.into(),
-        "--backend".into(),
-        backend_name.into(),
-    ]);
+    args.push("--".into());
+    args.extend(cmd.iter().cloned());
     args
 }
 
-/// `--ghostty` mode — open a new Ghostty terminal window running
-/// `bwoc spawn` for the agent. macOS-only because Ghostty's CLI
+/// `--ghostty` mode — open a new Ghostty terminal window running `cmd`
+/// (from [`pane_command`]) for the agent. macOS-only because Ghostty's CLI
 /// launcher on macOS is `open -na Ghostty.app` (per Ghostty's own
 /// `--help`: "On macOS, launching the terminal emulator from the CLI
 /// is not supported"). On other platforms the call falls through
 /// with an exit-2 explanation rather than silently failing.
-fn open_in_ghostty(agent_id: &str, agent_path: &std::path::Path, backend: Backend) -> i32 {
+fn open_in_ghostty(agent_id: &str, agent_path: &Path, backend: Backend, cmd: &[String]) -> i32 {
     if !cfg!(target_os = "macos") {
         eprintln!(
             "bwoc chat --ghostty: macOS-only. Ghostty on Linux/BSD has its own CLI entry — \
@@ -306,25 +416,13 @@ fn open_in_ghostty(agent_id: &str, agent_path: &std::path::Path, backend: Backen
     }
     let path_str = agent_path.to_string_lossy().to_string();
     let wd_arg = format!("--working-directory={path_str}");
-    let exe = spawn::bwoc_exe();
-    // `open -na Ghostty.app --args --working-directory=<p> -e bwoc spawn --path <p> --backend <b>`
+    // `open -na Ghostty.app --args --working-directory=<p> -e <cmd…>`
     // -n forces a new window even if Ghostty is already running.
     // --args passes the rest through to Ghostty itself.
     // -e collects all subsequent tokens as the command to run.
     match std::process::Command::new("open")
-        .args([
-            "-na",
-            "Ghostty.app",
-            "--args",
-            wd_arg.as_str(),
-            "-e",
-            exe.as_str(),
-            "spawn",
-            "--path",
-            path_str.as_str(),
-            "--backend",
-            backend.display_name(),
-        ])
+        .args(["-na", "Ghostty.app", "--args", wd_arg.as_str(), "-e"])
+        .args(cmd)
         .status()
     {
         Ok(s) if s.success() => {
@@ -345,21 +443,6 @@ fn open_in_ghostty(agent_id: &str, agent_path: &std::path::Path, backend: Backen
             eprintln!("bwoc chat --ghostty: `open` exec failed: {e}");
             1
         }
-    }
-}
-
-fn parse_backend(s: &str) -> Option<Backend> {
-    match s {
-        "claude" => Some(Backend::Claude),
-        "agy" => Some(Backend::Antigravity),
-        "codex" => Some(Backend::Codex),
-        "kimi" => Some(Backend::Kimi),
-        "copilot" => Some(Backend::Copilot),
-        "ollama" => Some(Backend::Ollama),
-        "openai-compatible" => Some(Backend::OpenAiCompatible),
-        "openrouter" => Some(Backend::OpenRouter),
-        "litellm" => Some(Backend::LiteLlm),
-        _ => None,
     }
 }
 
@@ -389,7 +472,8 @@ mod tests {
 
     #[test]
     fn inside_tmux_adds_a_window() {
-        let a = tmux_launch_args(true, "agent-pi", "/ws/agent-pi", "claude", "/opt/bin/bwoc");
+        let cmd = pane_command(&launch(Backend::Claude, false, None));
+        let a = tmux_launch_args(true, "agent-pi", &cmd);
         assert_eq!(
             a,
             [
@@ -400,7 +484,7 @@ mod tests {
                 "/opt/bin/bwoc",
                 "spawn",
                 "--path",
-                "/ws/agent-pi",
+                "/ws/agents/agent-pi",
                 "--backend",
                 "claude"
             ]
@@ -409,7 +493,8 @@ mod tests {
 
     #[test]
     fn outside_tmux_auto_starts_an_attached_session() {
-        let a = tmux_launch_args(false, "agent-pi", "/ws/agent-pi", "ollama", "/opt/bin/bwoc");
+        let cmd = pane_command(&launch(Backend::Ollama, false, None));
+        let a = tmux_launch_args(false, "agent-pi", &cmd);
         assert_eq!(
             a,
             [
@@ -421,26 +506,141 @@ mod tests {
                 "agent-pi",
                 "--",
                 "/opt/bin/bwoc",
-                "spawn",
-                "--path",
-                "/ws/agent-pi",
-                "--backend",
-                "ollama"
+                "chat",
+                "agent-pi",
+                "--workspace",
+                "/ws",
+                "--lang",
+                "th"
             ]
         );
+    }
+
+    #[test]
+    fn harness_chat_route_picks_tui_only_on_a_full_terminal() {
+        assert_eq!(harness_chat_route(true, true), HarnessChatRoute::Tui);
+        assert_eq!(harness_chat_route(false, true), HarnessChatRoute::Protocol);
+        assert_eq!(harness_chat_route(true, false), HarnessChatRoute::Protocol);
+        assert_eq!(harness_chat_route(false, false), HarnessChatRoute::Protocol);
+    }
+
+    #[test]
+    fn protocol_extra_puts_harness_in_chat_mode() {
+        let extra = harness_protocol_extra(Path::new("/ws/agents/agent-pi"), None);
+        assert_eq!(extra, ["--chat", "--workdir", "/ws/agents/agent-pi"]);
+        // Never the batch path that demands `--task`.
+        assert!(!extra.iter().any(|a| a == "--task"));
+
+        let team = harness_protocol_extra(
+            Path::new("/ws/agents/agent-pi"),
+            Some(Path::new("/ws/.bwoc/teams/t/chat.jsonl")),
+        );
+        assert_eq!(&team[3..], ["--team-chat", "/ws/.bwoc/teams/t/chat.jsonl"]);
+    }
+
+    #[test]
+    fn registry_parser_keeps_claude_vendor_and_adds_anthropic_harness() {
+        assert_eq!(Backend::from_registry_name("claude"), Some(Backend::Claude));
+        assert!(!Backend::Claude.uses_harness());
+        assert_eq!(
+            Backend::from_registry_name("anthropic"),
+            Some(Backend::Anthropic)
+        );
+        assert!(Backend::Anthropic.uses_harness());
+        assert_eq!(Backend::from_registry_name("grok"), Some(Backend::Grok));
+        assert_eq!(Backend::from_registry_name("nope"), None);
+    }
+
+    /// Every backend `bwoc new --backend` accepts is written to the registry as
+    /// its `display_name()`; `bwoc chat` must parse each one back.
+    #[test]
+    fn every_new_backend_round_trips_through_the_chat_parser() {
+        use clap::ValueEnum;
+        for b in Backend::value_variants() {
+            assert_eq!(
+                Backend::from_registry_name(b.display_name()),
+                Some(*b),
+                "{} must round-trip",
+                b.display_name()
+            );
+        }
+    }
+
+    fn launch<'a>(backend: Backend, tui: bool, team: Option<&'a str>) -> PaneLaunch<'a> {
+        PaneLaunch {
+            bwoc_exe: "/opt/bin/bwoc",
+            backend,
+            agent_id: "agent-pi",
+            agent_path: Path::new("/ws/agents/agent-pi"),
+            workspace: Path::new("/ws"),
+            lang: "th",
+            tui,
+            team,
+        }
+    }
+
+    #[test]
+    fn pane_command_relaunches_chat_for_harness_backends() {
+        assert_eq!(
+            pane_command(&launch(Backend::Ollama, false, None)),
+            [
+                "/opt/bin/bwoc",
+                "chat",
+                "agent-pi",
+                "--workspace",
+                "/ws",
+                "--lang",
+                "th"
+            ]
+        );
+        assert_eq!(
+            pane_command(&launch(Backend::Anthropic, true, Some("squad"))),
+            [
+                "/opt/bin/bwoc",
+                "chat",
+                "agent-pi",
+                "--workspace",
+                "/ws",
+                "--lang",
+                "th",
+                "--tui",
+                "--team",
+                "squad"
+            ]
+        );
+    }
+
+    #[test]
+    fn pane_command_keeps_spawn_for_vendor_backends() {
+        for b in [
+            Backend::Claude,
+            Backend::Codex,
+            Backend::Kimi,
+            Backend::Antigravity,
+            Backend::Copilot,
+            Backend::Grok,
+        ] {
+            assert_eq!(
+                pane_command(&launch(b, false, Some("squad"))),
+                [
+                    "/opt/bin/bwoc",
+                    "spawn",
+                    "--path",
+                    "/ws/agents/agent-pi",
+                    "--backend",
+                    b.display_name()
+                ]
+            );
+        }
     }
 
     /// The launcher must re-invoke the running binary verbatim — including a
     /// dev-build absolute path — never collapse it to a bare `bwoc` PATH lookup.
     #[test]
     fn launch_args_use_the_given_bwoc_exe_verbatim() {
-        let a = tmux_launch_args(
-            true,
-            "agent-pi",
-            "/ws/agent-pi",
-            "claude",
-            "./target/debug/bwoc",
-        );
+        let mut p = launch(Backend::Claude, false, None);
+        p.bwoc_exe = "./target/debug/bwoc";
+        let a = tmux_launch_args(true, "agent-pi", &pane_command(&p));
         assert!(a.contains(&"./target/debug/bwoc".to_string()));
         assert!(!a.contains(&"bwoc".to_string()));
     }

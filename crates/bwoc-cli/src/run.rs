@@ -387,6 +387,31 @@ pub fn build_command(
             }
             Ok((harness.to_string_lossy().into_owned(), args))
         }
+        Backend::Anthropic => {
+            let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
+            // `--backend anthropic` selects the harness's Anthropic Messages
+            // provider (key from ANTHROPIC_API_KEY). baseUrl is optional — the
+            // harness defaults to the Anthropic endpoint. `claude` (vendor CLI)
+            // is a different backend and is unaffected.
+            let mut args = vec![
+                "--workdir".to_string(),
+                work_dir.to_string_lossy().into_owned(),
+                "--task".to_string(),
+                task.to_string(),
+                "--model".to_string(),
+                primary_model.to_string(),
+                "--backend".to_string(),
+                "anthropic".to_string(),
+            ];
+            let manifest_path = config_dir.join("config.manifest.json");
+            if let Ok(m) = Manifest::load_from_path(&manifest_path) {
+                if let Some(url) = m.base_url.filter(|u| !u.trim().is_empty()) {
+                    args.push("--endpoint".to_string());
+                    args.push(url.trim().to_string());
+                }
+            }
+            Ok((harness.to_string_lossy().into_owned(), args))
+        }
         Backend::Copilot => {
             // `copilot -p "<task>" --no-ask-user` — Copilot CLI's programmatic
             // mode. `--no-ask-user` is required headless (no TTY to answer
@@ -544,10 +569,11 @@ pub fn execute(args: RunArgs, runner: &dyn CommandRunner) -> Result<(RunResult, 
         .find(|a| a.id == lookup_id)
         .ok_or_else(|| RunError::AgentNotFound(args.agent.clone()))?;
 
-    let backend = parse_backend(&entry.backend).ok_or_else(|| RunError::UnknownBackend {
-        agent: entry.id.clone(),
-        backend: entry.backend.clone(),
-    })?;
+    let backend =
+        Backend::from_registry_name(&entry.backend).ok_or_else(|| RunError::UnknownBackend {
+            agent: entry.id.clone(),
+            backend: entry.backend.clone(),
+        })?;
 
     let agent_dir = workspace.join(&entry.path);
 
@@ -593,22 +619,6 @@ fn normalize_agent_id(name: &str) -> String {
         name.to_string()
     } else {
         format!("agent-{name}")
-    }
-}
-
-fn parse_backend(s: &str) -> Option<Backend> {
-    match s {
-        "claude" => Some(Backend::Claude),
-        "agy" => Some(Backend::Antigravity),
-        "codex" => Some(Backend::Codex),
-        "kimi" => Some(Backend::Kimi),
-        "copilot" => Some(Backend::Copilot),
-        "grok" => Some(Backend::Grok),
-        "ollama" => Some(Backend::Ollama),
-        "openai-compatible" => Some(Backend::OpenAiCompatible),
-        "openrouter" => Some(Backend::OpenRouter),
-        "litellm" => Some(Backend::LiteLlm),
-        _ => None,
     }
 }
 
