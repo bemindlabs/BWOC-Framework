@@ -47,6 +47,7 @@ Buddhist principles are used here as **engineering thinking aids** — not relig
   - [Infrastructure \& Datastores](#infrastructure--datastores)
   - [Getting Started](#getting-started)
     - [Install the toolkit](#install-the-toolkit)
+    - [Quick start: `bwoc` in any repo](#quick-start-bwoc-in-any-repo)
     - [As an Agent Author](#as-an-agent-author)
     - [Reading Paths](#reading-paths)
   - [Security Rules (Sīla 5)](#security-rules-sīla-5)
@@ -379,6 +380,16 @@ cargo install --path crates/bwoc-cli --locked --force
 ```
 
 **Upgrading from 2.x:** 3.x reads everything 2.x wrote and warns on legacy schema; run `bwoc migrate` to move an installation forward. See [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) and [`MIGRATION.en.md`](docs/en/MIGRATION.en.md).
+
+### Quick start: `bwoc` in any repo
+
+```bash
+cd any-repo
+bwoc auth set anthropic   # or export ANTHROPIC_API_KEY=..., or just run Ollama locally
+bwoc                      # a coding session right here: no workspace, no agent
+```
+
+On a terminal, bare `bwoc` opens the chat TUI on `bwoc-harness` in the current directory. The session's prompt holds a built-in coding preamble, the environment (cwd, OS, date, git state) and every `AGENTS.md` / `CLAUDE.md` from the git root down to the cwd. Pin the provider with `--backend` / `--model`, with `BWOC_BACKEND` / `BWOC_MODEL`, or with a `[runtime]` table in `.bwoc/config.toml` or `~/.bwoc/config.toml`. Otherwise an Anthropic key is used, then a local Ollama. In a pipe or script, bare `bwoc` still prints the banner, and `bwoc about` shows it on a terminal. Details: [`HARNESS.en.md` §Quick start](docs/en/HARNESS.en.md#quick-start-bwoc-in-any-repository).
 
 ### As an Agent Author
 
