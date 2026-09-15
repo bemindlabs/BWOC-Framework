@@ -18,7 +18,9 @@
 //!     current shell stays put. macOS-only (Ghostty's CLI entry-point
 //!     on macOS is `open -na Ghostty.app`).
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::io::{self, IsTerminal};
+use std::path::{Path, PathBuf};
 
 use bwoc_core::workspace::AgentsRegistry;
 
@@ -114,10 +116,13 @@ pub fn run(args: ChatArgs) -> i32 {
             }
         },
     };
-    if team_chat.is_some() && !(args.tui && backend.uses_harness()) {
+    // Team chat rides on the harness chat session, which every harness route
+    // below reaches except `--tmux` / `--ghostty` (those re-invoke `bwoc spawn`).
+    let team_honored = backend.uses_harness() && (args.tui || !(args.tmux || args.ghostty));
+    if team_chat.is_some() && !team_honored {
         eprintln!(
-            "bwoc chat: --team needs --tui with a harness backend \
-             (ollama / openai-compatible / openrouter); running this session solo."
+            "bwoc chat: --team needs a harness backend (ollama / openai-compatible / \
+             openrouter / litellm / anthropic) without --tmux/--ghostty; running this session solo."
         );
     }
 
@@ -171,8 +176,9 @@ pub fn run(args: ChatArgs) -> i32 {
         }
         eprintln!(
             "bwoc chat --tui: agent '{}' uses the '{}' backend, which the TUI can't drive \
-             (it only renders the bwoc-harness chat stream for ollama / openai-compatible / openrouter). \
-             Launching the backend CLI directly instead.",
+             (it only renders the bwoc-harness chat stream for ollama / openai-compatible / \
+             openrouter / litellm / anthropic — use backend `anthropic` for the harness route \
+             to Claude models). Launching the backend CLI directly instead.",
             entry.id,
             backend.display_name()
         );
@@ -186,15 +192,75 @@ pub fn run(args: ChatArgs) -> i32 {
         return open_in_ghostty(&entry.id, &agent_path, backend);
     }
 
+    // Harness backends: `bwoc-harness` with no `--chat`/`--task` just exits
+    // "--task is required", and raw `--chat` speaks JSON lines (a frontend
+    // protocol, not a human REPL). So a human at a terminal gets the TUI, and a
+    // pipe/redirect gets the protocol endpoint.
+    let mut extra: Vec<OsString> = Vec::new();
+    if backend.uses_harness() {
+        match harness_chat_route(io::stdin().is_terminal(), io::stdout().is_terminal()) {
+            HarnessChatRoute::Tui => {
+                eprintln!(
+                    "bwoc chat: '{}' is a harness backend — opening the chat TUI \
+                     (pipe stdin for the raw JSON-lines protocol).",
+                    backend.display_name()
+                );
+                return bwoc_tui::run(bwoc_tui::TuiArgs {
+                    agent_id: entry.id.clone(),
+                    agent_path,
+                    backend_name: backend.display_name().to_string(),
+                    team_chat,
+                });
+            }
+            HarnessChatRoute::Protocol => {
+                extra = harness_protocol_extra(&agent_path, team_chat.as_deref());
+            }
+        }
+    }
+
     // Default mode: hand off to spawn::run, which exec's the backend CLI
-    // in the agent's directory. Standard error messages from spawn are
-    // good enough — no special framing here.
+    // (or `bwoc-harness --chat` for the protocol route) in the agent's
+    // directory. Standard error messages from spawn are good enough.
     spawn::run(spawn::SpawnArgs {
         path: Some(agent_path),
         backend,
-        extra: Vec::new(),
+        extra,
         lang: args.lang,
     })
+}
+
+/// How non-TUI `bwoc chat` drives a harness backend.
+#[derive(Debug, PartialEq, Eq)]
+enum HarnessChatRoute {
+    /// Human at a terminal: the ratatui client (the only human-usable harness
+    /// chat frontend).
+    Tui,
+    /// Piped/redirected: `bwoc-harness --chat` speaking `chat_proto` JSON lines.
+    Protocol,
+}
+
+/// The TUI needs a terminal on both ends; anything else is a machine frontend.
+fn harness_chat_route(stdin_tty: bool, stdout_tty: bool) -> HarnessChatRoute {
+    if stdin_tty && stdout_tty {
+        HarnessChatRoute::Tui
+    } else {
+        HarnessChatRoute::Protocol
+    }
+}
+
+/// Extra harness args for the protocol route. `spawn` adds `--backend`,
+/// `--endpoint` and `--model` from the manifest.
+fn harness_protocol_extra(agent_path: &Path, team_chat: Option<&Path>) -> Vec<OsString> {
+    let mut extra: Vec<OsString> = vec![
+        "--chat".into(),
+        "--workdir".into(),
+        agent_path.as_os_str().to_owned(),
+    ];
+    if let Some(log) = team_chat {
+        extra.push("--team-chat".into());
+        extra.push(log.as_os_str().to_owned());
+    }
+    extra
 }
 
 fn open_in_tmux(agent_id: &str, agent_path: &std::path::Path, backend: Backend) -> i32 {
@@ -359,6 +425,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "openai-compatible" => Some(Backend::OpenAiCompatible),
         "openrouter" => Some(Backend::OpenRouter),
         "litellm" => Some(Backend::LiteLlm),
+        "anthropic" => Some(Backend::Anthropic),
         _ => None,
     }
 }
@@ -428,6 +495,36 @@ mod tests {
                 "ollama"
             ]
         );
+    }
+
+    #[test]
+    fn harness_chat_route_picks_tui_only_on_a_full_terminal() {
+        assert_eq!(harness_chat_route(true, true), HarnessChatRoute::Tui);
+        assert_eq!(harness_chat_route(false, true), HarnessChatRoute::Protocol);
+        assert_eq!(harness_chat_route(true, false), HarnessChatRoute::Protocol);
+        assert_eq!(harness_chat_route(false, false), HarnessChatRoute::Protocol);
+    }
+
+    #[test]
+    fn protocol_extra_puts_harness_in_chat_mode() {
+        let extra = harness_protocol_extra(Path::new("/ws/agents/agent-pi"), None);
+        assert_eq!(extra, ["--chat", "--workdir", "/ws/agents/agent-pi"]);
+        // Never the batch path that demands `--task`.
+        assert!(!extra.iter().any(|a| a == "--task"));
+
+        let team = harness_protocol_extra(
+            Path::new("/ws/agents/agent-pi"),
+            Some(Path::new("/ws/.bwoc/teams/t/chat.jsonl")),
+        );
+        assert_eq!(&team[3..], ["--team-chat", "/ws/.bwoc/teams/t/chat.jsonl"]);
+    }
+
+    #[test]
+    fn parse_backend_keeps_claude_vendor_and_adds_anthropic_harness() {
+        assert_eq!(parse_backend("claude"), Some(Backend::Claude));
+        assert!(!Backend::Claude.uses_harness());
+        assert_eq!(parse_backend("anthropic"), Some(Backend::Anthropic));
+        assert!(Backend::Anthropic.uses_harness());
     }
 
     /// The launcher must re-invoke the running binary verbatim — including a

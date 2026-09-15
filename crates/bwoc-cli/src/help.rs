@@ -240,6 +240,10 @@ proxy (any OpenAI-compatible `/v1`). The base is resolved from `baseUrl` /
 **optional**: a `LITELLM_API_KEY` / `~/.bwoc/secrets.toml` (`[litellm] api_key`)
 key is attached as bearer auth only when present, so a keyless local proxy works.
 
+The `anthropic` backend drives the same harness against the Anthropic Messages
+API (key from `ANTHROPIC_API_KEY`; `baseUrl` optional). It is the harness route
+to Claude models — `claude` still execs the vendor Claude Code CLI.
+
 Three ways to set the backend:
   - At incarnation:   bwoc new my-agent --backend ollama
   - Manifest edit:    edit agents/<name>/config.manifest.json then update

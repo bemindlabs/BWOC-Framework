@@ -387,6 +387,31 @@ pub fn build_command(
             }
             Ok((harness.to_string_lossy().into_owned(), args))
         }
+        Backend::Anthropic => {
+            let harness = Backend::harness_binary().ok_or(RunError::HarnessNotFound)?;
+            // `--backend anthropic` selects the harness's Anthropic Messages
+            // provider (key from ANTHROPIC_API_KEY). baseUrl is optional — the
+            // harness defaults to the Anthropic endpoint. `claude` (vendor CLI)
+            // is a different backend and is unaffected.
+            let mut args = vec![
+                "--workdir".to_string(),
+                work_dir.to_string_lossy().into_owned(),
+                "--task".to_string(),
+                task.to_string(),
+                "--model".to_string(),
+                primary_model.to_string(),
+                "--backend".to_string(),
+                "anthropic".to_string(),
+            ];
+            let manifest_path = config_dir.join("config.manifest.json");
+            if let Ok(m) = Manifest::load_from_path(&manifest_path) {
+                if let Some(url) = m.base_url.filter(|u| !u.trim().is_empty()) {
+                    args.push("--endpoint".to_string());
+                    args.push(url.trim().to_string());
+                }
+            }
+            Ok((harness.to_string_lossy().into_owned(), args))
+        }
         Backend::Copilot => {
             // `copilot -p "<task>" --no-ask-user` — Copilot CLI's programmatic
             // mode. `--no-ask-user` is required headless (no TTY to answer
@@ -608,6 +633,7 @@ fn parse_backend(s: &str) -> Option<Backend> {
         "openai-compatible" => Some(Backend::OpenAiCompatible),
         "openrouter" => Some(Backend::OpenRouter),
         "litellm" => Some(Backend::LiteLlm),
+        "anthropic" => Some(Backend::Anthropic),
         _ => None,
     }
 }

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`anthropic` backend: the harness route to Claude models.** `backend = "anthropic"` runs `bwoc-harness --backend anthropic` (Anthropic Messages API, key from `ANTHROPIC_API_KEY`, `baseUrl` optional) for `bwoc spawn`, `bwoc run` and `bwoc chat`, including `--tui` and `--fleet`. `claude` still execs the vendor Claude Code CLI everywhere. The manifest `backend` field is a string, so existing manifests are unaffected.
+
+### Fixed
+
+- **`bwoc chat <agent>` without `--tui` works for harness backends.** It launched `bwoc-harness` with neither `--chat` nor `--task`, so ollama / openai-compatible / openrouter / litellm agents exited with "--task is required". On a terminal it now opens the chat TUI, with a one-line note, because raw `--chat` speaks JSON lines rather than a human REPL. With piped stdin or stdout it runs `bwoc-harness --chat --workdir <agent>`, the `chat_proto` endpoint, which `bwoc spawn`'s no-TTY guard now lets through. `--team` is honoured on both routes.
+
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 
 **bwoc-bot, phase 1 — one agent, one bot.** Chat connectors gain a `[bot]` block: fixed slash-command replies that never reach the model, per-sender rate and message-length caps, and an opt-in **limited public mode** that lets strangers reach the agent by DM or @mention — read-only tools, a separate workdir with no memories or other chats, and an Untrusted principal. File-tool confinement is now symlink-safe for every agent, and connector configs carry a `schema_version` that `bwoc migrate` stamps.
