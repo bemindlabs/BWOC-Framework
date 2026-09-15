@@ -86,6 +86,9 @@ pub struct ProjectSession {
     /// `None` lets the harness use the backend's default endpoint.
     pub endpoint: Option<String>,
     pub max_tokens: Option<u32>,
+    /// Model context window override (`--max-context`). `None` lets the harness
+    /// size compaction from the provider-reported or known window.
+    pub max_context: Option<u32>,
     /// Where the harness persists the conversation. `None` keeps the harness
     /// default, `<workdir>/.bwoc/chat-session.json`.
     pub session_file: Option<PathBuf>,
@@ -268,12 +271,17 @@ fn harness_argv(
 }
 
 /// Extra harness argv for a project session: `--agent <name>` (display name in
-/// the `Ready` status), optional `--max-tokens`, and the per-directory
-/// `--session-file` so the conversation is not written into the repository.
+/// the `Ready` status), optional `--max-tokens` / `--max-context`, and the
+/// per-directory `--session-file` so the conversation is not written into the
+/// repository.
 fn project_argv(name: &str, p: &ProjectSession) -> Vec<String> {
     let mut argv = vec!["--agent".to_string(), name.to_string()];
     if let Some(n) = p.max_tokens {
         argv.push("--max-tokens".to_string());
+        argv.push(n.to_string());
+    }
+    if let Some(n) = p.max_context {
+        argv.push("--max-context".to_string());
         argv.push(n.to_string());
     }
     if let Some(file) = &p.session_file {
@@ -1547,6 +1555,7 @@ mod tests {
             model: "m".into(),
             endpoint: None,
             max_tokens: Some(4096),
+            max_context: Some(32768),
             session_file: Some(std::path::PathBuf::from("/h/.bwoc/sessions/abc.json")),
         };
         assert_eq!(
@@ -1556,6 +1565,8 @@ mod tests {
                 "repo",
                 "--max-tokens",
                 "4096",
+                "--max-context",
+                "32768",
                 "--session-file",
                 "/h/.bwoc/sessions/abc.json"
             ]
@@ -1564,6 +1575,7 @@ mod tests {
             model: "m".into(),
             endpoint: None,
             max_tokens: None,
+            max_context: None,
             session_file: None,
         };
         assert_eq!(super::project_argv("repo", &bare), ["--agent", "repo"]);

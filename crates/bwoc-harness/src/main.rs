@@ -236,6 +236,12 @@ struct Args {
     /// `bwoc` passes `[runtime] max_tokens` here.
     #[arg(long)]
     max_tokens: Option<u32>,
+
+    /// Model context window (tokens) for `--chat` / `--headless` compaction.
+    /// Unset = the window the provider reports, else a known backend window,
+    /// else a conservative default. Bare `bwoc` passes `[runtime] max_context`.
+    #[arg(long)]
+    max_context: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1385,6 +1391,17 @@ async fn run_chat_mode(
         chat_default_policy()
     };
 
+    // Context budget from the real window: `--max-context`, else what the
+    // provider reports, else a known backend window, else the default.
+    let window = match args.max_context {
+        Some(n) => Some(n),
+        None => match provider.model_context_limit(&resolved_model).await {
+            Some(n) => Some(n),
+            None => chat_session::known_context_window(&args.backend),
+        },
+    };
+    let max_context_tokens = chat_session::context_budget(window, max_tokens);
+
     // Agent id from the manifest when present, else the --agent fallback.
     let agent =
         bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
@@ -1399,7 +1416,7 @@ async fn run_chat_mode(
         system_prompt,
         policy,
         max_turn_iterations: args.max_iterations,
-        max_context_tokens: bwoc_harness::chat_session::DEFAULT_MAX_CONTEXT_TOKENS,
+        max_context_tokens,
         // Team chat broadcast (HV3-3a): `--team-chat <path>` opts this session
         // into a team's shared `chat.jsonl`. The host (`bwoc chat --team`)
         // resolves the workspace-relative path; unset = solo session.

@@ -103,9 +103,33 @@ pub fn session_path_for(workdir: &std::path::Path, config: &ChatConfig) -> PathB
     }
 }
 
-/// Default chat context budget (heuristic tokens) — conservative for the local
-/// models these sessions target. Overridable per session via [`ChatConfig`].
+/// Default chat context budget (heuristic tokens) when the model's context
+/// window is unknown — conservative for the local models these sessions target.
 pub const DEFAULT_MAX_CONTEXT_TOKENS: usize = 8_000;
+
+/// The chat context budget for a model context `window` (tokens): the window
+/// minus a reserve, which is the batch loop's headroom fraction, or the response
+/// cap `max_tokens` when that is larger and still fits. An unknown window keeps
+/// [`DEFAULT_MAX_CONTEXT_TOKENS`].
+pub fn context_budget(window: Option<u32>, max_tokens: Option<u32>) -> usize {
+    let Some(window) = window.filter(|w| *w > 0) else {
+        return DEFAULT_MAX_CONTEXT_TOKENS;
+    };
+    let headroom = (f64::from(window) * crate::agent_loop::CONTEXT_HEADROOM_FRAC) as u32;
+    let reserve = match max_tokens {
+        Some(cap) if cap > headroom && cap < window => cap,
+        _ => headroom,
+    };
+    window.saturating_sub(reserve).max(1) as usize
+}
+
+/// A backend's context window when the provider does not report one. Only the
+/// Anthropic Messages API (`anthropic` / `claude`) has one window across its
+/// current models (200k tokens); other backends rely on the provider's report,
+/// `--max-context`, or the default.
+pub fn known_context_window(backend: &str) -> Option<u32> {
+    matches!(backend, "anthropic" | "claude").then_some(200_000)
+}
 
 impl Default for ChatConfig {
     fn default() -> Self {
@@ -1987,6 +2011,25 @@ mod tests {
                 "plan-mode tool `{tool}` is refused by the capability gate"
             );
         }
+    }
+
+    #[test]
+    fn context_budget_sizes_from_the_window() {
+        // Unknown window: the old fixed budget.
+        assert_eq!(context_budget(None, None), DEFAULT_MAX_CONTEXT_TOKENS);
+        assert_eq!(
+            context_budget(Some(0), Some(4096)),
+            DEFAULT_MAX_CONTEXT_TOKENS
+        );
+        // Known window: minus the 10% headroom, or the response cap if larger.
+        assert_eq!(context_budget(Some(200_000), None), 180_000);
+        assert_eq!(context_budget(Some(200_000), Some(32_000)), 168_000);
+        assert_eq!(context_budget(Some(200_000), Some(1_000)), 180_000);
+        // A cap that does not fit the window falls back to the headroom.
+        assert_eq!(context_budget(Some(4096), Some(8192)), 3687);
+        assert_eq!(known_context_window("anthropic"), Some(200_000));
+        assert_eq!(known_context_window("claude"), Some(200_000));
+        assert_eq!(known_context_window("ollama"), None);
     }
 
     #[tokio::test]
