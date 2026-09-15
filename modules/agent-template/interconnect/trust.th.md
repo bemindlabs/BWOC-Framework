@@ -153,9 +153,9 @@ gate **เปิดโดย default ในรูปแบบ warn เท่า�
 |---|---|---|
 | `0` / `off` / `false` | ปิด | — (ทุก envelope ผ่าน quality gate) |
 | `1` | บังคับ | effective `mode` จาก manifest ข้างบน **รวมถึง `refuse`** |
-| ไม่ตั้ง / `warn` / ค่าอื่นใด | **default — warn เท่านั้น** | manifest `mode: "off"` → `off`; ค่าอื่น (`warn`, `refuse` หรือไม่มี) → `warn` |
+| ไม่ตั้ง / ค่าว่าง / `warn` / ค่าอื่นใด | **default — warn เท่านั้น** | manifest `mode: "off"` → `off`; ค่าอื่น (`warn`, `refuse` หรือไม่มี) → `warn` |
 
-default ไม่เคย refuse: manifest ผ่อนเป็น `off` ได้ แต่มีแค่ `BWOC_TRUST_GATING=1` ที่ยกระดับเป็น `refuse` ดังนั้นสิ่งที่เคย deliver ก่อนมี default นี้จะไม่ถูก refuse หลังจากนั้น เมื่อ `BWOC_SIGNING_MODE=off` default จะไม่ทำงาน (trust layer idle ทั้งหมด) log line `trust_warn` ถูกเขียน **ครั้งเดียวต่อ `(sender, คุณสมบัติที่ขาด)` ต่อการรัน daemon หนึ่งรอบ** และ warning ไม่ถูกเขียนลง `inbox.refusals.jsonl`
+default ไม่เคย refuse เพราะขาด quality: manifest ผ่อนเป็น `off` ได้ แต่มีแค่ `BWOC_TRUST_GATING=1` ที่ยกระดับเป็น `refuse` ดังนั้นสิ่งที่เคย deliver ก่อนมี default นี้จะไม่ถูก refuse หลังจากนั้น เมื่อ `BWOC_SIGNING_MODE=off` default จะไม่ทำงาน (trust layer idle ทั้งหมด) log line `trust_warn` ถูกเขียน **ครั้งเดียวต่อ `(sender, คุณสมบัติที่ขาด)` ต่อการรัน daemon หนึ่งรอบ** และ warning ไม่ถูกเขียนลง `inbox.refusals.jsonl`
 
 **Can't-verify paths refuse เสมอโดยไม่คำนึง mode** เมื่อ daemon resolve manifest ของผู้ส่งไม่ได้ (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`) envelope ถูกปฏิเสธ ผู้ส่งที่ตรวจสอบไม่ได้ไม่สามารถ warn-pass ได้
 

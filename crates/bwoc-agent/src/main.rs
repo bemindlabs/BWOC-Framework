@@ -214,9 +214,9 @@ where
     if trust_ctx.gating_default {
         if !trust_ctx.is_inert() {
             eprintln!(
-                "bwoc-agent --serve: trust gating WARN (default) — logging, never \
-                 refusing, senders missing {:?}; BWOC_TRUST_GATING=1 enforces \
-                 trust.mode, =0 disables",
+                "bwoc-agent --serve: trust gating WARN (default) — logging instead of \
+                 refusing senders missing {:?}; BWOC_TRUST_GATING=1 enforces \
+                 trust.mode, =0/off/false disables",
                 trust_ctx.required
             );
         }

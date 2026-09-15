@@ -153,9 +153,9 @@ The gate runs **on by default in warn-only form**; refusal is opt-in. Precedence
 |---|---|---|
 | `0` / `off` / `false` | disabled | — (every envelope passes the quality gate) |
 | `1` | enforced | the manifest's effective `mode` above, **including `refuse`** |
-| unset / `warn` / any other value | **default — warn only** | manifest `mode: "off"` → `off`; anything else (`warn`, `refuse`, or absent) → `warn` |
+| unset / empty / `warn` / any other value | **default — warn only** | manifest `mode: "off"` → `off`; anything else (`warn`, `refuse`, or absent) → `warn` |
 
-The default never refuses: a manifest may relax it to `off`, but only `BWOC_TRUST_GATING=1` escalates to `refuse`, so nothing delivered before the default existed is refused after it. With `BWOC_SIGNING_MODE=off` the default does not engage (the trust layer stays fully idle). Each `trust_warn` line is logged **once per `(sender, missing qualities)` per daemon run**, and warnings are never written to `inbox.refusals.jsonl`.
+The default never refuses on missing qualities: a manifest may relax it to `off`, but only `BWOC_TRUST_GATING=1` escalates to `refuse`, so nothing delivered before the default existed is refused after it. With `BWOC_SIGNING_MODE=off` the default does not engage (the trust layer stays fully idle). Each `trust_warn` line is logged **once per `(sender, missing qualities)` per daemon run**, and warnings are never written to `inbox.refusals.jsonl`.
 
 **Can't-verify paths always refuse regardless of mode.** When the daemon cannot resolve the sender's manifest (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`), the envelope is refused. An unverifiable sender is not warn-passable.
 
