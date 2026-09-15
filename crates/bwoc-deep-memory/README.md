@@ -2,7 +2,7 @@
 
 The Tier 2 **deep-memory** reference implementation for the [BWOC framework](../../README.md) — a standalone binary giving an agent semantic recall across sessions.
 
-Tier 2 is optional: the framework runs on Tier 1 (file-based memory) alone. This crate is what you point `deepMemoryCmd` at when you want cross-session semantic recall without writing your own backend. It speaks the `wake-up | search | mine` sub-command contract defined by [`bwoc-core::deep_memory`](../bwoc-core/src/deep_memory.rs), which [`bwoc-cli`](../bwoc-cli/) shells out to for `bwoc memory wake-up | t2-search | mine`. **Dep-quarantine is load-bearing** — `rusqlite` (SQLite, `bundled`), `regex`, and `reqwest` are pulled in here, never in `bwoc-core`. The crate splits into a library (unit-tested offline against a stub embedder and an in-memory store) and a thin `main.rs` that only parses args and resolves config.
+Tier 2 is optional: the framework runs on Tier 1 (file-based memory) alone. This crate is what you point `deepMemoryCmd` at when you want cross-session semantic recall without writing your own backend. It speaks the `wake-up | search | mine` sub-command contract defined by [`bwoc-core::deep_memory`](../bwoc-core/src/deep_memory.rs), which [`bwoc-cli`](../bwoc-cli/) shells out to for `bwoc memory wake-up | search --tier 2 | mine`. **Dep-quarantine is load-bearing** — `rusqlite` (SQLite, `bundled`), `regex`, and `reqwest` are pulled in here, never in `bwoc-core`. The crate splits into a library (unit-tested offline against a stub embedder and an in-memory store) and a thin `main.rs` that only parses args and resolves config.
 
 ## Scope
 

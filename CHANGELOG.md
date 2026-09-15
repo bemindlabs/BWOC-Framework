@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Deprecated
+
+- **Duplicate CLI entry points** — each still works exactly as before (same handler; byte-identical stdout, `--json` and exit code) and prints one line to stderr naming its replacement. `BWOC_NO_DEPRECATION_WARNINGS=1` silences it. Removed in 4.0; see [`COMPATIBILITY.en.md` §Deprecated in 3.2](docs/en/COMPATIBILITY.en.md#deprecated-in-32-removed-in-40).
+  - `bwoc notes | retro | research <new|list|view>` → `bwoc doc <new|list|view> notes | retrospectives | research`
+  - `bwoc tasks` → `bwoc task list --all` — `task list` gains `--all`, `--agent` and `--state`, and `<TEAM>` becomes optional with `--all`
+  - `bwoc memory t2-search <query> <agent>` → `bwoc memory search <query> <agent> --tier 2` — `memory search` gains `--tier 1|2` (default 1)
+
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 
 **bwoc-bot, phase 1 — one agent, one bot.** Chat connectors gain a `[bot]` block: fixed slash-command replies that never reach the model, per-sender rate and message-length caps, and an opt-in **limited public mode** that lets strangers reach the agent by DM or @mention — read-only tools, a separate workdir with no memories or other chats, and an Untrusted principal. File-tool confinement is now symlink-safe for every agent, and connector configs carry a `schema_version` that `bwoc migrate` stamps.

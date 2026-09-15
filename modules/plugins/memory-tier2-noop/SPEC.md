@@ -20,7 +20,7 @@ Implements the four-phase `memory-backend` lifecycle (`init → configure → in
 
 - **`init`** — confirms it can run. No directories created, no handles opened. Returns success.
 - **`configure`** — accepts an empty config block (no `[config.schema]` keys); reports success. Re-runs are no-ops because nothing was applied.
-- **`invoke`** — every Tier 2 read/write is **forwarded to Tier 1**. A `wake-up` call returns whatever Tier 1's `MEMORY.md` index would surface; a write call appends to the same Tier 1 store; a `t2-search` call performs a substring search across Tier 1 memory files. No semantic / vector layer.
+- **`invoke`** — every Tier 2 read/write is **forwarded to Tier 1**. A `wake-up` call returns whatever Tier 1's `MEMORY.md` index would surface; a write call appends to the same Tier 1 store; a `search` call (`bwoc memory search --tier 2`) performs a substring search across Tier 1 memory files. No semantic / vector layer.
 - **`teardown`** — releases nothing. Returns success.
 
 Idempotency is trivially satisfied at every phase because the plugin owns no external state.

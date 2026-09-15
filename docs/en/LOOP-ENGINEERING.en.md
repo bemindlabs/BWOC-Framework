@@ -124,7 +124,7 @@ Loops the layer enables. All share the **same missing core** (`Goal + Ticker + G
 | **Drive team T's tasks to all-`Completed`** | task-mtime event | one `run_lead` drain (`crates/bwoc-harness/src/lead.rs:152`) | DoD predicate + re-fire wrapper — *cheapest win* |
 | **Keep fleet-health conditions green** | interval | `bwoc fleet health` → `bwoc doctor --auto` on Warn | timer glue + auto-fixable-class policy |
 | **Keep each agent's Tier-2 memory current** | adaptive / nightly | `bwoc memory mine <sessions> <agent>` | session cursor + scheduler entry |
-| **A dated retro/report per period** | cron | `bwoc retro new` (metrics-prefill) + `bwoc report` | calendar trigger + one-per-period idempotency |
+| **A dated retro/report per period** | cron | `bwoc doc new retrospectives` (metrics-prefill) + `bwoc report` | calendar trigger + one-per-period idempotency |
 | **Framework self-improvement** (the retired loop, productized) | run-end event | retro `Trigger` → `bwoc task add` → lead drains it | trigger→task bridge + multi-run DoD |
 | **Ship a release** | operator kick | `bwoc run` gates → tag → notes | release orchestration (tag / semver / changelog) |
 

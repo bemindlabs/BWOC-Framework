@@ -106,13 +106,13 @@ For structured Paññā-3 reviews of a sprint, session, or milestone. Uses the s
 
 Sections: **Sutamayā** (what the data / docs say), **Cintāmayā** (synthesis / pattern), **Bhāvanāmayā** (action taken), **Metrics**.
 
-`bwoc retro new "<title>"` creates one in `retrospectives/` using the built-in template.
+`bwoc doc new retrospectives "<title>"` creates one in `retrospectives/` using the built-in template.
 
 ### `YYYY-MM-DD_<title>.md` — Research
 
 For exploratory investigations: a question, scope, sources, findings, and recommendation.  Committed to the repo like notes and retrospectives.
 
-`bwoc research new "<title>"` creates one in `research/` using the built-in template.
+`bwoc doc new research "<title>"` creates one in `research/` using the built-in template.
 
 ### `YYYY-MM-DD_<title>.md` — Custom doc kinds (NEW)
 
@@ -133,15 +133,14 @@ Custom kinds use the same `YYYY-MM-DD_<title>.md` pattern in the declared direct
 
 Resolution order: built-in kinds win; `.bwoc/doc-kinds.toml` entries come after. Unknown kind → error listing all available kinds.
 
-**CLI:** `bwoc doc <kind> new "<title>"` — resolves any kind (built-in or custom) through the same generic engine.
+**CLI:** `bwoc doc new <kind> "<title>"` (also `list <kind>`, `view <kind> <name>`) — resolves any kind (built-in or custom) through the same generic engine.
 
 ```
-bwoc doc decision new "use postgres"   # custom kind
-bwoc doc notes new "my note"           # built-in via generic command
-bwoc notes new "my note"               # built-in alias (unchanged)
+bwoc doc new decision "use postgres"   # custom kind
+bwoc doc new notes "my note"           # built-in kind
 ```
 
-The named aliases (`bwoc notes`, `bwoc retro`, `bwoc research`) remain thin wrappers and are not deprecated.
+The named aliases (`bwoc notes`, `bwoc retro`, `bwoc research`) are deprecated in 3.2 and removed in 4.0 — see [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md#deprecated-in-32-removed-in-40).
 
 ---
 
