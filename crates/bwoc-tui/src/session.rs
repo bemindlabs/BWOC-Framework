@@ -32,7 +32,7 @@ pub struct AgentInfo {
 /// `bwoc_cli::spawn::Backend::uses_harness` (the TUI must not depend on
 /// `bwoc-cli`): the OpenAI-compatible family and `anthropic` (the harness's
 /// Anthropic Messages provider) speak `chat_proto`, while vendor CLIs
-/// (claude / agy / codex / kimi / copilot, grok) speak their own interactive
+/// (claude / agy / codex / kimi / copilot / grok) speak their own interactive
 /// protocol and must be opened with `bwoc chat` directly.
 pub fn is_harness_drivable(backend: &str) -> bool {
     matches!(
