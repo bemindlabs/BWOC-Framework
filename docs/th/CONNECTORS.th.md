@@ -99,7 +99,7 @@ allow_handles = ["+15551234567", "friend@icloud.com"]  # ปิดโดยป�
 
 > [!warning] **ปิดโดยปริยาย; `public = true` เปิดโหมดสาธารณะแบบจำกัด** allow-list ที่ว่างหรือไม่มี = **ไม่อนุญาตใครเลย** และผู้ส่งที่ไม่อยู่ในรายการจะถูกเพิกเฉยทั้งหมด (Sīla เหนือความครบถ้วน) ทางเดียวที่จะเปิดบอตคือตั้ง `[bot] public = true` เมื่อเปิดแล้ว ผู้ส่งที่ไม่อยู่ใน allow-list จะได้รับบริการ **เฉพาะ** ทาง DM หรือเมื่อ @mention บอตในกลุ่ม ข้อความอื่นในกลุ่มของคนเหล่านี้จะถูกทิ้งและไม่ถูกบันทึก ทุก turn แบบนี้ถูกจำกัดดังนี้:
 >
-> - session ถูกล็อกให้ใช้ได้เฉพาะ **เครื่องมืออ่านอย่างเดียว** (โหมด `plan` ของ harness: `read_file`, `list_dir`, `grep`, `glob`, `memory_read` และรายการ `todo` ของ session ที่เก็บในหน่วยความจำ) การเขียน, `run_command`, git, การมอบงาน, `webfetch`, `subagent` และเครื่องมือ MCP ถูกปฏิเสธ ถ้า harness ไม่ยืนยันโหมด session จะไม่ถูกสร้าง
+> - session ถูกล็อกให้ใช้ได้เฉพาะ **เครื่องมืออ่านอย่างเดียว** (โหมด `plan` ของ harness: `read_file`, `list_dir`, `grep`, `glob`, `memory_read`) การเขียน, `run_command`, git, การมอบงาน, `webfetch`, `todo`, `subagent` และเครื่องมือ MCP ถูกปฏิเสธ ถ้า harness ไม่ยืนยันโหมด session จะไม่ถูกสร้าง
 > - เพดานอัตราและความยาวบังคับใช้เสมอ แม้ตั้งเป็น `0` สำหรับผู้ส่งสาธารณะ `0` จะกลับไปใช้ค่าปริยาย
 > - session รันใน **workdir ของตัวเอง** คือ `<agent>/.bwoc/public/<platform>-<chat_id>/` ซึ่งมีแค่สำเนาของ `AGENTS.md` และ `config.manifest.json` (ตัด `deepMemoryCmd` ออก) กับไฟล์ session ของตัวเอง ไม่มี memories, connectors, skills หรือแชตอื่น และไม่เคยเข้า team chat เครื่องมือไฟล์ถูกจำกัดให้อยู่ในนั้นหลัง resolve symlink แล้ว link จึงพาออกไปข้างนอกไม่ได้
 > - turn ยังถูกแท็ก `Principal::Platform` ซึ่งไม่น่าเชื่อถือ

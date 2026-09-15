@@ -128,7 +128,7 @@ connector ที่ตั้ง `[bot] public = true` ยอมให้ **ใ�
 
 | ภัยคุกคาม | มาตรการ |
 |---|---|
-| คนแปลกหน้าชักจูง agent ให้เขียนไฟล์ รันคำสั่ง หรือออกเครือข่าย | session ถูกล็อกเป็นโหมด `plan` ของ harness ก่อนส่งข้อความผู้ใช้ใด ๆ โหมดนี้ใช้ allow-list อ่านอย่างเดียวแบบตายตัว (`read_file`, `list_dir`, `grep`, `glob`, `memory_read` และ `todo` ของ session ที่เก็บในหน่วยความจำ; ไม่รวม `webfetch` และ `subagent`) ถ้า harness ไม่ยืนยันโหมด session จะไม่ถูกสร้าง (fail closed) |
+| คนแปลกหน้าชักจูง agent ให้เขียนไฟล์ รันคำสั่ง หรือออกเครือข่าย | session ถูกล็อกเป็นโหมด `plan` ของ harness ก่อนส่งข้อความผู้ใช้ใด ๆ โหมดนี้ใช้ allow-list อ่านอย่างเดียวแบบตายตัว (`read_file`, `list_dir`, `grep`, `glob`, `memory_read`; ไม่รวม `webfetch`, `todo` และ `subagent`) ถ้า harness ไม่ยืนยันโหมด session จะไม่ถูกสร้าง (fail closed) |
 | ส่งข้อความถล่มหรือ prompt ขนาดใหญ่ | เพดานอัตราต่อผู้ส่งและเพดานความยาวบังคับใช้กับผู้ส่งสาธารณะเสมอ `0` หมายถึงค่าปริยาย ไม่ใช่ "ปิด" |
 | คนแปลกหน้าอ่านสถานะส่วนตัวของ agent หรือ context ของสมาชิก | session สาธารณะรันใน workdir ของตัวเอง (`.bwoc/public/<platform>-<chat_id>/`) ที่มีแค่สำเนาของ `AGENTS.md` และ `config.manifest.json` (ตัด `deepMemoryCmd` ออก) กับไฟล์ session ของตัวเอง ไม่มี memories, connectors, skills หรือแชตอื่น path ของเครื่องมือถูกจำกัดให้อยู่ใน workdir นั้นหลัง canonicalize (ancestor ที่ลึกที่สุดที่มีอยู่จริงต้องอยู่ใน workdir ที่ canonical แล้ว) symlink จึงพาออกไปไม่ได้ session สาธารณะไม่เข้า team chat และข้อความของคนแปลกหน้าที่ไม่ได้เรียกบอตจะถูกทิ้ง ไม่ถูกบันทึก |
 | ข้อความคนแปลกหน้าถูกเข้าใจผิดว่ามีอำนาจของ operator | ทุก turn ที่ถูกบริดจ์เป็น `Principal::Platform` ซึ่งไม่น่าเชื่อถือ |

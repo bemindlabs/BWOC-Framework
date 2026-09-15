@@ -13,18 +13,18 @@ use super::{LoopConfig, VettedMode};
 
 /// How many consecutive malformed-tool-call responses from a model before
 /// triggering fallback to the next model in the chain.
-pub(super) const MALFORMED_TOOL_CALL_THRESHOLD: u32 = 2;
+pub(crate) const MALFORMED_TOOL_CALL_THRESHOLD: u32 = 2;
 
 /// Leave this fraction of the context limit as headroom before compacting.
 /// Compaction triggers when `context_tokens > context_limit * (1 - headroom)`.
-pub(super) const CONTEXT_HEADROOM_FRAC: f64 = 0.10;
+pub(crate) const CONTEXT_HEADROOM_FRAC: f64 = 0.10;
 
 /// Detect malformed tool calls: empty ID or unparseable JSON arguments.
 ///
 /// The spike (llama3.2 3B) produced calls with empty IDs and garbled JSON.
 /// Detecting this early prevents the history from filling with garbage that
 /// confuses the next turn.
-pub(super) fn has_malformed_tool_calls(calls: &[ToolCall]) -> bool {
+pub(crate) fn has_malformed_tool_calls(calls: &[ToolCall]) -> bool {
     calls.iter().any(|c| {
         c.id.is_empty() || serde_json::from_str::<serde_json::Value>(&c.function.arguments).is_err()
     })

@@ -41,6 +41,10 @@ pub enum ChatEvent {
     Restored { role: String, text: String },
     /// A streaming assistant token delta (only when streaming is on).
     Token { text: String },
+    /// A streaming reasoning / thinking delta, only when the provider streams
+    /// one. Display-only: it is not part of the turn's `Message`, and a frontend
+    /// may dim or collapse it.
+    Thinking { text: String },
     /// A complete assistant message for this turn (always sent at turn end,
     /// so non-streaming frontends can render without accumulating `Token`s).
     Message { text: String },
@@ -241,6 +245,16 @@ mod tests {
         };
         let line = ev.to_line().unwrap();
         assert!(line.contains(r#""type":"team_message""#));
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
+    }
+
+    #[test]
+    fn thinking_roundtrips() {
+        let ev = ChatEvent::Thinking {
+            text: "considering".into(),
+        };
+        let line = ev.to_line().unwrap();
+        assert!(line.contains(r#""type":"thinking""#));
         assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), ev);
     }
 

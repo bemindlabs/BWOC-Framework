@@ -24,6 +24,7 @@
 //! model      = "<model>"
 //! endpoint   = "http://localhost:11434/v1"   # optional
 //! max_tokens = 8192                          # optional
+//! max_context = 32768                        # optional: model context window
 //! ```
 //!
 //! Absent `schema_version` reads as legacy (`bwoc-core::schema`); a newer one is
@@ -53,6 +54,7 @@ pub struct RuntimeLayer {
     pub model: Option<String>,
     pub endpoint: Option<String>,
     pub max_tokens: Option<u32>,
+    pub max_context: Option<u32>,
 }
 
 impl RuntimeLayer {
@@ -64,6 +66,7 @@ impl RuntimeLayer {
             model: keep(self.model),
             endpoint: keep(self.endpoint),
             max_tokens: self.max_tokens,
+            max_context: self.max_context,
         }
     }
 
@@ -86,6 +89,7 @@ struct RuntimeTable {
     model: Option<String>,
     endpoint: Option<String>,
     max_tokens: Option<u32>,
+    max_context: Option<u32>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -132,6 +136,7 @@ pub fn parse_config(text: &str, path: &Path) -> Result<RuntimeLayer, RuntimeErro
         model: r.model,
         endpoint: r.endpoint,
         max_tokens: r.max_tokens,
+        max_context: r.max_context,
     }
     .cleaned())
 }
@@ -181,6 +186,7 @@ pub fn env_layer(getenv: &dyn Fn(&str) -> Option<String>) -> RuntimeLayer {
         model: getenv(ENV_MODEL),
         endpoint: getenv(ENV_ENDPOINT),
         max_tokens: None,
+        max_context: None,
     }
     .cleaned()
 }
@@ -226,6 +232,7 @@ pub fn merge(layers: &[RuntimeLayer]) -> RuntimeLayer {
             .filter(compatible)
             .find_map(|l| l.endpoint.clone()),
         max_tokens: layers.iter().filter(compatible).find_map(|l| l.max_tokens),
+        max_context: layers.iter().filter(compatible).find_map(|l| l.max_context),
         backend,
     }
 }
@@ -245,6 +252,7 @@ pub struct Resolved {
     pub model: String,
     pub endpoint: Option<String>,
     pub max_tokens: Option<u32>,
+    pub max_context: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +281,7 @@ pub fn resolve(merged: &RuntimeLayer, probes: &Probes) -> Resolution {
             model,
             endpoint: merged.endpoint.clone(),
             max_tokens: merged.max_tokens,
+            max_context: merged.max_context,
         })
     };
 
@@ -422,6 +431,7 @@ pub fn run_session(flags: RuntimeLayer) -> i32 {
                     model: r.model,
                     endpoint: r.endpoint,
                     max_tokens: r.max_tokens,
+                    max_context: r.max_context,
                     session_file: home.as_deref().map(|h| session_file_for(h, &cwd)),
                 }),
             })
@@ -463,7 +473,8 @@ mod tests {
     fn parse_reads_runtime_table_and_ignores_unknown_keys() {
         let l = parse_config(
             "schema_version = 3\nfuture_key = 1\n[runtime]\nbackend = \"ollama\"\nmodel = \"m\"\n\
-             endpoint = \"http://h:1/v1\"\nmax_tokens = 4096\nnew_knob = true\n[other]\nx = 1\n",
+             endpoint = \"http://h:1/v1\"\nmax_tokens = 4096\nmax_context = 32768\nnew_knob = true\n\
+             [other]\nx = 1\n",
             Path::new("c.toml"),
         )
         .unwrap();
@@ -471,6 +482,7 @@ mod tests {
         assert_eq!(l.model.as_deref(), Some("m"));
         assert_eq!(l.endpoint.as_deref(), Some("http://h:1/v1"));
         assert_eq!(l.max_tokens, Some(4096));
+        assert_eq!(l.max_context, Some(32768));
     }
 
     #[test]
@@ -521,12 +533,14 @@ mod tests {
             model: Some("vendor-model".into()),
             endpoint: Some("https://vendor".into()),
             max_tokens: Some(9),
+            max_context: Some(99),
         };
         let m = merge(&[RuntimeLayer::default(), env, user]);
         assert_eq!(m.backend.as_deref(), Some("ollama"));
         assert_eq!(m.model, None);
         assert_eq!(m.endpoint, None);
         assert_eq!(m.max_tokens, None);
+        assert_eq!(m.max_context, None);
     }
 
     #[test]
@@ -601,6 +615,7 @@ mod tests {
                 model: DEFAULT_ANTHROPIC_MODEL.into(),
                 endpoint: None,
                 max_tokens: None,
+                max_context: None,
             })
         );
     }

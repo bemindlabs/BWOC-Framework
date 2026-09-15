@@ -236,6 +236,12 @@ struct Args {
     /// `bwoc` passes `[runtime] max_tokens` here.
     #[arg(long)]
     max_tokens: Option<u32>,
+
+    /// Model context window (tokens) for `--chat` / `--headless` compaction.
+    /// Unset = the window the provider reports, else a known backend window,
+    /// else a conservative default. Bare `bwoc` passes `[runtime] max_context`.
+    #[arg(long)]
+    max_context: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -554,58 +560,8 @@ async fn run() -> HarnessResult<()> {
         registry.register(bwoc_harness::deep_memory::MemorySearch::new(dm.clone()));
     }
     // ── MCP tool servers (HV2-5) ──────────────────────────────────────────
-    // Each --mcp launches an external MCP server and registers its tools.
-    // Failures are warned, not fatal — the run proceeds with the built-in set.
-    for spec in &args.mcp {
-        let parts: Vec<String> = spec.split_whitespace().map(String::from).collect();
-        let Some((program, prog_args)) = parts.split_first() else {
-            continue;
-        };
-        let label = std::path::Path::new(program)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(program);
-        match bwoc_harness::mcp::McpClient::connect_stdio(program, prog_args).await {
-            Ok(client) => match client.register_tools(&mut registry, label).await {
-                Ok(n) => println!("  mcp      : {n} tool(s) from `{program}`"),
-                Err(e) => {
-                    eprintln!("[bwoc-harness] warning: MCP `tools/list` from `{program}`: {e}")
-                }
-            },
-            Err(e) => eprintln!("[bwoc-harness] warning: MCP connect `{program}`: {e}"),
-        }
-    }
-    // Remote MCP servers over Streamable HTTP. The server label (and secrets
-    // token key prefix) is the URL host. Same fail-soft posture as --mcp.
-    for url in &args.mcp_http {
-        let host = url
-            .split("://")
-            .nth(1)
-            .and_then(|rest| rest.split(['/', ':']).next())
-            .filter(|h| !h.is_empty())
-            .unwrap_or(url.as_str());
-        // Sanitize the host into a label usable as both a tool-name prefix
-        // segment and a bare TOML secrets key: `example.com` → `example_com`.
-        let label: String = host
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let token = bwoc_harness::mcp::token_from_secrets(&label);
-        match bwoc_harness::mcp::McpClient::connect_http(url, token).await {
-            Ok(client) => match client.register_tools(&mut registry, &label).await {
-                Ok(n) => println!("  mcp      : {n} tool(s) from `{url}`"),
-                Err(e) => {
-                    eprintln!("[bwoc-harness] warning: MCP `tools/list` from `{url}`: {e}")
-                }
-            },
-            Err(e) => eprintln!("[bwoc-harness] warning: MCP connect `{url}`: {e}"),
-        }
+    for line in register_mcp_servers(&mut registry, &args.mcp, &args.mcp_http).await {
+        println!("  mcp      : {line}");
     }
     let registry = Arc::new(registry);
 
@@ -824,6 +780,75 @@ async fn run() -> HarnessResult<()> {
     println!("{}", result.final_response);
 
     Ok(())
+}
+
+/// Connect every `--mcp` (stdio command line) and `--mcp-http` (URL) server
+/// and register its tools. Shared by the batch and chat paths. Failures are
+/// warned on stderr, not fatal — the session keeps the built-in tools. Returns
+/// one `"<n> tool(s) from `<server>`"` line per server that registered, for the
+/// caller to print where its output belongs (stdout for batch, stderr for chat).
+async fn register_mcp_servers(
+    registry: &mut bwoc_harness::tools::ToolRegistry,
+    stdio: &[String],
+    http: &[String],
+) -> Vec<String> {
+    let mut registered = Vec::new();
+    for spec in stdio {
+        let parts: Vec<String> = spec.split_whitespace().map(String::from).collect();
+        let Some((program, prog_args)) = parts.split_first() else {
+            continue;
+        };
+        let label = std::path::Path::new(program)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(program);
+        match bwoc_harness::mcp::McpClient::connect_stdio(program, prog_args).await {
+            Ok(client) => match client.register_tools(registry, label).await {
+                Ok(n) => registered.push(format!("{n} tool(s) from `{program}`")),
+                Err(e) => {
+                    eprintln!("[bwoc-harness] warning: MCP `tools/list` from `{program}`: {e}")
+                }
+            },
+            Err(e) => eprintln!("[bwoc-harness] warning: MCP connect `{program}`: {e}"),
+        }
+    }
+    // Remote MCP servers over Streamable HTTP. The server label (and secrets
+    // token key prefix) is the URL host.
+    for url in http {
+        let label = mcp_http_label(url);
+        let token = bwoc_harness::mcp::token_from_secrets(&label);
+        match bwoc_harness::mcp::McpClient::connect_http(url, token).await {
+            Ok(client) => match client.register_tools(registry, &label).await {
+                Ok(n) => registered.push(format!("{n} tool(s) from `{url}`")),
+                Err(e) => {
+                    eprintln!("[bwoc-harness] warning: MCP `tools/list` from `{url}`: {e}")
+                }
+            },
+            Err(e) => eprintln!("[bwoc-harness] warning: MCP connect `{url}`: {e}"),
+        }
+    }
+    registered
+}
+
+/// The label for a `--mcp-http` URL: its host, sanitized into a string usable as
+/// both a tool-name prefix segment and a bare TOML secrets key
+/// (`https://example.com/mcp` → `example_com`).
+fn mcp_http_label(url: &str) -> String {
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split(['/', ':']).next())
+        .filter(|h| !h.is_empty())
+        .unwrap_or(url);
+    host.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1263,6 +1288,8 @@ async fn run_chat_mode(
     // literal string "auto" — which no provider serves — so an agent configured
     // `primaryModel: "auto"` cannot chat (#347). Chat is interactive, so there is
     // no `--task` to classify: the resolver picks its default from the pool.
+    // As in run(): the remaining available auto candidates are the fallback chain.
+    let mut fallback_models: Vec<String> = Vec::new();
     let resolved_model = if args.model == bwoc_harness::model_select::AUTO_SENTINEL {
         // Progress goes to STDERR: in chat/headless mode stdout carries the
         // `chat_proto` JSON-line protocol, so a stray human line there would
@@ -1287,6 +1314,7 @@ async fn run_chat_mode(
         let sel =
             bwoc_harness::model_select::resolve_auto(provider.as_ref(), &candidates, "").await?;
         eprintln!("[bwoc-harness] auto model → {}", sel.chosen);
+        fallback_models = sel.remaining;
         sel.chosen
     } else {
         args.model.clone()
@@ -1327,7 +1355,8 @@ async fn run_chat_mode(
         }
     }
 
-    // Tool registry + context, same as run() (no MCP in the chat v1 driver).
+    // Tool registry + context, same as run(), including `--mcp` / `--mcp-http`
+    // servers. Status goes to stderr: stdout is the chat_proto stream.
     let mut registry = default_registry();
     if let Some(dm) = &deep_memory {
         registry.register(bwoc_harness::deep_memory::MemorySearch::new(dm.clone()));
@@ -1342,6 +1371,9 @@ async fn run_chat_mode(
         provider.clone(),
         resolved_model.clone(),
     ));
+    for line in register_mcp_servers(&mut registry, &args.mcp, &args.mcp_http).await {
+        eprintln!("[bwoc-harness] mcp: {line}");
+    }
     let registry = Arc::new(registry);
     let ctx = if args.unrestricted {
         ToolContext::unconfined(workdir)
@@ -1369,6 +1401,17 @@ async fn run_chat_mode(
         chat_default_policy()
     };
 
+    // Context budget from the real window: `--max-context`, else what the
+    // provider reports, else a known backend window, else the default.
+    let window = match args.max_context {
+        Some(n) => Some(n),
+        None => match provider.model_context_limit(&resolved_model).await {
+            Some(n) => Some(n),
+            None => chat_session::known_context_window(&args.backend),
+        },
+    };
+    let max_context_tokens = chat_session::context_budget(window, max_tokens);
+
     // Agent id from the manifest when present, else the --agent fallback.
     let agent =
         bwoc_core::manifest::Manifest::load_from_path(&workdir.join("config.manifest.json"))
@@ -1378,11 +1421,12 @@ async fn run_chat_mode(
     let config = ChatConfig {
         agent,
         model: resolved_model.clone(),
+        fallback_models,
         backend: args.backend.clone(),
         system_prompt,
         policy,
         max_turn_iterations: args.max_iterations,
-        max_context_tokens: bwoc_harness::chat_session::DEFAULT_MAX_CONTEXT_TOKENS,
+        max_context_tokens,
         // Team chat broadcast (HV3-3a): `--team-chat <path>` opts this session
         // into a team's shared `chat.jsonl`. The host (`bwoc chat --team`)
         // resolves the workspace-relative path; unset = solo session.
@@ -1522,6 +1566,33 @@ mod tests {
         for backend in ["ollama", "openai-compatible", "claude", "anthropic"] {
             assert!(ensure_backend_credentials(backend).is_ok());
         }
+    }
+
+    #[test]
+    fn mcp_http_label_is_the_sanitized_host() {
+        assert_eq!(mcp_http_label("https://example.com/mcp"), "example_com");
+        assert_eq!(mcp_http_label("http://localhost:8080/x"), "localhost");
+        assert_eq!(mcp_http_label("https://MCP.Host-1.io"), "mcp_host_1_io");
+    }
+
+    #[tokio::test]
+    async fn register_mcp_servers_is_fail_soft_and_empty_by_default() {
+        // No flags: nothing registered, nothing to print (chat stays as before).
+        let mut registry = default_registry();
+        let before = registry.tool_names().len();
+        assert!(
+            register_mcp_servers(&mut registry, &[], &[])
+                .await
+                .is_empty()
+        );
+        // A server that cannot start is warned about, never fatal, and adds no tools.
+        let bad = vec!["/nonexistent/bwoc-mcp-test-server".to_string()];
+        assert!(
+            register_mcp_servers(&mut registry, &bad, &[])
+                .await
+                .is_empty()
+        );
+        assert_eq!(registry.tool_names().len(), before);
     }
 
     #[tokio::test]

@@ -178,10 +178,7 @@ impl Session {
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Inherit stderr like the single-agent TUI: invisible under the alt
-            // screen, but still captured by a shell redirect so a crashed
-            // session is diagnosable (it would otherwise vanish silently).
-            .stderr(Stdio::inherit())
+            .stderr(crate::harness_stderr())
             .spawn()?;
 
         let stdin = child.stdin.take().expect("piped stdin");

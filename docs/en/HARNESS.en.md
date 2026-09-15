@@ -65,6 +65,7 @@ backend    = "ollama"
 model      = "<model>"
 endpoint   = "http://localhost:11434/v1"   # optional
 max_tokens = 8192                          # optional
+max_context = 32768                        # optional: model context window
 ```
 
 An absent `schema_version` is read as legacy; a newer one is refused with an error naming `schema_version`. Unknown keys are ignored.
@@ -76,6 +77,8 @@ An absent `schema_version` is read as legacy; a newer one is refused with an err
 3. Project instructions: `AGENTS.md` (else `CLAUDE.md`) from each directory between the git root and the working directory, root first and nearest last, capped at 32 KB with the farthest directories cut first.
 
 The conversation is saved per directory under `~/.bwoc/sessions/`, never inside the repository. File tools stay confined to the working directory, and writes, edits and commands ask first (the chat default policy) unless `.bwoc/harness-policy.toml` says otherwise.
+
+**A session runs the batch paths.** Provider calls retry transient errors, and repeated malformed tool calls move to the next `autoModels` fallback. `--mcp` / `--mcp-http` servers register as in `bwoc run`. Every tool call passes the capability gate, guardrails and permission policy, then runs through the turn executor and OS sandbox — except the three chat-only tools below (`webfetch`, `todo`, `subagent`), which run in-process after the same checks. Once untrusted content (a tool output, a connector message) is in the conversation, a gated call such as `run_command` needs an explicit Allow, even in bypass mode; a `--headless` session denies it, as batch does. Compaction is sized from the model's context window: `max_context` (`--max-context`), else what the provider reports, else 200k tokens for `anthropic`, else 8,000 tokens. Reasoning text streamed by the provider shows as a dimmed line that collapses when the answer starts.
 
 **Agent sessions are unchanged.** When the workdir has `config.manifest.json` (`bwoc chat <agent>`), the prompt is still the agent's `AGENTS.md` plus its `MEMORY.md` index, now followed by a condensed persona and mindsets block: the `persona/README.md` body and each mindset's title and first paragraph, capped at 8 KB. A bwoc-connect public workdir (`.bwoc/public/…`) never reads instructions from above itself.
 
@@ -218,10 +221,10 @@ All tools are registered in `tools/registry.rs` and dispatched through the safet
 | Tool | Description | Chat default policy | Plan mode |
 |---|---|---|---|
 | `webfetch` | GET an http(s) URL and return text (HTML converted). 30 s timeout, 1 MB body, at most 5 redirects; localhost and loopback, private, link-local and CGNAT addresses are refused, including on redirect | `ask` (network egress) | blocked |
-| `todo` | The session's task list, held in memory (`read` / `write`) | `allow` | allowed |
+| `todo` | The session's task list, held in memory (`read` / `write`) | `allow` | blocked |
 | `subagent` | A read-only child session: same provider and model, fresh context, `read_file` / `list_dir` / `grep` / `glob` only, at most 15 model calls, cannot start another subagent. Returns its final answer | `allow` | blocked |
 
-`webfetch` and `subagent` stay out of plan mode because public connector sessions run in plan mode. There is no `apply_patch`: `multi_edit` covers multi-site edits without a patch grammar.
+`webfetch`, `todo` and `subagent` stay out of plan mode: public connector sessions run in plan mode, and every plan-mode tool must pass the capability gate on an untrusted turn, which only `PURE_READ_TOOLS` do. There is no `apply_patch`: `multi_edit` covers multi-site edits without a patch grammar.
 
 ---
 
