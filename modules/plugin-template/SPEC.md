@@ -37,10 +37,10 @@ Optional implementation files (Rust crate, binary on `PATH` matching `entry`, co
 
 | Placeholder | Required | Replaced by | Example |
 |---|---|---|---|
-| `{{pluginName}}` | yes | `bwoc plugin init <name>` argument; kebab-case; must equal the new directory name under `modules/plugins/` | `memory-tier2-noop` |
-| `{{pluginKind}}` | yes | `--kind <kind>` flag on `init`; one of `memory-backend`, `llm-backend`, `workflow` (or a future kind added to the enum) | `memory-backend` |
+| `{{pluginName}}` | yes | `bwoc plugin init <name>` argument; kebab-case; must equal the new directory name under `modules/plugins/` | `gcloud-auth` |
+| `{{pluginKind}}` | yes | `--kind <kind>` flag on `init`; one of `memory-backend`, `llm-backend`, `workflow` (or a future kind added to the enum) | `workflow` |
 | `{{pluginVersion}}` | yes | Author edit; semver of the plugin itself, separate from the framework version | `0.1.0` |
-| `{{pluginDescription}}` | yes | Author edit; one-sentence summary; the **only** manifest value where a vendor name is tolerated | `No-op Tier 2 memory backend that forwards to Tier 1.` |
+| `{{pluginDescription}}` | yes | Author edit; one-sentence summary; the **only** manifest value where a vendor name is tolerated | `Google Cloud (gcloud) credential-state adapter.` |
 
 `compat` is seeded as `">=3.0.0, <4.0.0"` — the framework version range under which this plugin is known to load. Keep the upper bound: an open-ended range would claim compatibility with majors that break this plugin, which is the failure the field exists to prevent. The author tightens or extends the range honestly; a mismatch at load time causes `bwoc` to refuse the plugin (see [[../../docs/en/PLUGINS.en#loading-mechanism|PLUGINS.en.md §Loading Mechanism]]).
 
@@ -68,6 +68,6 @@ Manifest values name no backend, model, or vendor CLI. The `kind` enum values (`
 ## See Also
 
 - [[../../docs/en/PLUGINS.en|PLUGINS.en.md]] — the spec this template scaffolds against.
-- [[../plugins/memory-tier2-noop/SPEC|memory-tier2-noop]] — the first reference plugin; use it as a worked example of a fully substituted manifest + SPEC.
+- [[../plugins/workflow/gcloud-auth/SPEC|gcloud-auth]] — a shipped plugin; use it as a worked example of a fully substituted manifest + SPEC.
 - [[../skill-template/SPEC|skill-template]] — the parallel template for the skill surface.
 - [[../../notes/2026-05-26_iso-compliance-plugins|iso-compliance-plugins design note]] — the path-reconcile decision that fixed flat layout for every plugin kind.

@@ -8,9 +8,9 @@ nav_order: 12
 
 A **framework plugin** extends the framework with capabilities that do not belong in every agent but should be available to agents and workspaces that need them. Plugins are loaded by the **framework runtime** — they are operator-facing, not agent-facing.
 
-This spec defines the plugin kinds, manifest format, lifecycle hooks, loading mechanism, and verification gates. The first reference plugin (`memory-tier2-noop`) ships alongside this spec — both lands and proves the format together.
+This spec defines the plugin kinds, manifest format, lifecycle hooks, loading mechanism, and verification gates. The shipped plugins are listed in [`modules/plugins/README.md`](../../modules/plugins/README.md). No reference plugin ships for the `memory-backend` or `llm-backend` kinds. The kinds stay in the spec, but Tier 2 memory is wired through the agent's `deepMemoryCmd` (`bwoc-core::deep_memory`), not through a plugin.
 
-> [!abstract] Status: initial scaffold. Manifest tables and lifecycle hooks below are normative; prose may be refined as story BWOC-1..3 work refines the contract. The first reference plugin lands in BWOC-7.
+> [!abstract] Status: initial scaffold. Manifest tables and lifecycle hooks below are normative; prose may be refined as story BWOC-1..3 work refines the contract.
 
 ---
 
@@ -517,12 +517,12 @@ modules/plugins/
 
 ```toml
 [plugin]
-name        = "memory-tier2-noop"               # required — must match the directory name
+name        = "memory-example"                  # required — must match the directory name (illustrative; not a shipped plugin)
 kind        = "memory-backend"                  # required — one of: memory-backend | llm-backend | workflow | audit | jira
 version     = "0.1.0"                           # required — semver
-description = "No-op Tier 2 memory backend that forwards to Tier 1."   # required — one-sentence summary
+description = "Example Tier 2 memory backend."  # required — one-sentence summary
 compat      = ">=3.0.0, <4.0.0"                 # required — semver range, bounded above; framework versions this plugin works with
-entry       = "bwoc-plugin-memory-tier2-noop"   # required — binary on PATH (preferred) or sibling Rust crate name
+entry       = "bwoc-plugin-memory-example"      # required — binary on PATH (preferred) or sibling Rust crate name
 
 [config.schema]                                 # optional — omit the table entirely if the plugin takes no config
 # Plugin-defined; JSON-schema-lite. The workspace's [plugins.<name>] table is validated against this.
@@ -625,7 +625,7 @@ The operator declares which plugins this workspace uses by adding entries to `wo
 ```toml
 [plugins]
 
-[plugins.memory-tier2-noop]
+[plugins.memory-example]
 enabled      = true
 storage_path = "memories/tier2"
 
@@ -824,7 +824,7 @@ A failed check exits non-zero on the workspace audit — same surface, same exit
 
 - **Skills** — see [`SKILLS.en.md`](SKILLS.en.md). Skills are agent-invoked; plugins are framework-loaded.
 - **The ten declared backends** (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`, `ollama`, `openai-compatible`, `openrouter`, `litellm`) — they are first-class, not plugins. See [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md).
-- **The first reference plugin itself** — see story `BWOC-7` and (once landed) `modules/plugins/memory-tier2-noop/SPEC.md`.
+- **A reference `memory-backend` or `llm-backend` plugin** — none ships. Tier 2 memory runs through the agent's `deepMemoryCmd` (`bwoc-core::deep_memory`).
 - **Trust v2 / signing of plugin binaries** — deferred. Plugin binaries today are trusted by virtue of being installed under `modules/plugins/`; richer trust gating lands with the broader Trust v2 work.
 
 ---

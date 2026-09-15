@@ -5065,7 +5065,8 @@ exposes     = ["op"]
 
     #[test]
     fn audit_plugin_manifest_reference_passes() {
-        // The reference manifest from modules/plugins/memory-tier2-noop/.
+        // Inline sample of a minimal valid memory-backend manifest (the shape of
+        // the former memory-tier2-noop stub; no plugin directory is read).
         let dir = write_plugin_manifest(
             "ref",
             "memory-tier2-noop",

@@ -149,5 +149,4 @@ enabled = true
 
 - [[../../docs/en/PLUGINS.en|PLUGINS.en.md]] — สเปคของ plugin; แถวของ `audit` kind (BWOC-10), Audit Findings Schema (BWOC-11)
 - [[../../notes/2026-05-26_iso-compliance-plugins|2026-05-26_iso-compliance-plugins.md]] — บันทึกกรอบความคิด EPIC-2 (ทำไม `audit`, ทำไม 29110 ก่อน)
-- [[../memory-tier2-noop/SPEC|memory-tier2-noop]] — ปลั๊กอินอ้างอิงพี่น้อง (kind ต่างกัน, substrate เดียวกัน)
 - [[../../crates/bwoc-cli/src/audit|crates/bwoc-cli/src/audit.rs]] — dispatcher ที่เรียกปลั๊กอินตัวนี้
