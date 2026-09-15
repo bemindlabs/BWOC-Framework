@@ -93,12 +93,17 @@ mod context;
 mod execute;
 mod provider;
 
-use context::{
-    CONTEXT_HEADROOM_FRAC, MALFORMED_TOOL_CALL_THRESHOLD, estimate_context_tokens,
-    find_larger_vetted_model, has_malformed_tool_calls, model_effective_limit,
-};
+use context::{estimate_context_tokens, find_larger_vetted_model, model_effective_limit};
 use execute::execute_tool_calls;
 use provider::call_with_retry_v2;
+
+// Shared with the `--chat` driver so it runs the same provider/retry path and
+// fallback rule as the batch loop.
+pub(crate) use context::{
+    CONTEXT_HEADROOM_FRAC, MALFORMED_TOOL_CALL_THRESHOLD, has_malformed_tool_calls,
+};
+pub(crate) use execute::LiveDelta;
+pub(crate) use provider::call_with_retry_live;
 
 // ---------------------------------------------------------------------------
 // Vetted-model mode
@@ -2576,12 +2581,49 @@ mod tests {
                     role: None,
                     content: Some(text.to_string()),
                     tool_calls: None,
+                    reasoning_content: None,
+                    reasoning: None,
                 },
                 finish_reason: None,
             }],
             usage: None,
             thinking_block: None,
         }
+    }
+
+    #[tokio::test]
+    async fn live_sink_streams_reasoning_apart_from_content() {
+        // Both reasoning field names reach the sink as Thinking; neither leaks
+        // into the accumulated message content.
+        let mut openai_style = content_chunk("");
+        openai_style.choices[0].delta.content = None;
+        openai_style.choices[0].delta.reasoning_content = Some("hmm".to_string());
+        let mut other_style = content_chunk("");
+        other_style.choices[0].delta.content = None;
+        other_style.choices[0].delta.reasoning = Some(", ok".to_string());
+        let provider = StreamingMockProvider {
+            chunks: vec![openai_style, other_style, content_chunk("answer")],
+        };
+        let mut seen: Vec<LiveDelta> = Vec::new();
+        let sink: &mut (dyn FnMut(LiveDelta) + Send) = &mut |d| seen.push(d);
+        let (msg, _) = super::execute::stream_and_accumulate_live(
+            &provider,
+            vec![],
+            vec![],
+            "mock",
+            Some(sink),
+        )
+        .await
+        .unwrap();
+        assert_eq!(msg.content.as_deref(), Some("answer"));
+        assert_eq!(
+            seen,
+            vec![
+                LiveDelta::Thinking("hmm".to_string()),
+                LiveDelta::Thinking(", ok".to_string()),
+                LiveDelta::Content("answer".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]

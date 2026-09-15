@@ -86,6 +86,9 @@ pub struct ProjectSession {
     /// `None` lets the harness use the backend's default endpoint.
     pub endpoint: Option<String>,
     pub max_tokens: Option<u32>,
+    /// Model context window override (`--max-context`). `None` lets the harness
+    /// size compaction from the provider-reported or known window.
+    pub max_context: Option<u32>,
     /// Where the harness persists the conversation. `None` keeps the harness
     /// default, `<workdir>/.bwoc/chat-session.json`.
     pub session_file: Option<PathBuf>,
@@ -154,9 +157,7 @@ pub fn run(args: TuiArgs) -> i32 {
         .args(&argv)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // Let the child's stderr pass through to ours; on the alt-screen it is
-        // mostly invisible but still captured by any redirect the user set.
-        .stderr(Stdio::inherit())
+        .stderr(harness_stderr())
         .spawn()
     {
         Ok(c) => c,
@@ -268,12 +269,17 @@ fn harness_argv(
 }
 
 /// Extra harness argv for a project session: `--agent <name>` (display name in
-/// the `Ready` status), optional `--max-tokens`, and the per-directory
-/// `--session-file` so the conversation is not written into the repository.
+/// the `Ready` status), optional `--max-tokens` / `--max-context`, and the
+/// per-directory `--session-file` so the conversation is not written into the
+/// repository.
 fn project_argv(name: &str, p: &ProjectSession) -> Vec<String> {
     let mut argv = vec!["--agent".to_string(), name.to_string()];
     if let Some(n) = p.max_tokens {
         argv.push("--max-tokens".to_string());
+        argv.push(n.to_string());
+    }
+    if let Some(n) = p.max_context {
+        argv.push("--max-context".to_string());
         argv.push(n.to_string());
     }
     if let Some(file) = &p.session_file {
@@ -302,6 +308,9 @@ struct App {
     /// Accumulator for the in-flight streamed assistant turn. Flushed to
     /// `conversation` on `Message`/`TurnEnd`.
     streaming: String,
+    /// Reasoning text streamed for the current step. Shown dimmed while it
+    /// arrives, then collapsed to one `∴` line when anything else follows.
+    thinking: String,
     /// The current input buffer (one line).
     input: String,
     /// A permission request awaiting `a`/`d`. Only one at a time.
@@ -345,6 +354,7 @@ impl App {
             status: None,
             conversation: vec!["(waiting for harness to become ready…)".to_string()],
             streaming: String::new(),
+            thinking: String::new(),
             input: String::new(),
             pending: None,
             usage: None,
@@ -389,10 +399,29 @@ impl App {
         }
     }
 
+    /// Collapse streamed reasoning into one dimmed transcript line: its size and
+    /// a whitespace-flattened preview.
+    fn flush_thinking(&mut self) {
+        const PREVIEW_CHARS: usize = 80;
+        let text = std::mem::take(&mut self.thinking);
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.is_empty() {
+            return;
+        }
+        let chars = flat.chars().count();
+        let preview: String = flat.chars().take(PREVIEW_CHARS).collect();
+        let more = if chars > PREVIEW_CHARS { "…" } else { "" };
+        self.conversation
+            .push(format!("∴ thinking ({chars} chars): {preview}{more}"));
+    }
+
     /// Fold one harness event into the app state. Pure w.r.t. I/O — returns
     /// nothing; the loop redraws after applying. Factored so the event→state
     /// mapping is unit-testable without a terminal.
     fn apply(&mut self, ev: ChatEvent) {
+        if !matches!(ev, ChatEvent::Thinking { .. }) {
+            self.flush_thinking();
+        }
         match ev {
             ChatEvent::Ready {
                 agent,
@@ -412,6 +441,9 @@ impl App {
             ChatEvent::Restored { role, text } => {
                 // A replayed turn from a persisted session.
                 self.conversation.push(format!("{role}: {text}"));
+            }
+            ChatEvent::Thinking { text } => {
+                self.thinking.push_str(&text);
             }
             ChatEvent::Token { text } => {
                 self.streaming.push_str(&text);
@@ -792,14 +824,21 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = app
         .conversation
         .iter()
-        .map(|l| Line::from(Span::styled(l.clone(), transcript_style(l))))
+        .flat_map(|l| styled_lines(l, transcript_style(l)))
         .collect();
+    // Reasoning still arriving: one dimmed progress line (collapsed later).
+    if app.streaming.is_empty() && !app.thinking.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("∴ thinking… ({} chars)", app.thinking.chars().count()),
+            Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
+        )));
+    }
     // Show the in-flight streamed turn live, below the committed history.
     if !app.streaming.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("assistant: {}", app.streaming),
+        lines.extend(styled_lines(
+            &format!("assistant: {}", app.streaming),
             Style::default().add_modifier(Modifier::DIM),
-        )));
+        ));
     }
 
     // The view is anchored to the tail; `app.scroll` (lines up from the bottom)
@@ -831,6 +870,20 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
+/// One transcript entry as display lines: split on `\n` (a trailing `\r` is
+/// dropped) so multi-line assistant text and tool output keep their line
+/// breaks. Every line takes the entry's style.
+fn styled_lines(text: &str, style: Style) -> Vec<Line<'static>> {
+    text.split('\n')
+        .map(|part| {
+            Line::from(Span::styled(
+                part.strip_suffix('\r').unwrap_or(part).to_string(),
+                style,
+            ))
+        })
+        .collect()
+}
+
 /// Per-line style for the transcript: color the inline tool-action markers
 /// (⚠ permission, ✗ error/denied, ✓ result/allowed, → tool call) so they stand
 /// out from plain user/assistant turns now that they share one column.
@@ -843,7 +896,11 @@ fn transcript_style(line: &str) -> Style {
         Style::default().fg(tone(design::color::DANGER))
     } else if line.starts_with('✓') {
         Style::default().fg(tone(design::color::SUCCESS))
-    } else if line.starts_with('→') || line.starts_with('●') || line.starts_with('📢') {
+    } else if line.starts_with('→')
+        || line.starts_with('●')
+        || line.starts_with('📢')
+        || line.starts_with('∴')
+    {
         Style::default().add_modifier(Modifier::DIM)
     } else {
         Style::default()
@@ -1539,6 +1596,33 @@ fn draw_fleet_sidebar(f: &mut ratatui::Frame, area: Rect, fleet: &Fleet) {
     f.render_widget(List::new(items).block(block), area);
 }
 
+/// Stderr for a TUI-spawned harness. Inherited stderr on a terminal paints
+/// over the alternate screen (sandbox warnings land mid-conversation), so it is
+/// appended to `~/.bwoc/logs/tui-harness.log` instead. A redirected stderr is
+/// kept, so a shell capture still sees a crashed session.
+pub(crate) fn harness_stderr() -> Stdio {
+    use std::io::IsTerminal as _;
+    if !io::stderr().is_terminal() {
+        return Stdio::inherit();
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    harness_log_path(home.map(PathBuf::from))
+        .and_then(|path| {
+            std::fs::create_dir_all(path.parent()?).ok()?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::inherit)
+}
+
+fn harness_log_path(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|h| h.join(".bwoc").join("logs").join("tui-harness.log"))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1547,6 +1631,7 @@ mod tests {
             model: "m".into(),
             endpoint: None,
             max_tokens: Some(4096),
+            max_context: Some(32768),
             session_file: Some(std::path::PathBuf::from("/h/.bwoc/sessions/abc.json")),
         };
         assert_eq!(
@@ -1556,6 +1641,8 @@ mod tests {
                 "repo",
                 "--max-tokens",
                 "4096",
+                "--max-context",
+                "32768",
                 "--session-file",
                 "/h/.bwoc/sessions/abc.json"
             ]
@@ -1564,6 +1651,7 @@ mod tests {
             model: "m".into(),
             endpoint: None,
             max_tokens: None,
+            max_context: None,
             session_file: None,
         };
         assert_eq!(super::project_argv("repo", &bare), ["--agent", "repo"]);
@@ -1680,6 +1768,46 @@ mod tests {
         assert!(s.contains("agent-pi"));
         assert!(s.contains("openai-compatible"));
         assert!(s.contains("connecting"));
+    }
+
+    #[test]
+    fn thinking_streams_then_collapses_to_one_dim_line() {
+        let mut app = App::new("a".into(), "anthropic");
+        app.apply(ChatEvent::Thinking {
+            text: "Let me\nthink ".into(),
+        });
+        app.apply(ChatEvent::Thinking {
+            text: "about it.".into(),
+        });
+        assert_eq!(app.thinking, "Let me\nthink about it.");
+        // The first non-thinking event collapses it.
+        app.apply(ChatEvent::Token {
+            text: "Answer".into(),
+        });
+        assert!(app.thinking.is_empty());
+        let collapsed: Vec<_> = app
+            .conversation
+            .iter()
+            .filter(|l| l.starts_with('∴'))
+            .collect();
+        assert_eq!(collapsed, ["∴ thinking (22 chars): Let me think about it."]);
+        assert_eq!(app.streaming, "Answer");
+        assert_eq!(
+            transcript_style(collapsed[0]),
+            Style::default().add_modifier(Modifier::DIM)
+        );
+    }
+
+    #[test]
+    fn styled_lines_keep_line_breaks() {
+        let style = transcript_style("✓ list_dir");
+        let lines = styled_lines("✓ list_dir: .git/\nAGENTS.md\r\nnotes.txt", style);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans[0].content.to_string())
+            .collect();
+        assert_eq!(text, ["✓ list_dir: .git/", "AGENTS.md", "notes.txt"]);
+        assert!(lines.iter().all(|l| l.spans[0].style == style));
     }
 
     #[test]
@@ -2050,5 +2178,14 @@ mod tests {
             screen.contains("[a]llow") && screen.contains("[d]eny"),
             "prompt actions:\n{screen}"
         );
+    }
+
+    #[test]
+    fn harness_log_lives_under_bwoc_home() {
+        assert_eq!(
+            harness_log_path(Some(PathBuf::from("/h"))),
+            Some(PathBuf::from("/h/.bwoc/logs/tui-harness.log"))
+        );
+        assert_eq!(harness_log_path(None), None);
     }
 }

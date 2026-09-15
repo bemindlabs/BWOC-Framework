@@ -171,6 +171,7 @@ impl EchoGuard {
             if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) != 0 {
                 return Self(None);
             }
+            arm_interrupt_restore(original);
             Self(Some(original))
         }
     }
@@ -180,12 +181,47 @@ impl EchoGuard {
 impl Drop for EchoGuard {
     fn drop(&mut self) {
         if let Some(original) = self.0 {
+            take_saved_termios();
             // SAFETY: restores the flags captured in `disable`.
             unsafe {
                 libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
             }
         }
     }
+}
+
+/// The terminal flags to put back if the hidden prompt is interrupted.
+#[cfg(unix)]
+static SAVED_TERMIOS: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::new(None);
+
+/// Ctrl-C ends the process without running `Drop`, which left echo off. Record
+/// the original flags and, once per process, install a SIGINT handler that
+/// restores them and exits 130 (the shell's interrupt code).
+#[cfg(unix)]
+fn arm_interrupt_restore(original: libc::termios) {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    *SAVED_TERMIOS.lock().unwrap_or_else(|e| e.into_inner()) = Some(original);
+    INSTALL.call_once(|| {
+        let _ = ctrlc::set_handler(|| {
+            if let Some(original) = take_saved_termios() {
+                // SAFETY: restores the flags captured in `EchoGuard::disable`.
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
+                }
+            }
+            eprintln!();
+            std::process::exit(130);
+        });
+    });
+}
+
+/// Take the flags recorded by [`arm_interrupt_restore`], leaving nothing armed.
+#[cfg(unix)]
+fn take_saved_termios() -> Option<libc::termios> {
+    SAVED_TERMIOS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
 }
 
 #[cfg(not(unix))]
@@ -348,6 +384,20 @@ mod tests {
 
     fn no_env(_: &str) -> Option<String> {
         None
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_restore_state_is_taken_once() {
+        // The SIGINT handler and `Drop` both take the recorded flags, so the
+        // terminal is restored at most once and nothing stays armed afterwards.
+        // (The flags are set directly: `arm_interrupt_restore` would install a
+        // real handler, and restoring would touch the test's terminal.)
+        // SAFETY: `termios` is plain data; a zeroed value is only stored and compared.
+        let flags: libc::termios = unsafe { std::mem::zeroed() };
+        *SAVED_TERMIOS.lock().unwrap() = Some(flags);
+        assert!(take_saved_termios().is_some());
+        assert!(take_saved_termios().is_none());
     }
 
     #[test]

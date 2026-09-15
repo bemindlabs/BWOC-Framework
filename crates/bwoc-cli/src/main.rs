@@ -2858,6 +2858,7 @@ fn main() -> ExitCode {
         model: cli.model.clone(),
         endpoint: cli.endpoint.clone(),
         max_tokens: None,
+        max_context: None,
     };
     if cli.command.is_some() && !session_flags.is_empty() {
         eprintln!(

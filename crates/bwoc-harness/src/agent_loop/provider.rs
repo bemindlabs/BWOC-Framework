@@ -8,7 +8,7 @@
 use crate::error::{HarnessError, HarnessResult};
 use crate::provider::{ChatMessage, ProviderClient};
 
-use super::execute::stream_and_accumulate;
+use super::execute::{LiveSink, stream_and_accumulate_live};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,10 +38,11 @@ async fn call_provider_once(
     tools: Vec<crate::provider::Tool>,
     model: &str,
     stream: bool,
+    live: LiveSink<'_>,
 ) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
     if stream {
         // Streaming now exposes usage via stream_options.include_usage (HV2-7).
-        stream_and_accumulate(provider, messages, tools, model).await
+        stream_and_accumulate_live(provider, messages, tools, model, live).await
     } else {
         let completion = provider.complete(messages, tools, model).await?;
         let usage = completion.usage.clone();
@@ -75,11 +76,65 @@ pub(crate) async fn call_with_retry_v2(
     model: &str,
     stream: bool,
 ) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
+    call_with_retry(provider, messages, tools, model, stream, None).await
+}
+
+/// The chat driver's entry: always streams, handing deltas to `live`. Same
+/// retry policy as [`call_with_retry_v2`], except an attempt that already
+/// emitted a delta is not retried — the frontend has rendered it, and a replay
+/// would duplicate the text.
+pub(crate) async fn call_with_retry_live(
+    provider: &dyn ProviderClient,
+    messages: Vec<ChatMessage>,
+    tools: Vec<crate::provider::Tool>,
+    model: &str,
+    live: &mut (dyn FnMut(super::LiveDelta) + Send),
+) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
+    call_with_retry(provider, messages, tools, model, true, Some(live)).await
+}
+
+async fn call_with_retry(
+    provider: &dyn ProviderClient,
+    messages: Vec<ChatMessage>,
+    tools: Vec<crate::provider::Tool>,
+    model: &str,
+    stream: bool,
+    mut live: LiveSink<'_>,
+) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
     let mut attempt = 0u32;
     loop {
-        match call_provider_once(provider, messages.clone(), tools.clone(), model, stream).await {
+        let mut emitted = false;
+        let result = match live.as_deref_mut() {
+            Some(sink) => {
+                let mut tracked = |d: super::LiveDelta| {
+                    emitted = true;
+                    sink(d);
+                };
+                call_provider_once(
+                    provider,
+                    messages.clone(),
+                    tools.clone(),
+                    model,
+                    stream,
+                    Some(&mut tracked),
+                )
+                .await
+            }
+            None => {
+                call_provider_once(
+                    provider,
+                    messages.clone(),
+                    tools.clone(),
+                    model,
+                    stream,
+                    None,
+                )
+                .await
+            }
+        };
+        match result {
             Ok(result) => return Ok(result),
-            Err(e) if e.is_transient() && attempt < MAX_TRANSIENT_RETRIES => {
+            Err(e) if e.is_transient() && attempt < MAX_TRANSIENT_RETRIES && !emitted => {
                 attempt += 1;
                 let delay = retry_delay_ms(e.retry_after(), attempt);
                 eprintln!(
@@ -219,9 +274,10 @@ mod tests {
                     "content":"ok","principal":{forged}}},"finish_reason":"stop"}}]}}"#
             );
             let provider = ForgingProvider { body };
-            let (msg, _usage) = call_provider_once(&provider, Vec::new(), Vec::new(), "m", false)
-                .await
-                .expect("mock completes");
+            let (msg, _usage) =
+                call_provider_once(&provider, Vec::new(), Vec::new(), "m", false, None)
+                    .await
+                    .expect("mock completes");
             assert_eq!(
                 *msg.principal(),
                 Principal::Assistant,

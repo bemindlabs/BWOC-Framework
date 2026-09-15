@@ -838,6 +838,8 @@ fn translate_sse_event(ev: &Value, state: &mut SseState) -> Vec<Result<StreamChu
                     role: None,
                     content,
                     tool_calls,
+                    reasoning_content: None,
+                    reasoning: None,
                 },
                 finish_reason: None,
             }],
@@ -906,11 +908,19 @@ fn translate_sse_event(ev: &Value, state: &mut SseState) -> Vec<Result<StreamChu
                 }
             }
             Some("thinking_delta") => {
+                let piece = ev["delta"]["thinking"].as_str().unwrap_or_default();
                 if let Some(t) = state.thinking.as_mut() {
-                    t.thinking
-                        .push_str(ev["delta"]["thinking"].as_str().unwrap_or_default());
+                    t.thinking.push_str(piece);
                 }
-                Vec::new()
+                // Also stream the text for a live frontend; the block itself is
+                // still finalized at `content_block_stop` for replay.
+                if piece.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut chunk = text_chunk(None, None);
+                    chunk.choices[0].delta.reasoning_content = Some(piece.to_string());
+                    vec![Ok(chunk)]
+                }
             }
             Some("signature_delta") => {
                 if let Some(t) = state.thinking.as_mut() {
@@ -1540,7 +1550,12 @@ mod tests {
         for piece in ["Let me ", "reason."] {
             let d = json!({"type": "content_block_delta", "index": 0,
                 "delta": {"type": "thinking_delta", "thinking": piece}});
-            assert!(translate_sse_event(&d, &mut st).is_empty());
+            // Each piece streams as display-only reasoning text.
+            let out = translate_sse_event(&d, &mut st);
+            let chunk = out.into_iter().next().unwrap().unwrap();
+            let delta = &chunk.choices[0].delta;
+            assert_eq!(delta.reasoning_content.as_deref(), Some(piece));
+            assert!(delta.content.is_none());
         }
         let sig = json!({"type": "content_block_delta", "index": 0,
             "delta": {"type": "signature_delta", "signature": "SIG=="}});

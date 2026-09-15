@@ -276,6 +276,79 @@ impl PolicyOutcome {
     }
 }
 
+/// Layer 0 of [`run_pipeline`] on its own: the capability gate (Phase 5 t3).
+///
+/// `Err(reason)` when this turn may not run the tool; arguments as for
+/// [`run_pipeline`]. Exposed for the `--chat` driver, which runs the same gate
+/// but routes an interactive refusal to its operator prompt.
+pub fn capability_gate(
+    tool_name: &str,
+    arguments_json: &str,
+    worktree_root: &std::path::Path,
+    turn_trust: TrustLevel,
+    authenticated_actor: Option<&str>,
+) -> Result<(), String> {
+    // Layer 0: Capability gate (Phase 5 t3, ruling (a)). Runs FIRST and is
+    // deny-only — it can refuse, never grant. On an Untrusted turn the tool is
+    // graded by blast radius: pure-read always proceeds; a worktree-confined
+    // write proceeds ONLY when its target stays inside the worktree; everything
+    // else (run_command, git, network egress, sub-agent spawn, unclassified) is
+    // refused before the guardrail/permission layers run. A Trusted turn is a
+    // no-op here and falls straight through. Zero allow-by-omission: an
+    // unclassified tool is `Gated` and denied by default.
+    if turn_trust == TrustLevel::Untrusted {
+        match classify_capability(tool_name, arguments_json) {
+            Capability::PureRead => {} // always allowed — fall through
+            Capability::WorktreeWrite { path } => {
+                let resolved = path
+                    .as_deref()
+                    .and_then(|p| crate::sandbox::confine_path(p, worktree_root).ok());
+                let Some(resolved) = resolved else {
+                    return Err("write target escapes the worktree — an untrusted turn \
+                                 may write only inside its own worktree"
+                        .to_string());
+                };
+                if is_control_plane(&resolved, worktree_root) {
+                    return Err("write target is agent control-plane state — an untrusted \
+                                 turn may write worktree *content*, never the files that \
+                                 decide what it is allowed to do"
+                        .to_string());
+                }
+                // Confined content write — fall through to guardrails/permission.
+            }
+            Capability::ActAsUser { to } => {
+                // Act-as-user: allowed ONLY when this turn carries a pre-validated
+                // authenticated actor (a daemon-minted verified sender that
+                // survived the per-turn taint re-scan) AND the reply target is
+                // exactly that actor — a verified sender may reply to itself, and
+                // to no one else. Any mismatch, a missing `to`, or no actor at all
+                // (the common case, incl. every turn today) is denied exactly like
+                // `Gated`. The equality gate — not merely "an actor exists" — is
+                // what stops an act-as-user turn from messaging a THIRD party.
+                let authorized = match (authenticated_actor, to.as_deref()) {
+                    (Some(actor), Some(target)) => actor == target,
+                    _ => false,
+                };
+                if !authorized {
+                    return Err("act-as-user reply not authorized — it requires a \
+                                 daemon-verified authenticated sender on this turn whose \
+                                 id matches the reply target exactly"
+                        .to_string());
+                }
+                // Authorized act-as-user reply — fall through to guardrails/permission.
+            }
+            Capability::Gated => {
+                return Err("effectful capability blocked on an untrusted turn \
+                             (run_command / git / network / sub-agent / external delete \
+                             are gated; only pure-read and worktree-confined writes are \
+                             permitted)"
+                    .to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run the full policy pipeline for one tool call.
 ///
 /// # Arguments
@@ -311,75 +384,18 @@ pub fn run_pipeline(
     turn_trust: TrustLevel,
     authenticated_actor: Option<&str>,
 ) -> PolicyOutcome {
-    // Layer 0: Capability gate (Phase 5 t3, ruling (a)). Runs FIRST and is
-    // deny-only — it can refuse, never grant. On an Untrusted turn the tool is
-    // graded by blast radius: pure-read always proceeds; a worktree-confined
-    // write proceeds ONLY when its target stays inside the worktree; everything
-    // else (run_command, git, network egress, sub-agent spawn, unclassified) is
-    // refused before the guardrail/permission layers run. A Trusted turn is a
-    // no-op here and falls straight through. Zero allow-by-omission: an
-    // unclassified tool is `Gated` and denied by default.
-    if turn_trust == TrustLevel::Untrusted {
-        match classify_capability(tool_name, arguments_json) {
-            Capability::PureRead => {} // always allowed — fall through
-            Capability::WorktreeWrite { path } => {
-                let resolved = path
-                    .as_deref()
-                    .and_then(|p| crate::sandbox::confine_path(p, worktree_root).ok());
-                let Some(resolved) = resolved else {
-                    return PolicyOutcome::CapabilityDenied {
-                        tool: tool_name.to_string(),
-                        reason: "write target escapes the worktree — an untrusted turn \
-                                 may write only inside its own worktree"
-                            .to_string(),
-                    };
-                };
-                if is_control_plane(&resolved, worktree_root) {
-                    return PolicyOutcome::CapabilityDenied {
-                        tool: tool_name.to_string(),
-                        reason: "write target is agent control-plane state — an untrusted \
-                                 turn may write worktree *content*, never the files that \
-                                 decide what it is allowed to do"
-                            .to_string(),
-                    };
-                }
-                // Confined content write — fall through to guardrails/permission.
-            }
-            Capability::ActAsUser { to } => {
-                // Act-as-user: allowed ONLY when this turn carries a pre-validated
-                // authenticated actor (a daemon-minted verified sender that
-                // survived the per-turn taint re-scan) AND the reply target is
-                // exactly that actor — a verified sender may reply to itself, and
-                // to no one else. Any mismatch, a missing `to`, or no actor at all
-                // (the common case, incl. every turn today) is denied exactly like
-                // `Gated`. The equality gate — not merely "an actor exists" — is
-                // what stops an act-as-user turn from messaging a THIRD party.
-                let authorized = match (authenticated_actor, to.as_deref()) {
-                    (Some(actor), Some(target)) => actor == target,
-                    _ => false,
-                };
-                if !authorized {
-                    return PolicyOutcome::CapabilityDenied {
-                        tool: tool_name.to_string(),
-                        reason: "act-as-user reply not authorized — it requires a \
-                                 daemon-verified authenticated sender on this turn whose \
-                                 id matches the reply target exactly"
-                            .to_string(),
-                    };
-                }
-                // Authorized act-as-user reply — fall through to guardrails/permission.
-            }
-            Capability::Gated => {
-                return PolicyOutcome::CapabilityDenied {
-                    tool: tool_name.to_string(),
-                    reason: "effectful capability blocked on an untrusted turn \
-                             (run_command / git / network / sub-agent / external delete \
-                             are gated; only pure-read and worktree-confined writes are \
-                             permitted)"
-                        .to_string(),
-                };
-            }
-        }
+    // Layer 0: Capability gate — see [`capability_gate`].
+    if let Err(reason) = capability_gate(
+        tool_name,
+        arguments_json,
+        worktree_root,
+        turn_trust,
+        authenticated_actor,
+    ) {
+        return PolicyOutcome::CapabilityDenied {
+            tool: tool_name.to_string(),
+            reason,
+        };
     }
 
     // Layer 1: Guardrails (non-overridable, always runs first).

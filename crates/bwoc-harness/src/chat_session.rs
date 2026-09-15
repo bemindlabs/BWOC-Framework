@@ -13,17 +13,22 @@
 //!
 //! The per-turn shape mirrors [`crate::agent_loop::run_loop`]: same provider
 //! ([`ProviderClient::complete`]), same [`ToolRegistry`] / [`ToolContext`], and
-//! the same safety pipeline — guardrails ([`policy::guardrail_check`]) then the
-//! permission policy ([`policy::permission`]). The one difference is `ask`-mode:
-//! `run_loop` prompts the controlling TTY, whereas here an `ask` decision is
-//! routed to the frontend via a [`ChatEvent::PermissionRequest`] and answered
-//! with a [`ChatInput::Permission`].
+//! the same safety pipeline — the capability gate
+//! ([`policy::capability_gate`]), guardrails ([`policy::guardrail_check`]), the
+//! permission policy ([`policy::permission`]), then execution through
+//! [`crate::turn_executor::execute_proceeded`] (OS sandbox, isolated
+//! turn-executor process on unix). The difference is who answers: `run_loop`
+//! prompts the controlling TTY, whereas here an `ask` decision — and, in an
+//! interactive session, a capability-gate refusal — is routed to the frontend
+//! via a [`ChatEvent::PermissionRequest`] and answered with a
+//! [`ChatInput::Permission`].
 //!
-//! # Scope (v1)
+//! # Scope
 //!
-//! Streaming token deltas (`Token` events), then a final `Message`. No MCP /
-//! checkpoint / eval / budget — those belong to the batch `run_loop`, not this
-//! interactive driver.
+//! Streaming token deltas (`Token` events), then a final `Message`. Provider
+//! calls go through the batch loop's retry path, and repeated malformed tool
+//! calls step to the next fallback model, as in `run_loop`. No checkpoint /
+//! eval / budget — those belong to the batch `run_loop`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,10 +38,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 
 use crate::error::{HarnessError, HarnessResult};
 use crate::policy::permission::{self, Mode};
-use crate::policy::{Policy, guardrail_check};
+use crate::policy::{Policy, PolicyOutcome, guardrail_check};
+use crate::provider::types::ImageBlock;
 use crate::provider::{ChatMessage, ProviderClient, Role, ToolCall};
-use crate::tools::registry::dispatch;
+use crate::session_trust::SessionTrust;
 use crate::tools::{ToolContext, ToolRegistry};
+use bwoc_core::trust::TrustLevel;
 
 /// Everything the driver needs to run a session, mirroring the locals
 /// `main.rs::run()` assembles for the batch path.
@@ -45,6 +52,10 @@ pub struct ChatConfig {
     pub agent: String,
     /// Model identifier passed to the provider on every turn.
     pub model: String,
+    /// Ordered fallback models (the batch loop's error-based chain): after
+    /// `MALFORMED_TOOL_CALL_THRESHOLD` consecutive malformed tool-call responses
+    /// the session moves to the next one. Empty = no fallback.
+    pub fallback_models: Vec<String>,
     /// Backend label (e.g. `"ollama"`), for the [`ChatEvent::Ready`] status line.
     pub backend: String,
     /// System prompt loaded from `AGENTS.md` / `CLAUDE.md`.
@@ -92,15 +103,40 @@ pub fn session_path_for(workdir: &std::path::Path, config: &ChatConfig) -> PathB
     }
 }
 
-/// Default chat context budget (heuristic tokens) — conservative for the local
-/// models these sessions target. Overridable per session via [`ChatConfig`].
+/// Default chat context budget (heuristic tokens) when the model's context
+/// window is unknown — conservative for the local models these sessions target.
 pub const DEFAULT_MAX_CONTEXT_TOKENS: usize = 8_000;
+
+/// The chat context budget for a model context `window` (tokens): the window
+/// minus a reserve, which is the batch loop's headroom fraction, or the response
+/// cap `max_tokens` when that is larger and still fits. An unknown window keeps
+/// [`DEFAULT_MAX_CONTEXT_TOKENS`].
+pub fn context_budget(window: Option<u32>, max_tokens: Option<u32>) -> usize {
+    let Some(window) = window.filter(|w| *w > 0) else {
+        return DEFAULT_MAX_CONTEXT_TOKENS;
+    };
+    let headroom = (f64::from(window) * crate::agent_loop::CONTEXT_HEADROOM_FRAC) as u32;
+    let reserve = match max_tokens {
+        Some(cap) if cap > headroom && cap < window => cap,
+        _ => headroom,
+    };
+    window.saturating_sub(reserve).max(1) as usize
+}
+
+/// A backend's context window when the provider does not report one. Only the
+/// Anthropic Messages API (`anthropic` / `claude`) has one window across its
+/// current models (200k tokens); other backends rely on the provider's report,
+/// `--max-context`, or the default.
+pub fn known_context_window(backend: &str) -> Option<u32> {
+    matches!(backend, "anthropic" | "claude").then_some(200_000)
+}
 
 impl Default for ChatConfig {
     fn default() -> Self {
         Self {
             agent: "agent".to_string(),
             model: "gemma4".to_string(),
+            fallback_models: Vec::new(),
             backend: "ollama".to_string(),
             system_prompt: String::new(),
             policy: Policy::default(),
@@ -184,6 +220,50 @@ impl SessionMode {
     }
 }
 
+/// The session's model chain: primary then fallbacks, with the batch loop's
+/// malformed-tool-call counter.
+struct ModelChain {
+    models: Vec<String>,
+    idx: usize,
+    malformed: u32,
+}
+
+impl ModelChain {
+    fn new(config: &ChatConfig) -> Self {
+        let mut models = vec![config.model.clone()];
+        models.extend(config.fallback_models.iter().cloned());
+        Self {
+            models,
+            idx: 0,
+            malformed: 0,
+        }
+    }
+
+    fn active(&self) -> &str {
+        &self.models[self.idx]
+    }
+
+    /// Record one response's tool calls. Returns the model switched to when the
+    /// malformed threshold is reached and a fallback remains. Without a fallback
+    /// the response is kept and dispatched as before: the tools reject the bad
+    /// arguments and the model can correct itself.
+    fn observe(&mut self, calls: &[ToolCall]) -> Option<String> {
+        if calls.is_empty() || !crate::agent_loop::has_malformed_tool_calls(calls) {
+            self.malformed = 0;
+            return None;
+        }
+        self.malformed += 1;
+        if self.malformed >= crate::agent_loop::MALFORMED_TOOL_CALL_THRESHOLD
+            && self.idx + 1 < self.models.len()
+        {
+            self.idx += 1;
+            self.malformed = 0;
+            return Some(self.active().to_string());
+        }
+        None
+    }
+}
+
 /// Run an interactive chat session against real stdin/stdout.
 ///
 /// Reads [`ChatInput`] lines from stdin and writes [`ChatEvent`] lines to
@@ -245,6 +325,13 @@ where
     // this session has already injected. Starts at 0 so the first user turn
     // pulls in any backlog of peer messages already on the log.
     let mut team_seen: usize = 0;
+
+    let mut models = ModelChain::new(&config);
+
+    // Phase 5 t2 trust latch, as in `run_loop`: once untrusted ingress (a
+    // connector message, a tool output) is in the window, later turns are
+    // Untrusted and the capability gate applies.
+    let mut session_trust = SessionTrust::default();
 
     // Sorted so the `Ready.tools` list is stable across runs (the registry is a
     // HashMap → non-deterministic iteration order).
@@ -381,7 +468,7 @@ where
                         // when the manifest configures deepMemoryCmd.
                         let outcome = crate::compact::compact_context(
                             &*provider,
-                            &config.model,
+                            models.active(),
                             config.max_context_tokens,
                             &mut history,
                             &ctx.workdir,
@@ -412,6 +499,8 @@ where
                         &mut completion_tokens,
                         &mut session_mode,
                         &mut interjection,
+                        &mut models,
+                        &mut session_trust,
                     )
                     .await?;
                     // Persist the conversation after the turn settles (incl. tool
@@ -595,12 +684,11 @@ fn restored_display(msg: &ChatMessage) -> Option<(&'static str, String)> {
     }
 }
 
-/// Stream the assistant response, emitting a `Token` event for every content
-/// delta as it arrives, and accumulate the full message (content, tool_calls,
-/// usage) — the streaming analogue of `provider.complete()`, but the frontend
-/// renders tokens live. Mirrors `agent_loop::stream_and_accumulate`, adding the
-/// per-delta `Token` emit.
-async fn stream_turn<W>(
+/// One provider call through the batch loop's retry path
+/// ([`crate::agent_loop::call_with_retry_live`]), forwarding each streamed delta
+/// to the frontend as it arrives. The provider future and the emitter share a
+/// channel, so events stay in stream order while the call is still running.
+async fn stream_call<W>(
     provider: &dyn ProviderClient,
     messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::Tool>,
@@ -610,89 +698,41 @@ async fn stream_turn<W>(
 where
     W: AsyncWriteExt + Unpin,
 {
-    use futures_util::StreamExt;
+    use crate::agent_loop::LiveDelta;
 
-    #[derive(Default)]
-    struct Acc {
-        id: String,
-        kind: String,
-        name: String,
-        args: String,
-    }
-
-    let mut stream = provider.stream(messages, tools, model).await?;
-    let mut content = String::new();
-    let mut calls: std::collections::HashMap<u32, Acc> = std::collections::HashMap::new();
-    let mut usage: Option<crate::provider::Usage> = None;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        if chunk.usage.is_some() {
-            usage = chunk.usage;
-        }
-        for sd in chunk.choices {
-            if let Some(text) = sd.delta.content {
-                if !text.is_empty() {
-                    // Accumulate by borrow, then move the owned delta into the
-                    // event — no per-token clone.
-                    content.push_str(&text);
-                    emit(out, &ChatEvent::Token { text }).await?;
-                }
-            }
-            if let Some(tcs) = sd.delta.tool_calls {
-                for tc in tcs {
-                    let acc = calls.entry(tc.index).or_default();
-                    if let Some(id) = tc.id {
-                        acc.id = id;
-                    }
-                    if let Some(kind) = tc.r#type {
-                        acc.kind = kind;
-                    }
-                    if let Some(func) = tc.function {
-                        if let Some(name) = func.name {
-                            acc.name = name;
-                        }
-                        if let Some(args) = func.arguments {
-                            acc.args.push_str(&args);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let tool_calls: Vec<ToolCall> = if calls.is_empty() {
-        Vec::new()
-    } else {
-        let mut sorted: Vec<_> = calls.into_iter().collect();
-        sorted.sort_by_key(|(idx, _)| *idx);
-        sorted
-            .into_iter()
-            .map(|(_, a)| ToolCall {
-                id: a.id,
-                kind: a.kind,
-                function: crate::provider::FunctionCall {
-                    name: a.name,
-                    arguments: a.args,
-                },
-            })
-            .collect()
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LiveDelta>();
+    let call = async move {
+        // Owning `tx` here means the channel closes when the call finishes,
+        // which ends the drain loop below.
+        let mut sink = move |d: LiveDelta| {
+            let _ = tx.send(d);
+        };
+        crate::agent_loop::call_with_retry_live(provider, messages, tools, model, &mut sink).await
     };
+    let drain = async {
+        while let Some(delta) = rx.recv().await {
+            let event = match delta {
+                LiveDelta::Content(text) => ChatEvent::Token { text },
+                LiveDelta::Thinking(text) => ChatEvent::Thinking { text },
+            };
+            emit(out, &event).await?;
+        }
+        Ok::<(), HarnessError>(())
+    };
+    let (result, drained) = tokio::join!(call, drain);
+    drained?;
+    let (message, usage) = result?;
 
-    // A stream that yielded neither content nor tool calls (e.g. a usage-only
-    // chunk, or an early termination) is a provider fault — surface it as an
-    // error so the caller emits `Error` + `TurnEnd`, rather than an empty
-    // `Message` that masks the failure. (Matches the old empty-completion guard.)
-    if content.is_empty() && tool_calls.is_empty() {
+    // A response with neither content nor tool calls (a usage-only stream, an
+    // early termination) is a provider fault: surface it as an error rather than
+    // an empty `Message` that masks the failure.
+    let empty_content = message.content.as_deref().is_none_or(str::is_empty);
+    let no_calls = message.tool_calls.as_ref().is_none_or(Vec::is_empty);
+    if empty_content && no_calls {
         return Err(HarnessError::Provider(
             "provider returned an empty response (no content, no tool calls)".to_string(),
         ));
     }
-
-    let message = ChatMessage::assistant(
-        (!content.is_empty()).then_some(content),
-        (!tool_calls.is_empty()).then_some(tool_calls),
-    );
     Ok((message, usage))
 }
 
@@ -715,6 +755,8 @@ async fn run_turn<R, W>(
     completion_tokens: &mut u64,
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
+    models: &mut ModelChain,
+    session_trust: &mut SessionTrust,
 ) -> HarnessResult<()>
 where
     R: AsyncBufReadExt + Unpin,
@@ -745,12 +787,12 @@ where
             return Ok(());
         }
 
-        // ── Provider call (streaming) — emit `Token` deltas live ─────────────
-        let (message, usage) = match stream_turn(
+        // ── Provider call (streaming, with retry) — emit `Token` deltas live ──
+        let (message, usage) = match stream_call(
             provider,
             history.clone(),
             tools.to_vec(),
-            &config.model,
+            models.active(),
             out,
         )
         .await
@@ -776,6 +818,24 @@ where
         }
 
         let tool_calls = message.tool_calls.clone().unwrap_or_default();
+
+        // Repeated malformed tool calls: move to the next fallback model and
+        // retry this step without keeping the bad response (as `run_loop` does).
+        if let Some(next) = models.observe(&tool_calls) {
+            emit(
+                out,
+                &ChatEvent::Error {
+                    message: format!(
+                        "the model returned malformed tool calls {} times in a row; \
+                         switching to fallback model `{next}`",
+                        crate::agent_loop::MALFORMED_TOOL_CALL_THRESHOLD
+                    ),
+                },
+            )
+            .await?;
+            iterations -= 1;
+            continue;
+        }
 
         if tool_calls.is_empty() {
             // Final answer for this turn.
@@ -811,11 +871,15 @@ where
         // Append the assistant(tool_calls) message before its results (OpenAI
         // ordering), then run each call through the pipeline.
         history.push(message);
+        // Fold this step's history into the trust latch before dispatch, exactly
+        // where `run_loop` does.
+        let turn_trust = session_trust.observe(history);
         for call in &tool_calls {
-            let result = dispatch_call(
+            let (result, images) = dispatch_call(
                 registry,
                 ctx,
-                &config.policy,
+                config,
+                turn_trust,
                 call,
                 lines,
                 out,
@@ -823,11 +887,10 @@ where
                 interjection,
             )
             .await?;
-            history.push(ChatMessage::tool_result(
-                call.id.clone(),
-                call.function.name.clone(),
-                result,
-            ));
+            history.push(
+                ChatMessage::tool_result(call.id.clone(), call.function.name.clone(), result)
+                    .with_images(images),
+            );
         }
         // If the operator interjected with a message mid-prompt, stop the turn at
         // this batch boundary (every tool_call now has a matching tool_result, so
@@ -841,29 +904,51 @@ where
     }
 }
 
-/// Pass one tool call through GUARDRAILS → PERMISSION, then dispatch it.
+/// Pass one tool call through the batch safety pipeline — CAPABILITY GATE →
+/// GUARDRAILS → PERMISSION — then execute it as `run_loop` does
+/// ([`crate::turn_executor::execute_proceeded`]).
 ///
-/// Returns the string that becomes the `tool` result message (a denial reason
-/// when blocked — fed back to the model exactly like `run_loop` does, never a
-/// hard error). Emits `ToolCall` / `ToolResult`, and on an `ask`-mode tool the
-/// `PermissionRequest` + blocking read of the matching `Permission` answer.
+/// Who decides differs from batch: an `ask`, and in an interactive session a
+/// capability-gate refusal, go to the operator as a
+/// [`ChatEvent::PermissionRequest`]. A gated call can only run on an explicit
+/// approval — no session mode and no `allow` rule approves it silently. With no
+/// operator (`headless`) the gate denies exactly as in batch.
+///
+/// Returns the tool-result text (a denial reason when blocked — fed back to the
+/// model like `run_loop` does, never a hard error) and any images the tool
+/// produced.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_call<R, W>(
     registry: &ToolRegistry,
     ctx: &ToolContext,
-    policy: &Policy,
+    config: &ChatConfig,
+    turn_trust: TrustLevel,
     call: &ToolCall,
     lines: &mut Lines<R>,
     out: &mut W,
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
-) -> HarnessResult<String>
+) -> HarnessResult<(String, Vec<ImageBlock>)>
 where
     R: AsyncBufReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
 {
     let name = &call.function.name;
     let args = &call.function.arguments;
+    let policy = &config.policy;
+
+    // ── Layer 0: Capability gate (Phase 5 t3) ────────────────────────────────
+    let gated = crate::policy::capability_gate(name, args, &ctx.workdir, turn_trust, None).err();
+    if let (Some(reason), true) = (&gated, config.headless) {
+        let msg = PolicyOutcome::CapabilityDenied {
+            tool: name.clone(),
+            reason: reason.clone(),
+        }
+        .into_tool_result()
+        .unwrap_or_else(|| "blocked".to_string());
+        emit_tool_result(out, call, false, &msg).await?;
+        return Ok((msg, Vec::new()));
+    }
 
     // ── Layer 1: Guardrails (non-overridable) ────────────────────────────────
     if let Err(violation) = guardrail_check(name, args, &ctx.workdir) {
@@ -873,75 +958,71 @@ where
             reason = violation.reason,
         );
         emit_tool_result(out, call, false, &msg).await?;
-        return Ok(msg);
+        return Ok((msg, Vec::new()));
     }
 
     // ── Plan mode: refuse mutating tools before the permission gate ──────────
     if let Some(reason) = session_mode.plan_block(name) {
         emit_tool_result(out, call, false, &reason).await?;
-        return Ok(reason);
+        return Ok((reason, Vec::new()));
     }
 
     // ── Layer 2: Permission ──────────────────────────────────────────────────
     // Resolve the bare mode so `ask` can be routed to the frontend rather than
     // the TTY that `permission::evaluate` assumes.
-    match permission::resolve_effective_mode(policy, name, args) {
-        Mode::Allow => {}
-        Mode::Deny => {
-            // Re-run evaluate to reuse its reason string (pattern/tool/default).
-            let msg = match permission::evaluate(policy, name, args, false) {
-                permission::PermissionDecision::Deny { reason } => {
-                    format!("DENIED by permission policy: {reason}")
-                }
-                permission::PermissionDecision::Allow => {
-                    // Shouldn't happen (mode was Deny), but stay safe.
-                    "DENIED by permission policy".to_string()
-                }
-            };
-            emit_tool_result(out, call, false, &msg).await?;
-            return Ok(msg);
-        }
-        Mode::Ask => {
-            // The session permission mode may auto-approve this `ask` (e.g.
-            // accept_edits for write/edit tools, or bypass for everything) —
-            // skip the prompt. `deny`/guardrails already handled above, so the
-            // mode never widens past `ask`.
-            if !session_mode.auto_allows(name) {
-                // Route to the frontend: emit a request, block for the answer.
-                emit(
-                    out,
-                    &ChatEvent::PermissionRequest {
-                        id: call.id.clone(),
-                        tool: name.clone(),
-                        detail: args.clone(),
-                    },
-                )
-                .await?;
-                match read_permission(lines, &call.id, session_mode).await? {
-                    PermissionOutcome::Allow => {}
-                    PermissionOutcome::Deny => {
-                        let msg = format!("DENIED by operator: `{name}` was declined");
-                        emit_tool_result(out, call, false, &msg).await?;
-                        return Ok(msg);
-                    }
-                    PermissionOutcome::DenyWithUserText { text, principal } => {
-                        // The operator typed a message instead of answering: deny
-                        // the tool (fail-safe) AND hand the text back so the loop
-                        // replays it as the next user turn — never a silent drop.
-                        *interjection = Some((text, principal));
-                        let msg = format!(
-                            "DENIED by operator: `{name}` was declined (operator sent a message \
-                             instead — handling it as the next turn)"
-                        );
-                        emit_tool_result(out, call, false, &msg).await?;
-                        return Ok(msg);
-                    }
-                }
+    let mode = permission::resolve_effective_mode(policy, name, args);
+    if matches!(mode, Mode::Deny) {
+        // Re-run evaluate to reuse its reason string (pattern/tool/default).
+        let msg = match permission::evaluate(policy, name, args, false) {
+            permission::PermissionDecision::Deny { reason } => {
+                format!("DENIED by permission policy: {reason}")
+            }
+            // Shouldn't happen (mode was Deny), but stay safe.
+            permission::PermissionDecision::Allow => "DENIED by permission policy".to_string(),
+        };
+        emit_tool_result(out, call, false, &msg).await?;
+        return Ok((msg, Vec::new()));
+    }
+    // A session mode may auto-approve an `ask` (accept_edits for write/edit,
+    // bypass for everything); it never approves a capability-gated call.
+    let ask = matches!(mode, Mode::Ask) && !session_mode.auto_allows(name);
+    if gated.is_some() || ask {
+        let detail = match &gated {
+            Some(reason) => format!("untrusted turn, capability gate: {reason} — {args}"),
+            None => args.clone(),
+        };
+        emit(
+            out,
+            &ChatEvent::PermissionRequest {
+                id: call.id.clone(),
+                tool: name.clone(),
+                detail,
+            },
+        )
+        .await?;
+        match read_permission(lines, &call.id, session_mode).await? {
+            PermissionOutcome::Allow => {}
+            PermissionOutcome::Deny => {
+                let msg = format!("DENIED by operator: `{name}` was declined");
+                emit_tool_result(out, call, false, &msg).await?;
+                return Ok((msg, Vec::new()));
+            }
+            PermissionOutcome::DenyWithUserText { text, principal } => {
+                // The operator typed a message instead of answering: deny the
+                // tool (fail-safe) AND hand the text back so the loop replays it
+                // as the next user turn — never a silent drop.
+                *interjection = Some((text, principal));
+                let msg = format!(
+                    "DENIED by operator: `{name}` was declined (operator sent a message \
+                     instead — handling it as the next turn)"
+                );
+                emit_tool_result(out, call, false, &msg).await?;
+                return Ok((msg, Vec::new()));
             }
         }
     }
 
-    // ── Dispatch (approved) ──────────────────────────────────────────────────
+    // ── Execute (approved): sandbox + turn executor, as in `run_loop` ────────
     emit(
         out,
         &ChatEvent::ToolCall {
@@ -951,13 +1032,22 @@ where
         },
     )
     .await?;
-    let output = dispatch(registry, name, args, ctx).await;
+    let os_sandbox = crate::sandbox::make_os_sandbox(&ctx.workdir);
+    let result = crate::turn_executor::execute_proceeded(
+        name,
+        args,
+        ctx,
+        registry,
+        &*os_sandbox,
+        turn_trust,
+    )
+    .await;
     // The registry/dispatch convention: an "error:"-prefixed string is a failed
-    // tool. Surface that as ok=false so the frontend can render it distinctly,
-    // while still feeding the same text back to the model as the tool result.
-    let ok = !output.starts_with("error:");
-    emit_tool_result(out, call, ok, &output).await?;
-    Ok(output)
+    // tool. Surface that (and an executor denial) as ok=false so the frontend
+    // renders it distinctly, while feeding the same text back to the model.
+    let ok = !result.denied && !result.content.starts_with("error:");
+    emit_tool_result(out, call, ok, &result.content).await?;
+    Ok((result.content, result.images))
 }
 
 /// The outcome of a blocking permission read.
@@ -1163,12 +1253,19 @@ mod tests {
 
     struct MockProvider {
         responses: Mutex<Vec<Result<ChatCompletion, HarnessError>>>,
+        /// The model named on each `stream` call, in order.
+        models: Mutex<Vec<String>>,
     }
 
     impl MockProvider {
         fn new(responses: Vec<ChatCompletion>) -> Self {
+            Self::scripted(responses.into_iter().map(Ok).collect())
+        }
+
+        fn scripted(responses: Vec<Result<ChatCompletion, HarnessError>>) -> Self {
             Self {
-                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+                responses: Mutex::new(responses),
+                models: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1192,11 +1289,12 @@ mod tests {
             &self,
             _messages: Vec<ChatMessage>,
             _tools: Vec<Tool>,
-            _model: &str,
+            model: &str,
         ) -> Result<
             Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>>,
             HarnessError,
         > {
+            self.models.lock().unwrap().push(model.to_string());
             // Convert the next queued completion into a single stream chunk so
             // the streaming driver sees the same turn the non-streaming path did.
             let mut lock = self.responses.lock().unwrap();
@@ -1229,6 +1327,8 @@ mod tests {
                         role: None,
                         content,
                         tool_calls: (!tc_deltas.is_empty()).then_some(tc_deltas),
+                        reasoning_content: None,
+                        reasoning: None,
                     },
                     finish_reason: Some(FinishReason::Stop),
                 }],
@@ -1297,6 +1397,7 @@ mod tests {
         ChatConfig {
             agent: "agent-test".to_string(),
             model: "mock".to_string(),
+            fallback_models: Vec::new(),
             backend: "mock".to_string(),
             system_prompt: "You are a test agent.".to_string(),
             policy,
@@ -1709,6 +1810,229 @@ mod tests {
                 .any(|e| matches!(e, ChatEvent::Message { text } if text == "second answer"))
         );
         assert!(matches!(events.last(), Some(ChatEvent::Bye)));
+    }
+
+    /// Drive a scripted session and return the parsed events.
+    async fn drive_events(
+        provider: Arc<MockProvider>,
+        cfg: ChatConfig,
+        stdin: &str,
+        workdir: &std::path::Path,
+    ) -> Vec<ChatEvent> {
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        drive(
+            provider,
+            registry,
+            ToolContext::new(workdir),
+            cfg,
+            lines,
+            &mut out,
+        )
+        .await
+        .unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    const HI_THEN_QUIT: &str = "{\"type\":\"user\",\"text\":\"hi\"}\n{\"type\":\"quit\"}\n";
+
+    #[tokio::test]
+    async fn transient_provider_error_is_retried_like_batch() {
+        // The batch retry path now fronts chat: a transient failure before any
+        // token arrives is retried, so the turn completes with no Error event.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::scripted(vec![
+            Err(HarnessError::TransientProvider {
+                msg: "503".to_string(),
+                retry_after: Some(std::time::Duration::from_millis(1)),
+            }),
+            Ok(final_response("after retry")),
+        ]));
+        let events = drive_events(provider, config(allow_all()), HI_THEN_QUIT, tmp.path()).await;
+        assert!(
+            !events.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a retried transient error must not surface: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Message { text } if text == "after retry"))
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_malformed_tool_calls_switch_to_fallback_model() {
+        let tmp = TempDir::new().unwrap();
+        let malformed = || {
+            let mut c = tool_call_response("read_file", "{not json");
+            c.choices[0].message.tool_calls.as_mut().unwrap()[0].id = String::new();
+            c
+        };
+        let provider = Arc::new(MockProvider::new(vec![
+            malformed(),
+            malformed(),
+            final_response("fallback answered"),
+        ]));
+        let cfg = ChatConfig {
+            fallback_models: vec!["fallback".to_string()],
+            ..config(allow_all())
+        };
+        let events = drive_events(provider.clone(), cfg, HI_THEN_QUIT, tmp.path()).await;
+        // Two malformed responses on the primary, then the fallback serves.
+        // (The first malformed batch is still dispatched; the tool rejects it.)
+        assert_eq!(
+            *provider.models.lock().unwrap(),
+            vec!["mock", "mock", "fallback"]
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, ChatEvent::Error { message } if message.contains("fallback model `fallback`"))
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Message { text } if text == "fallback answered"))
+        );
+    }
+
+    #[test]
+    fn model_chain_without_fallback_never_switches() {
+        let mut chain = ModelChain::new(&config(allow_all()));
+        let bad = vec![ToolCall {
+            id: String::new(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "read_file".to_string(),
+                arguments: "{".to_string(),
+            },
+        }];
+        for _ in 0..5 {
+            assert_eq!(chain.observe(&bad), None);
+        }
+        assert_eq!(chain.active(), "mock");
+    }
+
+    #[tokio::test]
+    async fn headless_untrusted_turn_is_capability_gated_like_batch() {
+        // A connector turn (no principal → Untrusted) in served mode: run_command
+        // is refused by the capability gate before anything runs, as in batch.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_call_response("run_command", r#"{"command":"touch pwned"}"#),
+            final_response("done"),
+        ]));
+        let cfg = ChatConfig {
+            headless: true,
+            ..config(allow_all())
+        };
+        let events = drive_events(provider, cfg, HI_THEN_QUIT, tmp.path()).await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ChatEvent::ToolResult { ok, output, .. } if !*ok && output.contains("capability gate")
+            )),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolCall { .. }))
+        );
+        assert!(!tmp.path().join("pwned").exists());
+    }
+
+    #[tokio::test]
+    async fn interactive_gated_call_needs_the_operator_even_in_bypass() {
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_call_response("run_command", r#"{"command":"touch pwned"}"#),
+            final_response("ok"),
+        ]));
+        let stdin = concat!(
+            "{\"type\":\"set_mode\",\"mode\":\"bypass\"}\n",
+            "{\"type\":\"user\",\"text\":\"run it\"}\n",
+            "{\"type\":\"permission\",\"id\":\"call-1\",\"allow\":false}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let events = drive_events(provider, config(allow_all()), stdin, tmp.path()).await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ChatEvent::PermissionRequest { tool, detail, .. }
+                    if tool == "run_command" && detail.contains("capability gate")
+            )),
+            "bypass must not auto-approve a gated call: {events:?}"
+        );
+        assert!(!tmp.path().join("pwned").exists());
+    }
+
+    #[tokio::test]
+    async fn trusted_operator_turn_is_not_gated() {
+        // The local TUI's first step (LocalOperator ingress only) is Trusted: an
+        // allowed run_command goes straight to execution, no gate prompt.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![
+            tool_call_response("run_command", r#"{"command":"true"}"#),
+            final_response("ok"),
+        ]));
+        let stdin = concat!(
+            "{\"type\":\"user\",\"text\":\"run it\",\"principal\":{\"kind\":\"local_operator\"}}\n",
+            "{\"type\":\"quit\"}\n"
+        );
+        let events = drive_events(provider, config(allow_all()), stdin, tmp.path()).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::PermissionRequest { .. })),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolCall { name, .. } if name == "run_command"))
+        );
+    }
+
+    #[test]
+    fn plan_mode_tools_pass_the_capability_gate() {
+        // Plan mode (and the public connector's read-only lock) must stay usable
+        // on an Untrusted turn: every plan-mode tool is a pure read.
+        for tool in PLAN_READ_ONLY_TOOLS {
+            assert!(
+                crate::policy::capability_gate(
+                    tool,
+                    r#"{"path":"a.txt","pattern":"x","query":"x"}"#,
+                    std::path::Path::new("/tmp/bwoc-plan-wt"),
+                    TrustLevel::Untrusted,
+                    None,
+                )
+                .is_ok(),
+                "plan-mode tool `{tool}` is refused by the capability gate"
+            );
+        }
+    }
+
+    #[test]
+    fn context_budget_sizes_from_the_window() {
+        // Unknown window: the old fixed budget.
+        assert_eq!(context_budget(None, None), DEFAULT_MAX_CONTEXT_TOKENS);
+        assert_eq!(
+            context_budget(Some(0), Some(4096)),
+            DEFAULT_MAX_CONTEXT_TOKENS
+        );
+        // Known window: minus the 10% headroom, or the response cap if larger.
+        assert_eq!(context_budget(Some(200_000), None), 180_000);
+        assert_eq!(context_budget(Some(200_000), Some(32_000)), 168_000);
+        assert_eq!(context_budget(Some(200_000), Some(1_000)), 180_000);
+        // A cap that does not fit the window falls back to the headroom.
+        assert_eq!(context_budget(Some(4096), Some(8192)), 3687);
+        assert_eq!(known_context_window("anthropic"), Some(200_000));
+        assert_eq!(known_context_window("claude"), Some(200_000));
+        assert_eq!(known_context_window("ollama"), None);
     }
 
     #[tokio::test]

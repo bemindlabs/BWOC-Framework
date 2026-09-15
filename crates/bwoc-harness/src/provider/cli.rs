@@ -261,6 +261,8 @@ impl ProviderClient for CliClient {
                     role: Some(Role::Assistant),
                     content: Some(text),
                     tool_calls: None,
+                    reasoning_content: None,
+                    reasoning: None,
                 },
                 finish_reason: Some(FinishReason::Stop),
             }],
