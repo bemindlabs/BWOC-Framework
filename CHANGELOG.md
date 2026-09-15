@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Fixed
 
+- **TUI permission prompts no longer eat typing.** `a`/`d` answer a pending prompt only on an empty input line and once the prompt has been up for 500 ms, so a prompt that appears while you type can't approve (or deny) a tool call from a letter in your sentence. Chat and fleet panes both.
 - **TUI:** a harness warning on stderr (e.g. the cgroup `RLIMIT_NPROC` fallback) no longer paints over the chat screen; on a terminal the harness's stderr goes to `~/.bwoc/logs/tui-harness.log`, and a redirected stderr is still inherited.
 - **Skill gates that could never pass.** Every shipped skill's `[gates].verify` called `bwoc skill verify <self>`, which the recursion guard refuses. The kept skills and `modules/skill-template/` now declare no gate, since `[gates]` is optional. `bwoc check` reports any `[gates].verify` that invokes `bwoc skill verify` as a violation.
 - **`bwoc doctor` reads a long Ollama model list.** The `/api/tags` probe sent HTTP/1.1, and Ollama answers a long model list with a chunked body, which the probe could not parse, so doctor reported installed models as missing. It now sends HTTP/1.0, whose response is never chunked. Bare `bwoc` uses the same probe to find a local Ollama.
