@@ -310,7 +310,7 @@ the accumulated assistant message, so replay works identically. **Multimodal
 image input** is provider-neutral: a `ChatMessage` may carry base64 images
 (`with_images`), rendered as Anthropic `image` blocks on the native path and as
 OpenAI `image_url` data-URI parts on the OpenAI-compat path — text-only messages
-are byte-for-byte unchanged. (Wiring a captured browser/computer screenshot
+are byte-for-byte unchanged. (Wiring a captured `computer` screenshot
 *through the re-exec turn-executor boundary* into that field is a separate,
 bemind-verified follow-up.) The current BWOC harness still speaks the
 OpenAI-compatible `/v1/chat/completions` surface so it can also run Ollama and

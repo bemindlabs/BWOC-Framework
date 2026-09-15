@@ -492,16 +492,6 @@ pub fn parse_chat(jsonl: &str) -> Result<Vec<TeamChatMessage>, TeamError> {
     Ok(out)
 }
 
-/// Serialize a message vector to a `chat.jsonl` body (one per line).
-pub fn render_chat(msgs: &[TeamChatMessage]) -> Result<String, TeamError> {
-    let mut out = String::new();
-    for m in msgs {
-        out.push_str(&m.to_line()?);
-        out.push('\n');
-    }
-    Ok(out)
-}
-
 /// Guard: the actor must be a team member to act on its tasks.
 pub fn ensure_member(team: &Team, agent: &str) -> Result<(), TeamError> {
     if team.has_member(agent) {
@@ -738,6 +728,16 @@ mod tests {
             parse_chat("{not json}\n").unwrap_err(),
             TeamError::Parse(_)
         ));
+    }
+
+    /// Serialize a message vector to a `chat.jsonl` body (test fixture).
+    fn render_chat(msgs: &[TeamChatMessage]) -> Result<String, TeamError> {
+        let mut out = String::new();
+        for m in msgs {
+            out.push_str(&m.to_line()?);
+            out.push('\n');
+        }
+        Ok(out)
     }
 
     #[test]

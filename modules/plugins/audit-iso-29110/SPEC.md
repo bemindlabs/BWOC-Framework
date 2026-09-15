@@ -149,5 +149,4 @@ The Basic-profile work-product list is drawn from the following public reference
 
 - [[../../docs/en/PLUGINS.en|PLUGINS.en.md]] — the plugin spec; `audit` kind row (BWOC-10), Audit Findings Schema (BWOC-11).
 - [[../../notes/2026-05-26_iso-compliance-plugins|2026-05-26_iso-compliance-plugins.md]] — EPIC-2 framing note (why `audit`, why 29110 first).
-- [[../memory-tier2-noop/SPEC|memory-tier2-noop]] — sibling reference plugin (a different kind, same substrate).
 - [[../../crates/bwoc-cli/src/audit|crates/bwoc-cli/src/audit.rs]] — the dispatcher that invokes this plugin.
