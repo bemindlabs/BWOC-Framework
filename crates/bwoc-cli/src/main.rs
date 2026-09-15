@@ -1180,14 +1180,23 @@ enum MemoryAction {
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
     },
-    /// Substring search across memory entries (case-insensitive).
+    /// Search memory. Tier 1 (default): case-insensitive substring match across
+    /// `.bwoc/memory/` entries. `--tier 2 <query> <agent>`: the agent's deep-memory
+    /// backend (`deepMemoryCmd search "<query>"`).
     Search {
-        /// Substring to look for in any entry's content.
+        /// Substring (tier 1) or query (tier 2) to search for.
         query: String,
+        /// Agent whose deep-memory backend to query. Required with `--tier 2`,
+        /// rejected otherwise. Matches by id ("agent-foo") or bare name ("foo").
+        #[arg(required_if_eq("tier", "2"))]
+        agent: Option<String>,
+        /// Memory tier: `1` = workspace entries, `2` = per-agent deep memory.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+        tier: u8,
         /// Workspace root. Resolution chain same as `memory list`.
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
-        /// Emit JSON instead of the human-readable grep-style output.
+        /// Emit JSON instead of the human-readable grep-style output (tier 1 only).
         #[arg(long)]
         json: bool,
     },
@@ -1213,8 +1222,7 @@ enum MemoryAction {
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
     },
-    /// Tier 2: search past decisions/notes (`deepMemoryCmd search "<query>"`).
-    /// Named `t2-search` to avoid collision with the existing Tier 1 `search` subcommand.
+    /// (deprecated → `bwoc memory search --tier 2`) Tier 2 deep-memory search.
     #[command(name = "t2-search")]
     T2Search {
         /// Search query string.
@@ -1430,6 +1438,7 @@ impl MemoryAction {
                 query,
                 workspace,
                 json,
+                ..
             } => memory::MemoryArgs {
                 action: memory::MemoryAction::Search(query),
                 workspace,
@@ -3087,15 +3096,34 @@ fn main() -> ExitCode {
                         workspace,
                     })
                 }
-                MemoryAction::T2Search {
+                MemoryAction::Search {
                     query,
                     agent,
+                    tier: 2,
                     workspace,
-                } => deep_memory_cmd::run(deep_memory_cmd::Tier2Args {
-                    action: deep_memory_cmd::Tier2Action::Search { query },
-                    agent,
-                    workspace,
-                }),
+                    json,
+                } => match (agent, json) {
+                    (_, true) => {
+                        eprintln!("bwoc memory search: --json is not supported with --tier 2");
+                        2
+                    }
+                    (None, false) => {
+                        eprintln!("bwoc memory search: --tier 2 requires <AGENT>");
+                        2
+                    }
+                    (Some(agent), false) => deep_memory_cmd::run(deep_memory_cmd::Tier2Args {
+                        action: deep_memory_cmd::Tier2Action::Search { query },
+                        agent,
+                        workspace,
+                    }),
+                },
+                MemoryAction::Search { agent: Some(_), .. } => {
+                    eprintln!("bwoc memory search: <AGENT> only applies to --tier 2");
+                    2
+                }
+                MemoryAction::T2Search { .. } => {
+                    unreachable!("`memory t2-search` is rewritten by canonicalize()")
+                }
                 MemoryAction::Mine {
                     path,
                     agent,
@@ -3622,6 +3650,21 @@ fn canonicalize(command: Commands) -> Canonical {
             "tasks".into(),
             "task list --all".into(),
         ),
+        Commands::Memory(MemoryAction::T2Search {
+            query,
+            agent,
+            workspace,
+        }) => Canonical::rewritten(
+            Commands::Memory(MemoryAction::Search {
+                query,
+                agent: Some(agent),
+                tier: 2,
+                workspace,
+                json: false,
+            }),
+            "memory t2-search".into(),
+            "memory search --tier 2".into(),
+        ),
         command => Canonical {
             command,
             deprecated: None,
@@ -3944,6 +3987,49 @@ mod deprecation_tests {
         assert!(bad(&["task", "list"]));
         assert!(bad(&["task", "list", "t", "--all"]));
         assert!(bad(&["task", "list", "t", "--agent", "pi"]));
+    }
+
+    #[test]
+    fn t2_search_routes_to_search_tier_2() {
+        assert_routes_like(
+            &[
+                "memory",
+                "t2-search",
+                "why postgres",
+                "pi",
+                "--workspace",
+                "/w",
+            ],
+            &[
+                "memory",
+                "search",
+                "why postgres",
+                "pi",
+                "--tier",
+                "2",
+                "--workspace",
+                "/w",
+            ],
+            "memory t2-search",
+            "memory search --tier 2",
+        );
+    }
+
+    #[test]
+    fn memory_search_defaults_to_tier_1_and_tier_2_needs_an_agent() {
+        let ok = |a: &[&str]| {
+            Cli::try_parse_from(std::iter::once("bwoc").chain(a.iter().copied())).is_ok()
+        };
+        assert!(matches!(
+            parse(&["memory", "search", "q"]),
+            Commands::Memory(MemoryAction::Search {
+                tier: 1,
+                agent: None,
+                ..
+            })
+        ));
+        assert!(!ok(&["memory", "search", "q", "--tier", "2"]));
+        assert!(!ok(&["memory", "search", "q", "--tier", "3"]));
     }
 
     #[test]

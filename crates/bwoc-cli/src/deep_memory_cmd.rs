@@ -33,7 +33,7 @@ pub struct Tier2Args {
 pub enum Tier2Action {
     /// `bwoc memory wake-up` — emit prior context at session start.
     WakeUp,
-    /// `bwoc memory t2-search <query>` — find relevant past decisions.
+    /// `bwoc memory search --tier 2 <query> <agent>` — find relevant past decisions.
     Search { query: String },
     /// `bwoc memory mine <path> [--mode <mode>]` — persist session learnings.
     Mine { path: PathBuf, mode: String },
@@ -118,7 +118,7 @@ pub fn run(args: Tier2Args) -> i32 {
                 0
             }
             Err(e) => {
-                eprintln!("bwoc memory t2-search: {e}");
+                eprintln!("bwoc memory search --tier 2: {e}");
                 1
             }
         },
