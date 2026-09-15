@@ -49,7 +49,7 @@
 |---|---|---|---|
 | FR-2.1 | M | ทุก task SHALL เริ่มด้วยกระบวนการอริยสัจ (ทุกข์→สมุทัย→นิโรธ→มรรค) | A |
 | FR-2.2 | M | Task SHALL มี `taskId` และ `goal` ที่วัดได้ | T |
-| FR-2.3 | M | Task SHALL ถูก track ใน `task-log.jsonl` (one JSON ต่อบรรทัด) | T |
+| FR-2.3 | M | Task SHALL ถูก track ใน `task-log.jsonl` (one JSON ต่อบรรทัด) — convention ที่ agent ดูแลเอง; framework ไม่เขียนและไม่ parse (`bwoc check` ตรวจแค่ว่ามีไฟล์) | A |
 | FR-2.4 | M | Status field SHALL เป็นหนึ่งใน: `pending`, `in_progress`, `blocked`, `completed`, `failed` | T |
 | FR-2.5 | M | `task-log.jsonl` SHALL append-only | A |
 | FR-2.6 | S | Task SHOULD declare scope boundaries (มัตตัญญุตา) ก่อนเริ่ม | I |
@@ -58,7 +58,7 @@
 
 | ID | P | Requirement | V |
 |---|---|---|---|
-| FR-3.1 | M | `interconnect/capabilities.md` SHALL ประกาศ skills แบบ machine-readable | T |
+| FR-3.1 | M | `interconnect/capabilities.md` SHALL อธิบาย skills ของ agent ให้คนและ agent อ่าน (ไม่มี code ใด parse ไฟล์นี้; A2A agent card สร้างจาก field ใน `config.manifest.json`) | I |
 | FR-3.2 | S | `interconnect/coordination.md` SHALL กำหนด phases, messaging, consensus | I |
 | FR-3.3 | S | Message ระหว่าง agent SHALL ตรงประเด็น มี context ครบ (ปิยวาจา) | A |
 | FR-3.4 | M | Error message SHALL ระบุ root cause และวิธีแก้ ไม่เพียงแค่บอกว่าผิด | A |
@@ -135,9 +135,9 @@
 
 | ID | P | Requirement | V |
 |---|---|---|---|
-| FR-7.16 | M | Session start SHALL load `MEMORY.md`, relevant memories, `task-log.jsonl` | T |
+| FR-7.16 | M | Session start SHALL load `MEMORY.md`, relevant memories, `task-log.jsonl` (harness inject index `MEMORY.md` ให้; memory file และ `task-log.jsonl` agent อ่านเอง) | T |
 | FR-7.17 | M | Session start SHALL verify memory claims กับ current code | A |
-| FR-7.18 | M | Session end SHALL update `task-log.jsonl` | T |
+| FR-7.18 | M | Session end SHALL update `task-log.jsonl` (agent ดูแลเอง; ไม่ถูกบังคับใช้) | A |
 | FR-7.19 | M | Session end SHALL persist new discoveries เป็น Tier 1 memories | A |
 | FR-7.20 | S | Session end SHOULD remove stale memories (อนิจจัง) | A |
 
@@ -234,7 +234,7 @@
 
 | ID | Requirement |
 |---|---|
-| NFR-8.1 | `task-log.jsonl` SHALL append-only audit trail |
+| NFR-8.1 | `task-log.jsonl` SHALL append-only audit trail (convention ที่ agent ดูแลเอง; framework ไม่บังคับใช้) |
 | NFR-8.2 | Memory file SHALL มี `created` และ `updated` ISO timestamps |
 
 ---

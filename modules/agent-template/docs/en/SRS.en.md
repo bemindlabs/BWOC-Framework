@@ -49,7 +49,7 @@ The system under specification is a **template repository**, not a runtime.
 |---|---|---|---|
 | FR-2.1 | M | Every task SHALL begin with the Four-Noble-Truths cycle (dukkha → samudaya → nirodha → magga) | A |
 | FR-2.2 | M | Tasks SHALL carry a `taskId` and a measurable `goal` | T |
-| FR-2.3 | M | Tasks SHALL be tracked in `task-log.jsonl` (one JSON per line) | T |
+| FR-2.3 | M | Tasks SHALL be tracked in `task-log.jsonl` (one JSON per line) — an agent-maintained convention; the framework neither writes nor parses it (`bwoc check` checks existence only) | A |
 | FR-2.4 | M | The status field SHALL be one of: `pending`, `in_progress`, `blocked`, `completed`, `failed` | T |
 | FR-2.5 | M | `task-log.jsonl` SHALL be append-only | A |
 | FR-2.6 | S | Tasks SHOULD declare scope boundaries (*mattaññutā*) before starting | I |
@@ -58,7 +58,7 @@ The system under specification is a **template repository**, not a runtime.
 
 | ID | P | Requirement | V |
 |---|---|---|---|
-| FR-3.1 | M | `interconnect/capabilities.md` SHALL declare skills in a machine-readable form | T |
+| FR-3.1 | M | `interconnect/capabilities.md` SHALL describe the agent's skills for human and agent readers (no code parses it; the A2A agent card is built from `config.manifest.json` fields) | I |
 | FR-3.2 | S | `interconnect/coordination.md` SHALL define phases, messaging, and consensus | I |
 | FR-3.3 | S | Inter-agent messages SHALL be concise and context-complete (*piyavācā*) | A |
 | FR-3.4 | M | Error messages SHALL state the root cause and the remedy, not merely that something failed | A |
@@ -135,9 +135,9 @@ Mapped onto the Four Padhāna.
 
 | ID | P | Requirement | V |
 |---|---|---|---|
-| FR-7.16 | M | Session start SHALL load `MEMORY.md`, relevant memories, and `task-log.jsonl` | T |
+| FR-7.16 | M | Session start SHALL load `MEMORY.md`, relevant memories, and `task-log.jsonl` (the harness injects the `MEMORY.md` index; memory files and `task-log.jsonl` are read by the agent itself) | T |
 | FR-7.17 | M | Session start SHALL verify memory claims against current code | A |
-| FR-7.18 | M | Session end SHALL update `task-log.jsonl` | T |
+| FR-7.18 | M | Session end SHALL update `task-log.jsonl` (agent-maintained; not enforced) | A |
 | FR-7.19 | M | Session end SHALL persist new discoveries as Tier 1 memories | A |
 | FR-7.20 | S | Session end SHOULD remove stale memories (*aniccaṃ*) | A |
 
@@ -234,7 +234,7 @@ Every FR that reads from memory must verify against current state — covered ex
 
 | ID | Requirement |
 |---|---|
-| NFR-8.1 | `task-log.jsonl` SHALL provide an append-only audit trail |
+| NFR-8.1 | `task-log.jsonl` SHALL provide an append-only audit trail (agent-maintained convention; not enforced by the framework) |
 | NFR-8.2 | Every memory file SHALL carry `created` and `updated` ISO timestamps |
 
 ---

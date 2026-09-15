@@ -32,7 +32,7 @@ Full walkthrough: [`INCARNATION.en.md`](../../docs/en/INCARNATION.en.md) · [`IN
 | `CLAUDE.md` | A **regular file** in the template repo (guidance for editing the template itself). `bwoc new` replaces it with a symlink → `AGENTS.md` in the incarnated agent. |
 | `config.manifest.json` | Placeholders + runtime config |
 | [`neutrality.md`](neutrality.md) · [`conventions.md`](conventions.md) | Backend-neutrality rules · communal conventions |
-| [`persona/`](persona/) · [`mindsets/`](mindsets/) · [`skills/`](skills/) | Identity, principles, capabilities (Obsidian tier-2 slots) |
+| [`persona/`](persona/) · [`mindsets/`](mindsets/) · [`skills/`](skills/) | Identity, principles, capabilities (Obsidian tier-2 slots) — reference material; no backend loads them into the prompt |
 | [`memories/`](memories/) | `MEMORY.md` index (≤ 200 lines) |
 | [`interconnect/`](interconnect/) | [`capabilities`](interconnect/capabilities.md) · [`messaging`](interconnect/messaging.md) · [`routing`](interconnect/routing.md) · [`sangha`](interconnect/sangha.md) · [`trust`](interconnect/trust.md) |
 | [`docs/`](docs/) | `en/` + `th/` spec pairs (OVERVIEW, PHILOSOPHY, PRD, SRS, THREAT-MODEL, SELF-IMPROVEMENT); memory and task-log examples; [persona example](docs/persona-example.good.md) and [anti-pattern](docs/persona-example.bad.md) |

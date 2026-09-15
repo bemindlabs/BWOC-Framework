@@ -17,11 +17,13 @@ tags:
 
 A skill is a concrete capability an agent owns — "schema review", "migration planning", "test authoring", "release notes generation". Each skill is small enough to verify and bounded enough to refuse out-of-scope work cleanly.
 
+Skill files are reference material: no backend loads them into the prompt; the agent sees one only if it reads it.
+
 Skills compose with three other slots:
 
 - [[../persona/README|persona]] — declares WHO the agent is; skills are what it *does*.
 - [[../mindsets/SPEC|mindsets]] — declares HOW the agent thinks; skills are what it *executes*.
-- [[../interconnect/capabilities|interconnect/capabilities.md]] — the machine-readable summary other agents read for delegation.
+- [[../interconnect/capabilities|interconnect/capabilities.md]] — the summary other agents can read for delegation (not parsed by framework code).
 
 ## Distinction
 
