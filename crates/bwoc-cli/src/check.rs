@@ -3072,7 +3072,7 @@ fn audit_workflow_bearer_auth(auth: &toml::Value, report: &mut AuditReport) {
             .push("[auth].key_file is under .bwoc/secrets/".to_string()),
         Some(_) => report.violations.push(
             "[auth].key_file must be a relative path under .bwoc/secrets/ — no absolute path, \
-             no `..` (value redacted)"
+             no `..`, no backslashes (value redacted)"
                 .to_string(),
         ),
         None => report.violations.push(
