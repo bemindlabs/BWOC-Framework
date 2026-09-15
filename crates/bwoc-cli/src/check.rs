@@ -1602,15 +1602,23 @@ pub fn audit_skill_manifest(skill_dir: &Path) -> AuditReport {
 }
 
 /// True when a shell command contains a `bwoc skill verify` invocation
-/// (any path to the `bwoc` binary, any shell separator around it).
+/// (any path to the `bwoc` binary, any shell separator or quoting around it).
 fn gate_reinvokes_skill_verify(cmd: &str) -> bool {
     let tokens: Vec<&str> = cmd
-        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`'))
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`' | '\'' | '"')
+        })
         .filter(|t| !t.is_empty())
         .collect();
     tokens
         .windows(3)
-        .any(|w| (w[0] == "bwoc" || w[0].ends_with("/bwoc")) && w[1] == "skill" && w[2] == "verify")
+        .any(|w| is_bwoc_binary(w[0]) && w[1] == "skill" && w[2] == "verify")
+}
+
+/// `bwoc`, `bwoc.exe`, or either behind a `/` or `\` path.
+fn is_bwoc_binary(token: &str) -> bool {
+    let name = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    name.eq_ignore_ascii_case("bwoc") || name.eq_ignore_ascii_case("bwoc.exe")
 }
 
 /// Audit one plugin installed at `<workspace>/modules/plugins/<name>/`.
@@ -8977,5 +8985,26 @@ options     = ["affirm-concord", "revise-concord"]
             report.warnings
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gate_reinvokes_skill_verify_sees_through_quotes_and_paths() {
+        for cmd in [
+            "bwoc skill verify auditor",
+            "cd x && /usr/local/bin/bwoc skill verify auditor",
+            "bash -lc 'bwoc skill verify auditor'",
+            "sh -c \"bwoc skill verify auditor\"",
+            r"C:\tools\bwoc.exe skill verify auditor",
+            r#""C:\Program Files\bwoc\bwoc.exe" skill verify auditor"#,
+        ] {
+            assert!(gate_reinvokes_skill_verify(cmd), "missed: {cmd}");
+        }
+        for cmd in [
+            "cargo test -p bwoc-cli",
+            "bwoc skill list",
+            "mybwoc skill verify x",
+        ] {
+            assert!(!gate_reinvokes_skill_verify(cmd), "false positive: {cmd}");
+        }
     }
 }

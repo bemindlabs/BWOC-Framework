@@ -21,7 +21,7 @@ The full contract (manifest, invocation lifecycle, discovery) is in [`docs/en/SK
 
 ```bash
 bwoc skill list | show <name>
-bwoc skill verify [--run-gates]         # static check; prints each [gates].verify command
+bwoc skill verify [--run-gates]         # static check + prints gates; --run-gates executes them (sh -c) — review untrusted manifests first
 bwoc skill init <name>                  # scaffold from modules/skill-template/
 bwoc skill install <path|git|tarball>   # SHA-256 trust gate
 bwoc skill enable|disable <name>        # on the current agent
