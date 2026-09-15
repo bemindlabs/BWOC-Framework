@@ -7,6 +7,3 @@ maturity    = "L1"
 [contract]
 requires    = []
 exposes     = ["query_brain", "refresh_brain"]
-
-[gates]
-verify      = "bwoc skill verify second-brain"

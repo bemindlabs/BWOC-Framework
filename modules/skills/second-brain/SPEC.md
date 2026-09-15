@@ -61,15 +61,14 @@ The skill holds no state between invocations. Replay-safe.
 
 ## Maturity
 
-Declared **L1** — first use, unverified across backends. Bumps to L2 once two agents have used `query_brain` to reuse prior fleet knowledge end-to-end; to L3 once `bwoc skill verify second-brain` is wired and green in CI.
+Declared **L1** — first use, unverified across backends. Bumps to L2 once two agents have used `query_brain` to reuse prior fleet knowledge end-to-end; to L3 once a concrete `[gates].verify` check is wired and green in CI.
 
 ## Neutrality
 
-Manifest values name no backend, model, or vendor CLI; `<secondBrainRoot>` is an operator-configured path, not a hardcoded host. The verify command is a framework command (`bwoc skill verify`). Satisfies the **Samānattatā** rule enforced by `bwoc check`.
+Manifest values name no backend, model, or vendor CLI; `<secondBrainRoot>` is an operator-configured path, not a hardcoded host. Satisfies the **Samānattatā** rule enforced by `bwoc check`.
 
 ## See Also
 
-- [[../server-rag/SPEC|server-rag]] — the fleet's *semantic* memory (ask a question, get prose + sources); this skill's sibling. Graph vs RAG: query structure here, ask "explain X" there.
 - [[../../../docs/en/SKILLS.en|SKILLS.en.md]] — the spec this skill conforms to.
 - [[../../agent-template/AGENTS|agent-template AGENTS.md]] — Remember-first / Yoniso Manasikāra in the base profile.
 - [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Yoniso Manasikāra, Sīlasāmaññatā framing.

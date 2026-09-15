@@ -51,7 +51,7 @@ teardown   → release the worktree on completion (no clinging)
 
 ## Maturity
 
-**L1**. → L2 once two tasks have gone implement→harden with gates green and zero manual cleanup; → L3 once `bwoc skill verify engineering` is wired + green in CI.
+**L1**. → L2 once two tasks have gone implement→harden with gates green and zero manual cleanup; → L3 once a concrete `[gates].verify` check is wired + green in CI.
 
 ## Neutrality
 

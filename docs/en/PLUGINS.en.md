@@ -276,7 +276,7 @@ An entry for an unassigned backlog issue omits the optional fields it has no val
 {
   "issue_key":   "BWOC-200",
   "project":     "BWOC",
-  "summary":     "Draft scrum-via-jira skill",
+  "summary":     "Draft onboarding guide",
   "status":      "To Do",
   "last_synced": "2026-05-27T10:00:00Z"
 }

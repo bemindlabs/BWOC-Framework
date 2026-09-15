@@ -274,7 +274,7 @@ Entry ของ issue ใน backlog ที่ไม่มีผู้รับ�
 {
   "issue_key":   "BWOC-200",
   "project":     "BWOC",
-  "summary":     "ร่าง scrum-via-jira skill",
+  "summary":     "ร่างคู่มือ onboarding",
   "status":      "To Do",
   "last_synced": "2026-05-27T10:00:00Z"
 }

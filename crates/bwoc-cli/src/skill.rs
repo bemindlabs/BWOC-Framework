@@ -2060,7 +2060,7 @@ mod tests {
 
     #[test]
     fn validate_name_accepts_kebab() {
-        assert!(validate_skill_name("worktree-discipline").is_ok());
+        assert!(validate_skill_name("second-brain").is_ok());
         assert!(validate_skill_name("a").is_ok());
         assert!(validate_skill_name("a1-b2").is_ok());
     }
@@ -2310,11 +2310,11 @@ mod tests {
     /// Write a skill that declares `requires_plugins = ["jira"]` and no gate,
     /// so verify's result is driven purely by dependency resolution.
     fn write_jira_dep_skill(root: &Path) {
-        let dir = root.join("modules/skills/scrum-via-jira");
+        let dir = root.join("modules/skills/jira-dep-probe");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("manifest.toml"),
-            "[skill]\nname = \"scrum-via-jira\"\nversion = \"0.1.0\"\n\
+            "[skill]\nname = \"jira-dep-probe\"\nversion = \"0.1.0\"\n\
              description = \"scrum via a jira-kind plugin\"\nmaturity = \"L1\"\n\n\
              [contract]\nrequires = []\nrequires_plugins = [\"jira\"]\n\
              exposes = [\"propose-sprint\"]\n",
@@ -2347,7 +2347,7 @@ mod tests {
             common: CommonArgs {
                 workspace: Some(root.to_path_buf()),
             },
-            name: Some("scrum-via-jira".to_string()),
+            name: Some("jira-dep-probe".to_string()),
             all: false,
             run_gates: false,
             json: false,
@@ -2401,18 +2401,17 @@ mod tests {
 
     // ---- BWOC-55: skill-on-multiple-plugins, kind-namespaced layout --------
 
-    /// Write the gcloud-ops skill (requires_plugins = ["workflow"], no gate) so
-    /// verify's result is driven purely by kind-level dependency resolution.
-    /// gcloud-ops names BOTH gcloud plugins in its SPEC, but resolution is
-    /// kind-level only — one enabled workflow-kind plugin satisfies it
-    /// (SKILLS §"Skill-on-multiple-plugins"; name-level is a future extension).
-    fn write_gcloud_ops_skill(root: &Path) {
-        let dir = root.join("modules/skills/gcloud-ops");
+    /// Write a skill with requires_plugins = ["workflow"] and no gate, so
+    /// verify's result is driven purely by kind-level dependency resolution —
+    /// one enabled workflow-kind plugin satisfies it (SKILLS
+    /// §"Skill-on-multiple-plugins"; name-level is a future extension).
+    fn write_workflow_dep_skill(root: &Path) {
+        let dir = root.join("modules/skills/workflow-dep-probe");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("manifest.toml"),
-            "[skill]\nname = \"gcloud-ops\"\nversion = \"0.1.0\"\n\
-             description = \"gcloud ops via the workflow plugins\"\nmaturity = \"L1\"\n\n\
+            "[skill]\nname = \"workflow-dep-probe\"\nversion = \"0.1.0\"\n\
+             description = \"ops via workflow-kind plugins\"\nmaturity = \"L1\"\n\n\
              [contract]\nrequires = []\nrequires_plugins = [\"workflow\"]\n\
              exposes = [\"whoami\", \"current-project\"]\n",
         )
@@ -2441,12 +2440,12 @@ mod tests {
         .unwrap();
     }
 
-    fn gcloud_ops_verify_args(root: &Path) -> VerifyArgs {
+    fn workflow_dep_verify_args(root: &Path) -> VerifyArgs {
         VerifyArgs {
             common: CommonArgs {
                 workspace: Some(root.to_path_buf()),
             },
-            name: Some("gcloud-ops".to_string()),
+            name: Some("workflow-dep-probe".to_string()),
             all: false,
             run_gates: false,
             json: false,
@@ -2457,10 +2456,10 @@ mod tests {
     fn verify_resolves_workflow_dep_from_kind_namespaced_layout() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write_gcloud_ops_skill(root);
+        write_workflow_dep_skill(root);
         install_and_enable_nested_workflow_plugin(root);
         assert_eq!(
-            run_verify(gcloud_ops_verify_args(root)),
+            run_verify(workflow_dep_verify_args(root)),
             0,
             "an enabled workflow-kind plugin under modules/plugins/workflow/ must satisfy \
              requires_plugins = [\"workflow\"] (kind-level resolution)"
@@ -2471,7 +2470,7 @@ mod tests {
     fn verify_fails_workflow_dep_when_nested_plugin_disabled() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write_gcloud_ops_skill(root);
+        write_workflow_dep_skill(root);
         install_and_enable_nested_workflow_plugin(root);
         std::fs::write(
             root.join(".bwoc/workspace.toml"),
@@ -2479,7 +2478,7 @@ mod tests {
         )
         .unwrap();
         assert_ne!(
-            run_verify(gcloud_ops_verify_args(root)),
+            run_verify(workflow_dep_verify_args(root)),
             0,
             "a disabled nested workflow plugin must not satisfy the dependency"
         );

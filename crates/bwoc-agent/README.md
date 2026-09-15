@@ -30,7 +30,7 @@ Talk to a running daemon over its socket:
 printf 'STATUS\n' | nc -U .bwoc/agent.sock
 ```
 
-Opt-in environment flags: `BWOC_TRUST_GATING`, `BWOC_SIGNING_MODE`, `BWOC_WARM`, `BWOC_AUTO_CLAIM`, `BWOC_TASK_WAKEUP`, `BWOC_TASK_POLL_SECS`, `BWOC_LANG`.
+Environment flags: `BWOC_TRUST_GATING` (unset or empty = warn-only trust gate, `1` = enforce, `0`/`off`/`false` = off), `BWOC_SIGNING_MODE`, `BWOC_WARM`, `BWOC_AUTO_CLAIM`, `BWOC_TASK_WAKEUP`, `BWOC_TASK_POLL_SECS`, `BWOC_LANG`.
 
 ## Status
 
