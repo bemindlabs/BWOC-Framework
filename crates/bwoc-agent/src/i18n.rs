@@ -32,16 +32,8 @@ pub fn bundle_for(lang: &str) -> FluentBundle<FluentResource> {
     bundle
 }
 
-/// Look up a message by key (no args). Returns a visible `«missing key: ...»`
-/// placeholder on failure — surfaces gaps during dev without panicking.
-///
-/// Currently unused by main but kept available for future no-arg messages.
-#[allow(dead_code)]
-pub fn t(bundle: &FluentBundle<FluentResource>, key: &str) -> String {
-    t_inner(bundle, key, None)
-}
-
-/// Look up a message by key with named string arguments. Slice-of-tuples shape
+/// Look up a message by key with named string arguments. Returns a visible
+/// `«missing key: ...»` placeholder on failure. Slice-of-tuples shape
 /// keeps call sites ergonomic without exposing `FluentArgs` directly.
 pub fn t_with(bundle: &FluentBundle<FluentResource>, key: &str, args: &[(&str, &str)]) -> String {
     let mut fargs = FluentArgs::new();
@@ -105,16 +97,19 @@ mod tests {
     }
 
     #[test]
+    fn missing_key_returns_visible_marker() {
+        // The documented user-visible fallback: an unknown key renders as a
+        // `«missing key: …»` marker instead of panicking or returning empty.
+        let b = bundle_for("en");
+        let s = t_with(&b, "bwoc-no-such-key", &[]);
+        assert!(s.contains("missing key"), "got: {s:?}");
+        assert!(s.contains("bwoc-no-such-key"), "got: {s:?}");
+    }
+
+    #[test]
     fn unknown_lang_falls_back_to_en() {
         let b = bundle_for("zz");
         let s = t_with(&b, "liveness-alive", &[("agent_id", "demo")]);
         assert!(s.contains("I am alive"), "got: {s:?}");
-    }
-
-    #[test]
-    fn missing_key_returns_marker() {
-        let b = bundle_for("en");
-        let s = t(&b, "no-such-key-at-all");
-        assert!(s.starts_with("«missing"), "got: {s:?}");
     }
 }

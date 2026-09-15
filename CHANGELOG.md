@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Removed
+
+- **Dead code with no production caller** — the empty `bwoc-core` `identity` / `error` stubs and the unused `lifecycle` module; `TrustBlock::missing_in`; `git_worktree::{worktree_add, worktree_path, worktree_branch}`; `bwoc-agent` `i18n::t`; `ToolQueue::in_flight_count`; the never-read `Caps::max_leases` and `FleetSnapshot.workspace` fields. The Rust API is not a public surface ([`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md)); CLI behaviour is unchanged.
+- **`bwoc-harness` `browser` feature** — the headless-Chromium `computer` executor (`tools/browser.rs`, optional `chromiumoxide` dependency). Nothing enabled it: no CI job, script or Formula built with `--features browser`. The `computer` tool model and Anthropic tool spec remain.
+
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 
 **bwoc-bot, phase 1 — one agent, one bot.** Chat connectors gain a `[bot]` block: fixed slash-command replies that never reach the model, per-sender rate and message-length caps, and an opt-in **limited public mode** that lets strangers reach the agent by DM or @mention — read-only tools, a separate workdir with no memories or other chats, and an Untrusted principal. File-tool confinement is now symlink-safe for every agent, and connector configs carry a `schema_version` that `bwoc migrate` stamps.
