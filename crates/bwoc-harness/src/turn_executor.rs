@@ -153,7 +153,7 @@ use serde::{Deserialize, Serialize};
 use crate::jail::{JailSpec, JailStatus};
 use crate::sandbox::OsSandbox;
 #[cfg(unix)]
-use crate::sandbox::{make_os_sandbox, run_sandboxed, scrub_env};
+use crate::sandbox::{make_os_sandbox, scrub_env};
 use crate::tools::registry::{default_registry, dispatch_rich};
 use crate::tools::{ToolContext, ToolRegistry};
 use bwoc_core::trust::TrustLevel;
@@ -694,15 +694,21 @@ async fn run_in_process(
     use crate::tools::ToolOutput;
     if tool_name == "run_command" {
         // run_command is text-only (no images).
-        match serde_json::from_str::<serde_json::Value>(args_json)
-            .ok()
-            .and_then(|v| v["command"].as_str().map(|s| s.to_string()))
-        {
+        let parsed = serde_json::from_str::<serde_json::Value>(args_json).ok();
+        let timeout = parsed
+            .as_ref()
+            .map(crate::tools::impls::run_command_timeout)
+            .unwrap_or_else(|| crate::tools::impls::run_command_timeout(&serde_json::Value::Null));
+        match parsed.and_then(|v| v["command"].as_str().map(|s| s.to_string())) {
             #[cfg(unix)]
-            Some(cmd) => match run_sandboxed(&cmd, &ctx.workdir, os_sandbox).await {
-                Ok(output) => ToolOutput::text(output.into_tool_result()),
-                Err(e) => ToolOutput::text(format!("error: {e}")),
-            },
+            Some(cmd) => {
+                match crate::sandbox::run_sandboxed_timeout(&cmd, &ctx.workdir, os_sandbox, timeout)
+                    .await
+                {
+                    Ok(output) => ToolOutput::text(output.into_tool_result()),
+                    Err(e) => ToolOutput::text(format!("error: {e}")),
+                }
+            }
             #[cfg(not(unix))]
             Some(cmd) => {
                 let _ = (&cmd, os_sandbox);

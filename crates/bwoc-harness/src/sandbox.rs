@@ -711,6 +711,63 @@ pub async fn run_sandboxed(
     })
 }
 
+/// [`run_sandboxed`] with a deadline: the command runs in its own process group
+/// and, when `timeout` expires, the whole group is killed and a `timed out`
+/// error returned. This is `run_command`'s production path on unix (inside the
+/// turn executor), so `timeout_secs` has to be enforced here.
+pub async fn run_sandboxed_timeout(
+    cmd: &str,
+    worktree_root: &Path,
+    os_sandbox: &dyn OsSandbox,
+    timeout: std::time::Duration,
+) -> Result<CommandOutput, HarnessError> {
+    scan_args(cmd).map_err(|v| HarnessError::ToolExecution {
+        tool: "run_command".to_string(),
+        reason: format!("[sandbox arg scan: {}] {}", v.pattern, v.reason),
+    })?;
+
+    let safe_env = scrub_env();
+    let mut command = shell_command(cmd);
+    command
+        .current_dir(worktree_root)
+        .env_clear()
+        .envs(&safe_env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    os_sandbox.apply(&mut command);
+
+    let child = command.spawn().map_err(|e| HarnessError::ToolExecution {
+        tool: "run_command".to_string(),
+        reason: format!("failed to spawn command: {e}"),
+    })?;
+    let pid = child.id();
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => Ok(CommandOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code().unwrap_or(-1),
+        }),
+        Ok(Err(e)) => Err(HarnessError::ToolExecution {
+            tool: "run_command".to_string(),
+            reason: format!("failed to wait for command: {e}"),
+        }),
+        Err(_) => {
+            crate::tools::impls::kill_process_group(pid);
+            Err(HarnessError::ToolExecution {
+                tool: "run_command".to_string(),
+                reason: format!(
+                    "command timed out after {}s and was killed (output discarded): `{cmd}`",
+                    timeout.as_secs()
+                ),
+            })
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -866,6 +923,36 @@ mod tests {
             .unwrap();
         assert!(output.stdout.contains("hello"));
         assert_eq!(output.exit_code, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandboxed_timeout_kills_the_command_group() {
+        let tmp = TempDir::new().unwrap();
+        let started = std::time::Instant::now();
+        let err = run_sandboxed_timeout(
+            "sleep 30 & echo $! > bg.pid; wait",
+            tmp.path(),
+            &NoopOsSandbox,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("timed out after 1s"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        // The backgrounded grandchild went down with the group.
+        let pid: i32 = std::fs::read_to_string(tmp.path().join("bg.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // SAFETY: signal 0 only probes for existence.
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "grandchild {pid} survived"
+        );
     }
 
     // `pwd` is a Unix command; on Windows use `cd` via CMD — gate to Unix only.

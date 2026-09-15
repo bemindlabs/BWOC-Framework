@@ -263,6 +263,18 @@ const BLOCKED_COMMANDS: &[&str] = &[
 const RUN_COMMAND_DEFAULT_TIMEOUT_SECS: u64 = 120;
 const RUN_COMMAND_MAX_TIMEOUT_SECS: u64 = 600;
 
+/// `run_command`'s effective timeout from its arguments: `timeout_secs`, else
+/// the default, clamped to 1..=max. Shared with the turn executor, which runs
+/// the command itself on unix.
+pub(crate) fn run_command_timeout(args: &Value) -> std::time::Duration {
+    std::time::Duration::from_secs(
+        args["timeout_secs"]
+            .as_u64()
+            .unwrap_or(RUN_COMMAND_DEFAULT_TIMEOUT_SECS)
+            .clamp(1, RUN_COMMAND_MAX_TIMEOUT_SECS),
+    )
+}
+
 #[async_trait]
 impl ToolImpl for RunCommand {
     fn name(&self) -> &'static str {
@@ -310,10 +322,7 @@ impl ToolImpl for RunCommand {
             }
         }
 
-        let timeout_secs = args["timeout_secs"]
-            .as_u64()
-            .unwrap_or(RUN_COMMAND_DEFAULT_TIMEOUT_SECS)
-            .clamp(1, RUN_COMMAND_MAX_TIMEOUT_SECS);
+        let timeout_secs = run_command_timeout(&args).as_secs();
 
         let mut command = shell_command(cmd);
         command
@@ -383,7 +392,7 @@ impl ToolImpl for RunCommand {
 
 /// SIGKILL the process group led by `pid` (spawned with `process_group(0)`).
 #[cfg(unix)]
-fn kill_process_group(pid: Option<u32>) {
+pub(crate) fn kill_process_group(pid: Option<u32>) {
     if let Some(pgid) = pid.and_then(|p| libc::pid_t::try_from(p).ok()) {
         // SAFETY: `killpg` only sends a signal; it touches no memory. `pgid` is
         // the group this call created for the child, so no unrelated group is hit.
@@ -396,7 +405,7 @@ fn kill_process_group(pid: Option<u32>) {
 /// Non-unix: no process groups here; `kill_on_drop` already killed the direct
 /// child. Grandchildren may outlive a timeout on these platforms.
 #[cfg(not(unix))]
-fn kill_process_group(_pid: Option<u32>) {}
+pub(crate) fn kill_process_group(_pid: Option<u32>) {}
 
 #[cfg(test)]
 mod tests {
