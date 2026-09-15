@@ -7,6 +7,3 @@ maturity    = "L1"
 [contract]
 requires    = []
 exposes     = ["plan_increment", "execute_increment"]
-
-[gates]
-verify      = "bwoc skill verify ai-dlc"

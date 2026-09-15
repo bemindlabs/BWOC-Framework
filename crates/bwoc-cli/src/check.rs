@@ -1574,10 +1574,51 @@ pub fn audit_skill_manifest(skill_dir: &Path) -> AuditReport {
         }
     }
 
+    // [gates].verify (optional) — must not re-enter `bwoc skill verify`. The
+    // gate runs INSIDE `bwoc skill verify --run-gates`, whose recursion guard
+    // (skill::VERIFY_INFLIGHT_ENV) refuses the nested call, so such a gate can
+    // never pass. Surface it statically instead of at gate time.
+    if let Some(cmd) = raw
+        .get("gates")
+        .and_then(|g| g.get("verify"))
+        .and_then(|v| v.as_str())
+    {
+        if gate_reinvokes_skill_verify(cmd) {
+            report.violations.push(format!(
+                "[gates].verify '{cmd}' re-invokes `bwoc skill verify` — the gate already runs \
+                 inside it and the recursion guard refuses the nested call, so it can never pass"
+            ));
+        } else {
+            report
+                .passes
+                .push("[gates].verify does not re-invoke `bwoc skill verify`".to_string());
+        }
+    }
+
     // Neutrality — no backend / model names anywhere in manifest values.
     check_manifest_neutrality_skill(&raw, &mut report);
 
     report
+}
+
+/// True when a shell command contains a `bwoc skill verify` invocation
+/// (any path to the `bwoc` binary, any shell separator or quoting around it).
+fn gate_reinvokes_skill_verify(cmd: &str) -> bool {
+    let tokens: Vec<&str> = cmd
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`' | '\'' | '"')
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    tokens
+        .windows(3)
+        .any(|w| is_bwoc_binary(w[0]) && w[1] == "skill" && w[2] == "verify")
+}
+
+/// `bwoc`, `bwoc.exe`, or either behind a `/` or `\` path.
+fn is_bwoc_binary(token: &str) -> bool {
+    let name = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    name.eq_ignore_ascii_case("bwoc") || name.eq_ignore_ascii_case("bwoc.exe")
 }
 
 /// Audit one plugin installed at `<workspace>/modules/plugins/<name>/`.
@@ -5011,22 +5052,19 @@ mod tests {
 
     #[test]
     fn audit_skill_manifest_reference_passes() {
-        // The reference manifest from modules/skills/worktree-discipline/.
+        // Shape of a shipped skill manifest (cf. modules/skills/documenter/).
         let dir = write_skill_manifest(
             "ref",
-            "worktree-discipline",
+            "documenter",
             r#"[skill]
-name        = "worktree-discipline"
+name        = "documenter"
 version     = "0.1.0"
-description = "Create, isolate, and cleanup task worktrees per Anattā."
+description = "Capture how a system actually works."
 maturity    = "L1"
 
 [contract]
 requires    = []
-exposes     = ["claim_task", "release_task"]
-
-[gates]
-verify      = "bwoc skill verify worktree-discipline"
+exposes     = ["document", "sync"]
 "#,
         );
         let report = audit_skill_manifest(&dir);
@@ -6182,21 +6220,67 @@ token = ""
     }
 
     #[test]
-    fn audit_skill_manifest_real_scrum_via_jira_reference_passes() {
-        // End-to-end (BWOC-45): audit the actual shipped scrum-via-jira skill —
-        // the framework's first skill-on-plugin dependency — exactly as
-        // `bwoc check --all` does per-skill. Its requires_plugins = ["jira"]
-        // must validate as a real kind enum and the manifest must pass clean.
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules/skills/scrum-via-jira");
-        if !dir.join("manifest.toml").is_file() {
-            return; // partial checkout without the skill — nothing to assert.
+    fn audit_skill_manifest_every_shipped_skill_passes() {
+        // End-to-end: audit every skill shipped under the repo's
+        // modules/skills/ exactly as `bwoc check --all` does per-skill.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for dir in discover_skill_dirs(&root) {
+            let report = audit_skill_manifest(&dir);
+            assert!(
+                report.violations.is_empty(),
+                "shipped skill {} must pass bwoc check, got: {:?}",
+                dir.display(),
+                report.violations
+            );
         }
+    }
+
+    #[test]
+    fn audit_skill_gate_reinvoking_skill_verify_fails() {
+        // The runtime recursion guard refuses a nested `bwoc skill verify`,
+        // so a gate that calls it can never pass — a static violation.
+        for gate in [
+            "bwoc skill verify self-gate",
+            "cd . && /usr/local/bin/bwoc  skill verify --all",
+        ] {
+            let dir = write_skill_manifest(
+                "self-gate",
+                "self-gate",
+                &format!(
+                    "[skill]\nname = \"self-gate\"\nversion = \"0.1.0\"\n\
+                     description = \"x\"\nmaturity = \"L1\"\n\n\
+                     [contract]\nexposes = [\"op\"]\n\n[gates]\nverify = \"{gate}\"\n"
+                ),
+            );
+            let report = audit_skill_manifest(&dir);
+            assert!(
+                report
+                    .violations
+                    .iter()
+                    .any(|v| v.contains("re-invokes `bwoc skill verify`")),
+                "gate {gate:?} must be a violation, got: {:?}",
+                report.violations
+            );
+            let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn audit_skill_gate_other_command_passes() {
+        let dir = write_skill_manifest(
+            "ok-gate",
+            "ok-gate",
+            "[skill]\nname = \"ok-gate\"\nversion = \"0.1.0\"\n\
+             description = \"x\"\nmaturity = \"L1\"\n\n\
+             [contract]\nexposes = [\"op\"]\n\n[gates]\nverify = \"bwoc check --all\"\n",
+        );
         let report = audit_skill_manifest(&dir);
         assert!(
             report.violations.is_empty(),
-            "real scrum-via-jira manifest must pass bwoc check, got: {:?}",
+            "a gate that does not re-enter skill verify must pass, got: {:?}",
             report.violations
         );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
     }
 
     // ---- BWOC-45: jira auth.toml contract validation -----------------------
@@ -6310,38 +6394,42 @@ base_url = ""
 
     #[test]
     fn audit_skill_requires_plugins_valid_kind_passes() {
-        // BWOC-45: `bwoc check` validates that requires_plugins names a valid
-        // plugin KIND enum ("jira"). It does NOT require the plugin to be
+        // BWOC-45/55: `bwoc check` validates that every requires_plugins entry
+        // names a valid plugin KIND enum. It does NOT require the plugin to be
         // enabled — that is a spawn-time / `bwoc skill verify` concern.
         let dir = write_skill_manifest(
             "reqplug-ok",
-            "scrum-via-jira",
+            "plugin-dep-probe",
             r#"[skill]
-name        = "scrum-via-jira"
+name        = "plugin-dep-probe"
 version     = "0.1.0"
-description = "Scrum operations over a jira-kind plugin."
+description = "Operations over a jira-kind and a workflow-kind plugin."
 maturity    = "L1"
 
 [contract]
 requires         = []
-requires_plugins = ["jira"]
+requires_plugins = ["jira", "workflow"]
 exposes          = ["propose-sprint"]
 "#,
         );
         let report = audit_skill_manifest(&dir);
         assert!(
             report.violations.is_empty(),
-            "requires_plugins with a valid kind must pass, got: {:?}",
+            "requires_plugins with valid kinds must pass, got: {:?}",
             report.violations
         );
-        assert!(
-            report
-                .passes
-                .iter()
-                .any(|p| p.contains("requires_plugins 'jira' is a valid plugin kind")),
-            "expected a pass note for the valid kind, got: {:?}",
-            report.passes
-        );
+        for kind in ["jira", "workflow"] {
+            assert!(
+                report
+                    .passes
+                    .iter()
+                    .any(|p| p
+                        .contains(&format!("requires_plugins '{kind}' is a valid plugin kind"))),
+                "expected a pass note for kind {kind}, got: {:?}",
+                report.passes
+            );
+        }
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
     }
 
     #[test]
@@ -7646,31 +7734,6 @@ entry       = "bin"
         );
     }
 
-    #[test]
-    fn audit_skill_manifest_real_gcloud_ops_reference_passes() {
-        // The gcloud-ops skill is the framework's first skill-on-MULTIPLE-plugins
-        // (requires_plugins = ["workflow"], kind-level). Its manifest must pass
-        // and the workflow kind must validate as a real enum.
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules/skills/gcloud-ops");
-        if !dir.join("manifest.toml").is_file() {
-            return;
-        }
-        let report = audit_skill_manifest(&dir);
-        assert!(
-            report.violations.is_empty(),
-            "real gcloud-ops manifest must pass bwoc check, got: {:?}",
-            report.violations
-        );
-        assert!(
-            report
-                .passes
-                .iter()
-                .any(|p| p.contains("requires_plugins 'workflow' is a valid plugin kind")),
-            "expected requires_plugins=[workflow] to validate as a real kind, got: {:?}",
-            report.passes
-        );
-    }
-
     // ---- BWOC-55: workflow auth.toml contract validation -------------------
 
     /// Minimal valid workflow-kind plugin manifest, reused by the auth.toml
@@ -8922,5 +8985,26 @@ options     = ["affirm-concord", "revise-concord"]
             report.warnings
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gate_reinvokes_skill_verify_sees_through_quotes_and_paths() {
+        for cmd in [
+            "bwoc skill verify auditor",
+            "cd x && /usr/local/bin/bwoc skill verify auditor",
+            "bash -lc 'bwoc skill verify auditor'",
+            "sh -c \"bwoc skill verify auditor\"",
+            r"C:\tools\bwoc.exe skill verify auditor",
+            r#""C:\Program Files\bwoc\bwoc.exe" skill verify auditor"#,
+        ] {
+            assert!(gate_reinvokes_skill_verify(cmd), "missed: {cmd}");
+        }
+        for cmd in [
+            "cargo test -p bwoc-cli",
+            "bwoc skill list",
+            "mybwoc skill verify x",
+        ] {
+            assert!(!gate_reinvokes_skill_verify(cmd), "false positive: {cmd}");
+        }
     }
 }

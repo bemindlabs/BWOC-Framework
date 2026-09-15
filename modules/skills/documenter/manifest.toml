@@ -7,6 +7,3 @@ maturity    = "L1"
 [contract]
 requires    = []
 exposes     = ["document", "sync"]
-
-[gates]
-verify      = "bwoc skill verify documenter"

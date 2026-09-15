@@ -7,6 +7,3 @@ maturity    = "L1"
 [contract]
 requires    = []
 exposes     = ["audit", "verify_finding"]
-
-[gates]
-verify      = "bwoc skill verify auditor"

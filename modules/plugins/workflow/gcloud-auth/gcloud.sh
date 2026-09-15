@@ -148,8 +148,7 @@ _gcloud_auth_status() {
 _gcloud_auth_login() {
   # Operator-driven only. The plugin lets `gcloud auth login` stream to the
   # operator's TTY and emits a single telemetry line on stdout AFTER it exits.
-  # Never auto-invoked by an agent (the gcloud-ops skill explicitly excludes
-  # this verb — BWOC-51 design note §Decision 5).
+  # Never auto-invoked by an agent (BWOC-51 design note §Decision 5).
   local request="$1"
   local account
   account="$(printf '%s' "$request" | jq -r '.account // empty' 2>/dev/null || true)"

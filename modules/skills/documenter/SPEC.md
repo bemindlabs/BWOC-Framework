@@ -11,7 +11,7 @@ maturity: L1
 
 # Documenter 📄
 
-> [!abstract] The craft of capturing how a system *actually* works so the next reader — human or agent — reuses the knowledge instead of re-deriving it, and keeping that record **true to current reality** as the system changes. Where [[../writer/SPEC|writer]] optimises for a reader's experience, `documenter` optimises for **accuracy, conventions, and staying in sync**. Encodes **Sīlasāmaññatā** (shared conventions) and **Sacca** (truthful to the current artifact).
+> [!abstract] The craft of capturing how a system *actually* works so the next reader — human or agent — reuses the knowledge instead of re-deriving it, and keeping that record **true to current reality** as the system changes. `documenter` optimises for **accuracy, conventions, and staying in sync**. Encodes **Sīlasāmaññatā** (shared conventions) and **Sacca** (truthful to the current artifact).
 
 ## What This Skill Does
 
@@ -51,7 +51,7 @@ teardown   → no-op (the doc is the durable artifact)
 
 ## Maturity
 
-**L1**. → L2 once two subjects have been documented + kept in `sync` across a real change without drift; → L3 once `bwoc skill verify documenter` is wired + green.
+**L1**. → L2 once two subjects have been documented + kept in `sync` across a real change without drift; → L3 once a concrete `[gates].verify` check is wired + green.
 
 ## Neutrality
 
@@ -59,6 +59,5 @@ Names no backend/model/vendor; conventions are the repo's own. Satisfies **Samā
 
 ## See Also
 
-- [[../writer/SPEC|writer]] — reader-facing prose craft (the sibling; accuracy ↔ experience).
 - [[../engineering/SPEC|engineering]] — the work this skill records.
 - [[../../agent-template/docs/en/PHILOSOPHY.en|PHILOSOPHY.en.md]] — Sīlasāmaññatā, Sacca.

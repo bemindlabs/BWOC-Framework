@@ -8,9 +8,9 @@ nav_order: 11
 
 A **framework skill** is a capability the framework recommends as a baseline that an agent can opt into. It is the "standard library" of agent behaviors — well-defined, verifiable, neutral across backends, discoverable through one manifest format.
 
-This spec defines the manifest format, invocation contract, discovery mechanism, and verification gates. The first reference skill (`worktree-discipline`) ships alongside this spec — both lands and proves the format together.
+This spec defines the manifest format, invocation contract, discovery mechanism, and verification gates. The framework ships five skills under [`modules/skills/`](../../modules/skills/README.md); each is prose guidance an agent opts into.
 
-> [!abstract] Status: initial scaffold. Manifest tables below are normative and audited by `bwoc check`; the init/invoke/teardown lifecycle and spawn-time resolution are specified, not enforced by the runtime; prose may be refined as story BWOC-1..3 work refines the contract. The first reference skill lands in BWOC-6.
+> [!abstract] Status: initial scaffold. Manifest tables below are normative and audited by `bwoc check`; the init/invoke/teardown lifecycle and spawn-time resolution are specified, not enforced by the runtime; prose may be refined as story BWOC-1..3 work refines the contract.
 
 ---
 
@@ -46,20 +46,20 @@ modules/skills/
 
 ```toml
 [skill]
-name        = "worktree-discipline"             # required — must match the directory name
+name        = "documenter"                      # required — must match the directory name
 version     = "0.1.0"                           # required — semver
-description = "Create, isolate, cleanup worktrees per Anatta."   # required — one-sentence summary
+description = "Capture how a system actually works."   # required — one-sentence summary
 maturity    = "L1"                              # required — see "Maturity" below
 
 [contract]
 requires         = []                              # optional (default []) — other framework skills this depends on
 requires_plugins = []                              # optional (default []) — plugin KINDS this skill needs enabled
-exposes          = ["claim_task", "release_task"]  # required — named operations the skill makes available
+exposes          = ["document", "sync"]            # required — named operations the skill makes available
                                                    #   (must be a non-empty array; empty means the skill exposes nothing
                                                    #    and should not exist — see Field reference)
 
 [gates]
-verify      = "bwoc skill verify worktree-discipline"   # optional — shell command; exits 0 iff the skill works here
+verify      = "<shell command>"   # optional — exits 0 iff the skill works here; must not call `bwoc skill verify`
 ```
 
 ### Field reference
@@ -73,7 +73,7 @@ verify      = "bwoc skill verify worktree-discipline"   # optional — shell com
 | `[contract]` | `requires` | no (default `[]`) | array of strings | Names of other installed framework **skills** this skill depends on; spawn-time resolution is specified, not enforced by the runtime |
 | `[contract]` | `requires_plugins` | no (default `[]`) | array of strings | Plugin **kinds** this skill needs enabled in the workspace; checked by `bwoc skill verify` (spawn-time resolution specified, not enforced) (see [Skill-on-plugin dependency](#skill-on-plugin-dependency)) |
 | `[contract]` | `exposes` | yes (non-empty) | array of strings | Named operations the skill makes available to its caller; an empty array fails `bwoc check` |
-| `[gates]` | `verify` | no | string (shell command) | Command run by `bwoc skill verify <name>`; exits 0 iff the skill works in this environment |
+| `[gates]` | `verify` | no | string (shell command) | Command run by `bwoc skill verify <name> --run-gates`; exits 0 iff the skill works in this environment. It must not invoke `bwoc skill verify` itself — the recursion guard refuses the nested call, so `bwoc check` reports it as a violation |
 
 ### Neutrality constraint (HARD)
 
@@ -147,7 +147,7 @@ Skills are **opt-in per agent**, not globally available. An agent's `config.mani
 {
   "skills": {
     "framework": [
-      { "name": "worktree-discipline", "version": ">=0.1.0", "enabled": true }
+      { "name": "documenter", "version": ">=0.1.0", "enabled": true }
     ]
   }
 }
@@ -176,11 +176,11 @@ No central index. A workspace knows about a skill only because it lives under `m
 
 ## Skill-on-plugin dependency
 
-A skill may depend not only on other **skills** (`[contract] requires`) but on a **plugin** (`[contract] requires_plugins`). A skill is an agent capability; a plugin is a framework integration ([`PLUGINS.en.md`](PLUGINS.en.md#skill-vs-plugin)). When a skill is a thin scrum/agent-vocabulary wrapper over an integration the workspace already loads, it declares that integration as a dependency rather than reimplementing it. The first such skill is [`scrum-via-jira`](../../modules/skills/scrum-via-jira/SPEC.md), which wraps a `jira`-kind plugin's `bwoc jira` verbs.
+A skill may depend not only on other **skills** (`[contract] requires`) but on a **plugin** (`[contract] requires_plugins`). A skill is an agent capability; a plugin is a framework integration ([`PLUGINS.en.md`](PLUGINS.en.md#skill-vs-plugin)). When a skill is a thin scrum/agent-vocabulary wrapper over an integration the workspace already loads, it declares that integration as a dependency rather than reimplementing it. For example, a skill that wraps a `jira`-kind plugin's `bwoc jira` verbs declares the dependency below. No shipped skill declares a plugin dependency today.
 
 ```toml
 [contract]
-requires         = ["worktree-discipline"]   # framework SKILL names
+requires         = ["documenter"]            # framework SKILL names
 requires_plugins = ["jira"]                   # plugin KINDS — not plugin names
 exposes          = ["transition-story", "..."]
 ```
@@ -201,7 +201,7 @@ The skill calls the plugin's verbs; the plugin has no knowledge of the skill and
 
 ### Skill-on-multiple-plugins
 
-A skill may compose **more than one plugin**. When those plugins share a kind, `requires_plugins` lists that kind **once** and the skill's SPEC enumerates the specific plugin instances it drives. The first such skill is [`gcloud-ops`](../../modules/skills/gcloud-ops/SPEC.md), which composes both `gcloud-auth` and `gcloud-project` — both `workflow`-kind — so its manifest declares `requires_plugins = ["workflow"]` (the kind, once), while its [Operations Contract](../../modules/skills/gcloud-ops/SPEC.md#operations-contract) names the two plugins it calls.
+A skill may compose **more than one plugin**. When those plugins share a kind, `requires_plugins` lists that kind **once** and the skill's SPEC enumerates the specific plugin instances it drives. For example, a skill composing both `gcloud-auth` and `gcloud-project` — both `workflow`-kind — declares `requires_plugins = ["workflow"]` (the kind, once), while its SPEC's operations contract names the two plugins it calls.
 
 This follows directly from the kind-based rule above: `requires_plugins` is a **kind** dependency, not a **name** dependency. The consequence for a multi-plugin skill is a deliberate L1 limitation — kind-level resolution confirms *a* `workflow` plugin is enabled, not that *every specific* plugin the skill composes is present:
 
@@ -320,8 +320,8 @@ Per-workspace registry of installs. Created on first install; never deleted by t
 ["abc123def456..."]
 url             = "https://github.com/org/skill.git#v0.1.0"   # original argument
 kind            = "skill"                                      # "skill" | "plugin"
-name            = "worktree-discipline"                        # from installed manifest
-target          = "modules/skills/worktree-discipline"          # workspace-relative
+name            = "documenter"                                 # from installed manifest
+target          = "modules/skills/documenter"                  # workspace-relative
 installed_at    = "2026-05-26T10:23:00Z"                       # ISO 8601 UTC
 installed_hash  = "<SHA-256 of installed tree>"                # for drift detection
 last_verified   = "2026-05-26T10:23:00Z"                       # set by bwoc check
@@ -393,6 +393,7 @@ A skill bumps maturity in its own `version` change; the `version` and `maturity`
 | `SPEC.md` present | A `SPEC.md` file exists alongside the manifest |
 | Required fields | `name`, `version`, `description`, `maturity`, `[contract] exposes` all present |
 | `requires_plugins` kinds valid | every value in `[contract] requires_plugins` (if present) is a valid plugin-kind enum (does not require the plugin to be enabled — that is a spawn-time check) |
+| Gate does not recurse | `[gates].verify` (if present) does not invoke `bwoc skill verify` |
 | Source registry parseable | `.bwoc/installed-sources.toml` is valid TOML if present |
 | No orphan source records | every entry where `kind = "skill"` in the registry has a matching `modules/skills/<name>/` directory |
 | No orphan installations | every `modules/skills/<name>/` either has a registry entry OR contains an `.authored-in-place` marker file (authored-in-place skills opt out of registry tracking) |
@@ -407,7 +408,7 @@ A failed check exits non-zero on the workspace audit — same surface, same exit
 - **Per-agent skill slots** — see [`modules/agent-template/skills/SPEC.md`](../../modules/agent-template/skills/SPEC.md). Different layer; different contract.
 - **Claude Code session skills** — see `.claude/skills/`. Tool-side concept; not a framework concern.
 - **Plugin loading** — see [`PLUGINS.en.md`](PLUGINS.en.md). Skills are agent-invoked; plugins are framework-loaded.
-- **The first reference skill itself** — see story `BWOC-6` and (once landed) `modules/skills/worktree-discipline/SPEC.md`.
+- **Individual skills** — each shipped skill documents itself in `modules/skills/<name>/SPEC.md`.
 
 ---
 
