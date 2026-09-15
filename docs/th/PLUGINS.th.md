@@ -550,6 +550,8 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # บังคับ — binary 
 
 ## Lifecycle
 
+> [!warning] เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime ไม่มี code ของเฟรมเวิร์กใด dispatch `init` / `configure` / `teardown`, validate `[config.schema]` หรือปฏิเสธการ load ปลั๊กอินที่ binary หรือ directory ของ `entry` หายไป สิ่งที่บังคับใช้วันนี้: ช่วง `[plugin] compat` (ดู Stability) และ manifest audit ของ `bwoc check`
+
 ```
 init  → configure → invoke (หลายครั้ง) → teardown
 ```
@@ -571,6 +573,8 @@ Idempotency เป็น **ข้อกำหนดบังคับทุก�
 | `audit` | `bwoc audit` CLI | `bwoc audit run` ครั้งแรกที่เลือกปลั๊กอินนี้ในการเรียกปัจจุบัน | ต่อการเรียก `bwoc audit run [--plugin <name>]` โดย operator; ไม่เรียกโดย implicit |
 
 ### สัญญา Hook — success, failure, partial state
+
+*(เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime — ดู [Lifecycle](#lifecycle))*
 
 ปลั๊กอินเชื่อมผ่านฟิลด์ `entry` — เป็น binary บน `PATH` หรือ Rust crate ข้างเคียง contract จึงแสดงทั้งในรูป exit-code (binary) และ return-value (crate); เฟรมเวิร์กถือว่าทั้งสองเทียบเท่ากัน สำหรับแต่ละ hook คำว่า "success" และ "failure" คือผลลัพธ์ที่เฟรมเวิร์กเห็น; "partial state" เป็นความรับผิดชอบของผู้เขียนปลั๊กอินที่จะ bound ไว้
 
@@ -635,11 +639,11 @@ Schema ของแต่ละ table `[plugins.<name>]`:
 
 - `<name>` (table key, string, บังคับ) — ชื่อไดเรกทอรีของปลั๊กอินที่ติดตั้งใต้ `modules/plugins/` Key คือชื่อปลั๊กอิน; **ไม่** ประกาศ `kind` ที่นี่ — `kind` เป็นของ manifest ของปลั๊กอินเอง (`[plugin].kind` ใน `manifest.toml`) และอ่านจากที่นั่นตอนโหลด
 - `enabled` (bool, บังคับ) — กำหนดว่าปลั๊กอินจะถูกโหลดตอนเฟรมเวิร์ก startup หรือไม่ ตั้ง `false` เพื่อเก็บ entry ไว้แสดงเจตนาแต่ไม่ load สอดคล้องกับ pattern `config.manifest.json skills.framework[] enabled` ใน [`SKILLS.th.md`](SKILLS.th.md#discovery); ใช้ `bwoc plugin disable <name>` เพื่อ flip โดยไม่ลบ entry
-- Key อื่นทั้งหมด (ปลั๊กอินกำหนดเอง) — validate กับ `[config.schema]` ของปลั๊กอินตอนเฟรมเวิร์ก startup ปฏิเสธเมื่อ schema ผิด; ไม่ apply ครึ่ง ๆ (ดู [Lifecycle](#lifecycle))
+- Key อื่นทั้งหมด (ปลั๊กอินกำหนดเอง) — validate กับ `[config.schema]` ของปลั๊กอินตอนเฟรมเวิร์ก startup (เป็นสเปก ยังไม่ถูกบังคับใช้) ปฏิเสธเมื่อ schema ผิด; ไม่ apply ครึ่ง ๆ (ดู [Lifecycle](#lifecycle))
 
 Entry ที่ไม่มีฟิลด์ `enabled` ถือเป็น manifest error — `bwoc check` จะปฏิเสธ ไม่มี default โดยปริยาย; เจตนาที่ชัดเจนคือ contract
 
-เมื่อเฟรมเวิร์ก startup runtime จะ:
+เมื่อเฟรมเวิร์ก startup runtime ถูกกำหนดให้ (**ยังไม่ถูกบังคับใช้โดย runtime** ยกเว้นการตรวจ `compat` — ปัจจุบันไม่มี loader ตอน startup ที่ validate `[config.schema]`, dispatch `init` / `configure` หรือปฏิเสธปลั๊กอินที่หายไป):
 
 1. อ่าน table `[plugins]` จาก `workspace.toml`
 2. กรองเฉพาะ entry ที่ `enabled` เป็น `true` Entry ที่ `enabled = false` ยังอยู่ใน `workspace.toml` (เป็นเจตนาที่บันทึกไว้) แต่ถูกข้ามตอนโหลด

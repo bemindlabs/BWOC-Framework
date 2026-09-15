@@ -10,7 +10,7 @@ A **framework skill** is a capability the framework recommends as a baseline tha
 
 This spec defines the manifest format, invocation contract, discovery mechanism, and verification gates. The first reference skill (`worktree-discipline`) ships alongside this spec — both lands and proves the format together.
 
-> [!abstract] Status: initial scaffold. Manifest tables and lifecycle hooks below are normative; prose may be refined as story BWOC-1..3 work refines the contract. The first reference skill lands in BWOC-6.
+> [!abstract] Status: initial scaffold. Manifest tables below are normative and audited by `bwoc check`; the init/invoke/teardown lifecycle and spawn-time resolution are specified, not enforced by the runtime; prose may be refined as story BWOC-1..3 work refines the contract. The first reference skill lands in BWOC-6.
 
 ---
 
@@ -70,8 +70,8 @@ verify      = "bwoc skill verify worktree-discipline"   # optional — shell com
 | `[skill]` | `version` | yes | string (semver) | Semver of the skill itself, separate from the framework version |
 | `[skill]` | `description` | yes | string | One-sentence summary; shown by `bwoc skill list` |
 | `[skill]` | `maturity` | yes | enum `L1`..`L7` | Current maturity level (see [Maturity](#maturity-levels)); honest declaration enforced by `bwoc check` |
-| `[contract]` | `requires` | no (default `[]`) | array of strings | Names of other installed framework **skills** this skill depends on; resolved at agent spawn |
-| `[contract]` | `requires_plugins` | no (default `[]`) | array of strings | Plugin **kinds** this skill needs enabled in the workspace; resolved at agent spawn (see [Skill-on-plugin dependency](#skill-on-plugin-dependency)) |
+| `[contract]` | `requires` | no (default `[]`) | array of strings | Names of other installed framework **skills** this skill depends on; spawn-time resolution is specified, not enforced by the runtime |
+| `[contract]` | `requires_plugins` | no (default `[]`) | array of strings | Plugin **kinds** this skill needs enabled in the workspace; checked by `bwoc skill verify` (spawn-time resolution specified, not enforced) (see [Skill-on-plugin dependency](#skill-on-plugin-dependency)) |
 | `[contract]` | `exposes` | yes (non-empty) | array of strings | Named operations the skill makes available to its caller; an empty array fails `bwoc check` |
 | `[gates]` | `verify` | no | string (shell command) | Command run by `bwoc skill verify <name>`; exits 0 iff the skill works in this environment |
 
@@ -87,6 +87,8 @@ A skill exposes named **operations** (declared in `[contract] exposes`). When an
 
 ### Lifecycle
 
+> [!warning] Specified, not enforced by the runtime. No framework code loads skills at agent spawn or calls `init` / `invoke` / `teardown`; this section is the contract a future loader must honour.
+
 ```
 init  → invoke (one or more times) → teardown
 ```
@@ -98,6 +100,8 @@ init  → invoke (one or more times) → teardown
 Idempotency is a **hard requirement at every phase** — agents may retry, restart, or replay. A skill that breaks on replay breaks the agent's recovery story.
 
 ### Hook contract — success, failure, partial state
+
+*(Specified, not enforced by the runtime — see [Lifecycle](#lifecycle).)*
 
 A skill is *invoked*, not *imported*. The agent's runtime resolves the skill name to an installed manifest, runs `init` once, then dispatches operations. No global registry; the resolution lookup is per-workspace (see [Discovery](#discovery)).
 
@@ -153,11 +157,11 @@ Schema for each `skills.framework[]` entry:
 
 - `name` (string, required) — the installed skill's directory name under `modules/skills/`.
 - `version` (string, required) — semver constraint the agent will accept; resolved against `[skill].version` in the skill's manifest.
-- `enabled` (bool, required) — gates whether the skill is loaded at agent spawn. Set `false` to keep the entry as documented intent without loading. Mirrors the `workspace.toml [plugins.<name>] enabled` pattern in [`PLUGINS.en.md`](PLUGINS.en.md); flip with `bwoc skill disable <name>` to preserve the entry.
+- `enabled` (bool, required) — declares whether the skill should be loaded at agent spawn (no spawn-time loader exists yet; the `bwoc skill` commands read it). Set `false` to keep the entry as documented intent without loading. Mirrors the `workspace.toml [plugins.<name>] enabled` pattern in [`PLUGINS.en.md`](PLUGINS.en.md); flip with `bwoc skill disable <name>` to preserve the entry.
 
 A missing `enabled` field is a manifest error — `bwoc check` rejects entries that omit it. There is no implicit default; explicit intent is the contract.
 
-At agent spawn the framework:
+At agent spawn the framework is specified to (**not enforced by the runtime** — `bwoc spawn` reads no skills today):
 
 1. Reads the `skills.framework` list from the agent's manifest.
 2. Filters to entries where `enabled` is `true`. Entries with `enabled = false` are kept in the manifest (as documented intent) but skipped at load.
@@ -191,8 +195,8 @@ The skill calls the plugin's verbs; the plugin has no knowledge of the skill and
 
 ### Resolution
 
-- **At agent spawn** — for every kind in `requires_plugins`, the framework checks the workspace has an **enabled** plugin of that kind (`workspace.toml [plugins.<name>]` with matching `kind`). If none is enabled, spawn fails fast with a diagnostic naming the missing kind; the agent is never half-wired (Discovery step 4).
-- **Earlier, via `bwoc skill verify <name>`** — runs the same check before spawn time so the gap surfaces in CI / pre-flight, not at runtime.
+- **At agent spawn** *(specified, not enforced by the runtime — `bwoc spawn` does not check today)* — for every kind in `requires_plugins`, the framework checks the workspace has an **enabled** plugin of that kind (`workspace.toml [plugins.<name>]` with matching `kind`). If none is enabled, spawn fails fast with a diagnostic naming the missing kind; the agent is never half-wired (Discovery step 4).
+- **Via `bwoc skill verify <name>`** *(implemented)* — runs the same check before spawn time so the gap surfaces in CI / pre-flight, not at runtime.
 - **Statically, via `bwoc check`** — validates that every `requires_plugins` value is a valid kind enum (see [Verification](#verification)). It does not require the plugin to be enabled at check time — enablement is a per-agent spawn concern, kind-validity is a manifest concern.
 
 ### Skill-on-multiple-plugins
@@ -201,7 +205,7 @@ A skill may compose **more than one plugin**. When those plugins share a kind, `
 
 This follows directly from the kind-based rule above: `requires_plugins` is a **kind** dependency, not a **name** dependency. The consequence for a multi-plugin skill is a deliberate L1 limitation — kind-level resolution confirms *a* `workflow` plugin is enabled, not that *every specific* plugin the skill composes is present:
 
-- **Kind-level (today).** Spawn / `bwoc skill verify` / `bwoc check` confirm the declared kind(s) resolve. A skill composing two `workflow` plugins is satisfied by any one enabled `workflow` plugin.
+- **Kind-level (today).** `bwoc skill verify` / `bwoc check` confirm the declared kind(s) resolve. A skill composing two `workflow` plugins is satisfied by any one enabled `workflow` plugin.
 - **Invoke-time fallback (today).** If a composed plugin is absent at invoke, the skill fails gracefully, surfacing which underlying verb could not dispatch (e.g. "`bwoc gcloud project show` — no enabled `gcloud-project` plugin"). The agent is never silently half-wired at runtime.
 - **Name-level enforcement (future extension).** Asserting that *all* named instances (`gcloud-auth` **and** `gcloud-project`) are enabled — not just *some* `workflow` plugin — is a documented future addition. It is intentionally not introduced as an unenforced manifest field; the SPEC's Operations Contract is the authoritative enumeration until the resolver supports name-level checks.
 
