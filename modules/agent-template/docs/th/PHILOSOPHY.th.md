@@ -352,16 +352,16 @@
 - v2 ระบุ live ที่ FR-7.7 และ FR-7.17 เท่านั้น ที่อื่นเป็นการอ้างอิง
 
 ### 4.3 เพิ่ม 6 หลักธรรมใหม่
-- ปฏิจจสมุปบาท → docs/FAILURE-MODES.md
-- ภาวนา 4 → docs/LIFECYCLE.md
+- ปฏิจจสมุปบาท → เอกสารนี้ (ไม่มีเอกสารแยก)
+- ภาวนา 4 → เอกสารนี้ (ไม่มีเอกสารแยก)
 - ปัญญา 3 → docs/SELF-IMPROVEMENT.md
 - พรหมวิหาร 4 → docs/PRD (Error UX section)
 - อปริหานิยธรรม → [`docs/th/FLEET-GOVERNANCE.th.md`](../../../../docs/th/FLEET-GOVERNANCE.th.md) (spec ระดับ framework-root สำหรับ operator ฉบับร่าง 2026-05-23)
 - ตัณหา 3 → docs/THREAT-MODEL.md
 - กัลยาณมิตร → [`interconnect/trust.md`](../../interconnect/trust.md) (spec draft v2026.5.23 — boolean 7 ค่า ประกาศใน `config.manifest.json` ตรวจสอบโดย `bwoc check`)
-- สติปัฏฐาน → docs/OBSERVABILITY.md (ขยายเต็ม)
-- อริยทรัพย์ 7 → docs/LIFECYCLE.md (maturity model)
-- กรรม 3 → docs/OBSERVABILITY.md (audit trail)
+- สติปัฏฐาน → `AGENTS.md` §10 (Observability)
+- อริยทรัพย์ 7 → เอกสารนี้ (maturity model)
+- กรรม 3 → เอกสารนี้ (audit trail)
 - สีล 5 → docs/THREAT-MODEL.md (baseline)
 
 ---

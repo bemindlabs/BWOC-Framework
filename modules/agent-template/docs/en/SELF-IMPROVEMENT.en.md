@@ -315,8 +315,5 @@ Not every feedback becomes knowledge — it must be curated.
 | Document | Connection |
 |---|---|
 | PHILOSOPHY | Paññā 3 (DP-13), Iddhipāda vīmaṃsā |
-| LIFECYCLE | L4 → L5 requires all three paññā |
-| FAILURE-MODES | Post-mortem feeds bhāvanā |
-| OBSERVABILITY | Rule application logs = suta source |
 | FLEET-GOVERNANCE | Mined patterns → CCP |
 | SRS | FR-8 (Sammā-samādhi) memory system |

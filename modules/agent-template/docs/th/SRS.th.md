@@ -59,7 +59,7 @@
 | ID | P | Requirement | V |
 |---|---|---|---|
 | FR-3.1 | M | `interconnect/capabilities.md` SHALL อธิบาย skills ของ agent ให้คนและ agent อ่าน (ไม่มี code ใด parse ไฟล์นี้; A2A agent card สร้างจาก field ใน `config.manifest.json`) | I |
-| FR-3.2 | S | `interconnect/coordination.md` SHALL กำหนด phases, messaging, consensus | I |
+| FR-3.2 | S | `interconnect/messaging.md` และ `interconnect/sangha.md` SHALL กำหนด messaging, phases, consensus | I |
 | FR-3.3 | S | Message ระหว่าง agent SHALL ตรงประเด็น มี context ครบ (ปิยวาจา) | A |
 | FR-3.4 | M | Error message SHALL ระบุ root cause และวิธีแก้ ไม่เพียงแค่บอกว่าผิด | A |
 | FR-3.5 | C | Agent COULD publish capabilities ไปยัง shared registry | D |
@@ -85,7 +85,7 @@
 | FR-5.1 | M | `AGENTS.md` SHALL เป็นไฟล์ปกติ ; `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` SHALL เป็น symlinks ชี้ที่ `AGENTS.md` | T |
 | FR-5.2 | M | ไม่มีไฟล์คำสั่งใด SHALL contain backend-specific content ที่ขัด AGENTS.md | A |
 | FR-5.3 | M | `bwoc check` SHALL fail ถ้า symlink พังหรือถูกแทนด้วยไฟล์ปกติ | T |
-| FR-5.4 | M | `trust-model.md` SHALL document security posture สำหรับการ clone agent ภายนอก | I |
+| FR-5.4 | M | `interconnect/trust.md` และ `THREAT-MODEL.th.md` SHALL document trust และ security posture สำหรับ agent ภายนอก | I |
 | FR-5.5 | S | Hook ใน `.claude/settings.json` SHOULD ป้องกัน destructive action | T |
 | FR-5.6 | M | ห้ามมี secret ใน memory file (สมานัตตตา + วินัย) | T |
 | FR-5.7 | M | ระบบ SHALL รองรับเพิ่ม backend ใหม่ด้วย symlink ใหม่ ไม่ต้องแก้ code | I |
@@ -415,15 +415,9 @@ Cleanup --> [*]       : (อนัตตา — release)
 ### v2.0 (2026-05-22)
 - **แก้ไข forced metaphors:** เปลี่ยน `อจินไตย` → `มัตตัญญุตา` ในจุดที่หมายถึง "รู้ประมาณของขอบเขตงาน" (อจินไตย คงไว้เฉพาะ 4 กรณีต้นฉบับ — Buddha-visaya, Jhāna-visaya, Kamma-vipāka, Loka-cintā)
 - **เพิ่มเอกสารคู่ขนาน:**
-  - `FAILURE-MODES.md` (ปฏิจจสมุปบาท) — failure analysis
-  - `LIFECYCLE.md` (ภาวนา 4 + อริยทรัพย์ 7) — agent lifecycle
-  - `OBSERVABILITY.md` (สติปัฏฐาน 4 + กรรม 3) — monitoring + audit
-  - `COORDINATION-PROTOCOL.md` (กัลยาณมิตร 7 + สาราณียธรรม 6) — inter-agent
   - `FLEET-GOVERNANCE.md` (อปริหานิยธรรม 7) — org-level governance
   - `SELF-IMPROVEMENT.md` (ปัญญา 3) — learning loop
   - `THREAT-MODEL.md` (ตัณหา 3 + สีล 5) — security
-  - `ANTIPATTERNS.md` (มิจฉาตามมรรค 8) — wrong-path catalog
-  - `GLOSSARY.md` — Pali + technical terms reference
   - `OVERVIEW.md` — entry-point document
 - **ขยาย PHILOSOPHY.md** ให้ครอบคลุม 22 หลักธรรม (เดิม 13) ใน 6 หมวด
 

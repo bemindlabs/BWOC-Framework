@@ -18,7 +18,7 @@ tags:
 
 | Tier | Audience | Format | Files |
 |---|---|---|---|
-| **Documentation** | Humans (Obsidian vault) | Obsidian Markdown | `README.md`, `conventions.md`, `neutrality.md`, `trust-model.md`, `persona/`, `memories/`, `skills/`, `mindsets/`, `projects/`, `docs/` |
+| **Documentation** | Humans (Obsidian vault) | Obsidian Markdown | `README.md`, `conventions.md`, `neutrality.md`, `interconnect/trust.md`, `persona/`, `memories/`, `skills/`, `mindsets/`, `projects/`, `docs/` |
 | **Instructions** | LLM backends | Plain Markdown | `AGENTS.md` (and symlinks: `AGY.md`, `CODEX.md`, `KIMI.md`) |
 
 `CLAUDE.md` is an exception — a real file with template-repo-specific guidance for Claude Code, not a symlink.
@@ -269,6 +269,6 @@ Before committing agent profile files:
 
 - [[README|Agent Template]] — template overview
 - [[neutrality|Neutrality]] — backend-neutral cloning design
-- [[trust-model|Trust Model]] — external agent cloning security
+- [[interconnect/trust|Trust]] — trust declarations for peer agents
 - [[docs/en/PHILOSOPHY.en.md|Philosophy]] — 22 Buddhist frameworks
 - [`docs/en/NAMING.en.md`](../../docs/en/NAMING.en.md) — full `*.md` naming standard (12 categories)

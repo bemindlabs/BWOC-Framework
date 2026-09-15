@@ -112,7 +112,7 @@ bwoc check agents/agent-{name}
 
 When importing an agent profile from an external repo:
 
-1. **Inspect before trusting** — read all files before enabling. See [[trust-model|Trust Model]]
+1. **Inspect before trusting** — read all files before enabling. See [[interconnect/trust|Trust]]
 2. **Validate neutrality** — run the check script
 3. **Sandbox first** — run in an isolated worktree with limited permissions
 4. **Adapt config** — map external placeholders to your local config values
@@ -123,5 +123,5 @@ When importing an agent profile from an external repo:
 
 - [[README|Agent Template]] — template overview
 - [[conventions|Conventions]] — placeholder syntax and naming
-- [[trust-model|Trust Model]] — security for external cloning
+- [[interconnect/trust|Trust]] — security for external cloning
 - [[docs/en/PHILOSOPHY.en.md|Philosophy]] — Samanatatta and Sila-samannata

@@ -226,7 +226,5 @@
 | PHILOSOPHY | ตัณหา 3, สีล 5 (DP-17, DP-18) |
 | SRS | FR-5 (Sammā-ājīva) trust requirements |
 | ARCHITECTURE | สังขาร layer enforces policies |
-| OBSERVABILITY | Detection layer |
-| FAILURE-MODES | FM-7 prompt injection |
 | FLEET-GOVERNANCE | Crisis response |
-| COORDINATION-PROTOCOL | Identity, trust mechanics |
+| interconnect/trust.md | Identity, trust mechanics |

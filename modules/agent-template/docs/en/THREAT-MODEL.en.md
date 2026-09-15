@@ -226,7 +226,5 @@ Absolutely forbidden regardless of reason. Violation → halt + security alert.
 | PHILOSOPHY | Taṇhā 3, Sīla 5 (DP-17, DP-18) |
 | SRS | FR-5 (Sammā-ājīva) trust requirements |
 | ARCHITECTURE | Saṅkhāra layer enforces policies |
-| OBSERVABILITY | Detection layer |
-| FAILURE-MODES | FM-7 prompt injection |
 | FLEET-GOVERNANCE | Crisis response |
-| COORDINATION-PROTOCOL | Identity, trust mechanics |
+| interconnect/trust.md | Identity, trust mechanics |

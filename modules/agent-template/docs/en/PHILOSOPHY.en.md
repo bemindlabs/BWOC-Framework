@@ -352,16 +352,16 @@ Three cravings as the threat-model frame.
 - v2 lives in FR-7.7 and FR-7.17; other places reference
 
 ### 4.3 Added six new frameworks + extended existing
-- Paṭiccasamuppāda → docs/FAILURE-MODES.md
-- Bhāvanā 4 → docs/LIFECYCLE.md
+- Paṭiccasamuppāda → this document (no separate companion doc)
+- Bhāvanā 4 → this document (no separate companion doc)
 - Paññā 3 → docs/SELF-IMPROVEMENT.md
 - Brahmavihāra → docs/PRD (Error UX section)
 - Aparihāniya-dhamma → [`docs/en/FLEET-GOVERNANCE.en.md`](../../../../docs/en/FLEET-GOVERNANCE.en.md) (framework-root operator-facing spec drafted 2026-05-23)
 - Taṇhā 3 → docs/THREAT-MODEL.md
 - Kalyāṇamitta → [`interconnect/trust.md`](../../interconnect/trust.md) (spec draft v2026.5.23 — 7 declared booleans verified by `bwoc check`)
-- Satipaṭṭhāna → docs/OBSERVABILITY.md (fully expanded)
-- Ariya-dhana 7 → docs/LIFECYCLE.md (maturity)
-- Kamma 3 → docs/OBSERVABILITY.md (audit)
+- Satipaṭṭhāna → `AGENTS.md` §10 (Observability)
+- Ariya-dhana 7 → this document (maturity)
+- Kamma 3 → this document (audit)
 - Sīla 5 → docs/THREAT-MODEL.md (baseline)
 
 ---

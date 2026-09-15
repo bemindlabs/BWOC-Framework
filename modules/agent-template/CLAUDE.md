@@ -54,9 +54,9 @@ KIMI.md   → AGENTS.md
 | `AGENTS.md` | Agent instructions — single source of truth for all backends |
 | `CLAUDE.md` | This file — Claude Code guidance for the template repo itself |
 | `neutrality.md` | Why and how to keep profiles backend-neutral |
-| `trust-model.md` | T0–T3 trust pipeline for cloned agent security |
+| `interconnect/trust.md` | Kalyāṇamitta trust declarations and evidence rules |
 | `conventions.md` | Naming rules, placeholder table, YAML schemas, validation checklist |
 | `interconnect/` | Multi-agent coordination: capabilities, consensus, self-improvement |
-| `memories/memory.md` | Two-tier memory system spec |
+| `memories/README.md` | Two-tier memory system spec |
 | `docs/en/PHILOSOPHY.en.md` | 22 Buddhist frameworks — conceptual core |
 | `docs/en/SRS.en.md` | Requirements structured by Magga 8 |

@@ -17,7 +17,7 @@ A single, consistent convention for every `*.md` file in the BWOC framework, age
 | 1 | Top-level project metadata | repo root | `UPPERCASE.md` | `README.md` · `LICENSE` · `CHANGELOG.md` · `VERSION.md` · `VISION.md` · `SECURITY.md` · `CODE_OF_CONDUCT.md` · `CONTRIBUTING.md` |
 | 2 | Top-level translation | repo root | `UPPERCASE.<lang>.md` | `VISION.th.md` |
 | 3 | Specification doc | `docs/<lang>/` | `UPPERCASE.<lang>.md` | `PHILOSOPHY.en.md` · `GLOSSARY.th.md` · `ARCHITECTURE.en.md` · `INCARNATION.th.md` · `WORKSPACE.en.md` |
-| 4 | Template / module prose | `modules/<x>/` | `lowercase-hyphen.md` | `conventions.md` · `neutrality.md` · `trust-model.md` |
+| 4 | Template / module prose | `modules/<x>/` | `lowercase-hyphen.md` | `conventions.md` · `neutrality.md` · `capabilities.md` |
 | 5 | Slot landing (Obsidian-formatted) | `modules/<x>/<slot>/` | `README.md` | `memories/README.md` · `persona/README.md` |
 | 6 | Crate documentation | `crates/<crate>/` | `README.md` | `crates/bwoc-cli/README.md` |
 | 7 | Skill definition | `.claude/skills/<name>/` | `SKILL.md` | `.claude/skills/incarnate/SKILL.md` |

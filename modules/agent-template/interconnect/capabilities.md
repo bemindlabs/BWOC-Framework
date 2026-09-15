@@ -71,4 +71,4 @@ Human or agent orchestrators can consult capabilities to:
 ## See Also
 
 - [[README|Agent Template]]
-- [[coordination|Coordination Protocol]]
+- [[sangha|Saṅgha]] · [[messaging|Messaging]]

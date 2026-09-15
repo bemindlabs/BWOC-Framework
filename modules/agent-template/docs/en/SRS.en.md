@@ -59,7 +59,7 @@ The system under specification is a **template repository**, not a runtime.
 | ID | P | Requirement | V |
 |---|---|---|---|
 | FR-3.1 | M | `interconnect/capabilities.md` SHALL describe the agent's skills for human and agent readers (no code parses it; the A2A agent card is built from `config.manifest.json` fields) | I |
-| FR-3.2 | S | `interconnect/coordination.md` SHALL define phases, messaging, and consensus | I |
+| FR-3.2 | S | `interconnect/messaging.md` and `interconnect/sangha.md` SHALL define messaging, phases, and consensus | I |
 | FR-3.3 | S | Inter-agent messages SHALL be concise and context-complete (*piyavācā*) | A |
 | FR-3.4 | M | Error messages SHALL state the root cause and the remedy, not merely that something failed | A |
 | FR-3.5 | C | Agents COULD publish their capabilities to a shared registry | D |
@@ -85,7 +85,7 @@ The system under specification is a **template repository**, not a runtime.
 | FR-5.1 | M | `AGENTS.md` SHALL be a regular file; `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` SHALL be symlinks pointing to `AGENTS.md` | T |
 | FR-5.2 | M | No instruction file SHALL contain backend-specific content contradicting AGENTS.md | A |
 | FR-5.3 | M | `bwoc check` SHALL fail if any symlink is broken or replaced by a regular file | T |
-| FR-5.4 | M | `trust-model.md` SHALL document the security posture for cloning external agents | I |
+| FR-5.4 | M | `interconnect/trust.md` and `THREAT-MODEL.en.md` SHALL document the trust and security posture for external agents | I |
 | FR-5.5 | S | Hooks in `.claude/settings.json` SHOULD restrict destructive actions | T |
 | FR-5.6 | M | No secrets SHALL be committed to memory files (*samānattatā* + discipline) | T |
 | FR-5.7 | M | New backends SHALL be addable via new symlinks, with no code change | I |
@@ -415,15 +415,9 @@ Cleanup --> [*]       : (anattā — release)
 ### v2.0 (2026-05-22)
 - **Fixed forced metaphors:** Replaced `acinteyya` → `mattaññutā` in cases meaning "knowing moderation of work scope". Acinteyya is reserved for its original four cases (Buddha-visaya, Jhāna-visaya, Kamma-vipāka, Loka-cintā).
 - **Added companion documents:**
-  - `FAILURE-MODES.md` (Paṭiccasamuppāda) — failure analysis
-  - `LIFECYCLE.md` (Bhāvanā 4 + Ariya-dhana 7) — agent lifecycle
-  - `OBSERVABILITY.md` (Satipaṭṭhāna 4 + Kamma 3) — monitoring + audit
-  - `COORDINATION-PROTOCOL.md` (Kalyāṇamitta 7 + Sāraṇīyadhamma 6) — inter-agent
   - `FLEET-GOVERNANCE.md` (Aparihāniya-dhamma 7) — org-level governance
   - `SELF-IMPROVEMENT.md` (Paññā 3) — learning loop
   - `THREAT-MODEL.md` (Taṇhā 3 + Sīla 5) — security
-  - `ANTIPATTERNS.md` (Micchā- per Magga 8) — wrong-path catalog
-  - `GLOSSARY.md` — Pali + technical terms reference
   - `OVERVIEW.md` — entry-point document
 - **Extended PHILOSOPHY.md** to cover 22 frameworks (was 13) across six groups.
 
