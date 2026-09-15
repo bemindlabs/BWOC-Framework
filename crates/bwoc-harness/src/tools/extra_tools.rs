@@ -249,19 +249,22 @@ impl ToolImpl for EditFile {
 // grep — search file contents by pattern under the worktree
 // ---------------------------------------------------------------------------
 
-/// Walk the worktree (or a sub-path) and search for lines matching a pattern.
+/// Walk the worktree (or a sub-path) and search for lines matching a regex.
 ///
-/// Uses a pure-Rust walk + `str::contains` (substring, case-sensitive by
-/// default) so no external binary is required.  The `regex` crate is NOT
-/// added as a dep (dep-quarantine: bwoc-harness is already the heaviest
-/// crate; a simple substring search covers the primary use-case and the
-/// model can shell out to `rg` via `run_command` for advanced regex).
+/// Pure-Rust walk + the `regex` crate, so no external binary is required.
+/// `fixed_strings` searches the pattern literally. A pattern that is not a
+/// valid regex falls back to a literal search (with a note), so a caller that
+/// relied on the earlier substring-only behaviour (`foo(`) keeps working.
+/// Binary files (a NUL byte in the first 8 KB, or non-UTF-8) are skipped.
 ///
 /// Output: matching lines in `<relative-path>:<line-no>:<line>` format,
 /// capped at 1000 matches to prevent context overflow.
 pub struct Grep;
 
 const GREP_MAX_MATCHES: usize = 1_000;
+
+/// Bytes inspected for a NUL when deciding a file is binary (git's heuristic).
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 #[async_trait]
 impl ToolImpl for Grep {
@@ -270,11 +273,12 @@ impl ToolImpl for Grep {
     }
 
     fn description(&self) -> &'static str {
-        "Search file contents for lines containing a pattern under the working directory. \
-         Returns matching lines in `<path>:<line>:<content>` format. \
-         `pattern` is a case-sensitive substring by default; set `case_insensitive` to true \
-         for case-insensitive matching. Results are capped at 1000 matches. \
-         The search is confined to the working directory (worktree-safe)."
+        "Search file contents under the working directory for lines matching a \
+         regular expression (Rust regex syntax). Returns matching lines as \
+         `<path>:<line>:<content>`. Set `fixed_strings` to search the pattern \
+         literally, `case_insensitive` to ignore case, and `glob` (e.g. `*.rs`) to \
+         restrict which files are searched. Binary files and hidden directories are \
+         skipped. Results are capped at 1000 matches. Confined to the working directory."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -283,15 +287,23 @@ impl ToolImpl for Grep {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Substring to search for."
+                    "description": "Regular expression to search for (a literal string when `fixed_strings` is true)."
                 },
                 "path": {
                     "type": "string",
                     "description": "Directory or file to search (relative to working directory). Defaults to working directory root."
                 },
+                "glob": {
+                    "type": "string",
+                    "description": "Only search files matching this glob (same syntax as the `glob` tool), e.g. `*.rs`."
+                },
                 "case_insensitive": {
                     "type": "boolean",
                     "description": "If true, matching is case-insensitive. Default: false."
+                },
+                "fixed_strings": {
+                    "type": "boolean",
+                    "description": "If true, `pattern` is a literal string, not a regex. Default: false."
                 }
             },
             "required": ["pattern"]
@@ -307,25 +319,31 @@ impl ToolImpl for Grep {
             })?;
         let raw = args["path"].as_str().unwrap_or(".");
         let case_insensitive = args["case_insensitive"].as_bool().unwrap_or(false);
+        let fixed = args["fixed_strings"].as_bool().unwrap_or(false);
 
         let search_root = ctx.resolve_path(raw)?;
+        let (matcher, fallback_note) = grep_matcher(pattern, fixed, case_insensitive)?;
+        let include = match args["glob"].as_str() {
+            Some(g) => Some(glob_to_regex(g).map_err(|e| HarnessError::ToolExecution {
+                tool: self.name().to_string(),
+                reason: format!("invalid glob `{g}`: {e}"),
+            })?),
+            None => None,
+        };
 
-        // Tokio's fs::read_dir is async but walking is inherently recursive;
-        // use blocking spawn to avoid blocking the async runtime.
+        // Walking is blocking I/O; keep it off the async runtime.
         let workdir = ctx.workdir.clone();
-        let pattern_owned = pattern.to_string();
-        let pattern_display = pattern_owned.clone();
         let results = tokio::task::spawn_blocking(move || {
-            grep_walk(&search_root, &workdir, &pattern_owned, case_insensitive)
+            grep_walk(&search_root, &workdir, &matcher, include.as_ref())
         })
         .await
         .map_err(|e| HarnessError::ToolExecution {
             tool: "grep".to_string(),
             reason: format!("grep task panicked: {e}"),
-        })??;
+        })?;
 
-        if results.is_empty() {
-            Ok(format!("no matches for `{pattern_display}` in `{raw}`"))
+        let mut out = if results.is_empty() {
+            format!("no matches for `{pattern}` in `{raw}`")
         } else {
             let truncated = results.len() >= GREP_MAX_MATCHES;
             let mut out = results.join("\n");
@@ -334,8 +352,49 @@ impl ToolImpl for Grep {
                     "\n[truncated at {GREP_MAX_MATCHES} matches — narrow your search path or pattern]"
                 ));
             }
-            Ok(out)
+            out
+        };
+        if let Some(note) = fallback_note {
+            out.push_str(&note);
         }
+        Ok(out)
+    }
+}
+
+/// Build the line matcher. An invalid regex (when `fixed` is false) degrades to
+/// a literal search and returns a note saying so, rather than failing the call.
+fn grep_matcher(
+    pattern: &str,
+    fixed: bool,
+    case_insensitive: bool,
+) -> Result<(regex::Regex, Option<String>), HarnessError> {
+    let build = |p: &str| {
+        regex::RegexBuilder::new(p)
+            .case_insensitive(case_insensitive)
+            .build()
+    };
+    let literal = regex::escape(pattern);
+    if fixed {
+        return build(&literal).map(|r| (r, None)).map_err(grep_regex_error);
+    }
+    match build(pattern) {
+        Ok(r) => Ok((r, None)),
+        Err(e) => {
+            let note = format!(
+                "\n[note: `pattern` is not a valid regex ({}); searched it as a literal string]",
+                e.to_string().lines().last().unwrap_or("parse error").trim()
+            );
+            build(&literal)
+                .map(|r| (r, Some(note)))
+                .map_err(grep_regex_error)
+        }
+    }
+}
+
+fn grep_regex_error(e: regex::Error) -> HarnessError {
+    HarnessError::ToolExecution {
+        tool: "grep".to_string(),
+        reason: format!("cannot compile pattern: {e}"),
     }
 }
 
@@ -343,25 +402,33 @@ impl ToolImpl for Grep {
 fn grep_walk(
     root: &std::path::Path,
     workdir: &std::path::Path,
-    pattern: &str,
-    case_insensitive: bool,
-) -> Result<Vec<String>, HarnessError> {
-    let pattern_lower = pattern.to_lowercase();
+    matcher: &regex::Regex,
+    include: Option<&regex::Regex>,
+) -> Vec<String> {
     let mut matches = Vec::new();
 
     walk_files(root, workdir, &mut |p| {
-        // Best-effort: skip binary-looking files (non-UTF-8).
-        let Ok(content) = std::fs::read_to_string(p) else {
+        if let Some(include) = include {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !include.is_match(&name) && !include.is_match(&rel_slash(p, root)) {
+                return true;
+            }
+        }
+        let Ok(bytes) = std::fs::read(p) else {
+            return true;
+        };
+        if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+            return true;
+        }
+        let Ok(content) = std::str::from_utf8(&bytes) else {
             return true;
         };
         let rel = rel_slash(p, workdir);
         for (lineno, line) in content.lines().enumerate() {
-            let hit = if case_insensitive {
-                line.to_lowercase().contains(&pattern_lower)
-            } else {
-                line.contains(pattern)
-            };
-            if hit {
+            if matcher.is_match(line) {
                 matches.push(format!("{}:{}:{}", rel, lineno + 1, line));
                 if matches.len() >= GREP_MAX_MATCHES {
                     return false;
@@ -371,7 +438,7 @@ fn grep_walk(
         true
     });
 
-    Ok(matches)
+    matches
 }
 
 /// Visit every regular file under `root` (or `root` itself when it is a file),
@@ -1790,6 +1857,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, "one.txt:1:needle");
+    }
+
+    #[tokio::test]
+    async fn grep_regex_fixed_strings_and_invalid_fallback() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.rs"), "fn alpha() {}\nlet x = foo(1);\n").unwrap();
+        let ctx = ctx_for(&tmp);
+        let out = Grep
+            .execute(json!({"pattern": r"fn \w+\(\)"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "a.rs:1:fn alpha() {}");
+        // `.` is literal under fixed_strings — no line contains "o.o".
+        let out = Grep
+            .execute(json!({"pattern": "o.o", "fixed_strings": true}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.starts_with("no matches"), "{out}");
+        // An invalid regex degrades to a literal search, with a note.
+        let out = Grep
+            .execute(json!({"pattern": "foo("}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.starts_with("a.rs:2:let x = foo(1);"), "{out}");
+        assert!(out.contains("not a valid regex"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn grep_glob_filter_and_binary_skip() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.rs"), "needle\n").unwrap();
+        std::fs::write(tmp.path().join("a.md"), "needle\n").unwrap();
+        std::fs::write(tmp.path().join("blob.bin"), b"needle\0\x01\x02").unwrap();
+        let ctx = ctx_for(&tmp);
+        let out = Grep
+            .execute(json!({"pattern": "needle", "glob": "*.rs"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out, "a.rs:1:needle");
+        let out = Grep
+            .execute(json!({"pattern": "needle"}), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.contains("blob.bin"), "binary skipped: {out}");
+        assert!(out.contains("a.md") && out.contains("a.rs"), "{out}");
     }
 
     // ── glob ──────────────────────────────────────────────────────────────────
