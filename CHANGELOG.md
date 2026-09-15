@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - **`bwoc-harness` `browser` feature** — the headless-Chromium `computer` executor (`tools/browser.rs`, optional `chromiumoxide` dependency). Nothing enabled it: no CI job, script or Formula built with `--features browser`. The `computer` tool model and Anthropic tool spec remain.
 - **Three stub plugins with no runtime.** `modules/plugins/memory-tier2-noop/` and `modules/plugins/llm-backend/{hermes,openclaw}/` named entry binaries (`bwoc-plugin-memory-tier2-noop`, `bwoc-llm-hermes`, `bwoc-llm-openclaw`) that nothing builds and no code path loads. The `memory-backend` and `llm-backend` kinds stay in the spec, but no plugin of either kind ships. Tier 2 memory keeps working through the agent's `deepMemoryCmd` (`bwoc-core::deep_memory`). The framework now ships 25 plugins across 7 kinds.
 
+### Fixed
+
+- **`bwoc check` accepts the bearer `[auth]` shape for workflow plugins.** The workflow `auth.toml` audit used to require gcloud's `[sources]` table (adc / service_account / env), so the shipped `workflow/accounting-api` plugin always failed `bwoc check --all`. The audit now also accepts `[auth]` with `scheme = "bearer"`, `env_var` set to an env-var NAME, and `key_file` set to a relative path under `.bwoc/secrets/` (absolute paths and `..` are rejected). `[auth]` gets the same fail-closed undeclared-key guard as `[sources]`, and values are never echoed. An `auth.toml` with neither table is still a violation.
+
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 
 **bwoc-bot, phase 1 — one agent, one bot.** Chat connectors gain a `[bot]` block: fixed slash-command replies that never reach the model, per-sender rate and message-length caps, and an opt-in **limited public mode** that lets strangers reach the agent by DM or @mention — read-only tools, a separate workdir with no memories or other chats, and an Untrusted principal. File-tool confinement is now symlink-safe for every agent, and connector configs carry a `schema_version` that `bwoc migrate` stamps.
