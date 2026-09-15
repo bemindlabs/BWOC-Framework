@@ -105,6 +105,17 @@ pub enum RuntimeError {
     Io { path: String, msg: String },
 }
 
+impl RuntimeError {
+    /// A malformed or too-new config is the user's to fix (usage); an
+    /// unreadable file is an environment error.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            RuntimeError::Parse { .. } | RuntimeError::FutureSchema { .. } => exit::USAGE,
+            RuntimeError::Io { .. } => exit::ERROR,
+        }
+    }
+}
+
 /// Parse a `config.toml` into its `[runtime]` layer.
 pub fn parse_config(text: &str, path: &Path) -> Result<RuntimeLayer, RuntimeError> {
     let shown = path.display().to_string();
@@ -387,7 +398,7 @@ pub fn run_session(flags: RuntimeLayer) -> i32 {
         Ok(l) => l,
         Err(e) => {
             eprintln!("bwoc: {e}");
-            return exit::ERROR;
+            return e.exit_code();
         }
     };
     let merged = merge(&layers);
@@ -696,5 +707,20 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.starts_with("/h/.bwoc/sessions"));
         assert_eq!(a, session_file_for(home, Path::new("/src/a")));
+    }
+
+    #[test]
+    fn config_errors_map_to_the_exit_code_contract() {
+        let p = Path::new("/x/.bwoc/config.toml");
+        let parse = parse_config("runtime = [", p).unwrap_err();
+        assert_eq!(parse.exit_code(), exit::USAGE);
+        let future = parse_config("schema_version = 999\n", p).unwrap_err();
+        assert!(matches!(future, RuntimeError::FutureSchema { .. }));
+        assert_eq!(future.exit_code(), exit::USAGE);
+        let io = RuntimeError::Io {
+            path: "p".into(),
+            msg: "denied".into(),
+        };
+        assert_eq!(io.exit_code(), exit::ERROR);
     }
 }
