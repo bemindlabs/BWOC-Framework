@@ -33,6 +33,21 @@ The system under specification is a **template repository**, not a runtime.
 
 ## 1. Functional Requirements (Organized by Magga 8)
 
+### Implementation Status
+
+What the framework enforces today. *Convention* means the agent is expected to follow it and nothing checks it.
+
+| FR group | Status | Enforced by / gap |
+|---|---|---|
+| FR-1 Persona & identity | Partial | `bwoc new` fills `AGENTS.md` §1 and `persona/README.md`; the `persona/`, `mindsets/`, `skills/` slots are never loaded into the prompt |
+| FR-2 Goal setting & task log | Not enforced | Four-Noble-Truths cycle and `task-log.jsonl` are conventions; `bwoc check` only warns when the log is missing |
+| FR-3 Inter-agent communication | Partial | `bwoc send` / inbox messaging exists; `capabilities.md` is not parsed; message quality and bilingual parity are review rules |
+| FR-4 Worktree & commit discipline | Partial | Harness sandbox confines tools to the worktree and guardrails block force-push / `--no-verify`; worktree-per-task, no-stash and rebase-only are conventions |
+| FR-5 Trust & neutrality | Implemented | `bwoc check` (symlinks, neutrality, trust evidence, hook neutrality) and harness guardrails |
+| FR-6 Verification gates | Partial | Harness `run_gates` runs the manifest gates; vendor-CLI backends rely on the agent running them |
+| FR-7 Memory system | Partial | Harness injects the `MEMORY.md` index, provides memory tools and Tier-2 wake-up/search/mine; `bwoc check` validates memory front-matter and warns past 200 lines; pruning and verify-before-act are conventions |
+| FR-8 Configuration & tooling | Implemented | `bwoc new` / `bwoc check`; `fallbackModel` is metadata only |
+
 ### Pillar 1 — Sammā-diṭṭhi (Right View): Persona & Identity
 
 | ID | P | Requirement | V |

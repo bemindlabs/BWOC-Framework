@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Removed
+
+- **Template shell scripts** — `modules/agent-template/scripts/incarnate.sh` and `check-agent-neutrality.sh` are gone; `bwoc new` and `bwoc check` replaced them long ago. Every live doc, the `/incarnate` and `/check-neutrality` skills, and root `CLAUDE.md` now point at the CLI.
+
+### Changed
+
+- **Docs stop promising what the code doesn't do.** `fallbackModel` is documented as metadata only (the harness fallback chain comes from `autoModels`); `sessionsPath` is marked reserved/unused; the manifest schema in `AGENTS.md` §8.2, SRS §5.3 and `conventions.md` uses the real keys (`primaryModel`, flat `memoryPath`); unenforced `maxConcurrentTasks` / `worktreeIsolation` / `memory.wakeUpOnStart` / `maxMemoryIndexLines` defaults are dropped from the template manifest. HARNESS no longer claims `context_limit` or persona come from the manifest. `interconnect/capabilities.md` is no longer called machine-readable, the `persona/` / `mindsets/` / `skills/` slots and `task-log.jsonl` are described as reference material / agent conventions, and the SKILLS / PLUGINS lifecycle and spawn- or startup-time resolution are labelled "specified, not enforced by the runtime". The SRS gains a per-FR-group implementation status table. INCARNATION (EN/TH) describes `bwoc new` as shipped, and ROADMAP's `task-claimed` hook no longer claims to run `git worktree add`.
+
+### Fixed
+
+- **Dangling doc references** — links to `trust-model.md`, `interconnect/coordination.md`, `memories/memory.md`, and the never-shipped template companions (`FAILURE-MODES`, `LIFECYCLE`, `OBSERVABILITY`, `COORDINATION-PROTOCOL`, `ANTIPATTERNS`, template `GLOSSARY`) are repointed to files that exist or removed.
+
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 
 **bwoc-bot, phase 1 — one agent, one bot.** Chat connectors gain a `[bot]` block: fixed slash-command replies that never reach the model, per-sender rate and message-length caps, and an opt-in **limited public mode** that lets strangers reach the agent by DM or @mention — read-only tools, a separate workdir with no memories or other chats, and an Untrusted principal. File-tool confinement is now symlink-safe for every agent, and connector configs carry a `schema_version` that `bwoc migrate` stamps.

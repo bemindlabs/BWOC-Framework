@@ -33,6 +33,21 @@
 
 ## 1. Functional Requirements (จัดตามมรรค 8)
 
+### สถานะการ Implement
+
+สิ่งที่เฟรมเวิร์กบังคับใช้วันนี้ *Convention* หมายถึง agent ควรทำตามเอง ไม่มีอะไรตรวจ
+
+| กลุ่ม FR | สถานะ | บังคับใช้โดย / ช่องว่าง |
+|---|---|---|
+| FR-1 Persona & identity | บางส่วน | `bwoc new` กรอก `AGENTS.md` §1 และ `persona/README.md`; slot `persona/`, `mindsets/`, `skills/` ไม่เคยถูกโหลดเข้า prompt |
+| FR-2 Goal setting & task log | ไม่ถูกบังคับใช้ | วงจรอริยสัจ 4 และ `task-log.jsonl` เป็น convention; `bwoc check` แค่เตือนเมื่อไม่มีไฟล์ log |
+| FR-3 Inter-agent communication | บางส่วน | มีการส่งข้อความผ่าน `bwoc send` / inbox; ไม่มีการ parse `capabilities.md`; คุณภาพข้อความและ bilingual parity เป็นกฎตอน review |
+| FR-4 Worktree & commit discipline | บางส่วน | sandbox ของ harness จำกัด tool ไว้ใน worktree และ guardrail บล็อก force-push / `--no-verify`; worktree ต่อ task, ห้าม stash และ rebase-only เป็น convention |
+| FR-5 Trust & neutrality | Implement แล้ว | `bwoc check` (symlink, neutrality, trust evidence, hook neutrality) และ guardrail ของ harness |
+| FR-6 Verification gates | บางส่วน | `run_gates` ของ harness รัน gate จาก manifest; backend แบบ vendor CLI พึ่งให้ agent รันเอง |
+| FR-7 Memory system | บางส่วน | harness inject index `MEMORY.md`, มี memory tool และ Tier-2 wake-up/search/mine; `bwoc check` validate front-matter ของ memory และเตือนเมื่อเกิน 200 บรรทัด; การ prune และ verify-before-act เป็น convention |
+| FR-8 Configuration & tooling | Implement แล้ว | `bwoc new` / `bwoc check`; `fallbackModel` เป็น metadata เท่านั้น |
+
 ### หมวด 1 — สัมมาทิฏฐิ (Right View) : Persona & Identity
 
 | ID | P | Requirement | V |
