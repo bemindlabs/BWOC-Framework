@@ -3108,11 +3108,11 @@ fn main() -> ExitCode {
                 } => match (agent, json) {
                     (_, true) => {
                         eprintln!("bwoc memory search: --json is not supported with --tier 2");
-                        2
+                        exit::USAGE
                     }
                     (None, false) => {
                         eprintln!("bwoc memory search: --tier 2 requires <AGENT>");
-                        2
+                        exit::USAGE
                     }
                     (Some(agent), false) => deep_memory_cmd::run(deep_memory_cmd::Tier2Args {
                         action: deep_memory_cmd::Tier2Action::Search { query },
@@ -3122,7 +3122,7 @@ fn main() -> ExitCode {
                 },
                 MemoryAction::Search { agent: Some(_), .. } => {
                     eprintln!("bwoc memory search: <AGENT> only applies to --tier 2");
-                    2
+                    exit::USAGE
                 }
                 MemoryAction::T2Search { .. } => {
                     unreachable!("`memory t2-search` is rewritten by canonicalize()")
@@ -3187,7 +3187,7 @@ fn main() -> ExitCode {
                     (Some(team), false) => sangha::run_task_list(workspace, team, json),
                     (None, false) => {
                         eprintln!("bwoc task list: pass a <TEAM> or --all");
-                        2
+                        exit::USAGE
                     }
                 },
                 TaskCommand::Claim {

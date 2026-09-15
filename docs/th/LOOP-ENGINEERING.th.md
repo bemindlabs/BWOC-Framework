@@ -121,7 +121,7 @@ Loop ที่ layer นี้เปิดใช้ ทั้งหมดใช�
 | **ดันงานทีม T ให้เป็น `Completed` หมด** | task-mtime event | หนึ่ง `run_lead` drain (`crates/bwoc-harness/src/lead.rs:152`) | DoD predicate + re-fire wrapper — *ถูกสุด* |
 | **คง fleet-health conditions ให้เขียว** | interval | `bwoc fleet health` → `bwoc doctor --auto` เมื่อ Warn | timer glue + auto-fixable-class policy |
 | **คง Tier-2 memory ของแต่ละ agent ให้ทันสมัย** | adaptive / nightly | `bwoc memory mine <sessions> <agent>` | session cursor + scheduler entry |
-| **retro/report หนึ่งฉบับต่อ period** | cron | `bwoc doc new retrospectives` (metrics-prefill) + `bwoc report` | calendar trigger + idempotency หนึ่งต่อ period |
+| **retro/report หนึ่งฉบับต่อ period** | cron | `bwoc doc new retrospectives "<title>"` (metrics-prefill) + `bwoc report` | calendar trigger + idempotency หนึ่งต่อ period |
 | **Framework self-improvement** (loop เดิม productized) | run-end event | retro `Trigger` → `bwoc task add` → lead drain | trigger→task bridge + multi-run DoD |
 | **Ship release** | operator kick | `bwoc run` gates → tag → notes | release orchestration (tag / semver / changelog) |
 
