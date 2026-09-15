@@ -38,7 +38,7 @@ bwoc spawn --backend ollama
   │
   └─▶  bwoc-harness binary
          │
-         ├─ load: AGENTS.md (system prompt) + persona + manifest + memory
+         ├─ load: AGENTS.md (or CLAUDE.md) + MEMORY.md index + optional Tier-2 wake-up
          ├─ connect: OpenAI-compat endpoint (default: http://localhost:11434/v1)
          │
          └─ agentic loop (Iddhipāda 4 — engine of work)
@@ -222,7 +222,7 @@ bwoc spawn --backend ollama --path agents/my-agent
 `bwoc spawn` detects the `ollama` backend and launches the `bwoc-harness` binary instead of a vendor CLI. The harness:
 
 1. Reads `AGENTS.md` (via `OLLAMA.md → AGENTS.md` symlink) as the system prompt.
-2. Reads `config.manifest.json` for the model name and `context_limit`.
+2. Reads `config.manifest.json` for the model name. (`context_limit` is not a manifest field: the harness hardcodes it to `0`, i.e. no compaction, and only `auto` model selection supplies per-model limits.)
 3. Connects to `http://localhost:11434/v1` (or `$OLLAMA_BASE_URL` if set).
 4. Validates that the model exists on the Ollama instance before the first turn.
 5. Runs the agentic loop.
@@ -264,7 +264,7 @@ No other change required. The harness reads the same `AGENTS.md` every other bac
 }
 ```
 
-`fallbackModel` is tried if the primary model produces malformed tool calls more than twice in a row. (History compaction and per-model context limits live on the harness `LoopConfig`, not as a `config.manifest.json` field.)
+`fallbackModel` is metadata only — the harness never reads it. The fallback chain tried after repeated malformed tool calls comes from `autoModels` when `primaryModel` is `"auto"`. (History compaction and per-model context limits live on the harness `LoopConfig`, not as a `config.manifest.json` field.)
 
 For OpenAI-compatible endpoints serving GPT-5.5, prefer an explicit model or
 runtime selection pool:
@@ -310,7 +310,7 @@ the accumulated assistant message, so replay works identically. **Multimodal
 image input** is provider-neutral: a `ChatMessage` may carry base64 images
 (`with_images`), rendered as Anthropic `image` blocks on the native path and as
 OpenAI `image_url` data-URI parts on the OpenAI-compat path — text-only messages
-are byte-for-byte unchanged. (Wiring a captured browser/computer screenshot
+are byte-for-byte unchanged. (Wiring a captured `computer` screenshot
 *through the re-exec turn-executor boundary* into that field is a separate,
 bemind-verified follow-up.) The current BWOC harness still speaks the
 OpenAI-compatible `/v1/chat/completions` surface so it can also run Ollama and

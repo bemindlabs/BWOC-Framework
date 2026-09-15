@@ -1,12 +1,13 @@
 //! Generic workspace document-kind engine.
 //!
-//! All three CLI aliases (`bwoc notes`, `bwoc retro`, `bwoc research`) dispatch
-//! into `run()` here — one code path for all kinds.  The `DocKind` descriptor
-//! from `bwoc-core::doc_kind` drives every decision.
+//! `bwoc doc <new|list|view> <kind>` dispatches into `run()` here — one code
+//! path for all kinds (the deprecated `bwoc notes` / `retro` / `research`
+//! aliases are rewritten onto `bwoc doc` before dispatch). The `DocKind`
+//! descriptor from `bwoc-core::doc_kind` drives every decision.
 //!
 //! # Retro metrics-prefill (Feature B — TODO #10)
 //!
-//! When `bwoc retro new` scaffolds a retrospective, `cmd_new` best-effort reads
+//! When `bwoc doc new retrospectives` scaffolds a retrospective, `cmd_new` best-effort reads
 //! `session-metrics.jsonl` from `metrics/` and/or `agents/*/metrics/` under the
 //! workspace root and injects a summary into the `## Metrics` table.  Absent or
 //! unparseable JSONL leaves the placeholder row unchanged — it never fails the

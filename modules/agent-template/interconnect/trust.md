@@ -86,7 +86,7 @@ A v1 daemon reading a v2 manifest ignores unknown fields entirely (forward-compa
 
 ### Manifest scaffolding
 
-The `incarnate.sh` template and (future) `bwoc new` will seed the `trust` block with a sensible floor: `requiredTrust: ["vatta", "noCatthana"]` — "speaks beneficial truth" + "does not lead astray". These are the two qualities Pi identified as the **minimum civic floor** every peer should reasonably demand. Newly incarnated agents are therefore "strict-ish out of the box" while the framework-wide default stays permissive (existing agents are unaffected; scaffold-driven adoption ≠ default flip). This avoids the **vestigial-feature risk** of a refusal mechanism nobody opts into.
+The planned scaffolding floor for `bwoc new` seeds the `trust` block with: `requiredTrust: ["vatta", "noCatthana"]` — "speaks beneficial truth" + "does not lead astray". These are the two qualities Pi identified as the **minimum civic floor** every peer should reasonably demand. Newly incarnated agents are therefore "strict-ish out of the box" while the framework-wide default stays permissive (existing agents are unaffected; scaffold-driven adoption ≠ default flip). This avoids the **vestigial-feature risk** of a refusal mechanism nobody opts into. **Not yet implemented:** `bwoc new` currently writes no `trust` block.
 
 ## Evidence Rules (what `bwoc check` verifies)
 
@@ -176,7 +176,7 @@ The motivation for this 3-state design: strict-by-default for a self-declared (u
 - **v1.1 / 2026-05-23 (Oracle + Pi review):**
   - `gambhira` evidence rule rewritten from "≥50 lines + Pali term mention" → "≥50 lines + `[[PHILOSOPHY.en.md]]` wikilink" per Pi (catches the keyword-sniff loophole, reuses existing wikilink infrastructure).
   - `trust.schemaVersion: 1` added; explicit "missing fields in `declared` → `false`" rule documented per Pi (Anicca seam for future v2 fields).
-  - Scaffolding clause: incarnate.sh / `bwoc new` seed `requiredTrust: ["vatta", "noCatthana"]` per Pi (vestigial-feature defense without flipping framework default).
+  - Scaffolding clause: the incarnation scaffold (`bwoc new`) seeds `requiredTrust: ["vatta", "noCatthana"]` per Pi (vestigial-feature defense without flipping framework default).
   - "Refusal modes" section added planning 3-state (`off` / `warn` / `refuse`) for v2 per Oracle (warn-by-default avoids security theater while gathering data).
 - **v2 / 2026-05-24 (Trust v2 warn-mode — Oracle, GH #6 / WS5):**
   - `RefusalMode` enum (`off` | `warn` | `refuse`) added to `bwoc-core::manifest::TrustBlock`.

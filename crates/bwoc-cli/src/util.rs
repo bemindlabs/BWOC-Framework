@@ -132,9 +132,67 @@ pub fn validate_plugin_entry(entry: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Env var that silences CLI deprecation warnings. Set to `1` in scripts that
+/// already know and cannot migrate yet.
+pub const NO_DEPRECATION_WARNINGS_ENV: &str = "BWOC_NO_DEPRECATION_WARNINGS";
+
+/// The one-line deprecation notice for a CLI entry point. `old` and `new` are
+/// command paths without the leading `bwoc` (e.g. `notes list`, `doc list notes`).
+pub fn deprecation_message(old: &str, new: &str) -> String {
+    format!("bwoc {old}: deprecated — use `bwoc {new}` (removal in 4.0)")
+}
+
+/// Write the notice to `out` unless `suppress_env` (the value of
+/// [`NO_DEPRECATION_WARNINGS_ENV`]) is `1`. Returns whether it wrote. Split
+/// from [`deprecated`] so the stream and the suppression are testable.
+pub fn write_deprecation(
+    out: &mut impl std::io::Write,
+    old: &str,
+    new: &str,
+    suppress_env: Option<&str>,
+) -> bool {
+    if suppress_env == Some("1") {
+        return false;
+    }
+    writeln!(out, "{}", deprecation_message(old, new)).is_ok()
+}
+
+/// Warn that `bwoc <old>` is deprecated in favour of `bwoc <new>`. Always
+/// **stderr** — scripts parse stdout and `--json`, which must stay
+/// byte-identical to the canonical command's. The single place every
+/// deprecated CLI alias goes through (COMPATIBILITY.en.md §Deprecation).
+pub fn deprecated(old: &str, new: &str) {
+    let env = std::env::var(NO_DEPRECATION_WARNINGS_ENV).ok();
+    write_deprecation(&mut std::io::stderr().lock(), old, new, env.as_deref());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deprecation_line_names_old_new_and_removal_major() {
+        let mut buf = Vec::new();
+        assert!(write_deprecation(
+            &mut buf,
+            "notes list",
+            "doc list notes",
+            None
+        ));
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "bwoc notes list: deprecated — use `bwoc doc list notes` (removal in 4.0)\n"
+        );
+    }
+
+    #[test]
+    fn deprecation_env_1_suppresses_other_values_do_not() {
+        let mut buf = Vec::new();
+        assert!(!write_deprecation(&mut buf, "a", "b", Some("1")));
+        assert!(buf.is_empty());
+        assert!(write_deprecation(&mut buf, "a", "b", Some("0")));
+        assert!(!buf.is_empty());
+    }
 
     #[test]
     fn accepts_normal_members() {

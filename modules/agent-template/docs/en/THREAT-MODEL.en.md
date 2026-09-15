@@ -81,7 +81,7 @@ The Five Precepts are baseline forbidden actions.
 **Vector:** Agent hides state outside declared locations (e.g., git notes).
 **Mitigation:**
 - Declared state inventory in ARCHITECTURE
-- check-agent-neutrality.sh detects unauthorized files
+- `bwoc check` flags author-added `.claude/hooks/` scripts
 - Worktree isolation eliminates hiding places
 
 ### T-2.4 Cron / Scheduled Persistence
@@ -226,7 +226,5 @@ Absolutely forbidden regardless of reason. Violation → halt + security alert.
 | PHILOSOPHY | Taṇhā 3, Sīla 5 (DP-17, DP-18) |
 | SRS | FR-5 (Sammā-ājīva) trust requirements |
 | ARCHITECTURE | Saṅkhāra layer enforces policies |
-| OBSERVABILITY | Detection layer |
-| FAILURE-MODES | FM-7 prompt injection |
 | FLEET-GOVERNANCE | Crisis response |
-| COORDINATION-PROTOCOL | Identity, trust mechanics |
+| interconnect/trust.md | Identity, trust mechanics |

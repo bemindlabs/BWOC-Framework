@@ -227,7 +227,7 @@ AI coding agent ทุกตัวในองค์กรใช้โครง�
 | Symlink พังบน Windows | อนิจจัง — env เปลี่ยน | Document WSL workaround |
 | Agent ข้าม worktree isolation | ตัณหาในความเร็ว | Hook in `.claude/settings.json` ขัดขวาง |
 | Memory โตไม่หยุด | ตัณหาในการเก็บ | 200-line cap (มัตตัญญุตา) + Tier 2 |
-| Forked template เลือนออกจาก neutrality | สังขาร = เปลี่ยนแปลง | `check-agent-neutrality.sh` ใน CI |
+| Forked template เลือนออกจาก neutrality | สังขาร = เปลี่ยนแปลง | `bwoc check` ใน CI |
 | Placeholder ค้างไม่ถูกแทนที่ | ความประมาท | Manifest-driven validation |
 
 ---
@@ -264,15 +264,9 @@ AI coding agent ทุกตัวในองค์กรใช้โครง�
 ### v2.0 (2026-05-22)
 - **แก้ไข forced metaphors:** เปลี่ยน `อจินไตย` → `มัตตัญญุตา` ในจุดที่หมายถึง "รู้ประมาณของขอบเขตงาน" (อจินไตย คงไว้เฉพาะ 4 กรณีต้นฉบับ — Buddha-visaya, Jhāna-visaya, Kamma-vipāka, Loka-cintā)
 - **เพิ่มเอกสารคู่ขนาน:**
-  - `FAILURE-MODES.md` (ปฏิจจสมุปบาท) — failure analysis
-  - `LIFECYCLE.md` (ภาวนา 4 + อริยทรัพย์ 7) — agent lifecycle
-  - `OBSERVABILITY.md` (สติปัฏฐาน 4 + กรรม 3) — monitoring + audit
-  - `COORDINATION-PROTOCOL.md` (กัลยาณมิตร 7 + สาราณียธรรม 6) — inter-agent
   - `FLEET-GOVERNANCE.md` (อปริหานิยธรรม 7) — org-level governance
   - `SELF-IMPROVEMENT.md` (ปัญญา 3) — learning loop
   - `THREAT-MODEL.md` (ตัณหา 3 + สีล 5) — security
-  - `ANTIPATTERNS.md` (มิจฉาตามมรรค 8) — wrong-path catalog
-  - `GLOSSARY.md` — Pali + technical terms reference
   - `OVERVIEW.md` — entry-point document
 - **ขยาย PHILOSOPHY.md** ให้ครอบคลุม 22 หลักธรรม (เดิม 13) ใน 6 หมวด
 

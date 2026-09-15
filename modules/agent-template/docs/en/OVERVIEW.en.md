@@ -50,19 +50,19 @@ See [PHILOSOPHY.en.md](PHILOSOPHY.en.md) for the full mapping.
 
 ### I'm an Agent Author (building a new agent)
 ```bash
-./scripts/incarnate.sh <agent-name>
-cd ../agent-<agent-name>
+bwoc new <agent-name>
+cd agents/agent-<agent-name>
 # Edit persona/README.md
-# Edit config.manifest.json
-./scripts/check-agent-neutrality.sh
+# Review config.manifest.json
+bwoc check .
 ```
-Read next: [LIFECYCLE.en.md](LIFECYCLE.en.md) → Kāya-bhāvanā section
+Read next: [HANDBOOK.en.md](HANDBOOK.en.md)
 
 ### I'm an Agent Operator (using agents)
-Read next: OVERVIEW → SRS section 5 → [examples/workflow/](../examples/workflow/)
+Read next: [HANDBOOK.en.md](HANDBOOK.en.md) → [SRS.en.md](SRS.en.md) section 5
 
 ### I'm a Platform Maintainer
-Read: [GLOSSARY](GLOSSARY.en.md) → [PHILOSOPHY](PHILOSOPHY.en.md) → everything
+Read: [GLOSSARY](../../../../docs/en/GLOSSARY.en.md) → [PHILOSOPHY](PHILOSOPHY.en.md) → everything
 
 ### I want the philosophy first
 Read: [PHILOSOPHY.en.md](PHILOSOPHY.en.md)
@@ -73,31 +73,19 @@ Read: [PHILOSOPHY.en.md](PHILOSOPHY.en.md)
 
 ```
 docs/
-├── PHILOSOPHY.{th,en}.md          ← Buddhist foundations (read first)
-├── OVERVIEW.{th,en}.md            ← this file
-├── GLOSSARY.{th,en}.md            ← Pali + technical terms
-│
-├── PRD.{th,en}.md                 ← Product (Ariyasacca 4)
-├── SRS.{th,en}.md                 ← Requirements (Magga 8)
-├── ARCHITECTURE.{th,en}.md        ← Architecture (Khandha 5)
-│
-├── LIFECYCLE.{th,en}.md           ← Agent lifecycle (Bhāvanā 4)
-├── OBSERVABILITY.{th,en}.md       ← Monitoring (Satipaṭṭhāna 4)
-├── FAILURE-MODES.{th,en}.md       ← Failures (Paṭiccasamuppāda)
-├── SELF-IMPROVEMENT.{th,en}.md    ← Learning (Paññā 3)
-│
-├── COORDINATION-PROTOCOL.{th,en}.md  ← Inter-agent (Kalyāṇamitta)
-├── FLEET-GOVERNANCE.{th,en}.md       ← Org (Aparihāniya-dhamma)
-├── THREAT-MODEL.{th,en}.md           ← Security (Taṇhā 3)
-│
-└── ANTIPATTERNS.{th,en}.md        ← wrong paths for each Magga
+├── {en,th}/
+│   ├── PHILOSOPHY               ← Buddhist foundations (read first)
+│   ├── OVERVIEW                 ← this file
+│   ├── HANDBOOK                 ← working as an agent
+│   ├── PRD                      ← Product (Ariyasacca 4)
+│   ├── SRS                      ← Requirements (Magga 8)
+│   ├── SELF-IMPROVEMENT         ← Learning (Paññā 3)
+│   └── THREAT-MODEL             ← Security (Taṇhā 3)
+├── persona-example.{good,bad}.md                ← good/bad persona examples
+├── project-example.md · reference-example.md    ← memory file examples
+└── task-log.example.jsonl                       ← task-log example
 
-examples/
-├── persona/                       ← good/bad persona examples
-├── memory/                        ← memory file examples
-├── capabilities/                  ← capabilities.md example
-├── task-log/                      ← task-log.jsonl example
-└── workflow/                      ← step-by-step examples
+Framework-root docs/ (ARCHITECTURE, FLEET-GOVERNANCE, GLOSSARY) sit outside the template.
 ```
 
 ---

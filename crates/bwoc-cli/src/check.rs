@@ -1,7 +1,7 @@
 //! `bwoc check` — backend-neutrality audit.
 //!
-//! Rust port of `modules/agent-template/scripts/check-agent-neutrality.sh`
-//! with feature parity. Pure-data audit + separate printer for testability.
+//! Replaced the template's former neutrality shell script (since removed).
+//! Pure-data audit + separate printer for testability.
 
 use std::collections::HashSet;
 use std::fs;
@@ -393,7 +393,7 @@ pub fn audit(target: &Path) -> AuditReport {
 }
 
 /// Framework-shipped Claude hooks that every incarnation carries from the
-/// template (via `incarnate.sh`). These are known/documented (their non-Claude
+/// template (via `bwoc new`). These are known/documented (their non-Claude
 /// equivalents are tracked as deferred in `interconnect/messaging.md`), so they
 /// are exempt — flagging them would warn on every agent and train operators to
 /// ignore the signal. An author-added hook beyond this baseline is the real gap.
@@ -2899,16 +2899,26 @@ fn audit_workflow_auth(plugin_dir: &Path, report: &mut AuditReport) {
         }
     };
 
+    // Two accepted contract shapes: the gcloud `[sources]` precedence table, or a
+    // bearer `[auth]` table (e.g. `workflow/accounting-api`). A present `[auth]`
+    // is always audited, even alongside `[sources]`, so it cannot hide a secret.
+    let auth = raw.get("auth");
+    if let Some(a) = auth {
+        audit_workflow_bearer_auth(a, report);
+    }
+
     // [sources] — the credential-resolution contract table.
     let sources = match raw.get("sources").and_then(|s| s.as_table()) {
         Some(t) => {
             report.passes.push("[sources] table present".to_string());
             t
         }
+        None if auth.is_some() => return,
         None => {
             report.violations.push(
-                "[sources] table missing — auth.toml must declare the credential-resolution \
-                 contract (adc / service_account / env)"
+                "no credential contract — auth.toml must declare either a [sources] table \
+                 (adc / service_account / env) or a bearer [auth] table (scheme = \"bearer\", \
+                 env_var, key_file)"
                     .to_string(),
             );
             return;
@@ -2943,15 +2953,7 @@ fn audit_workflow_auth(plugin_dir: &Path, report: &mut AuditReport) {
             }
         };
 
-        // Fail-closed secret-leak guard: reject any key outside the shape set.
-        for key in table.keys() {
-            if !allowed.contains(&key.as_str()) {
-                report.violations.push(format!(
-                    "[sources].{src}.{key} is not a declared shape key — auth.toml carries SHAPE \
-                     only; an inline credential value MUST NOT be committed (value redacted)"
-                ));
-            }
-        }
+        reject_undeclared_shape_keys(table, &format!("[sources].{src}"), allowed, report);
 
         // Shape type checks for the declared descriptors.
         if src == "env" {
@@ -2995,6 +2997,114 @@ fn audit_workflow_auth(plugin_dir: &Path, report: &mut AuditReport) {
             }
         }
     }
+}
+
+/// Fail-closed secret-leak guard shared by the workflow auth shapes: reject any
+/// key outside `allowed` as a possible inline credential. The value is NEVER
+/// echoed (echoing would re-leak the secret into `bwoc check` output).
+fn reject_undeclared_shape_keys(
+    table: &toml::map::Map<String, toml::Value>,
+    label: &str,
+    allowed: &[&str],
+    report: &mut AuditReport,
+) {
+    for key in table.keys() {
+        if !allowed.contains(&key.as_str()) {
+            report.violations.push(format!(
+                "{label}.{key} is not a declared shape key — auth.toml carries SHAPE \
+                 only; an inline credential value MUST NOT be committed (value redacted)"
+            ));
+        }
+    }
+}
+
+/// Validate the bearer `[auth]` shape of a workflow `auth.toml` (e.g.
+/// `workflow/accounting-api`): `scheme = "bearer"`, `env_var` = an env-var NAME,
+/// `key_file` = a relative path under `.bwoc/secrets/`, optional `[auth.scopes]`
+/// of scope-name strings. Same fail-closed guard as `[sources]`: undeclared keys
+/// are violations, and no field value is ever echoed.
+fn audit_workflow_bearer_auth(auth: &toml::Value, report: &mut AuditReport) {
+    let Some(table) = auth.as_table() else {
+        report
+            .violations
+            .push("[auth] has wrong type — expected a table".to_string());
+        return;
+    };
+    report.passes.push("[auth] table present".to_string());
+    reject_undeclared_shape_keys(
+        table,
+        "[auth]",
+        &["scheme", "env_var", "key_file", "scopes"],
+        report,
+    );
+
+    match table.get("scheme") {
+        Some(toml::Value::String(s)) if s == "bearer" => {
+            report.passes.push("[auth].scheme is bearer".to_string())
+        }
+        Some(_) => report.violations.push(
+            "[auth].scheme is not supported — the only accepted [auth] scheme is \"bearer\" \
+             (value redacted)"
+                .to_string(),
+        ),
+        None => report
+            .violations
+            .push("[auth].scheme missing — expected scheme = \"bearer\"".to_string()),
+    }
+
+    match table.get("env_var") {
+        Some(toml::Value::String(s)) if is_env_var_name(s) => {
+            report.passes.push(format!("[auth].env_var names ${s}"))
+        }
+        Some(_) => report.violations.push(
+            "[auth].env_var is not an env-var NAME (^[A-Z][A-Z0-9_]*$) — it must name the \
+             variable, never hold the credential (value redacted)"
+                .to_string(),
+        ),
+        None => report
+            .violations
+            .push("[auth].env_var missing — the bearer key must name its env var".to_string()),
+    }
+
+    match table.get("key_file") {
+        Some(toml::Value::String(s)) if is_safe_secrets_key_file(s) => report
+            .passes
+            .push("[auth].key_file is under .bwoc/secrets/".to_string()),
+        Some(_) => report.violations.push(
+            "[auth].key_file must be a relative path under .bwoc/secrets/ — no absolute path, \
+             no `..`, no backslashes (value redacted)"
+                .to_string(),
+        ),
+        None => report.violations.push(
+            "[auth].key_file missing — the bearer key must declare its secrets file".to_string(),
+        ),
+    }
+
+    if let Some(scopes) = table.get("scopes") {
+        let ok = scopes
+            .as_table()
+            .is_some_and(|t| t.values().all(|v| v.is_str()));
+        if !ok {
+            report.violations.push(
+                "[auth].scopes has wrong type — expected a table of scope-name strings".to_string(),
+            );
+        }
+    }
+}
+
+/// `^[A-Z][A-Z0-9_]*$` — an environment-variable NAME, not a value.
+fn is_env_var_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A relative path strictly under `.bwoc/secrets/` with no `..` component.
+fn is_safe_secrets_key_file(p: &str) -> bool {
+    p.strip_prefix(".bwoc/secrets/")
+        .is_some_and(|rest| !rest.is_empty())
+        && !p.contains('\\')
+        && !p.split('/').any(|c| c == "..")
 }
 
 /// Validate the write-verb gate metadata declared in a `workflow`-kind plugin's
@@ -5065,17 +5175,18 @@ exposes     = ["op"]
 
     #[test]
     fn audit_plugin_manifest_reference_passes() {
-        // The reference manifest from modules/plugins/memory-tier2-noop/.
+        // Inline sample of a minimal valid memory-backend manifest (the shape of
+        // an illustrative minimal memory-backend manifest; no plugin directory is read).
         let dir = write_plugin_manifest(
             "ref",
-            "memory-tier2-noop",
+            "memory-example",
             r#"[plugin]
-name        = "memory-tier2-noop"
+name        = "memory-example"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "No-op Tier 2 memory backend that forwards to Tier 1."
 compat      = ">=3.0.0, <4.0.0"
-entry       = "bwoc-plugin-memory-tier2-noop"
+entry       = "bwoc-plugin-memory-example"
 "#,
         );
         let report = audit_plugin_manifest(&dir);
@@ -7175,9 +7286,9 @@ required = ["signer", 42]
         // expected_evidence_kind checks even if criteria.toml were present.
         let dir = write_plugin_manifest(
             "non-audit-evidence",
-            "memory-tier2-noop",
+            "memory-example",
             r#"[plugin]
-name        = "memory-tier2-noop"
+name        = "memory-example"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind — evidence-kind checks must not fire."
@@ -7213,9 +7324,9 @@ expected_evidence_kind  = "frobnicator"
         // — criteria.toml is an audit-kind-only contract.
         let dir = write_plugin_manifest(
             "non-audit",
-            "memory-tier2-noop",
+            "memory-example",
             r#"[plugin]
-name        = "memory-tier2-noop"
+name        = "memory-example"
 kind        = "memory-backend"
 version     = "0.1.0"
 description = "Non-audit kind."
@@ -7386,6 +7497,28 @@ entry       = "bin"
         assert!(
             report.passes.iter().any(|p| p == "[sources] table present"),
             "expected the workflow auth.toml shape to be validated, got: {:?}",
+            report.passes
+        );
+    }
+
+    #[test]
+    fn audit_plugin_manifest_real_accounting_api_reference_passes() {
+        // The shipped workflow/accounting-api plugin uses the bearer [auth]
+        // shape, not gcloud's [sources]; it must pass `bwoc check --all`.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../modules/plugins/workflow/accounting-api");
+        if !dir.join("manifest.toml").is_file() {
+            return; // partial checkout without the plugin — nothing to assert.
+        }
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "real accounting-api manifest + auth.toml must pass bwoc check, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report.passes.iter().any(|p| p == "[auth] table present"),
+            "expected the bearer auth.toml shape to be validated, got: {:?}",
             report.passes
         );
     }
@@ -7615,8 +7748,125 @@ env             = {{ vars = ["BWOC_GCLOUD_ACCOUNT"], priority = 3 }}
             report
                 .violations
                 .iter()
-                .any(|v| v.contains("[sources] table missing")),
-            "missing [sources] must be a violation, got: {:?}",
+                .any(|v| v.contains("no credential contract")
+                    && v.contains("[sources]")
+                    && v.contains("[auth]")),
+            "neither [sources] nor [auth] must be a violation naming both shapes, got: {:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    /// The bearer [auth] shape — env-var NAME + secrets-file path, no value.
+    const WORKFLOW_BEARER_AUTH_OK: &str = r#"[auth]
+scheme   = "bearer"
+env_var  = "BWOC_ACCOUNTING_KEY"
+key_file = ".bwoc/secrets/accounting-key"
+
+[auth.scopes]
+report = "reports:read"
+"#;
+
+    #[test]
+    fn audit_workflow_auth_bearer_shape_passes() {
+        let dir = write_plugin_manifest("wf-auth-bearer", "gcloud-auth", WORKFLOW_MANIFEST);
+        fs::write(dir.join("auth.toml"), WORKFLOW_BEARER_AUTH_OK).unwrap();
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report.violations.is_empty(),
+            "well-formed bearer [auth] auth.toml must pass, got: {:?}",
+            report.violations
+        );
+        assert!(report.passes.iter().any(|p| p == "[auth] table present"));
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn audit_workflow_auth_bearer_literal_secret_fails_and_redacts() {
+        // SECURITY: a key value in env_var, or an extra inline `token`, is a
+        // committed credential — violation, and never echoed back.
+        let leaked = "sk_live_9f8e7d-super-secret-api-key";
+        let dir = write_plugin_manifest("wf-auth-bearer-leak", "gcloud-auth", WORKFLOW_MANIFEST);
+        fs::write(
+            dir.join("auth.toml"),
+            format!(
+                "[auth]\nscheme = \"bearer\"\nenv_var = \"{leaked}\"\n\
+                 key_file = \".bwoc/secrets/accounting-key\"\ntoken = \"{leaked}\"\n"
+            ),
+        )
+        .unwrap();
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.contains("[auth].env_var is not an env-var NAME")),
+            "a literal value in env_var must be a violation, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.contains("[auth].token") && v.contains("redacted")),
+            "an inline credential key must be a violation, got: {:?}",
+            report.violations
+        );
+        assert!(
+            report.violations.iter().all(|v| !v.contains(leaked)),
+            "the secret value must be redacted from the report, got: {:?}",
+            report.violations
+        );
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn audit_workflow_auth_bearer_unsafe_key_file_fails() {
+        for (i, bad) in ["/etc/x", "../x", ".bwoc/secrets/../../x"]
+            .iter()
+            .enumerate()
+        {
+            let dir = write_plugin_manifest(
+                &format!("wf-auth-bearer-path-{i}"),
+                "gcloud-auth",
+                WORKFLOW_MANIFEST,
+            );
+            fs::write(
+                dir.join("auth.toml"),
+                format!(
+                    "[auth]\nscheme = \"bearer\"\nenv_var = \"BWOC_ACCOUNTING_KEY\"\n\
+                     key_file = \"{bad}\"\n"
+                ),
+            )
+            .unwrap();
+            let report = audit_plugin_manifest(&dir);
+            assert!(
+                report
+                    .violations
+                    .iter()
+                    .any(|v| v.contains("[auth].key_file must be a relative path")),
+                "key_file {bad:?} must be a violation, got: {:?}",
+                report.violations
+            );
+            let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn audit_workflow_auth_bearer_unknown_scheme_fails() {
+        let dir = write_plugin_manifest("wf-auth-bearer-scheme", "gcloud-auth", WORKFLOW_MANIFEST);
+        fs::write(
+            dir.join("auth.toml"),
+            WORKFLOW_BEARER_AUTH_OK.replace("\"bearer\"", "\"basic\""),
+        )
+        .unwrap();
+        let report = audit_plugin_manifest(&dir);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.contains("[auth].scheme is not supported")),
+            "an unknown scheme must be a violation, got: {:?}",
             report.violations
         );
         let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());

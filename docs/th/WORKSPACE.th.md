@@ -186,7 +186,7 @@ Workspace มีส่วนร่วมในทุกระยะของว�
 ## ดูเพิ่ม
 
 - [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md) — CLI, workspace, agent, runtime ทำงานร่วมกันอย่างไรใน runtime
-- [`INCARNATION.th.md`](INCARNATION.th.md) — สร้าง agent ทีละขั้น (Phase 1 ยังใช้ `incarnate.sh` ของ template; Phase 2+ หุ้มด้วย `bwoc new` ที่ write `agents.toml`)
+- [`INCARNATION.th.md`](INCARNATION.th.md) — สร้าง agent ทีละขั้นด้วย `bwoc new` (register agent ใน `agents.toml`)
 - [`GLOSSARY.th.md`](GLOSSARY.th.md) — ค้นหาคำบาลี
 - [`modules/agent-template/memories/README.md`](../../modules/agent-template/memories/README.md) — spec รูปแบบ memory (ใช้กับ per-agent, per-workspace, per-user memory)
 - [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) — วิธี install CLI และสถานะคำสั่งปัจจุบัน

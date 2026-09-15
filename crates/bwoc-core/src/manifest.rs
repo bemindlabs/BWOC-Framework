@@ -105,7 +105,8 @@ pub struct Manifest {
     ///
     /// Accepted values: `"claude"` | `"agy"` | `"codex"` | `"kimi"` |
     /// `"copilot"` | `"grok"` | `"ollama"` | `"openai-compatible"` |
-    /// `"openrouter"` | `"litellm"` | `"cli"`
+    /// `"openrouter"` | `"litellm"` | `"anthropic"` (harness-driven Anthropic
+    /// Messages API; `"claude"` is the vendor CLI) | `"cli"`
     /// (subscription-authenticated local vendor CLI; see `cliCmd`).
     ///
     /// Required for `openai-compatible`; optional/ignored for vendor backends
@@ -302,20 +303,6 @@ impl TrustDeclared {
             "noCatthana" => self.no_catthana,
             _ => false,
         }
-    }
-}
-
-impl TrustBlock {
-    /// Given a peer's declaration, return the qualities this block's
-    /// `required_trust` demands that the peer does NOT satisfy. Result
-    /// preserves the order of `required_trust`. Empty result ≡ peer
-    /// satisfies every required quality (no refusal).
-    pub fn missing_in(&self, declared: &TrustDeclared) -> Vec<String> {
-        self.required_trust
-            .iter()
-            .filter(|q| !declared.has(q))
-            .cloned()
-            .collect()
     }
 }
 
@@ -645,84 +632,6 @@ mod tests {
         assert!(!d.has("mudu"));
         assert!(!d.has("")); // empty key
         assert!(!d.has("PIYO")); // case-sensitive — wrong case is unknown
-    }
-
-    #[test]
-    fn missing_in_empty_required_returns_empty() {
-        let block = TrustBlock::default();
-        let declared = TrustDeclared::default();
-        assert!(block.missing_in(&declared).is_empty());
-    }
-
-    #[test]
-    fn missing_in_all_satisfied_returns_empty() {
-        let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
-            required_trust: vec!["vatta".into(), "noCatthana".into()],
-            mode: None,
-            signing_public_key: None,
-        };
-        let peer = TrustDeclared {
-            vatta: true,
-            no_catthana: true,
-            ..Default::default()
-        };
-        assert!(block.missing_in(&peer).is_empty());
-    }
-
-    #[test]
-    fn missing_in_partial_returns_only_missing() {
-        let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
-            required_trust: vec!["vatta".into(), "noCatthana".into(), "gambhira".into()],
-            mode: None,
-            signing_public_key: None,
-        };
-        let peer = TrustDeclared {
-            vatta: true,
-            // no_catthana: false → missing
-            // gambhira: false → missing
-            ..Default::default()
-        };
-        let missing = block.missing_in(&peer);
-        assert_eq!(missing, vec!["noCatthana", "gambhira"]);
-    }
-
-    #[test]
-    fn missing_in_preserves_required_order() {
-        // Order in the required_trust array is the order reported back —
-        // recipient's preferences drive the surfaced diagnostic.
-        let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
-            required_trust: vec!["gambhira".into(), "vatta".into(), "piyo".into()],
-            mode: None,
-            signing_public_key: None,
-        };
-        let peer = TrustDeclared::default(); // nothing declared
-        assert_eq!(block.missing_in(&peer), vec!["gambhira", "vatta", "piyo"]);
-    }
-
-    #[test]
-    fn missing_in_unknown_quality_is_always_missing() {
-        // A recipient that requires a future-spec quality the sender's
-        // v1 manifest doesn't know about → quality is missing (since
-        // unknown → false). Forward-compat works as expected.
-        let block = TrustBlock {
-            schema_version: 1,
-            declared: TrustDeclared::default(),
-            required_trust: vec!["mudu".into()], // future-spec quality
-            mode: None,
-            signing_public_key: None,
-        };
-        let peer = TrustDeclared {
-            piyo: true,
-            vatta: true,
-            ..Default::default()
-        };
-        assert_eq!(block.missing_in(&peer), vec!["mudu"]);
     }
 
     // ---- RefusalMode + effective_mode tests ---------------------------------

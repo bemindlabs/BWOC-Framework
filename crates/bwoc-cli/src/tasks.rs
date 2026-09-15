@@ -1,4 +1,5 @@
-//! `bwoc tasks` — a fleet-wide, queryable view over every team's task list.
+//! `bwoc task list --all` — a fleet-wide, queryable view over every team's task list.
+//! (Also reached by the deprecated `bwoc tasks`, rewritten onto it before dispatch.)
 //!
 //! The per-team `bwoc task list <team>` answers "what's on *this* team's list".
 //! This is the cross-team aggregate (#300): it scans every

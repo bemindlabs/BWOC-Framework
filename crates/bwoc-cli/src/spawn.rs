@@ -89,6 +89,13 @@ pub enum Backend {
     /// `~/.bwoc/secrets.toml` key resolves. `baseUrl` is optional.
     #[value(name = "litellm")]
     LiteLlm,
+    /// Anthropic Messages API driven by `bwoc-harness` (`--backend anthropic`,
+    /// key from `ANTHROPIC_API_KEY`). Distinct from `Claude`, which always
+    /// execs the vendor Claude Code CLI: choosing `anthropic` is the explicit
+    /// opt-in to the harness path. `baseUrl` is optional (the harness defaults
+    /// to the Anthropic endpoint).
+    #[value(name = "anthropic")]
+    Anthropic,
 }
 
 /// Canonical backend entry filenames that mirror `AGENTS.md`. Single source of
@@ -125,7 +132,8 @@ impl Backend {
             Backend::Ollama
             | Backend::OpenAiCompatible
             | Backend::OpenRouter
-            | Backend::LiteLlm => None,
+            | Backend::LiteLlm
+            | Backend::Anthropic => None,
         }
     }
 
@@ -142,15 +150,33 @@ impl Backend {
             Backend::OpenAiCompatible => "openai-compatible",
             Backend::OpenRouter => "openrouter",
             Backend::LiteLlm => "litellm",
+            Backend::Anthropic => "anthropic",
         }
     }
 
+    /// Parse a registry / manifest backend string (the [`display_name`] form,
+    /// e.g. `"agy"`). The single parser for `bwoc chat` and `bwoc run`; derived
+    /// from the enum so a new variant can never be missed.
+    ///
+    /// [`display_name`]: Backend::display_name
+    pub fn from_registry_name(s: &str) -> Option<Backend> {
+        use clap::ValueEnum;
+        Backend::value_variants()
+            .iter()
+            .copied()
+            .find(|b| b.display_name() == s)
+    }
+
     /// Returns `true` for backends that exec `bwoc-harness` rather than an
-    /// external vendor CLI.
+    /// external vendor CLI. Keep in sync with `bwoc_tui::session::is_harness_drivable`.
     pub fn uses_harness(self) -> bool {
         matches!(
             self,
-            Backend::Ollama | Backend::OpenAiCompatible | Backend::OpenRouter | Backend::LiteLlm
+            Backend::Ollama
+                | Backend::OpenAiCompatible
+                | Backend::OpenRouter
+                | Backend::LiteLlm
+                | Backend::Anthropic
         )
     }
 
@@ -180,7 +206,8 @@ impl Backend {
             | Backend::Ollama
             | Backend::OpenAiCompatible
             | Backend::OpenRouter
-            | Backend::LiteLlm => Vec::new(),
+            | Backend::LiteLlm
+            | Backend::Anthropic => Vec::new(),
         }
     }
 
@@ -194,7 +221,7 @@ impl Backend {
     /// slugs of the picker labels Google surfaces in the `agy` chooser.
     pub fn models(self) -> &'static [&'static str] {
         match self {
-            Backend::Claude => &[
+            Backend::Claude | Backend::Anthropic => &[
                 "claude-opus-4-8",
                 "claude-opus-4-7",
                 "claude-sonnet-4-6",
@@ -436,9 +463,16 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
                     c.arg("--endpoint").arg(url.trim());
                 }
             }
-            _ => unreachable!(
-                "uses_harness() only true for Ollama, OpenAiCompatible, OpenRouter, and LiteLlm"
-            ),
+            Backend::Anthropic => {
+                // Without `--backend anthropic` the harness would build the
+                // OpenAI-compatible client. baseUrl is optional: the harness
+                // swaps in the Anthropic endpoint when `--endpoint` is unset.
+                c.arg("--backend").arg("anthropic");
+                if let Some(url) = base_url.filter(|u| !u.trim().is_empty()) {
+                    c.arg("--endpoint").arg(url.trim());
+                }
+            }
+            _ => unreachable!("uses_harness() only true for harness-driven backends"),
         }
 
         // Forward the manifest's primaryModel as `--model` so harness backends
@@ -485,9 +519,12 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     // (a broken manifest should surface regardless of where it runs) but before
     // exec, so the user gets actionable guidance instead of a cryptic
     // backend-side failure. Escape hatch for headless/automation use.
+    // `bwoc-harness --chat` is a JSON-lines protocol endpoint for a frontend
+    // (pipe), not a human REPL, so a non-TTY stdin is its normal mode.
+    let protocol_chat = args.backend.uses_harness() && extra_is_protocol_chat(&args.extra);
     if spawn_blocked_by_no_tty(
         io::stdin().is_terminal(),
-        std::env::var_os("BWOC_SPAWN_ALLOW_NO_TTY").is_some(),
+        protocol_chat || std::env::var_os("BWOC_SPAWN_ALLOW_NO_TTY").is_some(),
     ) {
         return Err(SpawnError::NotInteractive);
     }
@@ -542,6 +579,11 @@ fn extra_has_model(extra: &[OsString]) -> bool {
         .iter()
         .filter_map(|a| a.to_str())
         .any(|s| s == "--model" || s == "-m" || s.starts_with("--model="))
+}
+
+/// True if `--extra` puts the harness in `--chat` (JSON-lines protocol) mode.
+fn extra_is_protocol_chat(extra: &[OsString]) -> bool {
+    extra.iter().any(|a| a == "--chat")
 }
 
 /// True if `--extra` already sets the reasoning-effort flag for `backend`, so
@@ -761,6 +803,32 @@ mod tests {
         assert!(!Backend::Antigravity.uses_harness());
         assert!(!Backend::Codex.uses_harness());
         assert!(!Backend::Kimi.uses_harness());
+    }
+
+    /// `anthropic` is the explicit harness route to the Anthropic provider;
+    /// `claude` must keep exec'ing the vendor CLI for `bwoc spawn` / `bwoc run`.
+    #[test]
+    fn anthropic_uses_harness_but_claude_stays_vendor_cli() {
+        assert!(Backend::Anthropic.uses_harness());
+        assert_eq!(Backend::Anthropic.cli_name(), None);
+        assert_eq!(Backend::Anthropic.display_name(), "anthropic");
+        assert!(!Backend::Claude.uses_harness());
+        assert_eq!(Backend::Claude.cli_name(), Some("claude"));
+    }
+
+    #[test]
+    fn protocol_chat_detection() {
+        assert!(extra_is_protocol_chat(&[
+            OsString::from("--chat"),
+            OsString::from("--workdir"),
+            OsString::from("/ws/a"),
+        ]));
+        // A task that merely mentions "chat" is the batch path, not protocol mode.
+        assert!(!extra_is_protocol_chat(&[
+            OsString::from("-t"),
+            OsString::from("chat"),
+        ]));
+        assert!(!extra_is_protocol_chat(&[]));
     }
 
     /// `openai-compatible` spawn with a missing `config.manifest.json` (or one

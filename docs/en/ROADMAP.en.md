@@ -30,7 +30,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 - Spec docs (all bilingual EN/TH): `PHILOSOPHY` §0.1 *The Arc*, `GLOSSARY`, `ARCHITECTURE`, `INCARNATION`, `WORKSPACE`, `NAMING`.
 - Crate READMEs (`bwoc-core`, `bwoc-cli`, `bwoc-agent`).
 - Claude Code tooling: 4 project skills (`/incarnate`, `/check-neutrality`, `/check-bilingual`, `/task-log`); 2 PostToolUse hooks (`bilingual-reminder`, `auto-version`).
-- `incarnate.sh` and `check-agent-neutrality.sh` shell scripts in the template (work today; will be ported to Rust).
+- Template shell scripts for incarnation and the neutrality audit (later replaced by `bwoc new` / `bwoc check` and removed).
 
 ### Shipped in Phase 1 v2.0
 
@@ -40,8 +40,8 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 |---|---|---|
 | `bwoc init [path]` | [`WORKSPACE.en.md`](WORKSPACE.en.md#cli-surface) | ✓ |
 | `bwoc workspace info` · `validate` | [`WORKSPACE.en.md`](WORKSPACE.en.md#cli-surface) | ✓ |
-| `bwoc new <name>` (port of `incarnate.sh`) | [`INCARNATION.en.md`](INCARNATION.en.md) | ✓ |
-| `bwoc check [path]` (port of `check-agent-neutrality.sh`) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
+| `bwoc new <name>` (replaced the template shell script) | [`INCARNATION.en.md`](INCARNATION.en.md) | ✓ |
+| `bwoc check [path]` (replaced the template shell script) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
 | `bwoc spawn <name>` (minimal `exec`) | [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md#information-flow--bwoc-spawn-agent-foo) | ✓ |
 | `bwoc list` (reads `.bwoc/agents.toml`) | [`WORKSPACE.en.md`](WORKSPACE.en.md) | ✓ |
 | `--lang` flag wired to Project Fluent (TH + EN locales) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ all 8 surfaces (init/list/spawn/workspace info/workspace validate/check/new/bwoc-agent) |
@@ -114,7 +114,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 | Agent → agent messaging (sammā-vācā Phase 1) | `bwoc send --from <agent>` writes sender identity into envelope; recipient daemon's trust gate evaluates against sender's manifest; refusals surface via `bwoc inbox` JSON merge. **Sāraṇīyadhamma 6** norms in [`interconnect/messaging.md`](../../modules/agent-template/interconnect/messaging.md) (+ `.th.md`). |
 | Dual-mode `bwoc check` | Detects template (placeholder `manifest.name`) vs incarnation (real name). Template mode asserts placeholders exist + neutrality rules; incarnation mode asserts placeholders are gone (except runtime `{{taskId}}`) and skips neutrality checks. Closes the bug where un-personalized agents silently passed. |
 | Interconnect routing — Track A | `.bwoc/interconnect/routes.toml` per-workspace, peer-declared (no central broker). `bwoc-core::routing` `Routes` type + resolve (exact `agent` → longest `namespace` prefix → `NotFound`); `send` consults it only on a local-registry miss, local-hit path byte-for-byte unchanged. Composes with the trust gate (a cross-workspace sender resolves as `unknown_sender` → refused), so it ships without Trust v2. Spec: [`interconnect/routing.md`](../../modules/agent-template/interconnect/routing.md). **Anattā / SN 22.59.** |
-| Worktree lifecycle — Track B | `git_worktree` shell-out util (no `git2`/`gitoxide`). A `task-claimed` Saṅgha hook fires `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>` on claim; the `Task` struct is not extended — worktree location follows the `<worktreeBase>/<agentId>/<taskId>` path convention so cleanup is deterministic without parsing any agent log. |
+| Worktree lifecycle — Track B | `git_worktree` shell-out util (no `git2`/`gitoxide`). On claim, `bwoc task claim` runs an optional user-supplied `.bwoc/hooks/task-claimed` hook (env `BWOC_TASK_ID`, `BWOC_AGENT`, `BWOC_WORKTREE_BASE`, …; a non-zero exit blocks the claim) — the framework runs no `git worktree add` itself, a hook may (e.g. `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>`); the `Task` struct is not extended — worktree location follows the `<worktreeBase>/<agentId>/<taskId>` path convention so cleanup is deterministic without parsing any agent log. |
 | `bwoc retire` full vaya | Retire now ends an agent cleanly: worktree cleanup (worktrees under `<worktreeBase>/<agentId>/` removed via the git util), branch release (`agent/<agentId>/*` — `-d`, escalating to `-D` with the forced names surfaced), interconnect deregister (`Routes::remove_agent_routes` strips routes whose `agent` targets the retiree from `routes.toml`). Idempotent; respects the file-mode flags; `--json` extended additively. Completes the **vaya** DoD half. |
 
 ### Phase 3 — beyond the DoD (Trust v2 shipped; Tier 2 deferred)

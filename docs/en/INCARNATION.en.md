@@ -22,38 +22,28 @@ After incarnation, the agent is a self-contained repository. It can be moved, ve
 
 ## Prerequisites
 
-- A shell (bash, zsh, or PowerShell with Git Bash on Windows).
+- The `bwoc` CLI on PATH (see [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md)).
 - `git` available on PATH.
-- `rsync`, `ln`, `python3` on PATH (used by `incarnate.sh` and `check-agent-neutrality.sh`).
 - (Optional) The backend CLI of choice — `claude`, `agy`, `codex`, `kimi`, or `ollama` (via `bwoc-harness`) — installed where you'll operate the agent.
 
-The `bwoc` Rust CLI is Phase 1 v2.0 in progress; today's canonical path uses the shell scripts shipped with the template. Once `bwoc new` ports the script's logic, the command becomes a single invocation.
-
 ---
 
-## Canonical Path (today)
-
-From the framework root:
+## Canonical Path
 
 ```bash
-cd modules/agent-template
-./scripts/incarnate.sh <agent-name> [target-path]
+bwoc new <agent-name>
 ```
 
-Defaults:
+- **`<agent-name>`** — lowercase, hyphen-separated (e.g. `database-schema`); the directory is named `agent-<agent-name>`.
+- **`--target <path>`** — optional. Default: `<workspace>/agents/agent-<agent-name>` when a workspace resolves; otherwise next to the template or under the current directory.
 
-- **`<agent-name>`** — lowercase, hyphen-separated (e.g. `agent-database-schema`).
-- **`[target-path]`** — optional. Default: `../agent-<agent-name>/` relative to the template.
-
-The script copies the template, creates backend symlinks (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md` → `AGENTS.md`), initializes git, makes the first commit, and runs the neutrality check. Output names every step and ends with a "Next steps" block.
+`bwoc new` copies the template (auto-detected `modules/agent-template/`, else the copy embedded in the binary), writes the resolved `config.manifest.json`, substitutes manifest fields into `AGENTS.md` and `persona/README.md`, creates the backend symlinks (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md`, … → `AGENTS.md`), registers the agent in `.bwoc/agents.toml` when a workspace resolves, and prints next steps. It does not run `git init` or commit.
 
 ---
 
-## Setting the Manifest — current vs planned
+## Setting the Manifest
 
-**Today (via `incarnate.sh`):** the script copies the template and stops. You edit `config.manifest.json` manually to resolve placeholders.
-
-**With `bwoc new` (Phase 1 v2.0 in progress):** the CLI accepts manifest fields as inputs, validates them, and writes the resolved manifest atomically. Two input modes:
+`bwoc new` accepts manifest fields as inputs, validates them, and writes the resolved manifest. Two input modes:
 
 - **Flags** — every required field has a flag. Example:
   ```bash
@@ -78,39 +68,26 @@ Phase 2 may add `bwoc manifest set <key> <value>` and `bwoc manifest get <key>` 
 
 ## Step-by-Step
 
-### 1. Run `incarnate.sh`
+### 1. Run `bwoc new`
 
 ```bash
-./scripts/incarnate.sh agent-foo
+bwoc new foo
 ```
 
-Produces:
+The new directory (e.g. `agents/agent-foo/`) contains a configured agent: the symlinks are real and the manifest holds the values you supplied or accepted.
 
-```
-+ CLAUDE.md -> AGENTS.md
-+ AGY.md    -> AGENTS.md
-+ CODEX.md  -> AGENTS.md
-+ KIMI.md   -> AGENTS.md
-+ OLLAMA.md -> AGENTS.md
-+ git initialized
-...
-Done in 3s
-```
-
-The new directory `../agent-foo/` now contains a working but unconfigured agent. Symlinks are real; the manifest still holds `{{placeholders}}`.
-
-### 2. Edit `config.manifest.json`
+### 2. Review `config.manifest.json`
 
 ```bash
-cd ../agent-foo
+cd agents/agent-foo
 $EDITOR config.manifest.json
 ```
 
-Resolve every required placeholder. At minimum:
+Confirm the resolved fields. At minimum:
 
-- `agentId` — matches the directory name without the `agent-` prefix.
+- `agentId` — `agent-<name>`, matching the directory name.
 - `agentRole` — one-line role description (e.g. `database schema reviewer`).
-- `primaryModel` / `fallbackModel` — backend-agnostic model selector keys (the backend's own CLI resolves these to its native names).
+- `primaryModel` — the model ID the backend runs, or `auto` to pick from `autoModels`. `fallbackModel` is metadata only (not a runtime fallback).
 - `memoryPath`, `deepMemoryCmd` — if Tier 2 memory is in use (see [`memories/README.md`](../../modules/agent-template/memories/README.md)).
 
 The schema documentation lives in [`modules/agent-template/conventions.md`](../../modules/agent-template/conventions.md).
@@ -138,15 +115,15 @@ Persona examples: [`persona-example.good.md`](../../modules/agent-template/docs/
 ### 5. Verify Backend Neutrality
 
 ```bash
-./scripts/check-agent-neutrality.sh
+bwoc check .
 ```
 
-Must exit 0. The script checks for:
+Must exit 0. It checks, among other things:
 
 - `AGENTS.md` is plain Markdown (no YAML frontmatter, no wikilinks).
 - Backend symlinks exist and point at `AGENTS.md`.
 - `config.manifest.json` parses as valid JSON.
-- No hardcoded model IDs or vendor-specific phrasing in `AGENTS.md`.
+- No `{{placeholders}}` remain in `AGENTS.md` (the runtime `{{taskId}}` excepted).
 
 Any FAIL line names the violation. Fix and re-run.
 
@@ -157,7 +134,7 @@ git add -A
 git commit -m "feat(agent): incarnate agent-foo from BWOC template v2"
 ```
 
-`incarnate.sh` already created the initial scaffold commit; this is your first **configured** commit.
+`bwoc new` does not commit; run `git init` first if the agent directory is not already inside a repository.
 
 **Target: steps 1–6 in under 30 minutes.**
 
@@ -171,7 +148,7 @@ The five default backends (Claude, Antigravity, Codex, Kimi, Ollama) ship as sym
 ln -s AGENTS.md <BACKEND>.md
 ```
 
-No other change required. Re-run `check-agent-neutrality.sh` to confirm.
+No other change required. Re-run `bwoc check` to confirm.
 
 This is **Samānattatā** — equal treatment — enforced at the file-system level.
 
@@ -196,7 +173,7 @@ mkdir docs/ja
 
 Before declaring the agent ready:
 
-- [ ] `./scripts/check-agent-neutrality.sh` exits 0
+- [ ] `bwoc check` exits 0
 - [ ] `config.manifest.json` has no unresolved `{{placeholders}}`
 - [ ] `AGENTS.md` Section 1 reflects this agent (not the template defaults)
 - [ ] `persona/README.md` names domains and boundaries

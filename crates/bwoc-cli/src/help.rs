@@ -240,6 +240,10 @@ proxy (any OpenAI-compatible `/v1`). The base is resolved from `baseUrl` /
 **optional**: a `LITELLM_API_KEY` / `~/.bwoc/secrets.toml` (`[litellm] api_key`)
 key is attached as bearer auth only when present, so a keyless local proxy works.
 
+The `anthropic` backend drives the same harness against the Anthropic Messages
+API (key from `ANTHROPIC_API_KEY`; `baseUrl` optional). It is the harness route
+to Claude models — `claude` still execs the vendor Claude Code CLI.
+
 Three ways to set the backend:
   - At incarnation:   bwoc new my-agent --backend ollama
   - Manifest edit:    edit agents/<name>/config.manifest.json then update
@@ -327,7 +331,7 @@ Schema (resolved by `bwoc new`, written verbatim — no placeholders):
     autoModels        ordered candidate pool used when primaryModel=\"auto\"
                       (this is the actual runtime model-fallback mechanism)
     reasoningEffort   optional backend effort control (e.g. \"medium\")
-    sessionsPath      session data dir for Tier 2 memory mining
+    sessionsPath      reserved; written but not read by any runtime
     deepMemoryCmd     Tier 2 memory CLI command
     worktreeBase      base path for spawned worktrees
 
@@ -641,6 +645,7 @@ Commands:
   bwoc memory show --all --json       same as a JSON array of {name, content}
   bwoc memory put <name>              write from stdin (or `--file <p>`); `--force` overwrites
   bwoc memory search <query>          substring match across entries (case-insensitive)
+  bwoc memory search <q> <agent> --tier 2   query the agent's Tier 2 deep-memory backend
   bwoc memory rm <name>               delete an entry; TTY-confirms unless `--yes` / `-y`
 
 Entry name in `show` / `put` accepts `<name>` or `<name>.md`
