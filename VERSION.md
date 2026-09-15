@@ -1,6 +1,6 @@
 # Version
 
-> **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — feature branches do not touch these shared lines (so concurrent PRs never collide on the version). The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
+> **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — ordinary feature branches leave these shared lines alone (so concurrent PRs never collide on the version); release and version-bump PRs are the ones that edit them. The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
 **Software-Version:** `3.2.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.14.0`   *(canonical here — bumped on `.md` edits)*
