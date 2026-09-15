@@ -91,11 +91,13 @@ pub fn assemble_with_git(workdir: &Path, git: &str) -> String {
     }
 }
 
-/// `AGENTS.md`, else `CLAUDE.md`, in `workdir` only. Empty when neither exists.
+/// The first non-blank of `AGENTS.md`, `CLAUDE.md` in `workdir` only. Empty
+/// when neither has content.
 pub fn workdir_instructions(workdir: &Path) -> String {
     INSTRUCTION_FILES
         .iter()
-        .find_map(|f| std::fs::read_to_string(workdir.join(f)).ok())
+        .filter_map(|f| std::fs::read_to_string(workdir.join(f)).ok())
+        .find(|s| !s.trim().is_empty())
         .unwrap_or_default()
 }
 
@@ -603,5 +605,13 @@ mod tests {
     #[test]
     fn preamble_stays_short() {
         assert!(CODING_PREAMBLE.lines().count() <= 60);
+    }
+
+    #[test]
+    fn workdir_instructions_skips_a_blank_agents_md() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "  \n").unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "fallback rules").unwrap();
+        assert_eq!(workdir_instructions(dir.path()), "fallback rules");
     }
 }
