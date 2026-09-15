@@ -8,9 +8,9 @@ nav_order: 12
 
 **Framework plugin** ขยายเฟรมเวิร์กด้วยความสามารถที่ไม่ควรอยู่ใน agent ทุกตัว แต่ควรพร้อมใช้สำหรับ agent และ workspace ที่ต้องการ ปลั๊กอินถูกโหลดโดย **framework runtime** — เป็นเรื่องของ operator ไม่ใช่ของ agent
 
-เอกสารนี้กำหนดประเภทของปลั๊กอิน, รูปแบบ manifest, lifecycle hooks, กลไกการโหลด, และ verification gates Reference plugin ตัวแรก (`memory-tier2-noop`) ลงพร้อมกับ spec นี้ — ทั้ง spec และ implementation พิสูจน์รูปแบบไปด้วยกัน
+เอกสารนี้กำหนดประเภทของปลั๊กอิน, รูปแบบ manifest, lifecycle hooks, กลไกการโหลด, และ verification gates รายการปลั๊กอินที่ ship อยู่ใน [`modules/plugins/README.md`](../../modules/plugins/README.md) ไม่มี reference plugin ที่ ship สำหรับ kind `memory-backend` หรือ `llm-backend` Kind ทั้งสองยังอยู่ใน spec แต่ Tier 2 memory ต่อผ่าน `deepMemoryCmd` ของ agent (`bwoc-core::deep_memory`) ไม่ได้ผ่านปลั๊กอิน
 
-> [!abstract] สถานะ: scaffold เริ่มต้น ตาราง manifest และ lifecycle hook ด้านล่างเป็น normative; ส่วน prose อาจปรับเมื่องาน story BWOC-1..3 ทำให้ contract ละเอียดขึ้น Reference plugin ตัวแรกจะมาใน BWOC-7
+> [!abstract] สถานะ: scaffold เริ่มต้น ตาราง manifest และ lifecycle hook ด้านล่างเป็น normative; ส่วน prose อาจปรับเมื่องาน story BWOC-1..3 ทำให้ contract ละเอียดขึ้น
 
 ---
 
@@ -515,12 +515,12 @@ modules/plugins/
 
 ```toml
 [plugin]
-name        = "memory-tier2-noop"               # บังคับ — ต้องตรงกับชื่อไดเรกทอรี
-kind        = "memory-backend"                  # บังคับ — หนึ่งใน: memory-backend | llm-backend | workflow | audit | jira
+name        = "memory-example"                  # บังคับ — ต้องตรงกับชื่อไดเรกทอรี (ตัวอย่างเท่านั้น ไม่ใช่ปลั๊กอินที่ ship)
+kind        = "memory-backend"                  # บังคับ — หนึ่งใน: memory-backend | llm-backend | workflow | audit | jira | okr | council | figma | gws
 version     = "0.1.0"                           # บังคับ — semver
-description = "No-op Tier 2 memory backend that forwards to Tier 1."   # บังคับ — สรุปหนึ่งประโยค
+description = "Example Tier 2 memory backend."  # บังคับ — สรุปหนึ่งประโยค
 compat      = ">=3.0.0, <4.0.0"                 # บังคับ — semver range มีขอบบน; เวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้
-entry       = "bwoc-plugin-memory-tier2-noop"   # บังคับ — binary บน PATH (แนะนำ) หรือชื่อ Rust crate ข้างเคียง
+entry       = "bwoc-plugin-memory-example"      # บังคับ — binary บน PATH (แนะนำ) หรือชื่อ Rust crate ข้างเคียง
 
 [config.schema]                                 # ไม่บังคับ — ตัดทั้ง table ออกได้ถ้าปลั๊กอินไม่รับ config
 # ปลั๊กอินกำหนดเอง; JSON-schema-lite ตาราง [plugins.<name>] ของ workspace ถูก validate กับ schema นี้
@@ -535,7 +535,7 @@ entry       = "bwoc-plugin-memory-tier2-noop"   # บังคับ — binary 
 | Section | Field | บังคับ | ชนิดข้อมูล | ความหมาย |
 |---|---|---|---|---|
 | `[plugin]` | `name` | ใช่ | string (kebab-case) | ชื่อปลั๊กอิน; ต้องตรงกับชื่อไดเรกทอรีใต้ `modules/plugins/` |
-| `[plugin]` | `kind` | ใช่ | enum | หนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`; เปลี่ยนไม่ได้หลัง `init` |
+| `[plugin]` | `kind` | ใช่ | enum | หนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws`; เปลี่ยนไม่ได้หลัง `init` |
 | `[plugin]` | `version` | ใช่ | string (semver) | Semver ของปลั๊กอินเอง แยกจากเวอร์ชันเฟรมเวิร์ก |
 | `[plugin]` | `description` | ใช่ | string | สรุปหนึ่งประโยค; เป็นค่า **ที่เดียว** ใน manifest ที่ยอมให้มีชื่อ vendor |
 | `[plugin]` | `compat` | ใช่ | string (semver range มีขอบบน) | ช่วงเวอร์ชันเฟรมเวิร์กที่ปลั๊กอินนี้ใช้ได้ บังคับใช้ตั้งแต่ 3.0: ไม่ตรง = ปฏิเสธการ load, parse ไม่ได้ = `bwoc check` fail, ไม่มีขอบบน = เตือน |
@@ -627,7 +627,7 @@ Operator ประกาศปลั๊กอินที่ workspace นี้
 ```toml
 [plugins]
 
-[plugins.memory-tier2-noop]
+[plugins.memory-example]
 enabled      = true
 storage_path = "memories/tier2"
 
@@ -769,7 +769,7 @@ modules/plugin-template/
 
 Placeholder ใช้รูปแบบ `{{camelCase}}` เดียวกับ `modules/agent-template/` และ `modules/skill-template/` รายการ substitute ที่บังคับอยู่ใน [`SPEC.md`](../../modules/plugin-template/SPEC.md) ของ template เอง
 
-flag `--kind` บังคับ — ไม่มี default ค่าที่ถูกต้อง: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` Kind ในอนาคตขยาย enum นี้โดยไม่เปลี่ยนโครงสร้าง template flag นี้ทำให้ operator ต้องระบุเจตนาตั้งแต่ต้น และเลี่ยง manifest ที่มี `kind` field หาย/ผิด
+flag `--kind` บังคับ — ไม่มี default ค่าที่ถูกต้อง: `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws` Kind ในอนาคตขยาย enum นี้โดยไม่เปลี่ยนโครงสร้าง template flag นี้ทำให้ operator ต้องระบุเจตนาตั้งแต่ต้น และเลี่ยง manifest ที่มี `kind` field หาย/ผิด
 
 `bwoc plugin init` เป็นวิธีที่แนะนำสำหรับเริ่มปลั๊กอินใหม่ — สร้างเองด้วยมือทำได้แต่ข้าม consistency ของ placeholder
 
@@ -806,7 +806,7 @@ Source ที่ถูกลบไม่ถูก auto-uninstall จาก `.bwo
 |---|---|
 | Manifest parseable | `manifest.toml` เป็น TOML ที่ valid และตรง schema ด้านบน |
 | ชื่อตรงกับไดเรกทอรี | `[plugin].name == basename(directory)` |
-| Kind valid | `[plugin].kind` เป็นหนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira` (หรือ kind ในอนาคตที่เพิ่มเข้า enum) |
+| Kind valid | `[plugin].kind` เป็นหนึ่งใน `memory-backend`, `llm-backend`, `workflow`, `audit`, `jira`, `okr`, `council`, `figma`, `gws` (หรือ kind ในอนาคตที่เพิ่มเข้า enum) |
 | Neutrality | ชื่อ vendor ปรากฏเฉพาะใน `description`; ที่อื่นไม่ได้ |
 | มี `SPEC.md` | ไฟล์ `SPEC.md` อยู่ข้าง manifest |
 | ฟิลด์บังคับครบ | `name`, `kind`, `version`, `description`, `compat`, `entry` ครบ |
@@ -826,7 +826,7 @@ Check ที่ไม่ผ่าน exit non-zero ใน workspace audit — su
 
 - **Skills** — ดู [`SKILLS.th.md`](SKILLS.th.md) Skill ถูก agent invoke; plugin ถูก framework load
 - **สิบ backend ที่ประกาศ** (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`, `ollama`, `openai-compatible`, `openrouter`, `litellm`) — เป็น first-class ไม่ใช่ plugin ดู [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md)
-- **Reference plugin ตัวแรกเอง** — ดู story `BWOC-7` และ (เมื่อลงแล้ว) `modules/plugins/memory-tier2-noop/SPEC.md`
+- **Reference plugin สำหรับ `memory-backend` หรือ `llm-backend`** — ไม่มีตัวที่ ship Tier 2 memory ทำงานผ่าน `deepMemoryCmd` ของ agent (`bwoc-core::deep_memory`)
 - **Trust v2 / signing ของ plugin binary** — เลื่อนออก ปัจจุบัน plugin binary trust ได้เพราะติดตั้งใต้ `modules/plugins/`; trust gating ที่ละเอียดกว่าจะลงพร้อมงาน Trust v2 ในภาพรวม
 
 ---

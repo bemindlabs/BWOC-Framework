@@ -65,22 +65,6 @@ fn git(args: &[&str]) -> Result<String, GitError> {
 
 // --- worktree operations ---------------------------------------------------
 
-/// Add a new worktree at `path` on a new branch named `branch`.
-///
-/// Equivalent to: `git worktree add <path> -b <branch>`
-///
-/// Returns `GitError::Failed` if the branch already exists or the path is
-/// already a worktree. Callers should treat that as a "worktree already
-/// exists for this task" condition and decide whether to proceed or abort.
-///
-/// Pre-API for the `task-claimed` hook (Track B). No caller in the CLI yet.
-#[allow(dead_code)]
-pub fn worktree_add(path: &Path, branch: &str) -> Result<(), GitError> {
-    let path_str = path.to_string_lossy();
-    git(&["worktree", "add", &path_str, "-b", branch])?;
-    Ok(())
-}
-
 /// List all registered worktrees.
 ///
 /// Equivalent to: `git worktree list --porcelain`
@@ -91,7 +75,7 @@ pub fn worktree_list() -> Result<Vec<WorktreeEntry>, GitError> {
     Ok(parse_worktree_list(&raw))
 }
 
-/// Remove a worktree that was previously added with `worktree_add`.
+/// Remove a registered worktree.
 ///
 /// Equivalent to: `git worktree remove <path>`
 ///
@@ -215,29 +199,6 @@ pub fn branch_delete_force(branch: &str) -> Result<(), GitError> {
     Ok(())
 }
 
-// --- BWOC path/branch convention helpers -----------------------------------
-
-/// Resolve the worktree path for a given agent + task using the BWOC
-/// path convention: `<worktreeBase>/<agentId>/<taskId>`.
-///
-/// `worktree_base` is from the agent's `config.manifest.json`
-/// (`manifest.worktree_base`), defaulting to `/tmp` when absent.
-///
-/// Tested by unit tests; production consumer lands with `task-claimed`.
-#[allow(dead_code)]
-pub fn worktree_path(worktree_base: &str, agent_id: &str, task_id: &str) -> PathBuf {
-    PathBuf::from(worktree_base).join(agent_id).join(task_id)
-}
-
-/// Build the BWOC branch name for a given agent + task:
-/// `agent/<agentId>/feat/<taskId>`.
-///
-/// Tested by unit tests; production consumer lands with `task-claimed`.
-#[allow(dead_code)]
-pub fn worktree_branch(agent_id: &str, task_id: &str) -> String {
-    format!("agent/{agent_id}/feat/{task_id}")
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -293,30 +254,10 @@ mod tests {
         assert!(entries[0].is_bare);
     }
 
-    // ---- convention helpers ------------------------------------------------
-
-    #[test]
-    fn worktree_path_convention() {
-        let p = worktree_path("/tmp", "agent-pi", "TASK-001");
-        assert_eq!(p, PathBuf::from("/tmp/agent-pi/TASK-001"));
-    }
-
-    #[test]
-    fn worktree_branch_convention() {
-        let b = worktree_branch("agent-pi", "TASK-001");
-        assert_eq!(b, "agent/agent-pi/feat/TASK-001");
-    }
-
-    #[test]
-    fn worktree_path_custom_base() {
-        let p = worktree_path("/var/worktrees", "agent-oracle", "t42");
-        assert_eq!(p, PathBuf::from("/var/worktrees/agent-oracle/t42"));
-    }
-
     // ---- branch_list_glob (unit: output parsing via workaround) -----------
     // We can't shell out to git in unit tests without a real repo, so the
-    // live git commands (worktree_add, worktree_list, worktree_remove,
+    // live git commands (worktree_list, worktree_remove,
     // branch_list_glob, branch_delete) are integration-verified by the
     // overall `cargo build --workspace` + live workspace exercise.
-    // The parser and convention helpers above are the pure-logic surface.
+    // The parser above is the pure-logic surface.
 }

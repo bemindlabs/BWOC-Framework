@@ -307,7 +307,7 @@ message ที่ accumulate ไว้ — replay จึงทำงานเห
 เป็นแบบ provider-neutral: `ChatMessage` แนบรูป base64 ได้ (`with_images`) โดย render
 เป็น Anthropic `image` block บน path native และเป็น OpenAI `image_url` data-URI part
 บน path OpenAI-compat — ข้อความที่เป็น text อย่างเดียวยังเหมือนเดิมทุก byte. (การต่อสาย
-screenshot จาก browser/computer *ผ่าน re-exec turn-executor boundary* เข้า field นี้
+screenshot จาก `computer` *ผ่าน re-exec turn-executor boundary* เข้า field นี้
 เป็น follow-up แยกที่ต้อง verify บน bemind.) ปัจจุบัน BWOC harness ยังพูดผ่าน surface OpenAI-compatible `/v1/chat/completions`
 เพื่อให้รันได้ทั้ง Ollama และ provider compatible อื่นๆ adapter แบบ native
 Responses API คือขั้นถัดไปสำหรับ control reasoning ของ GPT-5.5 แบบเต็ม ระหว่างนี้

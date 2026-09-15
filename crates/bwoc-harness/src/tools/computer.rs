@@ -13,13 +13,12 @@
 //!    tool (`{name, description, input_schema}`) to a provider-defined tool keyed
 //!    by `type`.
 //!
-//! Wired into the live loop behind the `browser` feature: [`default_registry`]
-//! registers the tool with a lazily-launched headless-browser executor, the
-//! Anthropic provider emits the native [`anthropic_tool_spec`] + beta header, and
-//! the policy pipeline gates it — `computer` is `Capability::Gated` (refused on
-//! untrusted turns), ask-by-default, and autoprocess-refused when there is no
-//! TTY. Default builds pull zero browser deps and never register it. A captured
-//! screenshot now flows end-to-end: [`ComputerTool::execute_rich`] base64-encodes
+//! No live executor ships: [`default_registry`] does not register the tool. A
+//! host that supplies a [`ComputerExecutor`] gets the Anthropic native
+//! [`anthropic_tool_spec`] + beta header, and the policy pipeline gates it —
+//! `computer` is `Capability::Gated` (refused on untrusted turns),
+//! ask-by-default, and autoprocess-refused when there is no TTY. A captured
+//! screenshot flows end-to-end: [`ComputerTool::execute_rich`] base64-encodes
 //! it into an [`crate::provider::types::ImageBlock`], which the isolated
 //! turn-executor marshals back across its IPC and the agent loop attaches to the
 //! `tool_result` (see [`crate::provider::types::ChatMessage::with_images`]);
@@ -34,6 +33,10 @@ use serde_json::{Value, json};
 
 use super::{ToolContext, ToolImpl};
 use crate::error::HarnessError;
+
+/// Display geometry (px) advertised to the model for the `computer` tool. The
+/// model reasons in this coordinate space.
+pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
 // ---------------------------------------------------------------------------
 // Neutral action model

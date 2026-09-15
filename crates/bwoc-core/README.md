@@ -23,9 +23,7 @@ Eight of the workspace's eleven crates depend on it ([`bwoc-cli`](../bwoc-cli/),
 - **`deep_memory`** — the optional Tier 2 seam: the `DeepMemory` trait (`wake_up` / `search` / `mine` / `status`) plus `DisabledDeepMemory` when `deepMemoryCmd` is unset.
 - **`doc_kind`** — registry for `notes` / `retrospectives` / `research` and workspace-declared kinds from `.bwoc/doc-kinds.toml`, feeding one generic `bwoc doc` engine. Convention: [`NAMING.en.md`](../../docs/en/NAMING.en.md).
 - **`design`** — UI tokens (`Ansi`, `ColorToken`, `glyph`, `space`) shared today by the ratatui frontends (`bwoc dashboard`, `bwoc-tui`). Each `ColorToken` carries both an ANSI name (so a terminal theme keeps authority) and an `rgb` triple for a future pixel UI. Spec: [`DESIGN.en.md`](../../docs/en/DESIGN.en.md).
-- **`lifecycle`** — `LifecyclePhase { Uppada, Thiti, Vaya }`, the BWOC arc named per AN 3.47. See [`PHILOSOPHY.en.md` §0.1](../../modules/agent-template/docs/en/PHILOSOPHY.en.md#01-the-arc--uppāda--ṭhiti--vaya).
 - **`time`** — `utc_now_iso8601` / `format_iso8601`, hand-rolled so no date crate enters the quarantine.
-- **`error`, `identity`** — declared in `lib.rs` but still empty. Errors currently live with their module (`ManifestError`, `WorkspaceError`, `TeamError`, `DeepMemoryError`).
 
 ## Usage
 
@@ -51,7 +49,7 @@ assert!(Principal::Tool { name: "read_file".into() }.is_untrusted());
 
 ## Status
 
-In production use — every BWOC binary builds on it, and the on-disk formats here (manifest, workspace registry, routes, inbox/outbox, team tasks) are the framework's real file contracts. `error` and `identity` remain empty placeholders; the dep list is deliberately frozen at four crates (`proptest` and `tempfile` are dev-only).
+In production use — every BWOC binary builds on it, and the on-disk formats here (manifest, workspace registry, routes, inbox/outbox, team tasks) are the framework's real file contracts. The dep list is deliberately frozen at four crates (`proptest` and `tempfile` are dev-only).
 
 ## License
 
