@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 ### Fixed
 
 - **`bwoc chat <agent>` without `--tui` works for harness backends.** It launched `bwoc-harness` with neither `--chat` nor `--task`, so ollama / openai-compatible / openrouter / litellm agents exited with "--task is required". On a terminal it now opens the chat TUI, with a one-line note, because raw `--chat` speaks JSON lines rather than a human REPL. With piped stdin or stdout it runs `bwoc-harness --chat --workdir <agent>`, the `chat_proto` endpoint, which `bwoc spawn`'s no-TTY guard now lets through. `--team` is honoured on both routes.
+- **`bwoc chat --tmux` / `--ghostty` work for harness backends.** The new pane or window relaunches `bwoc chat <id>` (carrying `--workspace`, `--lang`, `--tui`, `--team`) and so lands in the chat TUI, instead of re-running `bwoc spawn`, which failed with "--task is required". Vendor backends are unchanged.
+- **`bwoc chat` accepts `grok` agents.** `bwoc chat` and `bwoc run` now share one backend parser derived from the backend enum, so every backend `bwoc new` accepts is recognised by both.
 
 ## [v2026.9.13-2] — 2026-09-13 — 3.1.0
 

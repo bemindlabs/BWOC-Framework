@@ -90,7 +90,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
-// The CLI backend aliases accepted by `--backend` (`chat::parse_backend`),
+// The registry backend names (`spawn::Backend::from_registry_name`),
 // not the canonical vendor names in `check::BACKEND_NAMES` (which says
 // `antigravity`, not the `agy` alias shown here). Display-only.
 const BACKENDS: &str =

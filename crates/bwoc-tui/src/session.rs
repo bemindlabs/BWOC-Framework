@@ -266,7 +266,9 @@ mod tests {
         ] {
             assert!(is_harness_drivable(b), "{b} should be drivable");
         }
-        for b in ["claude", "agy", "codex", "kimi", "copilot", "cli", ""] {
+        for b in [
+            "claude", "agy", "codex", "kimi", "copilot", "grok", "cli", "",
+        ] {
             assert!(!is_harness_drivable(b), "{b} should not be drivable");
         }
     }

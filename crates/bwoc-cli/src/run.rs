@@ -569,10 +569,11 @@ pub fn execute(args: RunArgs, runner: &dyn CommandRunner) -> Result<(RunResult, 
         .find(|a| a.id == lookup_id)
         .ok_or_else(|| RunError::AgentNotFound(args.agent.clone()))?;
 
-    let backend = parse_backend(&entry.backend).ok_or_else(|| RunError::UnknownBackend {
-        agent: entry.id.clone(),
-        backend: entry.backend.clone(),
-    })?;
+    let backend =
+        Backend::from_registry_name(&entry.backend).ok_or_else(|| RunError::UnknownBackend {
+            agent: entry.id.clone(),
+            backend: entry.backend.clone(),
+        })?;
 
     let agent_dir = workspace.join(&entry.path);
 
@@ -618,23 +619,6 @@ fn normalize_agent_id(name: &str) -> String {
         name.to_string()
     } else {
         format!("agent-{name}")
-    }
-}
-
-fn parse_backend(s: &str) -> Option<Backend> {
-    match s {
-        "claude" => Some(Backend::Claude),
-        "agy" => Some(Backend::Antigravity),
-        "codex" => Some(Backend::Codex),
-        "kimi" => Some(Backend::Kimi),
-        "copilot" => Some(Backend::Copilot),
-        "grok" => Some(Backend::Grok),
-        "ollama" => Some(Backend::Ollama),
-        "openai-compatible" => Some(Backend::OpenAiCompatible),
-        "openrouter" => Some(Backend::OpenRouter),
-        "litellm" => Some(Backend::LiteLlm),
-        "anthropic" => Some(Backend::Anthropic),
-        _ => None,
     }
 }
 

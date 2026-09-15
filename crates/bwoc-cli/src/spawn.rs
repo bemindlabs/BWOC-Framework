@@ -154,6 +154,19 @@ impl Backend {
         }
     }
 
+    /// Parse a registry / manifest backend string (the [`display_name`] form,
+    /// e.g. `"agy"`). The single parser for `bwoc chat` and `bwoc run`; derived
+    /// from the enum so a new variant can never be missed.
+    ///
+    /// [`display_name`]: Backend::display_name
+    pub fn from_registry_name(s: &str) -> Option<Backend> {
+        use clap::ValueEnum;
+        Backend::value_variants()
+            .iter()
+            .copied()
+            .find(|b| b.display_name() == s)
+    }
+
     /// Returns `true` for backends that exec `bwoc-harness` rather than an
     /// external vendor CLI. Keep in sync with `bwoc_tui::session::is_harness_drivable`.
     pub fn uses_harness(self) -> bool {

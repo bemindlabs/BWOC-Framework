@@ -8,7 +8,9 @@ Phase R0 of the "bwoc-harness as a daily-driver coding agent" plan. It fixes two
   - **both TTY** → `bwoc_tui::run` with a one-line stderr note;
   - **otherwise** → `spawn` with extra `--chat --workdir <agent> [--team-chat <log>]`.
   
-  `--team` is now honoured on every harness route except `--tmux` / `--ghostty`.
+  `--team` is now honoured on every harness route.
+- `crates/bwoc-cli/src/chat.rs` (follow-up): a pure `pane_command` builds the `--tmux` / `--ghostty` command. For harness backends it relaunches `bwoc chat <id> --workspace <ws> --lang <l> [--tui] [--team <t>]`; the pane has a TTY, so it lands on the TUI route. Vendor backends keep `bwoc spawn --path <agent> --backend <b>`. `tmux_launch_args` and `open_in_ghostty` now take that command.
+- Shared backend parser: `Backend::from_registry_name` in `spawn.rs` is derived from `value_variants()` + `display_name()`. It replaces the two hand-written `parse_backend` tables in `chat.rs` and `run.rs`; `chat.rs`'s table was missing `grok`. A test round-trips every `bwoc new --backend` value through it. The TUI's non-drivable test list now includes `grok`.
 - `crates/bwoc-cli/src/spawn.rs`:
   - new `Backend::Anthropic` (`anthropic`), which spawns `bwoc-harness --backend anthropic [--endpoint baseUrl]`;
   - `uses_harness` includes it;
@@ -31,9 +33,15 @@ Phase R0 of the "bwoc-harness as a daily-driver coding agent" plan. It fixes two
 
 - `bwoc chat tester < /dev/null` (ollama, `gemma4`): reaches harness chat setup and fails with `model 'gemma4' not found`, exit 1. It no longer fails with "--task is required".
 - `bwoc chat tester2 < in.jsonl` (ollama, `gemma4:latest`, piped `user` + `quit`): full round-trip — `ready`, `token`, `message` ("pong"), `turn_end`, `bye`; exit 0.
+- `bwoc chat tester2 --tmux` (run inside a detached tmux session, so it takes the `new-window` path): the caller prints "Opened tmux window 'agent-tester2' (backend: ollama)". The window runs the relaunched `bwoc chat`, which lands in the chat TUI (status "gemma4:latest · ollama", ready, prior session restored) with a live `bwoc-harness --chat` child.
 - `bwoc chat claudey < in.jsonl` (anthropic, no key): `no Anthropic API key — set ANTHROPIC_API_KEY …`, exit 1. The harness Anthropic provider is selected.
 
-## Status / deferred
+## Bugs surfaced and fixed
 
-- `bwoc chat --tmux` / `--ghostty` for harness backends still re-invoke `bwoc spawn` without `--chat`, so they hit the same `--task` error. The fix is to relaunch `bwoc chat <id>` instead.
-- `chat.rs::parse_backend` has no entry for `grok`, which `run.rs` does have. This predates the change and was left alone.
+- `bwoc chat --tmux` / `--ghostty` on harness backends re-invoked `bwoc spawn` without `--chat` and hit the same `--task` error. They now relaunch `bwoc chat`.
+- `chat.rs`'s backend parser rejected `grok` agents ("unknown backend"), while `run.rs` accepted them. Both now use one parser derived from the enum, so the lists can't drift.
+
+## Decisions (follow-up)
+
+- The pane gets the resolved `--workspace`, so it doesn't depend on the pane's cwd or `BWOC_WORKSPACE`. It gets the resolved `--lang` (a global flag), so the pane matches the caller.
+- The TUI predicate stays a string list in `bwoc-tui`: `session` is a private module, and `bwoc-tui` must not depend on `bwoc-cli`. It is kept in step by tests on both sides.
