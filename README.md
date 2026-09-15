@@ -326,7 +326,7 @@ The `bwoc` CLI and `bwoc-agent` daemon read and respect the following environmen
 | `BWOC_WORKSPACE` | Overrides the workspace path. Part of the resolution chain: explicit `--workspace` → `BWOC_WORKSPACE` → ancestor walk. | Absolute or relative directory path |
 | `BWOC_LANG` | Sets the CLI and daemon UI language. Precedence: `--lang` flag → `BWOC_LANG` → `$LANG` → default `en`. | `en` (English), `th` (Thai) |
 | `BWOC_TEMPLATE` | Sets the custom path to an agent template for incarnation via `bwoc new`. | Directory path containing `agent-template` |
-| `BWOC_TRUST_GATING` | Enables the Kalyāṇamitta-7 trust system (checks manifest, peer trust, and refuses unauthorized inbox envelopes at the daemon). | `1` to enable, otherwise disabled |
+| `BWOC_TRUST_GATING` | Kalyāṇamitta-7 quality gate at the daemon. On by default in **warn-only** mode (logs senders missing `requiredTrust` instead of refusing them; signature, replay and unresolvable-sender refusals are unchanged); `1` enforces the manifest `trust.mode`, including refusal. | unset or empty = warn (default), `1` = enforce, `0`/`off`/`false` = disabled |
 | `BWOC_TASK_POLL_SECS` | How often `bwoc-agent --serve` re-scans team task lists for newly-claimable work. Raise it for a large fleet (fewer file reads), lower it for snappier pickup. | Integer seconds; default `2`, floored at `1` |
 | `BWOC_TASK_WAKEUP` | Opt-in flag for `bwoc-agent --serve` to ping the agent's tmux session when a new claimable task is available. | `1` to enable, otherwise disabled |
 | `BWOC_AUTO_CLAIM` | Opt-in flag for `bwoc-agent --serve` to automatically claim and wake up the agent when a new task becomes claimable. | `1` to enable, otherwise disabled |
@@ -476,7 +476,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 | Specification 3.0 (Philosophy, PRD, SRS, Threat) — validated by `bwoc check` | Ready |
 | Compatibility contract — schema markers, `bwoc migrate`, enforced `[plugin].compat` | Ready — [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md) |
 | `bwoc` CLI + `bwoc-agent` daemon (macOS · Linux · Windows, CI matrix) | Ready |
-| Kalyāṇamitta-7 trust + signed envelopes | Ready (daemon refusal behind `BWOC_TRUST_GATING=1`) |
+| Kalyāṇamitta-7 trust + signed envelopes | Ready (daemon warns by default; refusal behind `BWOC_TRUST_GATING=1`) |
 | `bwoc-harness` self-hosted runtime (`--chat`, sandbox, eval) | Ready |
 | Interconnect (A2A, MQTT) + chat connectors | Ready |
 | Fleet dashboard (`bwoc dashboard`) | Ready |

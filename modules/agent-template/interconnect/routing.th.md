@@ -73,7 +73,7 @@ cross-workspace delivery กับ trust gate compose กันเป็น **sa
 
 - trust check ของ daemon ฝั่งรับ resolve `from` ใน envelope กับ registry **ของตัวเอง** ([`trust.md` §Refusal Semantics](trust.md))
 - sender ข้าม workspace ไม่อยู่ใน registry ของผู้รับ → resolve เป็น `unknown_sender` → refused ลง `inbox.refusals.jsonl` (envelope ถูกเก็บไว้ ไม่ถูกลบ)
-- ดังนั้นเมื่อ `BWOC_TRUST_GATING=1` ข้อความข้าม workspace จาก sender ที่ไม่รู้จักจะ **ถูก refuse โดย default** — เป็นท่าทีอนุรักษ์นิยมที่ต้องการพอดีก่อนที่ identity จะพิสูจน์ได้ ถ้า gating ปิด (default ของ framework) ก็ deliver
+- ดังนั้นเมื่อ `BWOC_TRUST_GATING=1` ข้อความข้าม workspace จาก sender ที่ไม่รู้จักจะ **ถูก refuse โดย default** — เป็นท่าทีอนุรักษ์นิยมที่ต้องการพอดีก่อนที่ identity จะพิสูจน์ได้ ถ้าไม่ได้ตั้ง `=1` (default ของ framework คือ gating แบบ warn เท่านั้น) quality gate จะไม่ refuse
 
 ดังนั้น routing **ไม่** block บน [Trust v2](trust.md): สอง feature นี้ orthogonal และ interaction ถูกต้องตามที่เป็นอยู่
 
@@ -83,7 +83,7 @@ cross-workspace delivery กับ trust gate compose กันเป็น **sa
 
 - **Network transport** peer บน local filesystem เท่านั้น transport แบบ ssh/http/queue เลื่อนออก (Trust v2 cross-workspace)
 - **Discovery** ไม่มี peer discovery อัตโนมัติ, broadcast, หรือ gossip peer ถูกประกาศด้วยมือ
-- **Cross-workspace trust** routing ส่งให้; การ *trust* sender ข้าม workspace เป็นเรื่องของ Trust v2 (ดู seam ข้างบน) จนกว่าจะถึงตอนนั้น sender ข้าม workspace คือคนแปลกหน้า (ถูก refuse เมื่อเปิด gating)
+- **Cross-workspace trust** routing ส่งให้; การ *trust* sender ข้าม workspace เป็นเรื่องของ Trust v2 (ดู seam ข้างบน) จนกว่าจะถึงตอนนั้น sender ข้าม workspace คือคนแปลกหน้า (ถูก refuse เมื่อ `BWOC_TRUST_GATING=1`)
 - **การป้องกัน loop / cycle** v1 ทำ single hop (local → peer หนึ่งตัว) การ forward หลาย hop (A→B→C) อยู่นอก scope; route resolve ไปยัง workspace ปลายทาง ไม่ใช่ตาราง routing อีกอัน
 - **routing ฝั่งอ่าน** `bwoc inbox` ยังอ่าน inbox ของ agent local ตัวเอง routing คุม `send` (delivery) ไม่ใช่การอ่านข้าม workspace
 
