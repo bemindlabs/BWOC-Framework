@@ -65,6 +65,7 @@ backend    = "ollama"
 model      = "<model>"
 endpoint   = "http://localhost:11434/v1"   # ไม่บังคับ
 max_tokens = 8192                          # ไม่บังคับ
+max_context = 32768                        # ไม่บังคับ: context window ของ model
 ```
 
 ไม่มี `schema_version` ถือเป็น legacy ถ้าเป็น revision ที่ใหม่กว่าจะถูกปฏิเสธพร้อม error ที่ระบุ `schema_version` key ที่ไม่รู้จักจะถูกข้าม
@@ -76,6 +77,8 @@ max_tokens = 8192                          # ไม่บังคับ
 3. คำสั่งของโปรเจกต์: `AGENTS.md` (ถ้าไม่มีใช้ `CLAUDE.md`) จากทุก directory ระหว่าง git root ถึง working directory เรียงจาก root ก่อน ใกล้ที่สุดอยู่ท้าย จำกัดรวม 32 KB โดยตัด directory ที่ไกลที่สุดก่อน
 
 บทสนทนาถูกบันทึกแยกตาม directory ไว้ใต้ `~/.bwoc/sessions/` ไม่เคยเขียนลงใน repository file tool ถูกจำกัดอยู่ใน working directory และการเขียน แก้ไฟล์ หรือรันคำสั่งจะถามก่อน (chat default policy) เว้นแต่ `.bwoc/harness-policy.toml` กำหนดไว้เป็นอย่างอื่น
+
+**Session ใช้เส้นทางเดียวกับ batch** การเรียก provider จะ retry เมื่อเจอ error ชั่วคราว และถ้า tool call ผิดรูปแบบซ้ำ ๆ จะย้ายไปใช้ fallback ถัดไปจาก `autoModels` server ของ `--mcp` / `--mcp-http` ถูกลงทะเบียนเหมือนใน `bwoc run` ทุก tool call ผ่าน capability gate, guardrail และ permission policy แล้วรันผ่าน turn executor และ OS sandbox เมื่อมีเนื้อหาที่ไม่น่าเชื่อถือ (output ของ tool หรือข้อความจาก connector) อยู่ในบทสนทนาแล้ว call ที่ถูก gate เช่น `run_command` ต้องได้ Allow อย่างชัดแจ้งแม้อยู่ใน bypass mode ส่วน session แบบ `--headless` จะปฏิเสธเหมือน batch การ compact คำนวณจาก context window ของ model: `max_context` (`--max-context`) ถ้าไม่มีใช้ค่าที่ provider รายงาน ถ้าไม่มีใช้ 200k token สำหรับ `anthropic` ไม่เช่นนั้นใช้ 8,000 token ข้อความ reasoning ที่ provider stream มาจะแสดงเป็นบรรทัดสีจางและยุบลงเมื่อคำตอบเริ่ม
 
 **Agent session ไม่เปลี่ยน** เมื่อ workdir มี `config.manifest.json` (`bwoc chat <agent>`) prompt ยังคงเป็น `AGENTS.md` ของ agent ตามด้วย index ของ `MEMORY.md` และตอนนี้ต่อท้ายด้วยบล็อก persona และ mindsets แบบย่อ: เนื้อหา `persona/README.md` และชื่อกับย่อหน้าแรกของแต่ละ mindset จำกัด 8 KB ส่วน public workdir ของ bwoc-connect (`.bwoc/public/…`) จะไม่อ่านคำสั่งจาก directory ที่อยู่เหนือตัวเองเลย
 
