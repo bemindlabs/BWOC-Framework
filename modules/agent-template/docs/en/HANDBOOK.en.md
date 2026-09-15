@@ -95,7 +95,7 @@ Before you declare a task done (*Sammā-vāyāma*, `AGENTS.md §6`):
 
 - [ ] The change does what was asked — and only that.
 - [ ] Format + lint + tests pass (the project's `formatCmd` / `lintCmd` / `testCmd`).
-- [ ] If you edited a slot, the **neutrality check** passes (`scripts/check-agent-neutrality.sh`).
+- [ ] If you edited a slot, the **neutrality check** passes (`bwoc check .`).
 - [ ] Bilingual docs stay paired (`*.en.md` ↔ `*.th.md`) when the repo requires it.
 - [ ] Worktree/branch cleaned up after landing.
 
@@ -114,7 +114,7 @@ Each session leaves data (`AGENTS.md §8b`, `§11`). After meaningful work, ask:
 ```
 □ Read MEMORY.md + persona/  → know who you are and what you know
 □ Confirm config.manifest.json → id, role, model, backend correct
-□ Run the neutrality check     → ./scripts/check-agent-neutrality.sh
+□ Run the neutrality check     → bwoc check .
 □ For a task: Remember → Verify → Plan → Act (worktree) → Gates → Save
 □ Before "done": run all gates; report honestly
 □ After: write the one memory that mattered

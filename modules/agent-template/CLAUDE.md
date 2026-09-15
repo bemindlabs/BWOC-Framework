@@ -8,15 +8,15 @@ The agent's behavioral instructions are in `AGENTS.md`. All other LLM backends (
 
 ## What This Repo Is
 
-A **backend-neutral agent template** (BWOC — Buddhist Way of Coding). The philosophical foundation is in `docs/en/PHILOSOPHY.en.md`. This repo contains no application code — only Markdown documentation, shell scripts, and symlinks.
+A **backend-neutral agent template** (BWOC — Buddhist Way of Coding). The philosophical foundation is in `docs/en/PHILOSOPHY.en.md`. This repo contains no application code — only Markdown documentation, a manifest, and symlinks.
 
 This `CLAUDE.md` is a **standalone file**, not a symlink. It contains template-repo-specific guidance for Claude Code. When agents clone this template, their own `CLAUDE.md` becomes a symlink to their `AGENTS.md`.
 
 ## Validation
 
 ```bash
-./scripts/check-agent-neutrality.sh      # validates backend neutrality
-./scripts/incarnate.sh <agent-name>      # clones template to new agent
+bwoc check .                 # validates backend neutrality
+bwoc new <agent-name>        # incarnates the template into a new agent
 ```
 
 ## Architecture
@@ -54,9 +54,9 @@ KIMI.md   → AGENTS.md
 | `AGENTS.md` | Agent instructions — single source of truth for all backends |
 | `CLAUDE.md` | This file — Claude Code guidance for the template repo itself |
 | `neutrality.md` | Why and how to keep profiles backend-neutral |
-| `trust-model.md` | T0–T3 trust pipeline for cloned agent security |
+| `interconnect/trust.md` | Kalyāṇamitta trust declarations and evidence rules |
 | `conventions.md` | Naming rules, placeholder table, YAML schemas, validation checklist |
 | `interconnect/` | Multi-agent coordination: capabilities, consensus, self-improvement |
-| `memories/memory.md` | Two-tier memory system spec |
+| `memories/README.md` | Two-tier memory system spec |
 | `docs/en/PHILOSOPHY.en.md` | 22 Buddhist frameworks — conceptual core |
 | `docs/en/SRS.en.md` | Requirements structured by Magga 8 |

@@ -86,7 +86,7 @@ daemon v1 ที่อ่าน manifest v2 จะ ignore field ที่ไม�
 
 ### Scaffolding ของ manifest
 
-template `incarnate.sh` และ (ในอนาคต) `bwoc new` จะ seed block `trust` ด้วย floor ที่สมเหตุสมผล: `requiredTrust: ["vatta", "noCatthana"]` — "พูดความจริงที่เป็นประโยชน์" + "ไม่ชักนำผิดทาง" สองคุณสมบัตินี้ Pi ระบุเป็น **minimum civic floor** ที่ peer ทุกตัวควรเรียกร้องตามเหตุผล agent ที่ incarnate ใหม่จึงเป็น "strict-ish out of the box" ในขณะที่ default ระดับ framework ยังคงเป็น permissive (agent เก่าไม่ได้รับผลกระทบ; การยอมรับผ่าน scaffold ≠ การพลิก default) หลีกเลี่ยง **vestigial-feature risk** ของกลไกปฏิเสธที่ไม่มีใคร opt-in
+floor ที่วางแผนไว้สำหรับ `bwoc new` จะ seed block `trust` ด้วย: `requiredTrust: ["vatta", "noCatthana"]` — "พูดความจริงที่เป็นประโยชน์" + "ไม่ชักนำผิดทาง" สองคุณสมบัตินี้ Pi ระบุเป็น **minimum civic floor** ที่ peer ทุกตัวควรเรียกร้องตามเหตุผล agent ที่ incarnate ใหม่จึงเป็น "strict-ish out of the box" ในขณะที่ default ระดับ framework ยังคงเป็น permissive (agent เก่าไม่ได้รับผลกระทบ; การยอมรับผ่าน scaffold ≠ การพลิก default) หลีกเลี่ยง **vestigial-feature risk** ของกลไกปฏิเสธที่ไม่มีใคร opt-in **ยังไม่ implement:** ตอนนี้ `bwoc new` ไม่เขียน block `trust`
 
 ## กฎหลักฐาน (สิ่งที่ `bwoc check` ตรวจ)
 
@@ -164,7 +164,7 @@ daemon รองรับ 3-state refusal mode ควบคุมด้วย fi
 - **v1.1 / 2026-05-23 (review Oracle + Pi):**
   - กฎ evidence ของ `gambhira` เขียนใหม่จาก "≥50 บรรทัด + Pali term mention" → "≥50 บรรทัด + wikilink `[[PHILOSOPHY.en.md]]`" ตาม Pi (จับ loophole keyword-sniff reuse infrastructure wikilink ที่มีอยู่)
   - เพิ่ม `trust.schemaVersion: 1`; document กฎ "field ที่ขาดใน `declared` → `false`" ตาม Pi (seam Anicca สำหรับ field v2 ในอนาคต)
-  - clause scaffolding: incarnate.sh / `bwoc new` seed `requiredTrust: ["vatta", "noCatthana"]` ตาม Pi (ป้องกัน vestigial-feature โดยไม่พลิก default ของ framework)
+  - clause scaffolding: scaffold การ incarnate (`bwoc new`) seed `requiredTrust: ["vatta", "noCatthana"]` ตาม Pi (ป้องกัน vestigial-feature โดยไม่พลิก default ของ framework)
   - section "Mode การปฏิเสธ" เพิ่ม วางแผน 3-state (`off` / `warn` / `refuse`) สำหรับ v2 ตาม Oracle (warn-by-default หลีกเลี่ยง security theater ในขณะที่เก็บข้อมูล)
 - **v2 / 2026-05-24 (Trust v2 warn-mode — Oracle, GH #6 / WS5):**
   - เพิ่ม enum `RefusalMode` (`off` | `warn` | `refuse`) ใน `bwoc-core::manifest::TrustBlock`

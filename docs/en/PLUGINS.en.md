@@ -552,6 +552,8 @@ A `memory-backend` plugin must work for any agent regardless of backend. An `llm
 
 ## Lifecycle
 
+> [!warning] Specified, not enforced by the runtime. No framework code dispatches `init` / `configure` / `teardown`, validates `[config.schema]`, or refuses to load a plugin whose `entry` binary or directory is missing. Enforced today: the `[plugin] compat` range (see Stability) and the `bwoc check` manifest audit.
+
 ```
 init  → configure → invoke (many) → teardown
 ```
@@ -573,6 +575,8 @@ Idempotency is a **hard requirement at every phase**. The framework may retry an
 | `audit` | `bwoc audit` CLI | First `bwoc audit run` that selects this plugin in the current invocation | Per `bwoc audit run [--plugin <name>]` operator invocation; never implicit |
 
 ### Hook contract — success, failure, partial state
+
+*(Specified, not enforced by the runtime — see [Lifecycle](#lifecycle).)*
 
 Plugins integrate via the `entry` field — either a binary on `PATH` or a sibling Rust crate. The contract is therefore expressed in both exit-code (binary) and return-value (crate) forms; the framework treats them as equivalent. For each hook, "success" and "failure" are the dispatch result the framework observes; "partial state" is the plugin author's responsibility to bound.
 
@@ -637,11 +641,11 @@ Schema for each `[plugins.<name>]` table:
 
 - `<name>` (table key, string, required) — the installed plugin's directory name under `modules/plugins/`. The key is the plugin name; `kind` is **not** declared in `workspace.toml` — it is owned by the plugin's own `manifest.toml` `[plugin].kind` field and read from there at load time.
 - `enabled` (bool, required) — gates whether the plugin is loaded at framework startup. Set `false` to keep the entry as documented intent without loading. Mirrors the `config.manifest.json skills.framework[] enabled` pattern in [`SKILLS.en.md`](SKILLS.en.md#discovery); flip with `bwoc plugin disable <name>` to preserve the entry.
-- All other keys (plugin-defined) — validated against the plugin's `[config.schema]` at framework startup. Refused on schema violation; never half-applied (see [Lifecycle](#lifecycle)).
+- All other keys (plugin-defined) — validated against the plugin's `[config.schema]` at framework startup (specified, not enforced). Refused on schema violation; never half-applied (see [Lifecycle](#lifecycle)).
 
 A missing `enabled` field is a manifest error — `bwoc check` rejects entries that omit it. There is no implicit default; explicit intent is the contract.
 
-At framework startup the runtime:
+At framework startup the runtime is specified to (**not enforced by the runtime** apart from the `compat` check — no startup loader validates `[config.schema]`, dispatches `init` / `configure`, or refuses a missing plugin today):
 
 1. Reads the `[plugins]` table from `workspace.toml`.
 2. Filters to entries where `enabled` is `true`. Entries with `enabled = false` are kept in `workspace.toml` (as documented intent) but skipped at load.

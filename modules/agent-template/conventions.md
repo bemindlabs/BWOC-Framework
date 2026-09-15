@@ -18,7 +18,7 @@ tags:
 
 | Tier | Audience | Format | Files |
 |---|---|---|---|
-| **Documentation** | Humans (Obsidian vault) | Obsidian Markdown | `README.md`, `conventions.md`, `neutrality.md`, `trust-model.md`, `persona/`, `memories/`, `skills/`, `mindsets/`, `projects/`, `docs/` |
+| **Documentation** | Humans (Obsidian vault) | Obsidian Markdown | `README.md`, `conventions.md`, `neutrality.md`, `interconnect/trust.md`, `persona/`, `memories/`, `skills/`, `mindsets/`, `projects/`, `docs/` |
 | **Instructions** | LLM backends | Plain Markdown | `AGENTS.md` (and symlinks: `AGY.md`, `CODEX.md`, `KIMI.md`) |
 
 `CLAUDE.md` is an exception — a real file with template-repo-specific guidance for Claude Code, not a symlink.
@@ -103,10 +103,10 @@ Double curly braces, camelCase:
 | `{{branchName}}` | Git branch | `feat/PROJ-42` |
 | `{{worktreePath}}` | Worktree directory | `/tmp/proj-42` |
 | `{{memoryPath}}` | File-based memory dir | `memories/` |
-| `{{sessionsPath}}` | Session data dir | `~/.claude/projects/` |
+| `{{sessionsPath}}` | Reserved / unused (written, never read) | — |
 | `{{deepMemoryCmd}}` | Tier 2 memory CLI | resolved at runtime |
 | `{{primaryModel}}` | Primary LLM model ID | resolved at runtime |
-| `{{fallbackModel}}` | Fallback LLM model ID | resolved at runtime |
+| `{{fallbackModel}}` | Fallback model ID — metadata only, not a runtime fallback | set at incarnation |
 | `{{lintCmd}}` | Lint command | resolved at runtime |
 | `{{formatCmd}}` | Format command | resolved at runtime |
 | `{{testCmd}}` | Test command | resolved at runtime |
@@ -198,20 +198,15 @@ MemoryType:
 ### AgentConfig
 
 ```yaml
-AgentConfig:
+AgentConfig:                    # crates/bwoc-core/src/manifest.rs
   agentId: string
-  model: string
-  fallbackModel?: string
-  maxConcurrentTasks: number    # default: 3
-  worktreeIsolation: boolean    # default: true
-  worktreeBase: string          # default: "/tmp"
-  memory: MemoryConfig
-
-MemoryConfig:
-  fileBasedPath: string
+  primaryModel: string          # model ID, or "auto" (picks from autoModels)
+  fallbackModel?: string        # metadata only — not a runtime fallback
+  autoModels?: string[]
+  memoryPath: string            # default: "memories/"
   deepMemoryCmd?: string
-  wakeUpOnStart: boolean        # default: true
-  maxMemoryIndexLines: number   # default: 200
+  worktreeBase?: string         # default: "/tmp"
+  sessionsPath?: string         # reserved / unused
 ```
 
 ### SessionMetrics
@@ -266,7 +261,7 @@ Before committing agent profile files:
 - [ ] No backend-specific language ("Claude will...", "Antigravity supports...")
 - [ ] All backend-varying config uses `{{camelCase}}` placeholders
 - [ ] Symlinks point to `AGENTS.md`
-- [ ] Run `scripts/check-agent-neutrality.sh` — 0 violations
+- [ ] Run `bwoc check` — 0 violations
 
 ---
 
@@ -274,6 +269,6 @@ Before committing agent profile files:
 
 - [[README|Agent Template]] — template overview
 - [[neutrality|Neutrality]] — backend-neutral cloning design
-- [[trust-model|Trust Model]] — external agent cloning security
+- [[interconnect/trust|Trust]] — trust declarations for peer agents
 - [[docs/en/PHILOSOPHY.en.md|Philosophy]] — 22 Buddhist frameworks
 - [`docs/en/NAMING.en.md`](../../docs/en/NAMING.en.md) — full `*.md` naming standard (12 categories)

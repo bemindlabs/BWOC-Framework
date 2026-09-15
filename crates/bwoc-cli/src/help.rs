@@ -327,7 +327,7 @@ Schema (resolved by `bwoc new`, written verbatim — no placeholders):
     autoModels        ordered candidate pool used when primaryModel=\"auto\"
                       (this is the actual runtime model-fallback mechanism)
     reasoningEffort   optional backend effort control (e.g. \"medium\")
-    sessionsPath      session data dir for Tier 2 memory mining
+    sessionsPath      reserved; written but not read by any runtime
     deepMemoryCmd     Tier 2 memory CLI command
     worktreeBase      base path for spawned worktrees
 

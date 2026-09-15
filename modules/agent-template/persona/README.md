@@ -19,7 +19,7 @@ tags:
 | **Agent ID** | `agent-{{name}}` |
 | **Role** | `{{agentRole}}` |
 | **Model** | `{{primaryModel}}` |
-| **Fallback** | `{{fallbackModel}}` |
+| **Fallback** (metadata only) | `{{fallbackModel}}` |
 
 ## Primary Role
 
@@ -48,4 +48,4 @@ Describe what this agent does in 1–3 sentences. What is its primary function?
 
 ## Supported LLM Backends
 
-Backends consume this persona through `AGENTS.md`: vendor-CLI backends via their entry file (see `neutrality.md`), harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) by loading `AGENTS.md` directly — no backend-specific persona file is needed.
+No backend loads this file into the prompt. Every backend — vendor CLIs via their entry file (see `neutrality.md`), harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) directly — reads `AGENTS.md`, whose Section 1 carries the identity fields `bwoc new` fills from the manifest. This file is reference material the agent sees only if it reads it.

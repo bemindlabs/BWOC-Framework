@@ -17,7 +17,7 @@ convention เดียวที่สอดคล้องสำหรับท
 | 1 | Metadata ระดับ project | repo root | `UPPERCASE.md` | `README.md` · `LICENSE` · `CHANGELOG.md` · `VERSION.md` · `VISION.md` · `SECURITY.md` · `CODE_OF_CONDUCT.md` · `CONTRIBUTING.md` |
 | 2 | คำแปลระดับ project | repo root | `UPPERCASE.<lang>.md` | `VISION.th.md` |
 | 3 | เอกสารสเปก | `docs/<lang>/` | `UPPERCASE.<lang>.md` | `PHILOSOPHY.en.md` · `GLOSSARY.th.md` · `ARCHITECTURE.en.md` · `INCARNATION.th.md` · `WORKSPACE.en.md` |
-| 4 | prose ของ template / module | `modules/<x>/` | `lowercase-hyphen.md` | `conventions.md` · `neutrality.md` · `trust-model.md` |
+| 4 | prose ของ template / module | `modules/<x>/` | `lowercase-hyphen.md` | `conventions.md` · `neutrality.md` · `capabilities.md` |
 | 5 | Landing ของ slot (Obsidian) | `modules/<x>/<slot>/` | `README.md` | `memories/README.md` · `persona/README.md` |
 | 6 | เอกสารของ crate | `crates/<crate>/` | `README.md` | `crates/bwoc-cli/README.md` |
 | 7 | นิยาม skill | `.claude/skills/<name>/` | `SKILL.md` | `.claude/skills/incarnate/SKILL.md` |
