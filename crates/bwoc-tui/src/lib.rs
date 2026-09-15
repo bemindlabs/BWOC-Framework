@@ -157,9 +157,7 @@ pub fn run(args: TuiArgs) -> i32 {
         .args(&argv)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // Let the child's stderr pass through to ours; on the alt-screen it is
-        // mostly invisible but still captured by any redirect the user set.
-        .stderr(Stdio::inherit())
+        .stderr(harness_stderr())
         .spawn()
     {
         Ok(c) => c,
@@ -1598,6 +1596,33 @@ fn draw_fleet_sidebar(f: &mut ratatui::Frame, area: Rect, fleet: &Fleet) {
     f.render_widget(List::new(items).block(block), area);
 }
 
+/// Stderr for a TUI-spawned harness. Inherited stderr on a terminal paints
+/// over the alternate screen (sandbox warnings land mid-conversation), so it is
+/// appended to `~/.bwoc/logs/tui-harness.log` instead. A redirected stderr is
+/// kept, so a shell capture still sees a crashed session.
+pub(crate) fn harness_stderr() -> Stdio {
+    use std::io::IsTerminal as _;
+    if !io::stderr().is_terminal() {
+        return Stdio::inherit();
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    harness_log_path(home.map(PathBuf::from))
+        .and_then(|path| {
+            std::fs::create_dir_all(path.parent()?).ok()?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::inherit)
+}
+
+fn harness_log_path(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|h| h.join(".bwoc").join("logs").join("tui-harness.log"))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2153,5 +2178,14 @@ mod tests {
             screen.contains("[a]llow") && screen.contains("[d]eny"),
             "prompt actions:\n{screen}"
         );
+    }
+
+    #[test]
+    fn harness_log_lives_under_bwoc_home() {
+        assert_eq!(
+            harness_log_path(Some(PathBuf::from("/h"))),
+            Some(PathBuf::from("/h/.bwoc/logs/tui-harness.log"))
+        );
+        assert_eq!(harness_log_path(None), None);
     }
 }
