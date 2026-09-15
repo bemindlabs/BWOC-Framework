@@ -26,7 +26,9 @@
 //!   ┌ input ───────────────────────────────────────────┐
 //!
 //! Keys: Enter sends the input buffer as `ChatInput::User`; on a pending
-//! permission request `a`/`d` allow/deny; Ctrl-C (or `q` when input is empty)
+//! permission request `a`/`d` allow/deny (only on an empty input line, once the
+//! prompt has been up for a moment, so a prompt that appears mid-sentence never
+//! consumes typed letters); Ctrl-C (or `q` when input is empty)
 //! sends `Quit`, restores the terminal, and exits. In the fleet, a line that
 //! begins with `@<agent>` routes the rest of the message to that fleet member's
 //! live session (opening its pane and switching to it).
@@ -296,6 +298,26 @@ struct Pending {
     id: String,
     tool: String,
     detail: String,
+    shown_at: std::time::Instant,
+}
+
+/// How long a permission prompt must be on screen before `a`/`d` answer it.
+/// A prompt can appear while the operator is typing; a letter already on its
+/// way is typing, not consent.
+const PERMISSION_KEY_GRACE: Duration = Duration::from_millis(500);
+
+/// `Some(allow)` when `code` answers a pending permission prompt: `a` or `d` on
+/// an empty input line, after [`PERMISSION_KEY_GRACE`]. Otherwise the key is
+/// ordinary input.
+fn permission_answer(code: KeyCode, input_empty: bool, shown_for: Duration) -> Option<bool> {
+    if !input_empty || shown_for < PERMISSION_KEY_GRACE {
+        return None;
+    }
+    match code {
+        KeyCode::Char('a') => Some(true),
+        KeyCode::Char('d') => Some(false),
+        _ => None,
+    }
 }
 
 struct App {
@@ -469,9 +491,15 @@ impl App {
             ChatEvent::PermissionRequest { id, tool, detail } => {
                 // Inline in the transcript, with the key affordance shown where
                 // the operator is already reading (the input border echoes it too).
-                self.conversation
-                    .push(format!("⚠ permission: {tool} — {detail}  [a]llow / [d]eny"));
-                self.pending = Some(Pending { id, tool, detail });
+                self.conversation.push(format!(
+                    "⚠ permission: {tool} — {detail}  [a]llow / [d]eny on an empty input line"
+                ));
+                self.pending = Some(Pending {
+                    id,
+                    tool,
+                    detail,
+                    shown_at: std::time::Instant::now(),
+                });
             }
             ChatEvent::ModeChanged { mode } => {
                 self.conversation.push(format!("● permission mode: {mode}"));
@@ -622,30 +650,19 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         return Ok(true);
     }
 
-    // A pending permission request captures a/d (and only those); anything else
-    // falls through so the user can keep typing while deciding.
-    if let Some(p) = &app.pending {
-        match code {
-            KeyCode::Char('a') => {
-                let id = p.id.clone();
-                let tool = p.tool.clone();
-                app.pending = None;
-                app.conversation.push(format!("✓ allowed {tool}"));
-                app.scroll = 0; // show the decision even if scrolled up
-                send_input(stdin, &ChatInput::Permission { id, allow: true })?;
-                return Ok(false);
-            }
-            KeyCode::Char('d') => {
-                let id = p.id.clone();
-                let tool = p.tool.clone();
-                app.pending = None;
-                app.conversation.push(format!("✗ denied {tool}"));
-                app.scroll = 0; // show the decision even if scrolled up
-                send_input(stdin, &ChatInput::Permission { id, allow: false })?;
-                return Ok(false);
-            }
-            _ => {}
-        }
+    // A pending permission request captures a/d (see `permission_answer`);
+    // anything else falls through so the user can keep typing while deciding.
+    if let Some(p) = &app.pending
+        && let Some(allow) = permission_answer(code, app.input.is_empty(), p.shown_at.elapsed())
+    {
+        let id = p.id.clone();
+        let tool = p.tool.clone();
+        app.pending = None;
+        let mark = if allow { "✓ allowed" } else { "✗ denied" };
+        app.conversation.push(format!("{mark} {tool}"));
+        app.scroll = 0; // show the decision even if scrolled up
+        send_input(stdin, &ChatInput::Permission { id, allow })?;
+        return Ok(false);
     }
 
     // Scrollback navigation (PageUp/PageDown/End) — before input editing.
@@ -910,7 +927,14 @@ fn transcript_style(line: &str) -> Style {
 fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let (title, border) = match &app.pending {
         Some(p) => (
-            format!(" permission: {} ({}) — [a]llow / [d]eny ", p.tool, p.detail),
+            if app.input.is_empty() {
+                format!(" permission: {} ({}) — [a]llow / [d]eny ", p.tool, p.detail)
+            } else {
+                format!(
+                    " permission: {} ({}) — clear the input, then [a]llow / [d]eny ",
+                    p.tool, p.detail
+                )
+            },
             Style::default()
                 .fg(tone(design::color::WARNING))
                 .add_modifier(Modifier::BOLD),
@@ -1349,33 +1373,27 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
         return Ok(false);
     };
 
-    // A pending approval on the active pane captures a/d.
-    let pending = fleet.panes.get(&id).and_then(|p| {
-        p.pending
-            .as_ref()
-            .map(|pd| (pd.id.clone(), pd.tool.clone()))
+    // A pending approval on the active pane captures a/d (see `permission_answer`).
+    let answer = fleet.panes.get(&id).and_then(|p| {
+        let pd = p.pending.as_ref()?;
+        let allow = permission_answer(code, p.input.is_empty(), pd.shown_at.elapsed())?;
+        Some((pd.id.clone(), pd.tool.clone(), allow))
     });
-    if let Some((pid, tool)) = pending {
-        match code {
-            KeyCode::Char('a') | KeyCode::Char('d') => {
-                let allow = code == KeyCode::Char('a');
-                if let Some(s) = fleet.sessions.get_mut(&id) {
-                    s.send(&ChatInput::Permission { id: pid, allow });
-                }
-                if let Some(p) = fleet.panes.get_mut(&id) {
-                    p.pending = None;
-                    // Name the tool so the decision is unambiguous in the shared
-                    // transcript (matches the single-agent handler).
-                    p.conversation.push(format!(
-                        "{} {tool}",
-                        if allow { "✓ allowed" } else { "✗ denied" }
-                    ));
-                    p.scroll = 0;
-                }
-                return Ok(false);
-            }
-            _ => {}
+    if let Some((pid, tool, allow)) = answer {
+        if let Some(s) = fleet.sessions.get_mut(&id) {
+            s.send(&ChatInput::Permission { id: pid, allow });
         }
+        if let Some(p) = fleet.panes.get_mut(&id) {
+            p.pending = None;
+            // Name the tool so the decision is unambiguous in the shared
+            // transcript (matches the single-agent handler).
+            p.conversation.push(format!(
+                "{} {tool}",
+                if allow { "✓ allowed" } else { "✗ denied" }
+            ));
+            p.scroll = 0;
+        }
+        return Ok(false);
     }
 
     // Scrollback on the active pane (PageUp/PageDown/End).
@@ -2187,5 +2205,27 @@ mod tests {
             Some(PathBuf::from("/h/.bwoc/logs/tui-harness.log"))
         );
         assert_eq!(harness_log_path(None), None);
+    }
+
+    #[test]
+    fn permission_keys_never_consume_typing() {
+        let late = PERMISSION_KEY_GRACE + Duration::from_millis(1);
+        assert_eq!(
+            permission_answer(KeyCode::Char('a'), true, late),
+            Some(true)
+        );
+        assert_eq!(
+            permission_answer(KeyCode::Char('d'), true, late),
+            Some(false)
+        );
+        // Mid-sentence: the letter is input, not an answer.
+        assert_eq!(permission_answer(KeyCode::Char('a'), false, late), None);
+        assert_eq!(permission_answer(KeyCode::Char('d'), false, late), None);
+        // A prompt that just appeared under a typing burst is not answered.
+        assert_eq!(
+            permission_answer(KeyCode::Char('a'), true, Duration::ZERO),
+            None
+        );
+        assert_eq!(permission_answer(KeyCode::Char('x'), true, late), None);
     }
 }
