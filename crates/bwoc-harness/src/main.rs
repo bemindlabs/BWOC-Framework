@@ -1263,6 +1263,8 @@ async fn run_chat_mode(
     // literal string "auto" — which no provider serves — so an agent configured
     // `primaryModel: "auto"` cannot chat (#347). Chat is interactive, so there is
     // no `--task` to classify: the resolver picks its default from the pool.
+    // As in run(): the remaining available auto candidates are the fallback chain.
+    let mut fallback_models: Vec<String> = Vec::new();
     let resolved_model = if args.model == bwoc_harness::model_select::AUTO_SENTINEL {
         // Progress goes to STDERR: in chat/headless mode stdout carries the
         // `chat_proto` JSON-line protocol, so a stray human line there would
@@ -1287,6 +1289,7 @@ async fn run_chat_mode(
         let sel =
             bwoc_harness::model_select::resolve_auto(provider.as_ref(), &candidates, "").await?;
         eprintln!("[bwoc-harness] auto model → {}", sel.chosen);
+        fallback_models = sel.remaining;
         sel.chosen
     } else {
         args.model.clone()
@@ -1368,6 +1371,7 @@ async fn run_chat_mode(
     let config = ChatConfig {
         agent,
         model: resolved_model.clone(),
+        fallback_models,
         backend: args.backend.clone(),
         system_prompt,
         policy,

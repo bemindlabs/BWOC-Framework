@@ -152,13 +152,37 @@ pub(super) struct ToolCallResult {
     pub(super) capability_denied: bool,
 }
 
+/// A streamed delta surfaced live to an interactive frontend (`--chat`) while
+/// the accumulator still folds the whole response into one [`ChatMessage`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LiveDelta {
+    /// Assistant content text.
+    Content(String),
+}
+
+/// A sink for [`LiveDelta`]s. `None` everywhere except the chat driver.
+pub(crate) type LiveSink<'a> = Option<&'a mut (dyn FnMut(LiveDelta) + Send)>;
+
 /// Stream a response and accumulate content + tool_calls into a single
 /// [`ChatMessage`] as if it were a non-streaming completion.
+#[cfg(test)]
 pub(super) async fn stream_and_accumulate(
     provider: &dyn ProviderClient,
     messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::Tool>,
     model: &str,
+) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
+    stream_and_accumulate_live(provider, messages, tools, model, None).await
+}
+
+/// [`stream_and_accumulate`], additionally handing each delta to `live` as it
+/// arrives (the chat driver renders tokens from this).
+pub(super) async fn stream_and_accumulate_live(
+    provider: &dyn ProviderClient,
+    messages: Vec<ChatMessage>,
+    tools: Vec<crate::provider::Tool>,
+    model: &str,
+    mut live: LiveSink<'_>,
 ) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)> {
     use futures_util::StreamExt;
 
@@ -188,6 +212,11 @@ pub(super) async fn stream_and_accumulate(
 
             if let Some(content) = delta.content {
                 content_buf.push_str(&content);
+                if let Some(sink) = live.as_deref_mut() {
+                    if !content.is_empty() {
+                        sink(LiveDelta::Content(content));
+                    }
+                }
             }
 
             if let Some(tc_deltas) = delta.tool_calls {

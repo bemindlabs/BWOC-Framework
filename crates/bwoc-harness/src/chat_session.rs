@@ -19,11 +19,12 @@
 //! routed to the frontend via a [`ChatEvent::PermissionRequest`] and answered
 //! with a [`ChatInput::Permission`].
 //!
-//! # Scope (v1)
+//! # Scope
 //!
-//! Streaming token deltas (`Token` events), then a final `Message`. No MCP /
-//! checkpoint / eval / budget — those belong to the batch `run_loop`, not this
-//! interactive driver.
+//! Streaming token deltas (`Token` events), then a final `Message`. Provider
+//! calls go through the batch loop's retry path, and repeated malformed tool
+//! calls step to the next fallback model, as in `run_loop`. No checkpoint /
+//! eval / budget — those belong to the batch `run_loop`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +46,10 @@ pub struct ChatConfig {
     pub agent: String,
     /// Model identifier passed to the provider on every turn.
     pub model: String,
+    /// Ordered fallback models (the batch loop's error-based chain): after
+    /// `MALFORMED_TOOL_CALL_THRESHOLD` consecutive malformed tool-call responses
+    /// the session moves to the next one. Empty = no fallback.
+    pub fallback_models: Vec<String>,
     /// Backend label (e.g. `"ollama"`), for the [`ChatEvent::Ready`] status line.
     pub backend: String,
     /// System prompt loaded from `AGENTS.md` / `CLAUDE.md`.
@@ -101,6 +106,7 @@ impl Default for ChatConfig {
         Self {
             agent: "agent".to_string(),
             model: "gemma4".to_string(),
+            fallback_models: Vec::new(),
             backend: "ollama".to_string(),
             system_prompt: String::new(),
             policy: Policy::default(),
@@ -184,6 +190,50 @@ impl SessionMode {
     }
 }
 
+/// The session's model chain: primary then fallbacks, with the batch loop's
+/// malformed-tool-call counter.
+struct ModelChain {
+    models: Vec<String>,
+    idx: usize,
+    malformed: u32,
+}
+
+impl ModelChain {
+    fn new(config: &ChatConfig) -> Self {
+        let mut models = vec![config.model.clone()];
+        models.extend(config.fallback_models.iter().cloned());
+        Self {
+            models,
+            idx: 0,
+            malformed: 0,
+        }
+    }
+
+    fn active(&self) -> &str {
+        &self.models[self.idx]
+    }
+
+    /// Record one response's tool calls. Returns the model switched to when the
+    /// malformed threshold is reached and a fallback remains. Without a fallback
+    /// the response is kept and dispatched as before: the tools reject the bad
+    /// arguments and the model can correct itself.
+    fn observe(&mut self, calls: &[ToolCall]) -> Option<String> {
+        if calls.is_empty() || !crate::agent_loop::has_malformed_tool_calls(calls) {
+            self.malformed = 0;
+            return None;
+        }
+        self.malformed += 1;
+        if self.malformed >= crate::agent_loop::MALFORMED_TOOL_CALL_THRESHOLD
+            && self.idx + 1 < self.models.len()
+        {
+            self.idx += 1;
+            self.malformed = 0;
+            return Some(self.active().to_string());
+        }
+        None
+    }
+}
+
 /// Run an interactive chat session against real stdin/stdout.
 ///
 /// Reads [`ChatInput`] lines from stdin and writes [`ChatEvent`] lines to
@@ -245,6 +295,8 @@ where
     // this session has already injected. Starts at 0 so the first user turn
     // pulls in any backlog of peer messages already on the log.
     let mut team_seen: usize = 0;
+
+    let mut models = ModelChain::new(&config);
 
     // Sorted so the `Ready.tools` list is stable across runs (the registry is a
     // HashMap → non-deterministic iteration order).
@@ -381,7 +433,7 @@ where
                         // when the manifest configures deepMemoryCmd.
                         let outcome = crate::compact::compact_context(
                             &*provider,
-                            &config.model,
+                            models.active(),
                             config.max_context_tokens,
                             &mut history,
                             &ctx.workdir,
@@ -412,6 +464,7 @@ where
                         &mut completion_tokens,
                         &mut session_mode,
                         &mut interjection,
+                        &mut models,
                     )
                     .await?;
                     // Persist the conversation after the turn settles (incl. tool
@@ -595,12 +648,11 @@ fn restored_display(msg: &ChatMessage) -> Option<(&'static str, String)> {
     }
 }
 
-/// Stream the assistant response, emitting a `Token` event for every content
-/// delta as it arrives, and accumulate the full message (content, tool_calls,
-/// usage) — the streaming analogue of `provider.complete()`, but the frontend
-/// renders tokens live. Mirrors `agent_loop::stream_and_accumulate`, adding the
-/// per-delta `Token` emit.
-async fn stream_turn<W>(
+/// One provider call through the batch loop's retry path
+/// ([`crate::agent_loop::call_with_retry_live`]), forwarding each streamed delta
+/// to the frontend as it arrives. The provider future and the emitter share a
+/// channel, so events stay in stream order while the call is still running.
+async fn stream_call<W>(
     provider: &dyn ProviderClient,
     messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::Tool>,
@@ -610,89 +662,40 @@ async fn stream_turn<W>(
 where
     W: AsyncWriteExt + Unpin,
 {
-    use futures_util::StreamExt;
+    use crate::agent_loop::LiveDelta;
 
-    #[derive(Default)]
-    struct Acc {
-        id: String,
-        kind: String,
-        name: String,
-        args: String,
-    }
-
-    let mut stream = provider.stream(messages, tools, model).await?;
-    let mut content = String::new();
-    let mut calls: std::collections::HashMap<u32, Acc> = std::collections::HashMap::new();
-    let mut usage: Option<crate::provider::Usage> = None;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        if chunk.usage.is_some() {
-            usage = chunk.usage;
-        }
-        for sd in chunk.choices {
-            if let Some(text) = sd.delta.content {
-                if !text.is_empty() {
-                    // Accumulate by borrow, then move the owned delta into the
-                    // event — no per-token clone.
-                    content.push_str(&text);
-                    emit(out, &ChatEvent::Token { text }).await?;
-                }
-            }
-            if let Some(tcs) = sd.delta.tool_calls {
-                for tc in tcs {
-                    let acc = calls.entry(tc.index).or_default();
-                    if let Some(id) = tc.id {
-                        acc.id = id;
-                    }
-                    if let Some(kind) = tc.r#type {
-                        acc.kind = kind;
-                    }
-                    if let Some(func) = tc.function {
-                        if let Some(name) = func.name {
-                            acc.name = name;
-                        }
-                        if let Some(args) = func.arguments {
-                            acc.args.push_str(&args);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let tool_calls: Vec<ToolCall> = if calls.is_empty() {
-        Vec::new()
-    } else {
-        let mut sorted: Vec<_> = calls.into_iter().collect();
-        sorted.sort_by_key(|(idx, _)| *idx);
-        sorted
-            .into_iter()
-            .map(|(_, a)| ToolCall {
-                id: a.id,
-                kind: a.kind,
-                function: crate::provider::FunctionCall {
-                    name: a.name,
-                    arguments: a.args,
-                },
-            })
-            .collect()
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LiveDelta>();
+    let call = async move {
+        // Owning `tx` here means the channel closes when the call finishes,
+        // which ends the drain loop below.
+        let mut sink = move |d: LiveDelta| {
+            let _ = tx.send(d);
+        };
+        crate::agent_loop::call_with_retry_live(provider, messages, tools, model, &mut sink).await
     };
+    let drain = async {
+        while let Some(delta) = rx.recv().await {
+            let event = match delta {
+                LiveDelta::Content(text) => ChatEvent::Token { text },
+            };
+            emit(out, &event).await?;
+        }
+        Ok::<(), HarnessError>(())
+    };
+    let (result, drained) = tokio::join!(call, drain);
+    drained?;
+    let (message, usage) = result?;
 
-    // A stream that yielded neither content nor tool calls (e.g. a usage-only
-    // chunk, or an early termination) is a provider fault — surface it as an
-    // error so the caller emits `Error` + `TurnEnd`, rather than an empty
-    // `Message` that masks the failure. (Matches the old empty-completion guard.)
-    if content.is_empty() && tool_calls.is_empty() {
+    // A response with neither content nor tool calls (a usage-only stream, an
+    // early termination) is a provider fault: surface it as an error rather than
+    // an empty `Message` that masks the failure.
+    let empty_content = message.content.as_deref().is_none_or(str::is_empty);
+    let no_calls = message.tool_calls.as_ref().is_none_or(Vec::is_empty);
+    if empty_content && no_calls {
         return Err(HarnessError::Provider(
             "provider returned an empty response (no content, no tool calls)".to_string(),
         ));
     }
-
-    let message = ChatMessage::assistant(
-        (!content.is_empty()).then_some(content),
-        (!tool_calls.is_empty()).then_some(tool_calls),
-    );
     Ok((message, usage))
 }
 
@@ -715,6 +718,7 @@ async fn run_turn<R, W>(
     completion_tokens: &mut u64,
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
+    models: &mut ModelChain,
 ) -> HarnessResult<()>
 where
     R: AsyncBufReadExt + Unpin,
@@ -745,12 +749,12 @@ where
             return Ok(());
         }
 
-        // ── Provider call (streaming) — emit `Token` deltas live ─────────────
-        let (message, usage) = match stream_turn(
+        // ── Provider call (streaming, with retry) — emit `Token` deltas live ──
+        let (message, usage) = match stream_call(
             provider,
             history.clone(),
             tools.to_vec(),
-            &config.model,
+            models.active(),
             out,
         )
         .await
@@ -776,6 +780,24 @@ where
         }
 
         let tool_calls = message.tool_calls.clone().unwrap_or_default();
+
+        // Repeated malformed tool calls: move to the next fallback model and
+        // retry this step without keeping the bad response (as `run_loop` does).
+        if let Some(next) = models.observe(&tool_calls) {
+            emit(
+                out,
+                &ChatEvent::Error {
+                    message: format!(
+                        "the model returned malformed tool calls {} times in a row; \
+                         switching to fallback model `{next}`",
+                        crate::agent_loop::MALFORMED_TOOL_CALL_THRESHOLD
+                    ),
+                },
+            )
+            .await?;
+            iterations -= 1;
+            continue;
+        }
 
         if tool_calls.is_empty() {
             // Final answer for this turn.
@@ -1163,12 +1185,19 @@ mod tests {
 
     struct MockProvider {
         responses: Mutex<Vec<Result<ChatCompletion, HarnessError>>>,
+        /// The model named on each `stream` call, in order.
+        models: Mutex<Vec<String>>,
     }
 
     impl MockProvider {
         fn new(responses: Vec<ChatCompletion>) -> Self {
+            Self::scripted(responses.into_iter().map(Ok).collect())
+        }
+
+        fn scripted(responses: Vec<Result<ChatCompletion, HarnessError>>) -> Self {
             Self {
-                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+                responses: Mutex::new(responses),
+                models: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1192,11 +1221,12 @@ mod tests {
             &self,
             _messages: Vec<ChatMessage>,
             _tools: Vec<Tool>,
-            _model: &str,
+            model: &str,
         ) -> Result<
             Pin<Box<dyn Stream<Item = Result<StreamChunk, HarnessError>> + Send>>,
             HarnessError,
         > {
+            self.models.lock().unwrap().push(model.to_string());
             // Convert the next queued completion into a single stream chunk so
             // the streaming driver sees the same turn the non-streaming path did.
             let mut lock = self.responses.lock().unwrap();
@@ -1297,6 +1327,7 @@ mod tests {
         ChatConfig {
             agent: "agent-test".to_string(),
             model: "mock".to_string(),
+            fallback_models: Vec::new(),
             backend: "mock".to_string(),
             system_prompt: "You are a test agent.".to_string(),
             policy,
@@ -1709,6 +1740,110 @@ mod tests {
                 .any(|e| matches!(e, ChatEvent::Message { text } if text == "second answer"))
         );
         assert!(matches!(events.last(), Some(ChatEvent::Bye)));
+    }
+
+    /// Drive a scripted session and return the parsed events.
+    async fn drive_events(
+        provider: Arc<MockProvider>,
+        cfg: ChatConfig,
+        stdin: &str,
+        workdir: &std::path::Path,
+    ) -> Vec<ChatEvent> {
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        drive(
+            provider,
+            registry,
+            ToolContext::new(workdir),
+            cfg,
+            lines,
+            &mut out,
+        )
+        .await
+        .unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    const HI_THEN_QUIT: &str = "{\"type\":\"user\",\"text\":\"hi\"}\n{\"type\":\"quit\"}\n";
+
+    #[tokio::test]
+    async fn transient_provider_error_is_retried_like_batch() {
+        // The batch retry path now fronts chat: a transient failure before any
+        // token arrives is retried, so the turn completes with no Error event.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::scripted(vec![
+            Err(HarnessError::TransientProvider {
+                msg: "503".to_string(),
+                retry_after: Some(std::time::Duration::from_millis(1)),
+            }),
+            Ok(final_response("after retry")),
+        ]));
+        let events = drive_events(provider, config(allow_all()), HI_THEN_QUIT, tmp.path()).await;
+        assert!(
+            !events.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a retried transient error must not surface: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Message { text } if text == "after retry"))
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_malformed_tool_calls_switch_to_fallback_model() {
+        let tmp = TempDir::new().unwrap();
+        let malformed = || {
+            let mut c = tool_call_response("read_file", "{not json");
+            c.choices[0].message.tool_calls.as_mut().unwrap()[0].id = String::new();
+            c
+        };
+        let provider = Arc::new(MockProvider::new(vec![
+            malformed(),
+            malformed(),
+            final_response("fallback answered"),
+        ]));
+        let cfg = ChatConfig {
+            fallback_models: vec!["fallback".to_string()],
+            ..config(allow_all())
+        };
+        let events = drive_events(provider.clone(), cfg, HI_THEN_QUIT, tmp.path()).await;
+        // Two malformed responses on the primary, then the fallback serves.
+        // (The first malformed batch is still dispatched; the tool rejects it.)
+        assert_eq!(
+            *provider.models.lock().unwrap(),
+            vec!["mock", "mock", "fallback"]
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, ChatEvent::Error { message } if message.contains("fallback model `fallback`"))
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Message { text } if text == "fallback answered"))
+        );
+    }
+
+    #[test]
+    fn model_chain_without_fallback_never_switches() {
+        let mut chain = ModelChain::new(&config(allow_all()));
+        let bad = vec![ToolCall {
+            id: String::new(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "read_file".to_string(),
+                arguments: "{".to_string(),
+            },
+        }];
+        for _ in 0..5 {
+            assert_eq!(chain.observe(&bad), None);
+        }
+        assert_eq!(chain.active(), "mock");
     }
 
     #[tokio::test]

@@ -94,11 +94,16 @@ mod execute;
 mod provider;
 
 use context::{
-    CONTEXT_HEADROOM_FRAC, MALFORMED_TOOL_CALL_THRESHOLD, estimate_context_tokens,
-    find_larger_vetted_model, has_malformed_tool_calls, model_effective_limit,
+    CONTEXT_HEADROOM_FRAC, estimate_context_tokens, find_larger_vetted_model, model_effective_limit,
 };
 use execute::execute_tool_calls;
 use provider::call_with_retry_v2;
+
+// Shared with the `--chat` driver so it runs the same provider/retry path and
+// fallback rule as the batch loop.
+pub(crate) use context::{MALFORMED_TOOL_CALL_THRESHOLD, has_malformed_tool_calls};
+pub(crate) use execute::LiveDelta;
+pub(crate) use provider::call_with_retry_live;
 
 // ---------------------------------------------------------------------------
 // Vetted-model mode
