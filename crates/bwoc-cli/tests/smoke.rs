@@ -116,6 +116,49 @@ fn end_to_end_init_new_list() {
     );
 }
 
+/// A deprecated alias must be the canonical command plus one stderr line:
+/// identical stdout and exit code, and `BWOC_NO_DEPRECATION_WARNINGS=1` silences it.
+#[test]
+fn deprecated_alias_warns_on_stderr_only() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let ws = tmp.path();
+    let ok = Command::new(bin()).args(["init"]).arg(ws).output();
+    assert!(ok.is_ok_and(|o| o.status.success()), "init failed");
+
+    let run = |args: &[&str], silence: bool| {
+        let mut cmd = Command::new(bin());
+        cmd.args(args)
+            .arg("--workspace")
+            .arg(ws)
+            .env_remove("BWOC_NO_DEPRECATION_WARNINGS")
+            .env("BWOC_NO_WHATSNEW", "1")
+            .env("BWOC_NO_UPDATE_CHECK", "1");
+        if silence {
+            cmd.env("BWOC_NO_DEPRECATION_WARNINGS", "1");
+        }
+        cmd.output().expect("spawn bwoc")
+    };
+
+    let canonical = run(&["doc", "list", "notes"], false);
+    let old = run(&["notes", "list"], false);
+    assert_eq!(old.status.code(), canonical.status.code());
+    assert_eq!(
+        old.stdout, canonical.stdout,
+        "stdout must be byte-identical"
+    );
+    let stderr = String::from_utf8_lossy(&old.stderr);
+    assert!(
+        stderr.contains("bwoc notes list: deprecated — use `bwoc doc list notes` (removal in 4.0)"),
+        "missing deprecation line on stderr: {stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&old.stdout).contains("deprecated"));
+    assert!(!String::from_utf8_lossy(&canonical.stderr).contains("deprecated"));
+
+    let silenced = run(&["notes", "list"], true);
+    assert_eq!(silenced.stdout, canonical.stdout);
+    assert!(!String::from_utf8_lossy(&silenced.stderr).contains("deprecated"));
+}
+
 #[test]
 fn end_to_end_set_updates_backend_and_model() {
     let tmp = tempfile::tempdir().expect("create tempdir");

@@ -95,7 +95,7 @@
 
 - [ ] การเปลี่ยนแปลงทำตามที่ขอ — และเฉพาะเท่านั้น
 - [ ] Format + lint + tests ผ่าน (`formatCmd` / `lintCmd` / `testCmd` ของโปรเจกต์)
-- [ ] ถ้าแก้ slot ใด **neutrality check** ผ่าน (`scripts/check-agent-neutrality.sh`)
+- [ ] ถ้าแก้ slot ใด **neutrality check** ผ่าน (`bwoc check .`)
 - [ ] เอกสารสองภาษายังจับคู่ (`*.en.md` ↔ `*.th.md`) เมื่อ repo บังคับ
 - [ ] เก็บกวาด worktree/branch หลัง land แล้ว
 
@@ -114,7 +114,7 @@
 ```
 □ อ่าน MEMORY.md + persona/   → รู้ว่าคุณเป็นใครและรู้อะไร
 □ ยืนยัน config.manifest.json → id, role, model, backend ถูกต้อง
-□ รัน neutrality check         → ./scripts/check-agent-neutrality.sh
+□ รัน neutrality check         → bwoc check .
 □ เมื่อมีงาน: จำ → ตรวจสอบ → วางแผน → ลงมือ (worktree) → Gates → บันทึก
 □ ก่อน "เสร็จ": รัน gate ทุกตัว; รายงานตามจริง
 □ หลังจากนั้น: เขียน memory หนึ่งอันที่สำคัญ

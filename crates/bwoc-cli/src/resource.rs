@@ -97,10 +97,6 @@ pub struct Caps {
     pub max_vram_mb: Option<u64>,
     pub max_ram_mb: Option<u64>,
     pub max_cpu_cores: Option<u32>,
-    /// Concurrent-lease ceiling. Broker-side state (slice B) evaluates it; the
-    /// single-snapshot gate here cannot, so it is parsed but not yet read.
-    #[allow(dead_code)]
-    pub max_leases: Option<u32>,
     pub allow: Vec<String>,
     pub kinds: Vec<String>,
 }
@@ -421,7 +417,6 @@ pub fn load_sharing_config(root: &Path) -> Result<SharingConfig, String> {
             max_vram_mb: cap_u64(c.get("max_vram_mb")),
             max_ram_mb: cap_u64(c.get("max_ram_mb")),
             max_cpu_cores: cap_u32(c.get("max_cpu_cores")),
-            max_leases: cap_u32(c.get("max_leases")),
             allow: string_array(c.get("allow")),
             kinds: string_array(c.get("kinds")),
         })
@@ -1004,7 +999,6 @@ mod tests {
                 max_vram_mb: Some(40000),
                 max_ram_mb: Some(64000),
                 max_cpu_cores: Some(96),
-                max_leases: Some(4),
                 allow: allow.iter().map(|s| s.to_string()).collect(),
                 kinds: kinds.iter().map(|s| s.to_string()).collect(),
             },

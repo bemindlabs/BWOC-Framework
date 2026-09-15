@@ -237,8 +237,7 @@ bwoc-framework/
 │   └── agent-template/          ← Core template (cloned per agent — see B)
 │       ├── AGENTS.md              • single source of truth (backend entry files symlink to it — see neutrality.md)
 │       ├── docs/{en,th}/          • PHILOSOPHY · PRD · SRS · SELF-IMPROVEMENT · THREAT-MODEL · OVERVIEW
-│       ├── persona/ · mindsets/ · skills/ · interconnect/ · memories/
-│       └── scripts/               • check-agent-neutrality.sh · incarnate.sh (legacy — use `bwoc new`)
+│       └── persona/ · mindsets/ · skills/ · interconnect/ · memories/
 ├── docs/{en,th}/                ← Framework-level docs (bilingual pair)
 │                                    ARCHITECTURE · COMPATIBILITY · MIGRATION · INCARNATION · WORKSPACE · NAMING · GLOSSARY · ROADMAP · FAQ
 ├── examples/                    ← howto · showcases · usecases (illustrative)
@@ -333,6 +332,7 @@ The `bwoc` CLI and `bwoc-agent` daemon read and respect the following environmen
 | `BWOC_AUTO_CLAIM` | Opt-in flag for `bwoc-agent --serve` to automatically claim and wake up the agent when a new task becomes claimable. | `1` to enable, otherwise disabled |
 | `BWOC_WARM` | Opt-in flag for `bwoc-agent --serve` to run an auto-claimed task in a resident `bwoc-harness --headless` (warm — no per-task cold-start) instead of tmux-waking a session. Confined (harness) backends only; `requires_plan` tasks fall back to the wake path. | `1` to enable, otherwise disabled |
 | `BWOC_DISABLE_TMUX_WAKEUP` | Opt-out flag to suppress tmux wakeup pings during `bwoc send` (useful in CI or testing). | `1` to suppress |
+| `BWOC_NO_DEPRECATION_WARNINGS` | Suppresses the one-line stderr warning printed when a deprecated CLI command is used (e.g. `bwoc notes` → `bwoc doc`). stdout, `--json` and exit codes are never affected. | `1` to suppress |
 | `BWOC_NO_WHATSNEW` | Suppresses the one-line "you upgraded" notice printed to stderr on the first run of a new `MAJOR.MINOR` version. | `1` to suppress |
 | `BWOC_NO_UPDATE_CHECK` | Opts out of the startup update-check (the network drift guard that compares the running version against the latest release). | Set to any value to opt out |
 
@@ -405,8 +405,6 @@ bwoc retire alpha            # removes from registry (+ optional file delete)
 ```
 
 Run `bwoc help` for the topic index. Ten guides ship in-binary: `getting-started`, `backends`, `workspace`, `manifest`, `arc`, `lifecycle`, `daemon`, `messaging`, `persona`, `memory`. Run `bwoc help <topic>` for any specific one.
-
-Legacy: `modules/agent-template/scripts/incarnate.sh` still copies the raw template, but `bwoc new` is the supported path.
 
 **Target: from clone to first configured commit in under 30 minutes.**
 

@@ -78,11 +78,11 @@ The profile must work whether the agent is:
 ## Enforcement
 
 ```bash
-./scripts/check-agent-neutrality.sh          # validate all
-./scripts/check-agent-neutrality.sh <path>   # validate one agent
+bwoc check --all        # validate every agent in the workspace
+bwoc check <path>       # validate one agent or the template
 ```
 
-The script checks:
+`bwoc check` includes:
 - No hardcoded model IDs in base template files
 - No hardcoded tool names in base template files
 - No backend-specific language in `AGENTS.md`
@@ -95,26 +95,15 @@ The script checks:
 ## Cloning Workflow
 
 ```bash
-# 1. Clone template
-./scripts/incarnate.sh agent-{name}
+# 1. Incarnate — copies the template, writes the manifest, creates backend symlinks
+bwoc new {name}
 
 # 2. Customize identity
 # Edit AGENTS.md section 1 (identity)
 # Edit persona/README.md
 
-# 3. Create config manifest
-# Fill config.manifest.json with resolved placeholder values
-
-# 4. Create backend symlinks
-cd agent-{name}
-ln -s AGENTS.md AGY.md
-ln -s AGENTS.md CODEX.md
-ln -s AGENTS.md KIMI.md
-# CLAUDE.md -> symlink to AGENTS.md for agent repos (unlike the template itself)
-ln -s AGENTS.md CLAUDE.md
-
-# 5. Validate
-./scripts/check-agent-neutrality.sh agent-{name}
+# 3. Validate
+bwoc check agents/agent-{name}
 ```
 
 ---
@@ -123,7 +112,7 @@ ln -s AGENTS.md CLAUDE.md
 
 When importing an agent profile from an external repo:
 
-1. **Inspect before trusting** — read all files before enabling. See [[trust-model|Trust Model]]
+1. **Inspect before trusting** — read all files before enabling. See [[interconnect/trust|Trust]]
 2. **Validate neutrality** — run the check script
 3. **Sandbox first** — run in an isolated worktree with limited permissions
 4. **Adapt config** — map external placeholders to your local config values
@@ -134,5 +123,5 @@ When importing an agent profile from an external repo:
 
 - [[README|Agent Template]] — template overview
 - [[conventions|Conventions]] — placeholder syntax and naming
-- [[trust-model|Trust Model]] — security for external cloning
+- [[interconnect/trust|Trust]] — security for external cloning
 - [[docs/en/PHILOSOPHY.en.md|Philosophy]] — Samanatatta and Sila-samannata

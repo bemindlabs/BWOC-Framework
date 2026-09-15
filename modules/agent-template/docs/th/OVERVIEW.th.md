@@ -50,19 +50,19 @@ Agent Base Profile คือ **template สำหรับสร้าง AI cod
 
 ### ผมเป็น Agent Author (จะสร้าง agent ใหม่)
 ```bash
-./scripts/incarnate.sh <agent-name>
-cd ../agent-<agent-name>
+bwoc new <agent-name>
+cd agents/agent-<agent-name>
 # แก้ persona/README.md
-# แก้ config.manifest.json
-./scripts/check-agent-neutrality.sh
+# ตรวจ config.manifest.json
+bwoc check .
 ```
-อ่านต่อ: [LIFECYCLE.th.md](LIFECYCLE.th.md) → กายภาวนา section
+อ่านต่อ: [HANDBOOK.th.md](HANDBOOK.th.md)
 
 ### ผมเป็น Agent Operator (จะใช้งาน agent)
-อ่านต่อ: [OVERVIEW → SRS section 5 → examples/workflow/](../examples/workflow/)
+อ่านต่อ: [HANDBOOK.th.md](HANDBOOK.th.md) → [SRS.th.md](SRS.th.md) section 5
 
 ### ผมเป็น Platform Maintainer (ดูแล template)
-อ่าน: [GLOSSARY](GLOSSARY.th.md) → [PHILOSOPHY](PHILOSOPHY.th.md) → ทั้งหมด
+อ่าน: [GLOSSARY](../../../../docs/th/GLOSSARY.th.md) → [PHILOSOPHY](PHILOSOPHY.th.md) → ทั้งหมด
 
 ### ผมอยากเข้าใจปรัชญาก่อน
 อ่าน: [PHILOSOPHY.th.md](PHILOSOPHY.th.md)
@@ -73,31 +73,19 @@ cd ../agent-<agent-name>
 
 ```
 docs/
-├── PHILOSOPHY.{th,en}.md          ← รากฐานหลักพุทธ (อ่านก่อน)
-├── OVERVIEW.{th,en}.md            ← ไฟล์นี้
-├── GLOSSARY.{th,en}.md            ← ศัพท์บาลีและเทคนิค
-│
-├── PRD.{th,en}.md                 ← Product (อริยสัจ 4)
-├── SRS.{th,en}.md                 ← Requirements (มรรค 8)
-├── ARCHITECTURE.{th,en}.md        ← Architecture (ขันธ์ 5)
-│
-├── LIFECYCLE.{th,en}.md           ← Agent lifecycle (ภาวนา 4)
-├── OBSERVABILITY.{th,en}.md       ← Monitoring (สติปัฏฐาน 4)
-├── FAILURE-MODES.{th,en}.md       ← Failures (ปฏิจจสมุปบาท)
-├── SELF-IMPROVEMENT.{th,en}.md    ← Learning (ปัญญา 3)
-│
-├── COORDINATION-PROTOCOL.{th,en}.md  ← Inter-agent (กัลยาณมิตร)
-├── FLEET-GOVERNANCE.{th,en}.md       ← Org (อปริหานิยธรรม)
-├── THREAT-MODEL.{th,en}.md           ← Security (ตัณหา 3)
-│
-└── ANTIPATTERNS.{th,en}.md        ← ทางผิดของแต่ละมรรค
+├── {en,th}/
+│   ├── PHILOSOPHY               ← รากฐานหลักพุทธ (อ่านก่อน)
+│   ├── OVERVIEW                 ← ไฟล์นี้
+│   ├── HANDBOOK                 ← การทำงานในฐานะ agent
+│   ├── PRD                      ← Product (อริยสัจ 4)
+│   ├── SRS                      ← Requirements (มรรค 8)
+│   ├── SELF-IMPROVEMENT         ← Learning (ปัญญา 3)
+│   └── THREAT-MODEL             ← Security (ตัณหา 3)
+├── persona-example.{good,bad}.md                ← ตัวอย่าง persona ดี/แย่
+├── project-example.md · reference-example.md    ← ตัวอย่าง memory file
+└── task-log.example.jsonl                       ← ตัวอย่าง task-log
 
-examples/
-├── persona/                       ← ตัวอย่าง persona ดี/แย่
-├── memory/                        ← ตัวอย่าง memory file
-├── capabilities/                  ← ตัวอย่าง capabilities.md
-├── task-log/                      ← ตัวอย่าง task-log.jsonl
-└── workflow/                      ← ขั้นตอนตัวอย่าง
+docs/ ระดับ framework root (ARCHITECTURE, FLEET-GOVERNANCE, GLOSSARY) อยู่นอก template
 ```
 
 ---

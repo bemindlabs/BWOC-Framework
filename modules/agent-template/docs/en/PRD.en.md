@@ -227,7 +227,7 @@ The user is a developer or AI engineer familiar with git, markdown, shell, and J
 | Symlinks break on Windows | Aniccaṃ — environments change | Document WSL workaround |
 | Agents bypass worktree isolation | Craving for speed | Hooks in `.claude/settings.json` block it |
 | Memory grows unbounded | Craving to accumulate | 200-line cap (*mattaññutā*) + Tier 2 |
-| Forked templates drift from neutrality | Saṅkhāra — formations shift | `check-agent-neutrality.sh` in CI |
+| Forked templates drift from neutrality | Saṅkhāra — formations shift | `bwoc check` in CI |
 | Placeholders left unsubstituted | Carelessness | Manifest-driven validation |
 
 ---
@@ -264,15 +264,9 @@ The user is a developer or AI engineer familiar with git, markdown, shell, and J
 ### v2.0 (2026-05-22)
 - **Fixed forced metaphors:** Replaced `acinteyya` → `mattaññutā` in cases meaning "knowing moderation of work scope". Acinteyya is reserved for its original four cases (Buddha-visaya, Jhāna-visaya, Kamma-vipāka, Loka-cintā).
 - **Added companion documents:**
-  - `FAILURE-MODES.md` (Paṭiccasamuppāda) — failure analysis
-  - `LIFECYCLE.md` (Bhāvanā 4 + Ariya-dhana 7) — agent lifecycle
-  - `OBSERVABILITY.md` (Satipaṭṭhāna 4 + Kamma 3) — monitoring + audit
-  - `COORDINATION-PROTOCOL.md` (Kalyāṇamitta 7 + Sāraṇīyadhamma 6) — inter-agent
   - `FLEET-GOVERNANCE.md` (Aparihāniya-dhamma 7) — org-level governance
   - `SELF-IMPROVEMENT.md` (Paññā 3) — learning loop
   - `THREAT-MODEL.md` (Taṇhā 3 + Sīla 5) — security
-  - `ANTIPATTERNS.md` (Micchā- per Magga 8) — wrong-path catalog
-  - `GLOSSARY.md` — Pali + technical terms reference
   - `OVERVIEW.md` — entry-point document
 - **Extended PHILOSOPHY.md** to cover 22 frameworks (was 13) across six groups.
 

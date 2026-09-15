@@ -14,8 +14,9 @@ Output is localized (**EN · TH**) through Fluent bundles embedded at compile ti
 | **Inspect** | `list` · `status` · `info` · `doctor` · `check` · `workspace` · `sessions` · `log` |
 | **Loop-Engineering** | `loop` (L1 goal-loop TUI) · `monitor` (L3, alerts once per OK↔TRIP transition) · `digest` (L3, runs `--exec` once per `--period` via a durable idempotency ledger) |
 | **Messaging** | `send` · `inbox` · `outbox` · `triage` · `receipts` · `chat` · `ping` · `a2a` |
-| **Saṅgha & fleet** | `team` · `task` · `tasks` · `fleet` · `peer` · `trust` · `supervise` · `remote` |
-| **Docs & memory** | `notes` · `retro` · `research` · `doc` · `memory` |
+| **Saṅgha & fleet** | `team` · `task` (`task list --all` is fleet-wide) · `fleet` · `peer` · `trust` · `supervise` · `remote` |
+| **Docs & memory** | `doc` · `memory` (`search --tier 1\|2`) |
+| **Deprecated** (warn on stderr, removed in 4.0) | `notes` · `retro` · `research` → `doc` · `tasks` → `task list --all` · `memory t2-search` → `memory search --tier 2` |
 | **Extensions** | `skill` · `plugin` · `audit` · `resource`, plus the plugin-kind fronts `jira` · `gcloud` · `okr` · `council` · `figma` · `gws` · `accounting` (live verbs exit `4` with no installed plugin of that kind) |
 | **Ergonomics** | `help` · `handbook` · `dashboard` · `completion` · `update` · `report` · `eval` · `run` · `agent` |
 

@@ -10,7 +10,7 @@ nav_order: 11
 
 เอกสารนี้กำหนดรูปแบบ manifest, สัญญาการ invoke, กลไกการค้นพบ, และ verification gates Reference skill ตัวแรก (`worktree-discipline`) จะลงพร้อมกับ spec นี้ — ทั้ง spec และ implementation พิสูจน์รูปแบบไปด้วยกัน
 
-> [!abstract] สถานะ: scaffold เริ่มต้น ตาราง manifest และ lifecycle hook ด้านล่างเป็น normative; ส่วน prose อาจปรับเมื่องาน story BWOC-1..3 ทำให้ contract ละเอียดขึ้น Reference skill ตัวแรกจะมาใน BWOC-6
+> [!abstract] สถานะ: scaffold เริ่มต้น ตาราง manifest ด้านล่างเป็น normative และ audit โดย `bwoc check`; lifecycle init/invoke/teardown และการ resolve ตอน spawn เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime; ส่วน prose อาจปรับเมื่องาน story BWOC-1..3 ทำให้ contract ละเอียดขึ้น Reference skill ตัวแรกจะมาใน BWOC-6
 
 ---
 
@@ -68,8 +68,8 @@ verify      = "bwoc skill verify worktree-discipline"   # ไม่บังค�
 | `[skill]` | `version` | ใช่ | string (semver) | Semver ของ skill เอง แยกจากเวอร์ชันเฟรมเวิร์ก |
 | `[skill]` | `description` | ใช่ | string | สรุปหนึ่งประโยค; ใช้แสดงใน `bwoc skill list` |
 | `[skill]` | `maturity` | ใช่ | enum `L1`..`L7` | ระดับ maturity ปัจจุบัน (ดู [Maturity](#maturity-levels)); ประกาศตามจริง — `bwoc check` บังคับ |
-| `[contract]` | `requires` | ไม่ (default `[]`) | array of strings | ชื่อ framework **skill** ที่ติดตั้งแล้วและ skill นี้พึ่งพา; resolve ตอน spawn agent |
-| `[contract]` | `requires_plugins` | ไม่ (default `[]`) | array of strings | **kind** ของ plugin ที่ skill นี้ต้องการให้ enable ใน workspace; resolve ตอน spawn agent (ดู [Skill-on-plugin dependency](#skill-on-plugin-dependency)) |
+| `[contract]` | `requires` | ไม่ (default `[]`) | array of strings | ชื่อ framework **skill** ที่ติดตั้งแล้วและ skill นี้พึ่งพา; การ resolve ตอน spawn เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime |
+| `[contract]` | `requires_plugins` | ไม่ (default `[]`) | array of strings | **kind** ของ plugin ที่ skill นี้ต้องการให้ enable ใน workspace; ตรวจโดย `bwoc skill verify` (การ resolve ตอน spawn เป็นสเปก ยังไม่ถูกบังคับใช้) (ดู [Skill-on-plugin dependency](#skill-on-plugin-dependency)) |
 | `[contract]` | `exposes` | ใช่ (ไม่ว่าง) | array of strings | operations ที่ skill เปิดให้ผู้เรียก; array ว่างจะไม่ผ่าน `bwoc check` |
 | `[gates]` | `verify` | ไม่ | string (shell command) | คำสั่งที่ `bwoc skill verify <name>` รัน; exit 0 ถ้า skill ทำงานได้ในสภาพแวดล้อมนี้ |
 
@@ -85,6 +85,8 @@ Skill เปิด **operations** ที่มีชื่อ (ประกา�
 
 ### Lifecycle
 
+> [!warning] เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime ไม่มี code ของเฟรมเวิร์กใดโหลด skill ตอน spawn agent หรือเรียก `init` / `invoke` / `teardown`; ส่วนนี้คือ contract ที่ loader ในอนาคตต้องทำตาม
+
 ```
 init  → invoke (หนึ่งครั้งหรือมากกว่า) → teardown
 ```
@@ -96,6 +98,8 @@ init  → invoke (หนึ่งครั้งหรือมากกว่�
 Idempotency เป็น **ข้อกำหนดบังคับทุกเฟส** — agent อาจ retry, restart, หรือ replay Skill ที่พังบน replay จะทำลายเรื่อง recovery ของ agent
 
 ### สัญญา Hook — success, failure, partial state
+
+*(เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime — ดู [Lifecycle](#lifecycle))*
 
 Skill ถูก *invoke* ไม่ใช่ *import* Runtime ของ agent resolve ชื่อ skill ไปยัง manifest ที่ติดตั้ง รัน `init` ครั้งเดียว แล้ว dispatch operations ไม่มี global registry; การ resolve เป็นแบบ per-workspace (ดู [Discovery](#discovery))
 
@@ -151,11 +155,11 @@ Schema ของแต่ละ entry ใน `skills.framework[]`:
 
 - `name` (string, บังคับ) — ชื่อไดเรกทอรีของ skill ที่ติดตั้งใต้ `modules/skills/`
 - `version` (string, บังคับ) — semver constraint ที่ agent ยอมรับ; resolve กับ `[skill].version` ใน manifest ของ skill
-- `enabled` (bool, บังคับ) — กำหนดว่า skill จะถูกโหลดตอน spawn agent หรือไม่ ตั้ง `false` เพื่อเก็บ entry ไว้แสดงเจตนาแต่ไม่ load สอดคล้องกับ pattern `workspace.toml [plugins.<name>] enabled` ใน [`PLUGINS.th.md`](PLUGINS.th.md); ใช้ `bwoc skill disable <name>` เพื่อ flip โดยไม่ลบ entry
+- `enabled` (bool, บังคับ) — ประกาศว่า skill ควรถูกโหลดตอน spawn agent หรือไม่ (ยังไม่มี loader ตอน spawn; คำสั่ง `bwoc skill` อ่านค่านี้) ตั้ง `false` เพื่อเก็บ entry ไว้แสดงเจตนาแต่ไม่ load สอดคล้องกับ pattern `workspace.toml [plugins.<name>] enabled` ใน [`PLUGINS.th.md`](PLUGINS.th.md); ใช้ `bwoc skill disable <name>` เพื่อ flip โดยไม่ลบ entry
 
 Entry ที่ไม่มีฟิลด์ `enabled` ถือเป็น manifest error — `bwoc check` จะปฏิเสธ ไม่มี default โดยปริยาย; เจตนาที่ชัดเจนคือ contract
 
-เมื่อ spawn agent เฟรมเวิร์กจะ:
+เมื่อ spawn agent เฟรมเวิร์กถูกกำหนดให้ (**ยังไม่ถูกบังคับใช้โดย runtime** — ปัจจุบัน `bwoc spawn` ไม่อ่าน skill):
 
 1. อ่านรายการ `skills.framework` จาก manifest ของ agent
 2. กรองเฉพาะ entry ที่ `enabled` เป็น `true` Entry ที่ `enabled = false` ยังอยู่ใน manifest (เป็นเจตนาที่บันทึกไว้) แต่ถูกข้ามตอนโหลด
@@ -189,8 +193,8 @@ Skill เรียก verb ของ plugin; plugin ไม่รู้จัก 
 
 ### การ Resolve
 
-- **ตอน spawn agent** — สำหรับทุก kind ใน `requires_plugins` เฟรมเวิร์กตรวจว่า workspace มี plugin kind นั้นที่ **enable** อยู่ (`workspace.toml [plugins.<name>]` ที่ `kind` ตรงกัน) ถ้าไม่มีตัวไหน enable, spawn ล้มเหลวทันทีพร้อม diagnostic ระบุ kind ที่ขาด; agent ไม่ถูกต่อสายครึ่ง ๆ (Discovery ขั้นที่ 4)
-- **เร็วกว่านั้น ผ่าน `bwoc skill verify <name>`** — รันการตรวจเดียวกันก่อนถึงเวลา spawn เพื่อให้ช่องว่างปรากฏใน CI / pre-flight ไม่ใช่ตอน runtime
+- **ตอน spawn agent** *(เป็นสเปก ยังไม่ถูกบังคับใช้โดย runtime — ปัจจุบัน `bwoc spawn` ไม่ตรวจ)* — สำหรับทุก kind ใน `requires_plugins` เฟรมเวิร์กตรวจว่า workspace มี plugin kind นั้นที่ **enable** อยู่ (`workspace.toml [plugins.<name>]` ที่ `kind` ตรงกัน) ถ้าไม่มีตัวไหน enable, spawn ล้มเหลวทันทีพร้อม diagnostic ระบุ kind ที่ขาด; agent ไม่ถูกต่อสายครึ่ง ๆ (Discovery ขั้นที่ 4)
+- **ผ่าน `bwoc skill verify <name>`** *(implement แล้ว)* — รันการตรวจเดียวกันก่อนถึงเวลา spawn เพื่อให้ช่องว่างปรากฏใน CI / pre-flight ไม่ใช่ตอน runtime
 - **แบบ static ผ่าน `bwoc check`** — validate ว่าทุกค่าใน `requires_plugins` เป็น kind enum ที่ valid (ดู [Verification](#verification)) ไม่ต้องการให้ plugin enable ตอน check — การ enable เป็นเรื่องของ spawn ต่อ agent, ความ valid ของ kind เป็นเรื่องของ manifest
 
 ### Skill-on-multiple-plugins
@@ -199,7 +203,7 @@ Skill อาจประกอบ plugin **มากกว่าหนึ่ง�
 
 นี่ตามมาจากกฎ kind-based ข้างต้นโดยตรง: `requires_plugins` เป็นการพึ่งพา **kind** ไม่ใช่ **ชื่อ** ผลที่ตามมาสำหรับ skill หลาย plugin คือข้อจำกัด L1 ที่จงใจ — การ resolve ระดับ kind ยืนยันว่ามี plugin `workflow` *สักตัว* เปิดอยู่ ไม่ใช่ว่า plugin *เฉพาะทุกตัว* ที่ skill ประกอบมีครบ:
 
-- **ระดับ kind (วันนี้)** spawn / `bwoc skill verify` / `bwoc check` ยืนยันว่า kind ที่ประกาศ resolve ได้ skill ที่ประกอบ plugin `workflow` สองตัวถูกตอบสนองด้วย plugin `workflow` ที่เปิดอยู่ตัวใดตัวหนึ่ง
+- **ระดับ kind (วันนี้)** `bwoc skill verify` / `bwoc check` ยืนยันว่า kind ที่ประกาศ resolve ได้ skill ที่ประกอบ plugin `workflow` สองตัวถูกตอบสนองด้วย plugin `workflow` ที่เปิดอยู่ตัวใดตัวหนึ่ง
 - **fallback ตอน invoke (วันนี้)** ถ้า plugin ที่ประกอบขาดตอน invoke, skill ล้มเหลวอย่างนุ่มนวล โดย surface ว่า verb ใต้ฝากระโปรงตัวไหน dispatch ไม่ได้ (เช่น "`bwoc gcloud project show` — ไม่มี plugin `gcloud-project` ที่เปิดอยู่") agent ไม่เคยถูก half-wire เงียบ ๆ ตอน runtime
 - **การบังคับระดับชื่อ (future extension)** การยืนยันว่า instance ที่ระบุ *ทั้งหมด* (`gcloud-auth` **และ** `gcloud-project`) เปิดอยู่ — ไม่ใช่แค่ plugin `workflow` *บางตัว* — เป็นส่วนเพิ่มในอนาคตที่บันทึกไว้ จงใจไม่เพิ่มเป็น manifest field ที่ไม่ enforce; สัญญา Operation ของ SPEC เป็นการระบุที่เชื่อถือได้จนกว่า resolver จะรองรับการตรวจระดับชื่อ
 

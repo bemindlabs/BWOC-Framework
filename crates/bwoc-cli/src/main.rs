@@ -148,7 +148,8 @@ enum Commands {
     },
     /// Incarnate a new agent from the template (uppāda).
     New(Box<NewArgs>),
-    /// Exec the configured LLM backend CLI in an agent's directory (uppāda → ṭhiti).
+    /// Low-level launcher: exec a backend CLI in the agent dir given by `--path`,
+    /// with an explicit `--backend` and extra args after `--` (`chat` resolves these for you).
     Spawn(SpawnArgs),
     /// Initialize a BWOC workspace at the given path (uppāda).
     Init(InitArgs),
@@ -231,12 +232,14 @@ enum Commands {
     Trust(TrustArgs),
     /// Append a message to an agent's inbox (`.bwoc/inbox.jsonl`).
     Send(SendArgs),
-    /// Chat with an agent — exec backend CLI with manifest-driven model.
+    /// Interactive session with a registered agent by name: resolves its dir, backend
+    /// and model, then launches it here, in `--tmux`, `--ghostty`, or the `--tui`.
     Chat(ChatArgs),
-    /// Run a single task non-interactively and capture the result (headless mode).
+    /// Headless: deliver one `--task` to an agent, wait, and capture output + exit
+    /// code (`--json`) — for CI and orchestrators; no TTY.
     Run(RunCliArgs),
-    /// Agent host operations (e.g. launch a session as an unprivileged user on a
-    /// root-only VPS — `bwoc agent run --as-user <user> <agent>`).
+    /// Root host operations: `agent run --as-user <user> <agent>` drops to an
+    /// unprivileged user and runs the daemon (or a command) — root-only VPS pattern.
     #[command(subcommand)]
     Agent(AgentCommand),
     /// Read messages from an agent's inbox (`.bwoc/inbox.jsonl`).
@@ -256,8 +259,8 @@ enum Commands {
     /// Manage a team's shared task list (add / list / claim / complete / reopen).
     #[command(subcommand)]
     Task(TaskCommand),
-    /// Query task status across **every** team (fleet-wide): filter by `--agent`
-    /// (claimant) / `--state` (pending|in_progress|completed), table or `--json`.
+    /// (deprecated → `bwoc task list --all`) Task status across every team,
+    /// filtered by `--agent` / `--state`.
     Tasks(TasksCliArgs),
     /// Query read receipts — "was my message consumed?" — across recipients'
     /// triage logs: filter by `--message-id` / `--from` / `--agent`, table or `--json` (#299).
@@ -278,18 +281,18 @@ enum Commands {
         #[arg(long)]
         run: bool,
     },
-    /// Manage workspace notes (YYYY-MM-DD_<slug>.md in notes/).
+    /// (deprecated → `bwoc doc <new|list|view> notes`) Workspace notes in notes/.
     #[command(subcommand)]
     Notes(DocSubcommand),
-    /// Manage workspace retrospectives (YYYY-MM-DD_<slug>.md in retrospectives/).
+    /// (deprecated → `bwoc doc <new|list|view> retrospectives`) Workspace retrospectives.
     #[command(name = "retro", subcommand)]
     Retro(DocSubcommand),
-    /// Manage workspace research documents (YYYY-MM-DD_<slug>.md in research/).
+    /// (deprecated → `bwoc doc <new|list|view> research`) Workspace research documents.
     #[command(subcommand)]
     Research(DocSubcommand),
-    /// Manage documents of any kind — built-in or workspace-declared custom
-    /// (via `.bwoc/doc-kinds.toml`). Use this for custom kinds; the named
-    /// aliases (`notes`, `retro`, `research`) are thin wrappers over this.
+    /// Manage documents of any kind — built-in (`notes`, `retrospectives`,
+    /// `research`) or workspace-declared custom (via `.bwoc/doc-kinds.toml`):
+    /// `bwoc doc new <kind> <title>` · `list <kind>` · `view <kind> <name>`.
     #[command(name = "doc", subcommand)]
     Doc(DocKindSubcommand),
     /// Fleet status + governance. Bare `bwoc fleet` shows the status overview;
@@ -1012,10 +1015,21 @@ enum TaskCommand {
         #[arg(long)]
         json: bool,
     },
-    /// List a team's tasks with state + claimant.
+    /// List a team's tasks with state + claimant; `--all` lists every team's
+    /// (fleet-wide, filterable by `--agent` / `--state`).
     List {
-        /// Team id.
-        team: String,
+        /// Team id. Omit when passing `--all`.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        team: Option<String>,
+        /// List tasks across every team, with a TEAM column.
+        #[arg(long)]
+        all: bool,
+        /// With `--all`: only tasks claimed by this agent (id or bare name).
+        #[arg(long, conflicts_with = "team")]
+        agent: Option<String>,
+        /// With `--all`: only tasks in this state: `pending` | `in_progress` | `completed`.
+        #[arg(long, conflicts_with = "team")]
+        state: Option<String>,
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
         #[arg(long)]
@@ -1169,14 +1183,23 @@ enum MemoryAction {
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
     },
-    /// Substring search across memory entries (case-insensitive).
+    /// Search memory. Tier 1 (default): case-insensitive substring match across
+    /// `.bwoc/memory/` entries. `--tier 2 <query> <agent>`: the agent's deep-memory
+    /// backend (`deepMemoryCmd search "<query>"`).
     Search {
-        /// Substring to look for in any entry's content.
+        /// Substring (tier 1) or query (tier 2) to search for.
         query: String,
+        /// Agent whose deep-memory backend to query. Required with `--tier 2`,
+        /// rejected otherwise. Matches by id ("agent-foo") or bare name ("foo").
+        #[arg(required_if_eq("tier", "2"))]
+        agent: Option<String>,
+        /// Memory tier: `1` = workspace entries, `2` = per-agent deep memory.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+        tier: u8,
         /// Workspace root. Resolution chain same as `memory list`.
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
-        /// Emit JSON instead of the human-readable grep-style output.
+        /// Emit JSON instead of the human-readable grep-style output (tier 1 only).
         #[arg(long)]
         json: bool,
     },
@@ -1202,8 +1225,7 @@ enum MemoryAction {
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
     },
-    /// Tier 2: search past decisions/notes (`deepMemoryCmd search "<query>"`).
-    /// Named `t2-search` to avoid collision with the existing Tier 1 `search` subcommand.
+    /// (deprecated → `bwoc memory search --tier 2`) Tier 2 deep-memory search.
     #[command(name = "t2-search")]
     T2Search {
         /// Search query string.
@@ -1419,6 +1441,7 @@ impl MemoryAction {
                 query,
                 workspace,
                 json,
+                ..
             } => memory::MemoryArgs {
                 action: memory::MemoryAction::Search(query),
                 workspace,
@@ -2829,7 +2852,18 @@ fn main() -> ExitCode {
         update::notify_if_drifted(matches!(cli.command, Some(Commands::Update { .. })));
     }
 
-    match cli.command {
+    // Deprecated entry points are rewritten onto their canonical command here,
+    // before dispatch, so both forms run the same handler; the only difference
+    // is one warning line on stderr (COMPATIBILITY.en.md §Deprecation).
+    let command = cli.command.map(|c| {
+        let c = canonicalize(c);
+        if let Some(d) = &c.deprecated {
+            util::deprecated(&d.old, &d.new);
+        }
+        c.command
+    });
+
+    match command {
         Some(Commands::Check {
             path,
             all,
@@ -3065,15 +3099,34 @@ fn main() -> ExitCode {
                         workspace,
                     })
                 }
-                MemoryAction::T2Search {
+                MemoryAction::Search {
                     query,
                     agent,
+                    tier: 2,
                     workspace,
-                } => deep_memory_cmd::run(deep_memory_cmd::Tier2Args {
-                    action: deep_memory_cmd::Tier2Action::Search { query },
-                    agent,
-                    workspace,
-                }),
+                    json,
+                } => match (agent, json) {
+                    (_, true) => {
+                        eprintln!("bwoc memory search: --json is not supported with --tier 2");
+                        exit::USAGE
+                    }
+                    (None, false) => {
+                        eprintln!("bwoc memory search: --tier 2 requires <AGENT>");
+                        exit::USAGE
+                    }
+                    (Some(agent), false) => deep_memory_cmd::run(deep_memory_cmd::Tier2Args {
+                        action: deep_memory_cmd::Tier2Action::Search { query },
+                        agent,
+                        workspace,
+                    }),
+                },
+                MemoryAction::Search { agent: Some(_), .. } => {
+                    eprintln!("bwoc memory search: <AGENT> only applies to --tier 2");
+                    exit::USAGE
+                }
+                MemoryAction::T2Search { .. } => {
+                    unreachable!("`memory t2-search` is rewritten by canonicalize()")
+                }
                 MemoryAction::Mine {
                     path,
                     agent,
@@ -3119,9 +3172,24 @@ fn main() -> ExitCode {
                 } => sangha::run_task_add(workspace, team, title, deps, id, !no_plan, json),
                 TaskCommand::List {
                     team,
+                    all,
+                    agent,
+                    state,
                     workspace,
                     json,
-                } => sangha::run_task_list(workspace, team, json),
+                } => match (team, all) {
+                    (_, true) => tasks::run(tasks::TasksArgs {
+                        workspace,
+                        agent,
+                        state,
+                        json,
+                    }),
+                    (Some(team), false) => sangha::run_task_list(workspace, team, json),
+                    (None, false) => {
+                        eprintln!("bwoc task list: pass a <TEAM> or --all");
+                        exit::USAGE
+                    }
+                },
                 TaskCommand::Claim {
                     team,
                     task,
@@ -3181,9 +3249,8 @@ fn main() -> ExitCode {
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
-        Some(Commands::Tasks(args)) => {
-            let code = tasks::run(args.into());
-            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        Some(Commands::Tasks(_)) => {
+            unreachable!("`bwoc tasks` is rewritten by canonicalize()")
         }
         Some(Commands::Receipts(args)) => {
             let code = receipts::run(args.into());
@@ -3241,17 +3308,8 @@ fn main() -> ExitCode {
             let code = update::run(update::UpdateArgs { check, run });
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
-        Some(Commands::Notes(sub)) => {
-            let code = dispatch_doc_cmd("notes", sub);
-            ExitCode::from(u8::try_from(code).unwrap_or(1))
-        }
-        Some(Commands::Retro(sub)) => {
-            let code = dispatch_doc_cmd("retrospectives", sub);
-            ExitCode::from(u8::try_from(code).unwrap_or(1))
-        }
-        Some(Commands::Research(sub)) => {
-            let code = dispatch_doc_cmd("research", sub);
-            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        Some(Commands::Notes(_) | Commands::Retro(_) | Commands::Research(_)) => {
+            unreachable!("deprecated doc aliases are rewritten by canonicalize()")
         }
         Some(Commands::Doc(sub)) => {
             let code = dispatch_doc_kind_cmd(sub);
@@ -3551,24 +3609,106 @@ fn parse_locale(raw: String) -> Option<String> {
     }
 }
 
-/// Dispatch a `DocSubcommand` for the named built-in kind.
-/// Resolves the workspace root, looks up the `DocKind`, and runs the generic engine.
-fn dispatch_doc_cmd(kind_name: &str, sub: DocSubcommand) -> i32 {
-    use bwoc_core::doc_kind::kind as lookup;
+/// A command after deprecated entry points have been mapped onto canonical ones.
+struct Canonical {
+    command: Commands,
+    /// Set when the invocation used a deprecated entry point.
+    deprecated: Option<Deprecation>,
+}
 
-    let Some(k) = lookup(kind_name) else {
-        eprintln!("bwoc: unknown document kind '{kind_name}' (internal error)");
-        return 2;
+/// Command paths (without the leading `bwoc`) for the warning line.
+#[derive(Debug, PartialEq)]
+struct Deprecation {
+    old: String,
+    new: String,
+}
+
+impl Canonical {
+    fn rewritten(command: Commands, old: String, new: String) -> Self {
+        Self {
+            command,
+            deprecated: Some(Deprecation { old, new }),
+        }
+    }
+}
+
+/// Map a deprecated command onto the canonical one that runs the same handler;
+/// any other command passes through untouched. Pure — the warning is printed by
+/// the caller — so the mapping is unit-testable. Every rewrite here is scheduled
+/// for removal in 4.0 (COMPATIBILITY.en.md §Deprecated in 3.2).
+fn canonicalize(command: Commands) -> Canonical {
+    match command {
+        Commands::Notes(sub) => doc_alias("notes", "notes", sub),
+        Commands::Retro(sub) => doc_alias("retro", "retrospectives", sub),
+        Commands::Research(sub) => doc_alias("research", "research", sub),
+        Commands::Tasks(a) => Canonical::rewritten(
+            Commands::Task(TaskCommand::List {
+                team: None,
+                all: true,
+                agent: a.agent,
+                state: a.state,
+                workspace: a.workspace,
+                json: a.json,
+            }),
+            "tasks".into(),
+            "task list --all".into(),
+        ),
+        Commands::Memory(MemoryAction::T2Search {
+            query,
+            agent,
+            workspace,
+        }) => Canonical::rewritten(
+            Commands::Memory(MemoryAction::Search {
+                query,
+                agent: Some(agent),
+                tier: 2,
+                workspace,
+                json: false,
+            }),
+            "memory t2-search".into(),
+            "memory search --tier 2".into(),
+        ),
+        command => Canonical {
+            command,
+            deprecated: None,
+        },
+    }
+}
+
+/// `bwoc <alias> <verb> …` → `bwoc doc <verb> <kind> …`. Built-in kinds resolve
+/// before custom ones, so the generic path picks the same `DocKind` the alias did.
+fn doc_alias(alias: &str, kind: &str, sub: DocSubcommand) -> Canonical {
+    let kind_s = kind.to_string();
+    let (verb, doc) = match sub {
+        DocSubcommand::New { title, workspace } => (
+            "new",
+            DocKindSubcommand::New {
+                kind: kind_s,
+                title,
+                workspace,
+            },
+        ),
+        DocSubcommand::List { workspace } => (
+            "list",
+            DocKindSubcommand::List {
+                kind: kind_s,
+                workspace,
+            },
+        ),
+        DocSubcommand::View { name, workspace } => (
+            "view",
+            DocKindSubcommand::View {
+                kind: kind_s,
+                name,
+                workspace,
+            },
+        ),
     };
-
-    let (action, workspace_opt) = match sub {
-        DocSubcommand::New { title, workspace } => (doc_cmd::DocAction::New { title }, workspace),
-        DocSubcommand::List { workspace } => (doc_cmd::DocAction::List, workspace),
-        DocSubcommand::View { name, workspace } => (doc_cmd::DocAction::View { name }, workspace),
-    };
-
-    let root = resolve_doc_workspace(workspace_opt);
-    doc_cmd::run(k, action, &root)
+    Canonical::rewritten(
+        Commands::Doc(doc),
+        format!("{alias} {verb}"),
+        format!("doc {verb} {kind}"),
+    )
 }
 
 /// Dispatch a generic `bwoc doc <kind> <action>` invocation.
@@ -3749,5 +3889,161 @@ mod send_resolve_tests {
             ..args()
         };
         assert!(a.resolve().is_err());
+    }
+}
+
+#[cfg(test)]
+mod deprecation_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Commands {
+        let argv = std::iter::once("bwoc").chain(args.iter().copied());
+        Cli::try_parse_from(argv)
+            .unwrap_or_else(|e| panic!("parse {args:?}: {e}"))
+            .command
+            .expect("a subcommand")
+    }
+
+    /// The deprecated form must rewrite to exactly what the canonical form
+    /// parses to — same variant, same field values — so both reach one handler.
+    #[track_caller]
+    fn assert_routes_like(old: &[&str], canonical: &[&str], old_label: &str, new_label: &str) {
+        let r = canonicalize(parse(old));
+        assert_eq!(
+            format!("{:?}", r.command),
+            format!("{:?}", parse(canonical))
+        );
+        assert_eq!(
+            r.deprecated,
+            Some(Deprecation {
+                old: old_label.into(),
+                new: new_label.into()
+            })
+        );
+        // The canonical form itself is not deprecated.
+        assert!(canonicalize(parse(canonical)).deprecated.is_none());
+    }
+
+    #[test]
+    fn doc_aliases_route_to_doc() {
+        assert_routes_like(
+            &["notes", "new", "my note", "--workspace", "/w"],
+            &["doc", "new", "notes", "my note", "--workspace", "/w"],
+            "notes new",
+            "doc new notes",
+        );
+        assert_routes_like(
+            &["retro", "list"],
+            &["doc", "list", "retrospectives"],
+            "retro list",
+            "doc list retrospectives",
+        );
+        assert_routes_like(
+            &["research", "view", "2026-09-15"],
+            &["doc", "view", "research", "2026-09-15"],
+            "research view",
+            "doc view research",
+        );
+    }
+
+    #[test]
+    fn tasks_routes_to_task_list_all() {
+        assert_routes_like(
+            &["tasks"],
+            &["task", "list", "--all"],
+            "tasks",
+            "task list --all",
+        );
+        assert_routes_like(
+            &[
+                "tasks",
+                "--agent",
+                "pi",
+                "--state",
+                "pending",
+                "--json",
+                "--workspace",
+                "/w",
+            ],
+            &[
+                "task",
+                "list",
+                "--all",
+                "--agent",
+                "pi",
+                "--state",
+                "pending",
+                "--json",
+                "--workspace",
+                "/w",
+            ],
+            "tasks",
+            "task list --all",
+        );
+    }
+
+    #[test]
+    fn task_list_needs_a_team_or_all_and_filters_need_all() {
+        let bad = |a: &[&str]| {
+            Cli::try_parse_from(std::iter::once("bwoc").chain(a.iter().copied())).is_err()
+        };
+        assert!(bad(&["task", "list"]));
+        assert!(bad(&["task", "list", "t", "--all"]));
+        assert!(bad(&["task", "list", "t", "--agent", "pi"]));
+    }
+
+    #[test]
+    fn t2_search_routes_to_search_tier_2() {
+        assert_routes_like(
+            &[
+                "memory",
+                "t2-search",
+                "why postgres",
+                "pi",
+                "--workspace",
+                "/w",
+            ],
+            &[
+                "memory",
+                "search",
+                "why postgres",
+                "pi",
+                "--tier",
+                "2",
+                "--workspace",
+                "/w",
+            ],
+            "memory t2-search",
+            "memory search --tier 2",
+        );
+    }
+
+    #[test]
+    fn memory_search_defaults_to_tier_1_and_tier_2_needs_an_agent() {
+        let ok = |a: &[&str]| {
+            Cli::try_parse_from(std::iter::once("bwoc").chain(a.iter().copied())).is_ok()
+        };
+        assert!(matches!(
+            parse(&["memory", "search", "q"]),
+            Commands::Memory(MemoryAction::Search {
+                tier: 1,
+                agent: None,
+                ..
+            })
+        ));
+        assert!(!ok(&["memory", "search", "q", "--tier", "2"]));
+        assert!(!ok(&["memory", "search", "q", "--tier", "3"]));
+    }
+
+    #[test]
+    fn canonical_commands_are_left_alone() {
+        for argv in [
+            &["list"][..],
+            &["fleet"],
+            &["status"],
+            &["task", "list", "t"],
+        ] {
+            assert!(canonicalize(parse(argv)).deprecated.is_none(), "{argv:?}");
+        }
     }
 }

@@ -17,7 +17,7 @@ convention เดียวที่สอดคล้องสำหรับท
 | 1 | Metadata ระดับ project | repo root | `UPPERCASE.md` | `README.md` · `LICENSE` · `CHANGELOG.md` · `VERSION.md` · `VISION.md` · `SECURITY.md` · `CODE_OF_CONDUCT.md` · `CONTRIBUTING.md` |
 | 2 | คำแปลระดับ project | repo root | `UPPERCASE.<lang>.md` | `VISION.th.md` |
 | 3 | เอกสารสเปก | `docs/<lang>/` | `UPPERCASE.<lang>.md` | `PHILOSOPHY.en.md` · `GLOSSARY.th.md` · `ARCHITECTURE.en.md` · `INCARNATION.th.md` · `WORKSPACE.en.md` |
-| 4 | prose ของ template / module | `modules/<x>/` | `lowercase-hyphen.md` | `conventions.md` · `neutrality.md` · `trust-model.md` |
+| 4 | prose ของ template / module | `modules/<x>/` | `lowercase-hyphen.md` | `conventions.md` · `neutrality.md` · `capabilities.md` |
 | 5 | Landing ของ slot (Obsidian) | `modules/<x>/<slot>/` | `README.md` | `memories/README.md` · `persona/README.md` |
 | 6 | เอกสารของ crate | `crates/<crate>/` | `README.md` | `crates/bwoc-cli/README.md` |
 | 7 | นิยาม skill | `.claude/skills/<name>/` | `SKILL.md` | `.claude/skills/incarnate/SKILL.md` |
@@ -106,13 +106,13 @@ Note อยู่ได้ที่:
 
 หัวข้อ: **Sutamayā** (สิ่งที่ข้อมูล/เอกสารบอก), **Cintāmayā** (การสังเคราะห์/รูปแบบที่เกิด), **Bhāvanāmayā** (การกระทำที่ทำ), **Metrics**
 
-`bwoc retro new "<title>"` สร้างไฟล์ใน `retrospectives/` ด้วย template ที่ built-in
+`bwoc doc new retrospectives "<title>"` สร้างไฟล์ใน `retrospectives/` ด้วย template ที่ built-in
 
 ### `YYYY-MM-DD_<title>.md` — Research
 
 สำหรับการสำรวจเชิงวิจัย: คำถาม, ขอบเขต, แหล่งข้อมูล, ผลการค้นพบ และคำแนะนำ commit ลง repo เหมือน note และ retrospective
 
-`bwoc research new "<title>"` สร้างไฟล์ใน `research/` ด้วย template ที่ built-in
+`bwoc doc new research "<title>"` สร้างไฟล์ใน `research/` ด้วย template ที่ built-in
 
 ### `YYYY-MM-DD_<title>.md` — Doc kind กำหนดเอง (ใหม่)
 
@@ -133,15 +133,14 @@ Custom kind ใช้รูปแบบ `YYYY-MM-DD_<title>.md` เดียว�
 
 ลำดับการ resolve: built-in kind ชนะก่อน แล้วตาม `.bwoc/doc-kinds.toml` kind ที่ไม่รู้จัก → error แสดง kind ทั้งหมดที่มี
 
-**CLI:** `bwoc doc <kind> new "<title>"` — resolve kind ใดก็ได้ (built-in หรือ custom) ผ่าน engine เดียวกัน
+**CLI:** `bwoc doc new <kind> "<title>"` (รวมถึง `list <kind>`, `view <kind> <name>`) — resolve kind ใดก็ได้ (built-in หรือ custom) ผ่าน engine เดียวกัน
 
 ```
-bwoc doc decision new "use postgres"   # custom kind
-bwoc doc notes new "my note"           # built-in ผ่าน generic command
-bwoc notes new "my note"               # built-in alias (ไม่เปลี่ยน)
+bwoc doc new decision "use postgres"   # custom kind
+bwoc doc new notes "my note"           # built-in kind
 ```
 
-alias ที่มีชื่อ (`bwoc notes`, `bwoc retro`, `bwoc research`) ยังคงเป็น thin wrapper และไม่ถูกยกเลิก
+alias ที่มีชื่อ (`bwoc notes`, `bwoc retro`, `bwoc research`) ถูก deprecate ใน 3.2 และจะถูกลบใน 4.0 — ดู [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md#deprecated-in-32-removed-in-40)
 
 ---
 

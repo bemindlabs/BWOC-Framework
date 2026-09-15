@@ -9,7 +9,7 @@ The **BWOC framework** (Buddhist Way of Coding) — a backend-neutral specificat
 Distinguish two scopes when reading or editing:
 
 - **Framework root** (this directory) — framework spec docs (`docs/en/`, `docs/th/`, root-level `README.md` / `VISION.md` / `VERSION.md` / `CONTRIBUTING.md`), the Rust workspace (`crates/bwoc-cli`, `crates/bwoc-agent`, `crates/bwoc-core`, `Cargo.toml`), and helper scripts (`scripts/install.sh`, `scripts/bump-version.sh`).
-- **Agent template** (`modules/agent-template/`) — the cloneable artifact. Has its own `AGENTS.md`, `CLAUDE.md`, `docs/`, `scripts/`, `interconnect/`, `memories/`, `persona/`, `mindsets/`, `skills/`.
+- **Agent template** (`modules/agent-template/`) — the cloneable artifact. Has its own `AGENTS.md`, `CLAUDE.md`, `docs/`, `interconnect/`, `memories/`, `persona/`, `mindsets/`, `skills/`.
 
 The template's `CLAUDE.md` is for incarnated agents reading themselves; this file is for Claude editing the framework.
 
@@ -54,14 +54,14 @@ When in doubt: if the doc states project direction or principles, pair it. If it
 - **Referenced but not present**: `.github/CODEOWNERS` — `CONTRIBUTING.md` links it. Do not pretend it exists.
 - **Auto-version hook** (`.claude/hooks/auto-version.sh`) bumps `Cargo.toml` patch on `.rs`/`.toml` writes and `VERSION.md` `Document-Version` on `.md` writes. Expect those files to appear in your working tree after edits — that's the hook, not drift.
 
-## Template Scripts (used inside an incarnated agent, not from this root)
+## Template Tooling
+
+The template ships no shell scripts. Incarnate and audit agents with the CLI:
 
 ```bash
-./scripts/check-agent-neutrality.sh      # validates backend neutrality
-./scripts/incarnate.sh <agent-name>      # clones template to a new agent
+bwoc new <agent-name>      # copies the template into a new agent (crates/bwoc-cli/src/new.rs)
+bwoc check <path>          # backend-neutrality audit of the template or an agent (crates/bwoc-cli/src/check.rs)
 ```
-
-These live at `modules/agent-template/scripts/`. They run from inside the template directory, not from the framework root.
 
 ## Commits
 

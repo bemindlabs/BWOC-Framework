@@ -81,7 +81,7 @@
 **Vector:** Agent ซ่อน state นอก declared locations (เช่น git notes)
 **Mitigation:**
 - Declared state inventory ใน ARCHITECTURE
-- check-agent-neutrality.sh ตรวจ unauthorized files
+- `bwoc check` แจ้งเตือน script ใน `.claude/hooks/` ที่ผู้เขียนเพิ่มเอง
 - Worktree isolation = ไม่มีที่ซ่อน
 
 ### T-2.4 Cron / Scheduled Persistence
@@ -226,7 +226,5 @@
 | PHILOSOPHY | ตัณหา 3, สีล 5 (DP-17, DP-18) |
 | SRS | FR-5 (Sammā-ājīva) trust requirements |
 | ARCHITECTURE | สังขาร layer enforces policies |
-| OBSERVABILITY | Detection layer |
-| FAILURE-MODES | FM-7 prompt injection |
 | FLEET-GOVERNANCE | Crisis response |
-| COORDINATION-PROTOCOL | Identity, trust mechanics |
+| interconnect/trust.md | Identity, trust mechanics |

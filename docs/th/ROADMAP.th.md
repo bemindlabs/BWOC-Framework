@@ -30,7 +30,7 @@ nav_order: 6
 - เอกสารสเปก (bilingual EN/TH ทุกตัว): `PHILOSOPHY` §0.1 *วงรอบ*, `GLOSSARY`, `ARCHITECTURE`, `INCARNATION`, `WORKSPACE`, `NAMING`
 - Crate README (`bwoc-core`, `bwoc-cli`, `bwoc-agent`)
 - เครื่องมือ Claude Code: 4 project skills (`/incarnate`, `/check-neutrality`, `/check-bilingual`, `/task-log`); 2 PostToolUse hooks (`bilingual-reminder`, `auto-version`)
-- shell script `incarnate.sh` และ `check-agent-neutrality.sh` ใน template (ใช้ได้วันนี้; จะถูก port เป็น Rust)
+- shell script สำหรับ incarnate และ audit neutrality ใน template (ภายหลังถูกแทนด้วย `bwoc new` / `bwoc check` และลบออกแล้ว)
 
 ### ส่งมอบใน Phase 1 v2.0 (เสร็จแล้ว)
 
@@ -40,8 +40,8 @@ nav_order: 6
 |---|---|---|
 | `bwoc init [path]` | [`WORKSPACE.th.md`](WORKSPACE.th.md#cli-surface) | ✓ |
 | `bwoc workspace info` · `validate` | [`WORKSPACE.th.md`](WORKSPACE.th.md#cli-surface) | ✓ |
-| `bwoc new <name>` (port ของ `incarnate.sh`) | [`INCARNATION.th.md`](INCARNATION.th.md) | ✓ |
-| `bwoc check [path]` (port ของ `check-agent-neutrality.sh`) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
+| `bwoc new <name>` (แทน shell script เดิมของ template) | [`INCARNATION.th.md`](INCARNATION.th.md) | ✓ |
+| `bwoc check [path]` (แทน shell script เดิมของ template) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ |
 | `bwoc spawn <name>` (minimal `exec`) | [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md#การไหลของข้อมูล--bwoc-spawn-agent-foo) | ✓ |
 | `bwoc list` (อ่าน `.bwoc/agents.toml`) | [`WORKSPACE.th.md`](WORKSPACE.th.md) | ✓ |
 | flag `--lang` wired เข้ากับ Project Fluent (locale TH + EN) | [`crates/bwoc-cli/README.md`](../../crates/bwoc-cli/README.md) | ✓ ครบ 8 surface (init/list/spawn/workspace info/workspace validate/check/new/bwoc-agent) |
@@ -114,7 +114,7 @@ nav_order: 6
 | Agent → agent messaging (สัมมาวาจา Phase 1) | `bwoc send --from <agent>` เขียน sender identity ลง envelope; daemon ฝั่งผู้รับประเมินด้วย manifest ของ sender; refusals โผล่ผ่าน `bwoc inbox` JSON merge. กฎ **สาราณียธรรม 6** อยู่ใน [`interconnect/messaging.md`](../../modules/agent-template/interconnect/messaging.md) (+ `.th.md`) |
 | `bwoc check` แบบ dual-mode | ตรวจเทมเพลต (placeholder `manifest.name`) vs incarnation (ชื่อจริง) Template mode ยืนยันว่า placeholder ต้องมี + กฎ neutrality; incarnation mode ยืนยันว่า placeholder ต้องหายไป (ยกเว้น `{{taskId}}` ซึ่งเป็น runtime) และข้าม neutrality checks ปิด bug ที่ agent ยังไม่ personalize ผ่าน check แบบเงียบๆ |
 | Interconnect routing — Track A | `.bwoc/interconnect/routes.toml` ระดับ workspace, peer-declared (ไม่มี broker กลาง) `bwoc-core::routing` type `Routes` + resolve (exact `agent` → longest `namespace` prefix → `NotFound`); `send` consult เฉพาะตอน local-registry miss, path local-hit ไม่เปลี่ยน byte-for-byte compose กับ trust gate (sender ข้าม workspace → `unknown_sender` → refused) เลย ship ได้โดยไม่ต้องรอ Trust v2 Spec: [`interconnect/routing.md`](../../modules/agent-template/interconnect/routing.md) **อนัตตา / SN 22.59** |
-| Worktree lifecycle — Track B | util `git_worktree` แบบ shell-out (ไม่มี `git2`/`gitoxide`) hook `task-claimed` ของ Saṅgha ยิง `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>` ตอน claim; ไม่ขยาย `Task` struct — ตำแหน่ง worktree ตาม path convention `<worktreeBase>/<agentId>/<taskId>` ให้ cleanup deterministic ไม่ต้อง parse log |
+| Worktree lifecycle — Track B | util `git_worktree` แบบ shell-out (ไม่มี `git2`/`gitoxide`) ตอน claim `bwoc task claim` รัน hook `.bwoc/hooks/task-claimed` ที่ผู้ใช้กำหนดเอง (ถ้ามี; env `BWOC_TASK_ID`, `BWOC_AGENT`, `BWOC_WORKTREE_BASE`, …; exit ไม่เป็น 0 จะบล็อกการ claim) — framework ไม่รัน `git worktree add` เอง แต่ hook รันได้ (เช่น `git worktree add <worktreeBase>/<agentId>/<taskId> -b agent/<agentId>/feat/<taskId>`); ไม่ขยาย `Task` struct — ตำแหน่ง worktree ตาม path convention `<worktreeBase>/<agentId>/<taskId>` ให้ cleanup deterministic ไม่ต้อง parse log |
 | `bwoc retire` full vaya | retire จบ agent อย่างสะอาด: worktree cleanup (worktree ใต้ `<worktreeBase>/<agentId>/` ลบผ่าน git util), branch release (`agent/<agentId>/*` — `-d`, escalate `-D` พร้อมแจ้งชื่อที่ force), interconnect deregister (`Routes::remove_agent_routes` ตัด route ที่ `agent` ชี้ไปยัง retiree ออกจาก `routes.toml`) idempotent; เคารพ file-mode flags; `--json` ขยายแบบ additive ปิดครึ่ง **วยะ** ของ DoD |
 
 ### Phase 3 — นอก DoD (Trust v2 ship แล้ว; Tier 2 เลื่อน)

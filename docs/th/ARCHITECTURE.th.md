@@ -77,7 +77,6 @@ repo นี้ บรรจุ —
 - **Backend symlinks** — `CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md`, `OLLAMA.md`, `OPENAI.md` ล้วนชี้ไปที่ `AGENTS.md`
 - **`config.manifest.json`** — schema ของ placeholder (`{{agentId}}`, `{{primaryModel}}` ฯลฯ)
 - **ช่องเสียบ (slots)** — `persona/`, `memories/`, `interconnect/`, `mindsets/`, `skills/`
-- **`scripts/`** — `incarnate.sh`, `check-agent-neutrality.sh`
 - **`bwoc-agent`** binary — แนบไปกับทุก agent ที่ incarnate (Phase 1: stub บอกว่ายังมีชีวิตอยู่)
 
 ### 3. Agent ที่ Incarnate แล้ว

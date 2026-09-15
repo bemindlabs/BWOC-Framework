@@ -315,8 +315,5 @@ Migration จะใช้เวลา < 30 นาที, no downtime
 | เอกสาร | เชื่อมอย่างไร |
 |---|---|
 | PHILOSOPHY | ปัญญา 3 (DP-13), อิทธิบาท วิมังสา |
-| LIFECYCLE | L4 → L5 ต้องครบ ปัญญา 3 |
-| FAILURE-MODES | Post-mortem feeds ภาวนา |
-| OBSERVABILITY | Rule application logs = สุต source |
 | FLEET-GOVERNANCE | Mined patterns → CCP |
 | SRS | FR-8 (Sammā-samādhi) memory system |

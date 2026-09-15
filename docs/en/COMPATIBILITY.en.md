@@ -136,6 +136,22 @@ says it is going away.
    removal with extra steps.
 3. **Remove at the next major**, where it becomes a violation or an error.
 
+For a **CLI command**, step 2 is one line on **stderr** naming the replacement —
+``bwoc notes list: deprecated — use `bwoc doc list notes` (removal in 4.0)``. The
+old form is rewritten onto the canonical command before dispatch, so its stdout,
+`--json` and exit code are byte-identical to the replacement's. A script that
+cannot migrate yet sets `BWOC_NO_DEPRECATION_WARNINGS=1`.
+
+### Deprecated in 3.2 (removed in 4.0)
+
+| Deprecated | Use instead |
+|---|---|
+| `bwoc notes <new\|list\|view> …` | `bwoc doc <new\|list\|view> notes …` |
+| `bwoc retro <new\|list\|view> …` | `bwoc doc <new\|list\|view> retrospectives …` |
+| `bwoc research <new\|list\|view> …` | `bwoc doc <new\|list\|view> research …` |
+| `bwoc tasks [--agent] [--state] [--json]` | `bwoc task list --all [--agent] [--state] [--json]` |
+| `bwoc memory t2-search <query> <agent>` | `bwoc memory search <query> <agent> --tier 2` |
+
 Plugins carry their own version of this contract: `[plugin].compat` is a bounded
 semver range of framework versions, enforced since 3.0. See
 [`PLUGINS.en.md` §Stability](PLUGINS.en.md#stability).

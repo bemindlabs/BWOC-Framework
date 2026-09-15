@@ -331,7 +331,7 @@ Schema (resolved by `bwoc new`, written verbatim — no placeholders):
     autoModels        ordered candidate pool used when primaryModel=\"auto\"
                       (this is the actual runtime model-fallback mechanism)
     reasoningEffort   optional backend effort control (e.g. \"medium\")
-    sessionsPath      session data dir for Tier 2 memory mining
+    sessionsPath      reserved; written but not read by any runtime
     deepMemoryCmd     Tier 2 memory CLI command
     worktreeBase      base path for spawned worktrees
 
@@ -645,6 +645,7 @@ Commands:
   bwoc memory show --all --json       same as a JSON array of {name, content}
   bwoc memory put <name>              write from stdin (or `--file <p>`); `--force` overwrites
   bwoc memory search <query>          substring match across entries (case-insensitive)
+  bwoc memory search <q> <agent> --tier 2   query the agent's Tier 2 deep-memory backend
   bwoc memory rm <name>               delete an entry; TTY-confirms unless `--yes` / `-y`
 
 Entry name in `show` / `put` accepts `<name>` or `<name>.md`

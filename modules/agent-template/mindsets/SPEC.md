@@ -16,6 +16,8 @@ tags:
 
 A mindset is a small, named, reusable decision frame the agent reaches for in a specific class of situation. Where [[../persona/README|persona]] declares identity and [[../memories/README|memories]] hold accumulated knowledge, mindsets shape the *act of choosing* in the moment.
 
+Mindset files are reference material: no backend loads them into the prompt, so a mindset shapes a decision only when the agent reads it (or when `AGENTS.md` restates it).
+
 Mindsets correspond directly to BWOC principles being applied as decision filters — not as religious instruction, but as engineering thinking aids. See [`docs/en/GLOSSARY.en.md`](../../../docs/en/GLOSSARY.en.md) for the full term lookup.
 
 ## File Format

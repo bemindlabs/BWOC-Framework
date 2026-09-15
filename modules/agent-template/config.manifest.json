@@ -6,28 +6,19 @@
     "agentId":        { "type": "string",   "description": "Derived from name: agent-{name}", "required": true },
     "agentRole":      { "type": "string",   "description": "One-line role description", "required": true },
     "primaryModel":   { "type": "model-id", "description": "Primary LLM model identifier, or the literal \"auto\" to let the harness pick from autoModels at runtime", "required": true },
-    "fallbackModel":  { "type": "model-id", "description": "Fallback LLM model identifier", "required": false },
+    "fallbackModel":  { "type": "model-id", "description": "Fallback model identifier — metadata only (shown in status/dashboards; not a runtime fallback — use primaryModel = \"auto\" + autoModels)", "required": false },
     "autoModels":     { "type": "model-id[]", "description": "Candidate model pool (preference order) used when primaryModel is \"auto\"; for OpenAI-compatible endpoints put frontier models such as gpt-5.5 first and cheaper fallbacks later", "required": false },
     "reasoningEffort": { "type": "string", "description": "Optional backend effort control; backend-neutral but the value space is backend-specific (Claude: low|medium|high|xhigh|max via output_config.effort; OpenAI-compatible: e.g. low|medium|high|xhigh via reasoning_effort). Sent to both the native Claude and OpenAI-compatible paths; backends without effort control ignore it", "required": false },
     "maxTokens":      { "type": "number",   "description": "Optional output-token ceiling. Claude (Messages API) requires max_tokens and uses this instead of the harness default; OpenAI-compatible backends send it as max_tokens when set, else the provider default applies", "required": false },
     "promptCache":    { "type": "boolean",  "description": "Opt out of provider prompt caching (default on). When on, the native Claude path marks the stable system-prompt prefix with cache_control so an agentic loop that resends it pays cache-read (~0.1x) not full input; set false for a volatile system prompt. Below the provider minimum cacheable size the marker is a no-op", "required": false },
     "thinking":       { "type": "boolean",  "description": "Opt in to adaptive extended thinking (default off). When true, the native Claude path requests thinking:{type:adaptive} (Opus 4.6+/Sonnet 4.6+/Fable 5) and preserves + replays the returned thinking blocks across turns (required for the tool path) on both non-streaming and streaming completions. Non-thinking backends ignore it", "required": false },
     "memoryPath":     { "type": "path",     "description": "File-based memory directory", "required": true, "default": "memories/" },
-    "sessionsPath":   { "type": "path",     "description": "Session data directory for Tier 2 mining", "required": false },
+    "sessionsPath":   { "type": "path",     "description": "Reserved / unused — written by bwoc new, read by no runtime", "required": false },
     "deepMemoryCmd":  { "type": "command",  "description": "Tier 2 memory CLI command", "required": false },
     "lintCmd":        { "type": "command",  "description": "Lint command for verification gate", "required": true },
     "formatCmd":      { "type": "command",  "description": "Format command for verification gate", "required": true },
     "testCmd":        { "type": "command",  "description": "Test command for verification gate", "required": true },
     "buildCmd":       { "type": "command",  "description": "Build command for verification gate", "required": true },
     "worktreeBase":   { "type": "path",     "description": "Base directory for worktrees", "required": false, "default": "/tmp" }
-  },
-  "defaults": {
-    "maxConcurrentTasks": 3,
-    "worktreeIsolation": true,
-    "worktreeBase": "/tmp",
-    "memory": {
-      "wakeUpOnStart": true,
-      "maxMemoryIndexLines": 200
-    }
   }
 }
