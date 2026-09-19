@@ -406,11 +406,9 @@ impl App {
     }
 
     fn input_left(&mut self) {
-        self.input_cursor = self.input[..self.input_cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
+        if let Some(ch) = self.input[..self.input_cursor].chars().next_back() {
+            self.input_cursor -= ch.len_utf8();
+        }
     }
 
     fn input_right(&mut self) {
@@ -697,10 +695,7 @@ fn event_loop(
 }
 
 fn is_quit_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    matches!(
-        (code, modifiers),
-        (KeyCode::Char('c'), KeyModifiers::CONTROL)
-    )
+    matches!(code, KeyCode::Char('c' | 'C')) && modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// Process one key event. Returns `Ok(true)` when the user requested quit.
@@ -2252,6 +2247,10 @@ mod tests {
     #[test]
     fn ctrl_c_is_the_only_quit_key() {
         assert!(is_quit_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(is_quit_key(
+            KeyCode::Char('C'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        ));
         assert!(!is_quit_key(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(!is_quit_key(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!is_quit_key(KeyCode::Char('c'), KeyModifiers::NONE));
