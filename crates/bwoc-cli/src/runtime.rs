@@ -10,6 +10,13 @@
 //! 4. user `~/.bwoc/config.toml`
 //! 5. auto-detect: an Anthropic key ⇒ `anthropic`; else a local Ollama with at
 //!    least one model ⇒ `ollama`; else a "no provider configured" help screen
+//!    that names any vendor CLI found on `PATH`
+//!
+//! A harness backend (`anthropic`, `ollama`, …) opens the chat TUI on
+//! `bwoc-harness`. A vendor-CLI backend (`claude`, `codex`, `agy`, `kimi`,
+//! `grok`, `copilot`) hands the terminal to that CLI in the current directory:
+//! it runs on the CLI's own login (a subscription needs no API key) with its own
+//! tools and permissions, so harness tools and trust gates do not apply (#529).
 //!
 //! Fields resolve independently, with one guard: a layer that names a
 //! *different* backend from the winning one contributes nothing else, so a
@@ -20,15 +27,17 @@
 //! ```toml
 //! schema_version = 3
 //! [runtime]
-//! backend    = "ollama"
+//! backend    = "ollama"                      # or a vendor CLI: "claude", …
 //! model      = "<model>"
 //! endpoint   = "http://localhost:11434/v1"   # optional
 //! max_tokens = 8192                          # optional
 //! max_context = 32768                        # optional: model context window
 //! ```
 //!
-//! Absent `schema_version` reads as legacy (`bwoc-core::schema`); a newer one is
-//! refused. Unknown keys and tables are ignored.
+//! `[defaults] backend` (the fleet default for new agents) stands in for an
+//! absent `[runtime] backend` in the same file. Absent `schema_version` reads as
+//! legacy (`bwoc-core::schema`); a newer one is refused. Unknown keys and tables
+//! are ignored.
 
 use std::path::{Path, PathBuf};
 
@@ -81,6 +90,15 @@ struct ConfigFile {
     schema_version: SchemaVersion,
     #[serde(default)]
     runtime: RuntimeTable,
+    #[serde(default)]
+    defaults: DefaultsTable,
+}
+
+/// `[defaults]` — only `backend` is read here, as the fallback for
+/// `[runtime] backend`.
+#[derive(Debug, Deserialize, Default)]
+struct DefaultsTable {
+    backend: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -131,8 +149,12 @@ pub fn parse_config(text: &str, path: &Path) -> Result<RuntimeLayer, RuntimeErro
         });
     }
     let r = file.runtime;
+    let backend = r
+        .backend
+        .filter(|b| !b.trim().is_empty())
+        .or(file.defaults.backend);
     Ok(RuntimeLayer {
-        backend: r.backend,
+        backend,
         model: r.model,
         endpoint: r.endpoint,
         max_tokens: r.max_tokens,
@@ -255,21 +277,41 @@ pub struct Resolved {
     pub max_context: Option<u32>,
 }
 
+/// A session handed to a vendor coding CLI instead of `bwoc-harness`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendorSession {
+    pub backend: Backend,
+    /// `None` leaves the CLI on its own default model.
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
     Ready(Resolved),
+    /// A vendor-CLI backend: exec the CLI in the working directory.
+    Vendor(VendorSession),
     /// Nothing configured and nothing detected.
     NoProvider,
     /// Configured, but unusable — the message says what to change.
     Invalid(String),
 }
 
-/// Registry backend names a session can use: those that run `bwoc-harness`.
+/// Registry backend names that run on `bwoc-harness` (the chat TUI).
 pub fn session_backends() -> Vec<&'static str> {
     use clap::ValueEnum;
     Backend::value_variants()
         .iter()
         .filter(|b| b.uses_harness())
+        .map(|b| b.display_name())
+        .collect()
+}
+
+/// Registry backend names that hand the session to a vendor CLI.
+pub fn vendor_backends() -> Vec<&'static str> {
+    use clap::ValueEnum;
+    Backend::value_variants()
+        .iter()
+        .filter(|b| b.cli_name().is_some())
         .map(|b| b.display_name())
         .collect()
 }
@@ -302,11 +344,22 @@ pub fn resolve(merged: &RuntimeLayer, probes: &Probes) -> Resolution {
         };
     };
 
-    if !Backend::from_registry_name(backend).is_some_and(|b| b.uses_harness()) {
-        return Resolution::Invalid(format!(
-            "backend '{backend}' can't run a bwoc session — use one of: {}",
-            session_backends().join(", ")
-        ));
+    match Backend::from_registry_name(backend) {
+        Some(b) if b.uses_harness() => {}
+        Some(b) if b.cli_name().is_some() => {
+            return Resolution::Vendor(VendorSession {
+                backend: b,
+                model: merged.model.clone(),
+            });
+        }
+        _ => {
+            return Resolution::Invalid(format!(
+                "backend '{backend}' is not a session backend — use one of: {} \
+                 (bwoc-harness), or a vendor CLI: {}",
+                session_backends().join(", "),
+                vendor_backends().join(", ")
+            ));
+        }
     }
     if let Some(model) = merged.model.clone() {
         return ready(backend, model);
@@ -333,16 +386,53 @@ pub fn probe_ollama(endpoint: Option<&str>) -> Option<Vec<String>> {
     crate::doctor::ollama_models(&addr)
 }
 
-/// Printed (to stderr) when nothing is configured or detected.
-pub fn no_provider_help() -> String {
-    "\
+/// Vendor-CLI backends whose program is on `PATH`, in registry order.
+pub fn vendor_clis_on_path() -> Vec<&'static str> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    let found = |cli: &str| {
+        dirs.iter().any(|d| {
+            d.join(cli).is_file() || (cfg!(windows) && d.join(format!("{cli}.exe")).is_file())
+        })
+    };
+    use clap::ValueEnum;
+    Backend::value_variants()
+        .iter()
+        .filter(|b| b.cli_name().is_some_and(found))
+        .map(|b| b.display_name())
+        .collect()
+}
+
+/// Printed (to stderr) when nothing is configured or detected. `vendor_clis`
+/// are the vendor-CLI backends found on `PATH` (see [`vendor_clis_on_path`]).
+pub fn no_provider_help(vendor_clis: &[&str]) -> String {
+    let mut out = String::from(
+        "\
 bwoc: no model provider configured for this session.
 
 Pick one:
   API key     bwoc auth set anthropic      (or: export ANTHROPIC_API_KEY=...)
               bwoc auth set openrouter     then: export BWOC_BACKEND=openrouter BWOC_MODEL=<model>
   Local       ollama serve && ollama pull <model>   (found automatically on localhost:11434)
-
+",
+    );
+    let (cmd, why) = match vendor_clis.first() {
+        Some(first) => (
+            format!("bwoc --backend {first}"),
+            format!("found on PATH: {}", vendor_clis.join(", ")),
+        ),
+        None => (
+            "bwoc --backend <cli>".to_string(),
+            vendor_backends().join(", "),
+        ),
+    };
+    out.push_str(&format!(
+        "  Vendor CLI  {cmd:<29}({why}; runs on the CLI's own login)\n"
+    ));
+    out.push_str(
+        "
 Or pin it in ~/.bwoc/config.toml, or <repo>/.bwoc/config.toml:
   schema_version = 3
   [runtime]
@@ -350,8 +440,73 @@ Or pin it in ~/.bwoc/config.toml, or <repo>/.bwoc/config.toml:
   model   = \"<model>\"
 
 `bwoc --help` lists commands; `bwoc about` prints the banner.
-"
-    .to_string()
+",
+    );
+    out
+}
+
+/// Argv (after the program name) for a vendor-CLI session. Every supported
+/// CLI takes `--model <id>`; without a model the CLI keeps its own default.
+pub fn vendor_argv(v: &VendorSession) -> Vec<String> {
+    match &v.model {
+        Some(m) => vec!["--model".to_string(), m.clone()],
+        None => Vec::new(),
+    }
+}
+
+/// One-line stderr notice before the vendor CLI takes the terminal.
+pub fn vendor_notice(v: &VendorSession, cli: &str) -> String {
+    format!(
+        "bwoc: handing this session to `{cli}` (backend '{}') — it runs on its own login, \
+         tools and permissions; bwoc-harness tools and trust gates do not apply.",
+        v.backend.display_name()
+    )
+}
+
+/// Replace this process with the vendor CLI in `cwd` (Unix `exec`, so the CLI
+/// owns the terminal and its signals); elsewhere run it and pass its exit code
+/// through. Returns only on failure, or with the child's code off Unix.
+fn exec_vendor(v: &VendorSession, cwd: &Path, merged: &RuntimeLayer) -> i32 {
+    let cli = v
+        .backend
+        .cli_name()
+        .expect("Vendor resolution only for backends with a cli_name");
+    if merged.endpoint.is_some() || merged.max_tokens.is_some() || merged.max_context.is_some() {
+        eprintln!(
+            "bwoc: note: endpoint / max_tokens / max_context apply to bwoc-harness backends; \
+             ignored for '{}'",
+            v.backend.display_name()
+        );
+    }
+    eprintln!("{}", vendor_notice(v, cli));
+    let mut cmd = std::process::Command::new(cli);
+    cmd.args(vendor_argv(v)).current_dir(cwd);
+    let not_found = |e: &std::io::Error| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            eprintln!(
+                "bwoc: backend '{}' needs the `{cli}` CLI on PATH — install it, or pick another \
+                 --backend",
+                v.backend.display_name()
+            );
+            exit::USAGE
+        } else {
+            eprintln!("bwoc: cannot run `{cli}`: {e}");
+            exit::ERROR
+        }
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = cmd.exec();
+        not_found(&e)
+    }
+    #[cfg(not(unix))]
+    {
+        match cmd.status() {
+            Ok(status) => status.code().unwrap_or(exit::ERROR),
+            Err(e) => not_found(&e),
+        }
+    }
 }
 
 /// Where bare `bwoc` goes.
@@ -436,8 +591,9 @@ pub fn run_session(flags: RuntimeLayer) -> i32 {
                 }),
             })
         }
+        Resolution::Vendor(v) => exec_vendor(&v, &cwd, &merged),
         Resolution::NoProvider => {
-            eprint!("{}", no_provider_help());
+            eprint!("{}", no_provider_help(&vendor_clis_on_path()));
             exit::USAGE
         }
         Resolution::Invalid(msg) => {
@@ -649,7 +805,7 @@ mod tests {
             resolve(&RuntimeLayer::default(), &probes(&key, &empty)),
             Resolution::NoProvider
         );
-        assert!(no_provider_help().contains("bwoc auth set anthropic"));
+        assert!(no_provider_help(&[]).contains("bwoc auth set anthropic"));
     }
 
     #[test]
@@ -658,10 +814,11 @@ mod tests {
         let down = |_: Option<&str>| None;
         let p = probes(&key, &down);
 
-        // A vendor-CLI backend can't drive the harness.
-        let r = resolve(&layer(Some("claude"), None), &p);
+        // `cli` is the harness's generic subscription provider, not a session
+        // backend: the error lists both families so the vendor name is findable.
+        let r = resolve(&layer(Some("cli"), None), &p);
         assert!(
-            matches!(r, Resolution::Invalid(ref m) if m.contains("anthropic")),
+            matches!(r, Resolution::Invalid(ref m) if m.contains("anthropic") && m.contains("claude")),
             "{r:?}"
         );
 
@@ -687,6 +844,81 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// #529: every vendor coding CLI resolves to a vendor session — no key,
+    /// no Ollama, no probe — carrying the model only when one is named.
+    #[test]
+    fn vendor_backends_resolve_without_probing() {
+        let never = || panic!("no probe");
+        let never_o = |_: Option<&str>| panic!("no probe");
+        let p = probes(&never, &never_o);
+        for name in ["claude", "codex", "agy", "kimi", "grok", "copilot"] {
+            let expected = Backend::from_registry_name(name).unwrap();
+            assert_eq!(
+                resolve(&layer(Some(name), None), &p),
+                Resolution::Vendor(VendorSession {
+                    backend: expected,
+                    model: None,
+                }),
+                "{name}"
+            );
+            match resolve(&layer(Some(name), Some("m1")), &p) {
+                Resolution::Vendor(v) => assert_eq!(v.model.as_deref(), Some("m1")),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert_eq!(
+            vendor_backends(),
+            ["claude", "agy", "codex", "kimi", "copilot", "grok"]
+        );
+    }
+
+    #[test]
+    fn vendor_argv_forwards_only_a_named_model() {
+        let with = VendorSession {
+            backend: Backend::Codex,
+            model: Some("gpt-x".into()),
+        };
+        assert_eq!(vendor_argv(&with), ["--model", "gpt-x"]);
+        let without = VendorSession {
+            backend: Backend::Kimi,
+            model: None,
+        };
+        assert!(vendor_argv(&without).is_empty());
+        let notice = vendor_notice(&with, "codex");
+        assert!(notice.contains("`codex`") && notice.contains("trust gates"));
+    }
+
+    /// #529: `[defaults] backend` (what the reporter's config declared) now
+    /// reaches the session when `[runtime]` names none; `[runtime]` still wins.
+    #[test]
+    fn defaults_backend_stands_in_for_runtime_backend() {
+        let p = Path::new("c.toml");
+        let l = parse_config("[defaults]\nbackend = \"claude\"\n", p).unwrap();
+        assert_eq!(l.backend.as_deref(), Some("claude"));
+        let l = parse_config(
+            "[defaults]\nbackend = \"claude\"\n[runtime]\nbackend = \"ollama\"\n",
+            p,
+        )
+        .unwrap();
+        assert_eq!(l.backend.as_deref(), Some("ollama"));
+        let l = parse_config(
+            "[defaults]\nbackend = \"codex\"\n[runtime]\nbackend = \" \"\n",
+            p,
+        )
+        .unwrap();
+        assert_eq!(l.backend.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn no_provider_help_names_vendor_clis_found_on_path() {
+        let found = no_provider_help(&["claude", "codex"]);
+        assert!(found.contains("bwoc --backend claude"), "{found}");
+        assert!(found.contains("found on PATH: claude, codex"), "{found}");
+        let none = no_provider_help(&[]);
+        assert!(none.contains("bwoc --backend <cli>"), "{none}");
+        assert!(none.contains("kimi") && none.contains("grok"), "{none}");
     }
 
     #[test]
