@@ -6,13 +6,17 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
-### Deprecated
+## [v2026.9.20-0] — 2026-09-20 — 3.4.0
 
-- **`bwoc dashboard`** — use `bwoc fleet` for the status overview, or `bwoc chat <agent> --tui --fleet` for every agent's live session in one TUI without tmux. It still runs its own TUI and prints one stderr line (`BWOC_NO_DEPRECATION_WARNINGS=1` silences it). Removed in 4.0; see [`COMPATIBILITY.en.md` §Deprecated in 3.4](docs/en/COMPATIBILITY.en.md#deprecated-in-34-removed-in-40).
+**A chat input that works like the rest of your tools.** `/` opens a command menu in the chat TUI and `@` completes project files and attaches them to your message. `bwoc dashboard` is deprecated in favour of `bwoc fleet`. Nothing that worked in 3.3 breaks.
 
 ### Added
 
 - **`/` commands and `@` file mentions in the chat TUI.** In the input line, `/` opens a command menu (`/help`, `/clear`, `/mode [default|accept_edits|bypass]`, `/quit`, `/exit`) and `@` completes project files; `↑`/`↓` pick, `Tab` completes, `Esc` hides. Commands run in the TUI and never reach the model. On send, each `@path` naming a text file inside the working directory attaches its content (up to 32 KB per file); paths outside the directory and binary files are reported, not attached. No protocol change.
+
+### Deprecated
+
+- **`bwoc dashboard`** — use `bwoc fleet` for the status overview, or `bwoc chat <agent> --tui --fleet` for every agent's live session in one TUI without tmux. It still runs its own TUI and prints one stderr line (`BWOC_NO_DEPRECATION_WARNINGS=1` silences it). Removed in 4.0; see [`COMPATIBILITY.en.md` §Deprecated in 3.4](docs/en/COMPATIBILITY.en.md#deprecated-in-34-removed-in-40).
 
 ### Fixed
 
