@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`bwoc dashboard`** — use `bwoc fleet` for the status overview, or `bwoc chat <agent> --tui --fleet` for every agent's live session in one TUI without tmux. It still runs its own TUI and prints one stderr line (`BWOC_NO_DEPRECATION_WARNINGS=1` silences it). Removed in 4.0; see [`COMPATIBILITY.en.md` §Deprecated in 3.4](docs/en/COMPATIBILITY.en.md#deprecated-in-34-removed-in-40).
+
 ### Added
 
 - **`/` commands and `@` file mentions in the chat TUI.** In the input line, `/` opens a command menu (`/help`, `/clear`, `/mode [default|accept_edits|bypass]`, `/quit`, `/exit`) and `@` completes project files; `↑`/`↓` pick, `Tab` completes, `Esc` hides. Commands run in the TUI and never reach the model. On send, each `@path` naming a text file inside the working directory attaches its content (up to 32 KB per file); paths outside the directory and binary files are reported, not attached. No protocol change.

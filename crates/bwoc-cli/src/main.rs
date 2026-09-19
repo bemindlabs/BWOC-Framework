@@ -236,6 +236,8 @@ enum Commands {
     /// Emit a shell completion script (bash, zsh, fish, powershell, elvish).
     Completion(CompletionArgs),
     /// Launch the interactive TUI dashboard (agents list with navigation; refresh with `r`).
+    /// Deprecated — removal in 4.0: use `bwoc fleet` for the overview, or
+    /// `bwoc chat <agent> --tui --fleet` for live sessions without tmux.
     Dashboard(DashboardArgs),
     /// Launch the Loop-Engineering control center (L1 goal-loop): watch a team's
     /// task list drive toward Definition-of-Done. TUI; `--team` opens one directly.
@@ -3075,6 +3077,9 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Some(Commands::Dashboard(args)) => {
+            // No 1:1 replacement to rewrite onto, so it keeps its own TUI and
+            // only warns (COMPATIBILITY.en.md §Deprecated in 3.4).
+            util::deprecated("dashboard", "fleet");
             let code = dashboard::run(args.into_runtime(lang.clone()));
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }

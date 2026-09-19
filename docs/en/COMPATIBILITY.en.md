@@ -159,6 +159,15 @@ default, but only in warn mode — refusal still requires `BWOC_TRUST_GATING=1`
 | `bwoc tasks [--agent] [--state] [--json]` | `bwoc task list --all [--agent] [--state] [--json]` |
 | `bwoc memory t2-search <query> <agent>` | `bwoc memory search <query> <agent> --tier 2` |
 
+### Deprecated in 3.4 (removed in 4.0)
+
+| Deprecated | Use instead |
+|---|---|
+| `bwoc dashboard` | `bwoc fleet` (status overview), or `bwoc chat <agent> --tui --fleet` (live sessions in one TUI, no tmux) |
+
+`bwoc dashboard` has no one-to-one replacement to rewrite onto, so until 4.0 it
+keeps running its own TUI and only prints the stderr notice.
+
 Plugins carry their own version of this contract: `[plugin].compat` is a bounded
 semver range of framework versions, enforced since 3.0. See
 [`PLUGINS.en.md` §Stability](PLUGINS.en.md#stability).

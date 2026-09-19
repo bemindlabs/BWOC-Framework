@@ -149,6 +149,15 @@ trust gate Kalyāṇamitta ของ daemon ทำงานโดย default แ
 | `bwoc tasks [--agent] [--state] [--json]` | `bwoc task list --all [--agent] [--state] [--json]` |
 | `bwoc memory t2-search <query> <agent>` | `bwoc memory search <query> <agent> --tier 2` |
 
+### Deprecated in 3.4 (removed in 4.0)
+
+| Deprecated | ใช้แทนด้วย |
+|---|---|
+| `bwoc dashboard` | `bwoc fleet` (ภาพรวมสถานะ) หรือ `bwoc chat <agent> --tui --fleet` (session สดของทุก agent ใน TUI เดียว ไม่ต้องใช้ tmux) |
+
+`bwoc dashboard` ไม่มีคำสั่งที่มาแทนแบบหนึ่งต่อหนึ่งให้แปลงไปได้ จึงยังรัน TUI ของตัวเองต่อไปจนถึง 4.0
+และแค่พิมพ์ข้อความเตือนทาง stderr
+
 ปลั๊กอินมี contract รุ่นของตัวเอง: `[plugin].compat` เป็น semver range ที่มีขอบบน
 บังคับใช้ตั้งแต่ 3.0 ดู [`PLUGINS.th.md` §Stability](PLUGINS.th.md#stability)
 
