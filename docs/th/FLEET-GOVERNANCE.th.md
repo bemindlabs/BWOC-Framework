@@ -42,7 +42,7 @@ Phase 1–3 ให้พื้นฐานทางเทคนิคแก่ w
 
 **Signal:** `bwoc list --json` คืน `status`, `running` flag, และ timestamp `incarnated` ล่าสุดของแต่ละ agent. workspace ที่ agent ตัวใดไม่ได้ถูกแตะใน N สัปดาห์ = warning ไม่ใช่ violation
 
-**ปฏิบัติ:** รัน `bwoc list --json | jq '.[] | select(.status == "active")'` ตามจังหวะ (รายวัน / รายสัปดาห์) ดู agent ที่ `inbox` มี envelope ยังไม่อ่าน หรือ daemon ไม่ได้ ping ภายใน N วัน TUI `bwoc dashboard` เป็น surface ธรรมชาติ
+**ปฏิบัติ:** รัน `bwoc list --json | jq '.[] | select(.status == "active")'` ตามจังหวะ (รายวัน / รายสัปดาห์) ดู agent ที่ `inbox` มี envelope ยังไม่อ่าน หรือ daemon ไม่ได้ ping ภายใน N วัน `bwoc fleet` เป็น surface ธรรมชาติ (`bwoc dashboard` ถูก deprecate ตั้งแต่ 3.4)
 
 ### 2. เริ่ม-เลิกพร้อมกัน — *samaggā sannipatanti*
 
