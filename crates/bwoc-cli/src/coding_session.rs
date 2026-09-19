@@ -376,7 +376,7 @@ pub enum SessionCommand {
     },
     /// Copy a conversation into a new session (default: the latest) and print
     /// its id. The fork is now the latest, so bare `bwoc` resumes it; the
-    /// original stays as it was and opens with `bwoc --session <id>`.
+    /// original stays as it was and opens with `bwoc --session <parent-id>`.
     Fork {
         /// Session id or unique prefix.
         id: Option<String>,
@@ -424,12 +424,15 @@ pub fn run(cmd: SessionCommand) -> i32 {
         }
         SessionCommand::Fork { id } => match store.fork(id.as_deref(), SystemTime::now()) {
             Ok(s) => {
-                println!(
-                    "forked {parent} → {}\nbare `bwoc` now resumes the fork; \
-                     the original opens with: bwoc --session {parent}",
-                    s.id,
-                    parent = s.parent.as_deref().unwrap_or("?"),
-                );
+                // `fork` always records a parent; stay honest if it ever doesn't.
+                match s.parent.as_deref() {
+                    Some(parent) => println!(
+                        "forked {parent} → {}\nbare `bwoc` now resumes the fork; \
+                         the original opens with: bwoc --session {parent}",
+                        s.id
+                    ),
+                    None => println!("forked → {}\nbare `bwoc` now resumes the fork", s.id),
+                }
                 exit::OK
             }
             Err(e) => fail(e),
