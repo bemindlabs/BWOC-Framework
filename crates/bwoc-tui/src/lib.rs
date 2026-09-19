@@ -30,10 +30,12 @@
 //! permission request `a`/`d` allow/deny (only on an empty input line, once the
 //! prompt has been up for a moment, so a prompt that appears mid-sentence never
 //! consumes typed letters); Ctrl-C sends `Quit`, restores the terminal, and
-//! exits. In the fleet, a line that
+//! exits. In a single session, `/` opens a command menu and `@` completes
+//! project files (see the `complete` module). In the fleet, a line that
 //! begins with `@<agent>` routes the rest of the message to that fleet member's
 //! live session (opening its pane and switching to it).
 
+mod complete;
 mod session;
 
 use std::collections::HashMap;
@@ -59,7 +61,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
 /// Default OpenAI-compatible endpoint when the agent's manifest has no
 /// `baseUrl` (Ollama). Mirrors the harness's own `DEFAULT_ENDPOINT`; defined
@@ -210,6 +212,7 @@ pub fn run(args: TuiArgs) -> i32 {
     let mut terminal_guard = TerminalGuard::new();
 
     let mut app = App::new(args.agent_id, &args.backend_name);
+    app.workdir = Some(args.agent_path.clone());
     let result = event_loop(&mut term, &mut app, &rx, stdin);
 
     // Explicit restore on the happy path; disarm the guard so it doesn't restore
@@ -365,7 +368,29 @@ struct App {
     /// cycles the first three; `plan` (only ever entered harness-side) falls
     /// back to `default` on the next `F2`. Shown in the status line.
     mode: String,
+    /// Session working directory for `@` file mentions. `None` (fleet panes)
+    /// disables `/` and `@` handling so a fleet `@agent` line routes as before.
+    workdir: Option<PathBuf>,
+    /// Files under `workdir`, listed on the first `@` and reused after.
+    files: Option<Vec<String>>,
+    /// Highlighted row in the `/` / `@` popup.
+    popup_sel: usize,
+    /// `Esc` hid the popup; it comes back once the input changes.
+    popup_hidden: bool,
 }
+
+/// The completion popup over the input line, derived from the input + cursor.
+struct Popup {
+    /// Byte range of the token a pick replaces.
+    start: usize,
+    /// `(completion, description)` rows.
+    items: Vec<(String, String)>,
+    /// `/` commands run on `Enter`; `@` files only complete.
+    is_command: bool,
+}
+
+/// Rows shown in the popup at once.
+const POPUP_ROWS: usize = 8;
 
 struct ReadyStatus {
     agent: String,
@@ -391,7 +416,66 @@ impl App {
             done: false,
             scroll: 0,
             mode: "default".to_string(),
+            workdir: None,
+            files: None,
+            popup_sel: 0,
+            popup_hidden: false,
         }
+    }
+
+    /// The `/` or `@` popup for the current input, if one applies.
+    fn popup(&self) -> Option<Popup> {
+        if self.workdir.is_none() || self.popup_hidden {
+            return None;
+        }
+        if let Some(cmds) = complete::slash_matches(&self.input) {
+            if self.input_cursor != self.input.len() || cmds.is_empty() {
+                return None;
+            }
+            return Some(Popup {
+                start: 0,
+                items: cmds
+                    .into_iter()
+                    .map(|(n, d)| (n.to_string(), d.to_string()))
+                    .collect(),
+                is_command: true,
+            });
+        }
+        let (start, query) = complete::mention_at(&self.input, self.input_cursor)?;
+        let hits = complete::filter_files(self.files.as_deref()?, query, POPUP_ROWS);
+        (!hits.is_empty()).then(|| Popup {
+            start,
+            items: hits
+                .into_iter()
+                .map(|f| (format!("@{f}"), String::new()))
+                .collect(),
+            is_command: false,
+        })
+    }
+
+    /// Input changed: re-show a hidden popup, reset its selection, and list the
+    /// workdir's files the first time an `@` token appears.
+    fn input_changed(&mut self) {
+        self.popup_hidden = false;
+        self.popup_sel = 0;
+        if self.files.is_none()
+            && let Some(root) = &self.workdir
+            && complete::mention_at(&self.input, self.input_cursor).is_some()
+        {
+            self.files = Some(complete::list_files(root));
+        }
+    }
+
+    /// Replace the popup's token with its highlighted row.
+    fn accept_popup(&mut self, popup: &Popup) {
+        let Some((pick, _)) = popup.items.get(self.popup_sel.min(popup.items.len() - 1)) else {
+            return;
+        };
+        let (line, cursor) = complete::complete(&self.input, popup.start, self.input_cursor, pick);
+        self.input = line;
+        self.input_cursor = cursor;
+        self.popup_sel = 0;
+        self.popup_hidden = true;
     }
 
     /// The mode `F2` cycles to next: default → accept_edits → bypass → default.
@@ -724,6 +808,37 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         return Ok(false);
     }
 
+    // An open `/` / `@` popup takes the arrows, Tab, Enter and Esc.
+    if let Some(popup) = app.popup() {
+        match code {
+            KeyCode::Up => {
+                app.popup_sel = app
+                    .popup_sel
+                    .checked_sub(1)
+                    .unwrap_or(popup.items.len() - 1);
+                return Ok(false);
+            }
+            KeyCode::Down => {
+                app.popup_sel = (app.popup_sel + 1) % popup.items.len();
+                return Ok(false);
+            }
+            KeyCode::Tab => {
+                app.accept_popup(&popup);
+                return Ok(false);
+            }
+            KeyCode::Enter if !popup.is_command => {
+                app.accept_popup(&popup);
+                return Ok(false);
+            }
+            KeyCode::Enter => app.accept_popup(&popup), // then run it below
+            KeyCode::Esc => {
+                app.popup_hidden = true;
+                return Ok(false);
+            }
+            _ => {}
+        }
+    }
+
     // Scrollback navigation (arrows/PageUp/PageDown/End) — before input editing.
     if app.scroll_key(code) {
         return Ok(false);
@@ -742,38 +857,125 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         }
         KeyCode::Enter => {
             let text = app.take_input();
-            if !text.trim().is_empty() {
-                app.scroll = 0; // jump to live so the reply is visible
-                app.conversation.push(format!("you: {text}"));
-                // The local TUI is the trusted operator channel (Phase 5 t1).
-                send_input(
-                    stdin,
-                    &ChatInput::User {
-                        text,
-                        principal: Principal::LocalOperator,
-                    },
-                )?;
+            app.input_changed();
+            if text.trim().is_empty() {
+                return Ok(false);
             }
+            app.scroll = 0; // jump to live so the reply is visible
+            if app.workdir.is_some()
+                && let Some(cmd) = complete::parse_slash(&text)
+            {
+                return run_slash(app, stdin, cmd);
+            }
+            app.conversation.push(format!("you: {text}"));
+            let text = match &app.workdir {
+                Some(root) => {
+                    let (expanded, report) = complete::expand_mentions(&text, root);
+                    app.conversation.extend(report.iter().map(attach_line));
+                    expanded
+                }
+                None => text,
+            };
+            // The local TUI is the trusted operator channel (Phase 5 t1).
+            send_input(
+                stdin,
+                &ChatInput::User {
+                    text,
+                    principal: Principal::LocalOperator,
+                },
+            )?;
             Ok(false)
         }
         KeyCode::Backspace => {
             app.input_backspace();
+            app.input_changed();
             Ok(false)
         }
         KeyCode::Left => {
             app.input_left();
+            app.input_changed();
             Ok(false)
         }
         KeyCode::Right => {
             app.input_right();
+            app.input_changed();
             Ok(false)
         }
         KeyCode::Char(c) => {
             app.input_insert(c);
+            app.input_changed();
             Ok(false)
         }
         KeyCode::Esc => Ok(false),
         _ => Ok(false),
+    }
+}
+
+/// Run a `/` command locally. Every command maps onto an existing `ChatInput`;
+/// nothing reaches the model. Returns `Ok(true)` for `/quit`.
+fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io::Result<bool> {
+    use complete::Slash;
+    match cmd {
+        Slash::Help => {
+            app.conversation.push("● commands:".to_string());
+            app.conversation.extend(
+                complete::COMMANDS
+                    .iter()
+                    .map(|(name, desc)| format!("●   {name:<7} {desc}")),
+            );
+            app.conversation.push(
+                "●   @path   attach a project file to your message (Tab completes)".to_string(),
+            );
+        }
+        Slash::Clear => {
+            send_input(stdin, &ChatInput::Forget)?;
+            app.conversation.clear();
+            app.streaming.clear();
+            app.thinking.clear();
+            app.usage = None;
+            app.conversation
+                .push("● conversation forgotten — starting fresh".to_string());
+        }
+        Slash::Mode(None) => {
+            app.conversation.push(format!(
+                "● permission mode: {} — /mode {} (or F2)",
+                app.mode,
+                complete::MODES.join("|")
+            ));
+        }
+        Slash::Mode(Some(m)) if complete::MODES.contains(&m.as_str()) => {
+            app.mode = m.clone();
+            send_input(stdin, &ChatInput::SetMode { mode: m })?;
+        }
+        Slash::Mode(Some(m)) => {
+            app.conversation.push(format!(
+                "✗ unknown mode `{m}` — one of {}",
+                complete::MODES.join(", ")
+            ));
+        }
+        Slash::Quit => return Ok(true),
+        Slash::Unknown(name) => {
+            app.conversation
+                .push(format!("✗ unknown command /{name} — /help lists them"));
+        }
+    }
+    Ok(false)
+}
+
+/// Transcript line for one `@` mention resolved at send time.
+fn attach_line(a: &complete::Attached) -> String {
+    match a {
+        complete::Attached::File {
+            path,
+            bytes,
+            truncated,
+        } => {
+            let cut = if *truncated { ", truncated" } else { "" };
+            format!("● attached {path} ({bytes} bytes{cut})")
+        }
+        complete::Attached::Skipped { path, reason } => {
+            format!("✗ not attached {path}: {reason}")
+        }
     }
 }
 
@@ -794,7 +996,66 @@ fn draw_frame(f: &mut ratatui::Frame, app: &App) {
     draw_status(f, layout[0], app);
     draw_body(f, layout[1], app);
     draw_input(f, layout[2], app, true);
-    draw_footer(f, layout[3]);
+    draw_footer(f, layout[3], app.workdir.is_some());
+    if let Some(popup) = app.popup() {
+        draw_popup(f, layout[1], &popup, app.popup_sel);
+    }
+}
+
+/// The `/` / `@` popup, overlaid on the bottom of the conversation pane just
+/// above the input box.
+fn draw_popup(f: &mut ratatui::Frame, body: Rect, popup: &Popup, sel: usize) {
+    let rows = popup.items.len().min(POPUP_ROWS) as u16;
+    // Inside the pane's border: one row/column in from each edge.
+    let height = (rows + 2).min(body.height.saturating_sub(2));
+    let width = body.width.saturating_sub(2).min(72);
+    if height < 3 || width < 10 {
+        return;
+    }
+    let area = Rect {
+        x: body.x + 1,
+        y: body.y + body.height - 1 - height,
+        width,
+        height,
+    };
+    let sel = sel.min(popup.items.len() - 1);
+    let items: Vec<ListItem> = popup
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, (name, desc))| {
+            let style = if i == sel {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(tone(design::color::ACCENT))
+            } else {
+                Style::default()
+            };
+            let line = if desc.is_empty() {
+                Line::from(Span::raw(name.clone()))
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{name:<8}"),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!(" {desc}")),
+                ])
+            };
+            ListItem::new(line).style(style)
+        })
+        .collect();
+    let title = if popup.is_command {
+        " commands — ↑/↓ · Tab complete · Enter run · Esc "
+    } else {
+        " files — ↑/↓ · Tab/Enter complete · Esc "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(tone(design::color::ACCENT)));
+    f.render_widget(Clear, area);
+    f.render_widget(List::new(items).block(block), area);
 }
 
 /// Map a design token's ANSI half to ratatui's *named* colour, so the user's
@@ -1071,10 +1332,16 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App, cursor_visible: boo
     }
 }
 
-fn draw_footer(f: &mut ratatui::Frame, area: Rect) {
+fn draw_footer(f: &mut ratatui::Frame, area: Rect, completions: bool) {
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" ↑/↓ ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("scroll · ←/→ cursor · PgUp/PgDn · End live · select/copy · "),
+        Span::raw("scroll · ←/→ cursor · PgUp/PgDn · End live · "),
+        Span::raw(if completions {
+            "/ commands · @ files · "
+        } else {
+            ""
+        }),
+        Span::raw("select/copy · "),
         Span::styled(
             "Ctrl-C exit ",
             Style::default().add_modifier(Modifier::BOLD),
@@ -1642,7 +1909,7 @@ fn draw_fleet(f: &mut ratatui::Frame, fleet: &Fleet) {
             draw_input(f, rows[2], app, fleet.palette.is_none());
         }
     }
-    draw_footer(f, rows[3]);
+    draw_footer(f, rows[3], false);
     if fleet.palette.is_some() {
         draw_palette(f, area, fleet);
     }
@@ -2142,6 +2409,52 @@ mod tests {
         assert_eq!(parse_mention("email @ me"), None); // '@' not leading a token
         assert_eq!(parse_mention("@"), None); // empty name
         assert_eq!(parse_mention(""), None);
+    }
+
+    fn type_into(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.input_insert(c);
+            app.input_changed();
+        }
+    }
+
+    #[test]
+    fn popups_are_off_without_a_workdir() {
+        // Fleet panes have no workdir: `/` and `@` stay plain input there.
+        let mut app = App::new("a".into(), "ollama");
+        type_into(&mut app, "/cl");
+        assert!(app.popup().is_none());
+    }
+
+    #[test]
+    fn slash_popup_completes_the_command() {
+        let mut app = App::new("a".into(), "ollama");
+        app.workdir = Some(std::env::temp_dir());
+        type_into(&mut app, "/m");
+        let popup = app.popup().expect("slash popup");
+        assert!(popup.is_command);
+        assert_eq!(popup.items[0].0, "/mode");
+        app.accept_popup(&popup);
+        assert_eq!(app.input, "/mode ");
+        assert_eq!(app.input_cursor, app.input.len());
+        // Hidden after a pick; typing brings popups back (none match here).
+        assert!(app.popup().is_none());
+    }
+
+    #[test]
+    fn file_popup_lists_the_workdir_on_first_at() {
+        let dir = std::env::temp_dir().join(format!("bwoc-tui-at-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "").unwrap();
+        let mut app = App::new("a".into(), "ollama");
+        app.workdir = Some(dir.clone());
+        type_into(&mut app, "explain @mai");
+        let popup = app.popup().expect("file popup");
+        assert!(!popup.is_command);
+        app.accept_popup(&popup);
+        assert_eq!(app.input, "explain @src/main.rs ");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`/` commands and `@` file mentions in the chat TUI.** In the input line, `/` opens a command menu (`/help`, `/clear`, `/mode [default|accept_edits|bypass]`, `/quit`, `/exit`) and `@` completes project files; `↑`/`↓` pick, `Tab` completes, `Esc` hides. Commands run in the TUI and never reach the model. On send, each `@path` naming a text file inside the working directory attaches its content (up to 32 KB per file); paths outside the directory and binary files are reported, not attached. No protocol change.
+
 ### Fixed
 
 - **`bwoc session fork` says which conversation bare `bwoc` resumes.** The fork is the newest write, so bare `bwoc` continues it; the message used to suggest opening the fork with `--session`, implying the original stayed the default. It now names the fork as the resumed one and shows how to open the original. Behavior is unchanged.
