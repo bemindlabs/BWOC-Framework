@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.19-0] — 2026-09-19 — 3.3.0
+
+**Several conversations per directory.** Bare `bwoc` still resumes where you left off, and now `bwoc --new` starts another conversation, `bwoc --session <id>` resumes a specific one, and `bwoc session list | fork | rm` manages them (runtime R4a). Bare `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) opens that vendor CLI on its own subscription, and the chat TUI gets explicit, copy-friendly controls. 3.2 conversations move to the new layout on first open. Nothing that worked in 3.2 breaks.
+
 ### Added
 
 - **Several conversations per directory (runtime R4).** Bare `bwoc` still resumes the directory's latest conversation; `bwoc --new` starts another and `bwoc --session <id>` (id or unique prefix) resumes a specific one. `bwoc session list [--all] [--json]` lists them with title, message count and last write, `bwoc session fork [<id>]` copies one into a new session that records its parent, and `bwoc session rm <id>` deletes one. Conversations live in `~/.bwoc/sessions/<dir-hash>/<id>.json`; a 3.2 `~/.bwoc/sessions/<dir-hash>.json` moves in the first time its directory is opened, so an upgrade resumes the same conversation. (`bwoc sessions` still lists running agent processes.)
