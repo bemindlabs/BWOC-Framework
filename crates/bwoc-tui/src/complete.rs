@@ -252,7 +252,8 @@ pub fn expand_mentions(text: &str, root: &Path) -> (String, Vec<Attached>) {
             String::new()
         };
         out.push_str(&format!(
-            "\n\n<file path=\"{rel}\"{note}>\n{content}\n</file>"
+            "\n\n<file path=\"{}\"{note}>\n{content}\n</file>",
+            escape_attr(rel)
         ));
         report.push(Attached::File {
             path: rel.to_string(),
@@ -261,6 +262,15 @@ pub fn expand_mentions(text: &str, root: &Path) -> (String, Vec<Attached>) {
         });
     }
     (out, report)
+}
+
+/// Escape a value for a double-quoted markup attribute — a Unix filename may
+/// hold `"`, `<`, `>` or `&`.
+fn escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -383,6 +393,11 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn attach_escapes_the_path_attribute() {
+        assert_eq!(escape_attr(r#"a"b<c>&.rs"#), "a&quot;b&lt;c&gt;&amp;.rs");
     }
 
     #[test]
