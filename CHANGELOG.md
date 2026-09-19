@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **Chat TUI controls are explicit and copy-friendly.** `Ctrl-C` is the only exit key, so `q` is always ordinary input and `Esc` no longer closes the session. The chat pane scrolls one row with `↑` / `↓`, retains page navigation with `PgUp` / `PgDn` and `End`, and `←` / `→` move a Unicode-safe input cursor for editing. A persistent footer shows the controls. Idle frames stop repainting so native terminal text selection remains stable for copying.
+
 ## [v2026.9.15-0] — 2026-09-15 — 3.2.0
 
 **BWOC as its own coding agent.** Run `bwoc` in any repository and, on a terminal, it opens a coding session over the current directory — no workspace, agent or manifest needed. The provider resolves from flags, env, a project or user `config.toml`, or auto-detect (an Anthropic key or a local Ollama), and `bwoc auth` stores API keys `0600`. Chat sessions now run the batch paths — retry and fallback, MCP, the capability gate and OS sandbox, a context budget sized to the model — and gain coding tools: `glob`, regex `grep`, `multi_edit`, `webfetch`, `todo`, `subagent` and a `run_command` timeout. A lean pass removes dead code, stub plugins and unused skills; the Kalyāṇamitta trust gate runs by default in warn mode; duplicate CLI entry points are deprecated (removed in 4.0). Nothing that worked in 3.1 breaks.
