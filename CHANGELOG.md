@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Several conversations per directory (runtime R4).** Bare `bwoc` still resumes the directory's latest conversation; `bwoc --new` starts another and `bwoc --session <id>` (id or unique prefix) resumes a specific one. `bwoc session list [--all] [--json]` lists them with title, message count and last write, `bwoc session fork [<id>]` copies one into a new session that records its parent, and `bwoc session rm <id>` deletes one. Conversations live in `~/.bwoc/sessions/<dir-hash>/<id>.json`; a 3.2 `~/.bwoc/sessions/<dir-hash>.json` moves in the first time its directory is opened, so an upgrade resumes the same conversation. (`bwoc sessions` still lists running agent processes.)
+
 ### Changed
 
 - **Chat TUI controls are explicit and copy-friendly.** `Ctrl-C` is the only exit key, so `q` is always ordinary input and `Esc` no longer closes the session. The chat pane scrolls one row with `↑` / `↓`, retains page navigation with `PgUp` / `PgDn` and `End`, and `←` / `→` move a Unicode-safe input cursor for editing. A persistent footer shows the controls. Idle frames stop repainting so native terminal text selection remains stable for copying.

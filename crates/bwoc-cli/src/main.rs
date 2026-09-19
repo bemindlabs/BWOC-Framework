@@ -17,6 +17,7 @@ mod auth;
 mod banner;
 mod chat;
 mod check;
+mod coding_session;
 mod completion;
 mod council;
 mod dashboard;
@@ -108,6 +109,16 @@ struct Cli {
     /// Bare `bwoc` only: provider endpoint URL (overrides BWOC_ENDPOINT).
     #[arg(long, value_name = "URL")]
     endpoint: Option<String>,
+
+    /// Bare `bwoc` only: start a new conversation instead of resuming this
+    /// directory's latest one.
+    #[arg(long = "new", conflicts_with = "session")]
+    new_session: bool,
+
+    /// Bare `bwoc` only: resume this directory's conversation with this id (or
+    /// unique id prefix) — see `bwoc session list`.
+    #[arg(long, value_name = "ID")]
+    session: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -249,6 +260,10 @@ enum Commands {
     Trust(TrustArgs),
     /// Append a message to an agent's inbox (`.bwoc/inbox.jsonl`).
     Send(SendArgs),
+    /// Bare `bwoc` conversations in the current directory: list / fork / rm.
+    /// (`bwoc sessions` lists running agent processes instead.)
+    #[command(subcommand)]
+    Session(coding_session::SessionCommand),
     /// Provider API keys for `bwoc` sessions, kept in `~/.bwoc/secrets.toml`.
     #[command(subcommand)]
     Auth(auth::AuthCommand),
@@ -2862,10 +2877,17 @@ fn main() -> ExitCode {
         max_tokens: None,
         max_context: None,
     };
-    if cli.command.is_some() && !session_flags.is_empty() {
+    let session_pick = match (cli.new_session, cli.session.clone()) {
+        (true, _) => coding_session::SessionPick::New,
+        (false, Some(id)) => coding_session::SessionPick::Id(id),
+        (false, None) => coding_session::SessionPick::Latest,
+    };
+    if cli.command.is_some()
+        && (!session_flags.is_empty() || session_pick != coding_session::SessionPick::Latest)
+    {
         eprintln!(
-            "bwoc: --backend / --model / --endpoint apply only to bare `bwoc` (a coding \
-             session), not to subcommands"
+            "bwoc: --backend / --model / --endpoint / --new / --session apply only to bare \
+             `bwoc` (a coding session), not to subcommands"
         );
         return ExitCode::from(2);
     }
@@ -3098,6 +3120,9 @@ fn main() -> ExitCode {
                 }
             };
             ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Session(cmd)) => {
+            ExitCode::from(u8::try_from(coding_session::run(cmd)).unwrap_or(1))
         }
         Some(Commands::Auth(cmd)) => ExitCode::from(u8::try_from(auth::run(cmd)).unwrap_or(1)),
         Some(Commands::About) => {
@@ -3633,10 +3658,10 @@ fn main() -> ExitCode {
             match runtime::bare_route(
                 std::io::stdin().is_terminal(),
                 std::io::stdout().is_terminal(),
-                !session_flags.is_empty(),
+                !session_flags.is_empty() || session_pick != coding_session::SessionPick::Latest,
             ) {
                 runtime::BareRoute::Session => {
-                    let code = runtime::run_session(session_flags);
+                    let code = runtime::run_session(session_flags, session_pick);
                     ExitCode::from(u8::try_from(code).unwrap_or(1))
                 }
                 runtime::BareRoute::Banner => {
@@ -3645,7 +3670,7 @@ fn main() -> ExitCode {
                 }
                 runtime::BareRoute::NeedsTerminal => {
                     eprintln!(
-                        "bwoc: --backend / --model / --endpoint open an interactive session \
+                        "bwoc: --backend / --model / --endpoint / --new / --session open an interactive session \
                          and need a terminal (stdin and stdout must be a TTY)"
                     );
                     ExitCode::from(2)
