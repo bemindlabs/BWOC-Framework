@@ -375,7 +375,8 @@ pub enum SessionCommand {
         json: bool,
     },
     /// Copy a conversation into a new session (default: the latest) and print
-    /// its id; open it with `bwoc --session <id>`.
+    /// its id. The fork is now the latest, so bare `bwoc` resumes it; the
+    /// original stays as it was and opens with `bwoc --session <parent-id>`.
     Fork {
         /// Session id or unique prefix.
         id: Option<String>,
@@ -423,12 +424,15 @@ pub fn run(cmd: SessionCommand) -> i32 {
         }
         SessionCommand::Fork { id } => match store.fork(id.as_deref(), SystemTime::now()) {
             Ok(s) => {
-                println!(
-                    "forked {} → {}\nopen it with: bwoc --session {}",
-                    s.parent.as_deref().unwrap_or("?"),
-                    s.id,
-                    s.id
-                );
+                // `fork` always records a parent; stay honest if it ever doesn't.
+                match s.parent.as_deref() {
+                    Some(parent) => println!(
+                        "forked {parent} → {}\nbare `bwoc` now resumes the fork; \
+                         the original opens with: bwoc --session {parent}",
+                        s.id
+                    ),
+                    None => println!("forked → {}\nbare `bwoc` now resumes the fork", s.id),
+                }
                 exit::OK
             }
             Err(e) => fail(e),
@@ -639,6 +643,11 @@ mod tests {
         let forked = store.fork(None, at(1_758_300_000)).unwrap();
         assert_eq!(forked.parent.as_deref(), Some("20250101T000000Z-0001"));
         assert_eq!(forked.title, "base");
+        // The copy is the newest write, so bare `bwoc` resumes the fork.
+        assert_eq!(
+            store.resolve(&SessionPick::Latest, at(1)).unwrap(),
+            forked.path
+        );
         assert_eq!(
             std::fs::read_to_string(&forked.path).unwrap(),
             convo("base")
