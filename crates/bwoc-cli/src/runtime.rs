@@ -528,17 +528,8 @@ pub fn bare_route(stdin_tty: bool, stdout_tty: bool, session_flags: bool) -> Bar
     }
 }
 
-/// The session's persisted conversation: one file per directory under
-/// `~/.bwoc/sessions/`, so a session never writes into the repository itself.
-pub fn session_file_for(bwoc_home: &Path, cwd: &Path) -> PathBuf {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(cwd.to_string_lossy().as_bytes());
-    let id: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    bwoc_home.join("sessions").join(format!("{id}.json"))
-}
-
 /// Bare `bwoc` on a terminal: resolve the runtime and open the chat TUI.
-pub fn run_session(flags: RuntimeLayer) -> i32 {
+pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick) -> i32 {
     let cwd = match std::env::current_dir().and_then(|p| p.canonicalize()) {
         Ok(p) => p,
         Err(e) => {
@@ -573,6 +564,27 @@ pub fn run_session(flags: RuntimeLayer) -> i32 {
 
     match resolve(&merged, &probes) {
         Resolution::Ready(r) => {
+            // The conversation lives under ~/.bwoc/sessions/, never in the
+            // repository. No home means no persistence, as before.
+            let session_file = match home.as_deref() {
+                Some(h) => {
+                    let store = crate::coding_session::SessionStore::new(h, &cwd);
+                    match store
+                        .prepare()
+                        .and_then(|()| store.resolve(&pick, std::time::SystemTime::now()))
+                    {
+                        Ok(path) => Some(path),
+                        Err(e) => {
+                            eprintln!("bwoc: {e}");
+                            return match e {
+                                crate::coding_session::SessionError::Io(_) => exit::ERROR,
+                                _ => exit::USAGE,
+                            };
+                        }
+                    }
+                }
+                None => None,
+            };
             let name = cwd
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -587,9 +599,16 @@ pub fn run_session(flags: RuntimeLayer) -> i32 {
                     endpoint: r.endpoint,
                     max_tokens: r.max_tokens,
                     max_context: r.max_context,
-                    session_file: home.as_deref().map(|h| session_file_for(h, &cwd)),
+                    session_file,
                 }),
             })
+        }
+        Resolution::Vendor(_) if pick != crate::coding_session::SessionPick::Latest => {
+            eprintln!(
+                "bwoc: --new / --session pick a bwoc conversation; a vendor CLI keeps its own \
+                 sessions"
+            );
+            exit::USAGE
         }
         Resolution::Vendor(v) => exec_vendor(&v, &cwd, &merged),
         Resolution::NoProvider => {
@@ -929,16 +948,6 @@ mod tests {
             assert_eq!(bare_route(i, o, false), BareRoute::Banner);
             assert_eq!(bare_route(i, o, true), BareRoute::NeedsTerminal);
         }
-    }
-
-    #[test]
-    fn session_file_is_per_directory_under_bwoc_home() {
-        let home = Path::new("/h/.bwoc");
-        let a = session_file_for(home, Path::new("/src/a"));
-        let b = session_file_for(home, Path::new("/src/b"));
-        assert_ne!(a, b);
-        assert!(a.starts_with("/h/.bwoc/sessions"));
-        assert_eq!(a, session_file_for(home, Path::new("/src/a")));
     }
 
     #[test]
