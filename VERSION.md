@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — ordinary feature branches leave these shared lines alone (so concurrent PRs never collide on the version); release and version-bump PRs are the ones that edit them. The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `3.3.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Software-Version:** `3.4.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
 **Document-Version:** `1.14.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 7 — *anicca* (versioned change & the compatibility contract), **in progress** — producing 3.0. Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** *(t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature — see `reports/retro/t32-deep-memory-design.md`)*. **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant)*; Phase 3 vaya + Phase 4 fleet-governance also met
-**Latest release:** [`v2026.9.19-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.19-0) *(2026-09-19 — **3.3.0** — several conversations per directory: `bwoc --new`, `bwoc --session <id>`, `bwoc session list` / `fork` / `rm`, 3.2 conversations migrate on first open; bare `bwoc` on vendor coding CLIs (claude, codex, agy, kimi, grok, copilot); explicit chat TUI controls. Prior: `v2026.9.15-0` 3.2.0 — BWOC as its own coding agent; `v2026.9.13-0` 3.0.0 — **BWOC 3.0, the compatibility contract**)*
+**Latest release:** [`v2026.9.20-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.20-0) *(2026-09-20 — **3.4.0** — `/` commands and `@` file mentions in the chat input; `bwoc dashboard` deprecated in favour of `bwoc fleet` (removal in 4.0). Prior: `v2026.9.19-0` 3.3.0 — several conversations per directory; `v2026.9.15-0` 3.2.0 — BWOC as its own coding agent; `v2026.9.13-0` 3.0.0 — **BWOC 3.0, the compatibility contract**)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v3.0
-**Last-Updated:** `2026-09-19T16:59:58Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-09-19T21:52:56Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
