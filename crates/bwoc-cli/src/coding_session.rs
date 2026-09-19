@@ -12,8 +12,8 @@
 //! differ. "Latest" is the conversation written most recently, by mtime.
 //!
 //! 3.2 kept one file per directory at `~/.bwoc/sessions/<hash>.json`. That
-//! file becomes a session in the folder the first time the directory is
-//! opened, so an upgrade resumes the same conversation.
+//! file moves into the folder, keeping `<hash>` as its id, the first time the
+//! directory is opened, so an upgrade resumes the same conversation.
 //!
 //! Not the same thing as `bwoc sessions`, which lists running agent processes.
 
@@ -182,13 +182,19 @@ impl SessionStore {
             .map_err(|e| SessionError::Io(e.to_string()))?;
             std::fs::write(&marker, json).map_err(|e| io_err("write", &marker, e))?;
         }
-        let legacy = self.root.join(format!("{}.json", dir_key(&self.cwd)));
-        if legacy.is_file() {
-            let born = std::fs::metadata(&legacy)
-                .and_then(|m| m.modified())
-                .unwrap_or_else(|_| SystemTime::now());
-            let target = self.path_of(&new_id(born));
-            std::fs::rename(&legacy, &target).map_err(|e| io_err("move", &legacy, e))?;
+        // The 3.2 file keeps its id (the directory hash, which `new_id` never
+        // mints), so an id copied from `session list` before the move still
+        // resolves after it. A rename that finds nothing lost a race with
+        // another `bwoc` opening the same directory, which did the move.
+        let key = dir_key(&self.cwd);
+        let legacy = self.root.join(format!("{key}.json"));
+        let target = self.path_of(&key);
+        if legacy.is_file() && !target.exists() {
+            match std::fs::rename(&legacy, &target) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_err("move", &legacy, e)),
+            }
         }
         Ok(())
     }
@@ -209,14 +215,25 @@ impl SessionStore {
     pub fn resolve(&self, pick: &SessionPick, now: SystemTime) -> Result<PathBuf, SessionError> {
         match pick {
             SessionPick::New => Ok(self.path_of(&new_id(now))),
-            SessionPick::Latest => Ok(self
-                .list()
-                .into_iter()
-                .next()
-                .map(|s| s.path)
-                .unwrap_or_else(|| self.path_of(&new_id(now)))),
+            SessionPick::Latest => Ok(self.newest().unwrap_or_else(|| self.path_of(&new_id(now)))),
             SessionPick::Id(prefix) => self.find(prefix).map(|s| s.path),
         }
+    }
+
+    /// The most recently written conversation, by mtime alone: opening a
+    /// session should not cost a parse of every conversation in the directory.
+    fn newest(&self) -> Option<PathBuf> {
+        let legacy = self.root.join(format!("{}.json", dir_key(&self.cwd)));
+        std::fs::read_dir(&self.dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| is_session_file(p))
+            .chain(legacy.is_file().then_some(legacy))
+            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+            .max()
+            .map(|(_, p)| p)
     }
 
     /// A session by id or unique id prefix.
@@ -535,13 +552,18 @@ mod tests {
         std::fs::write(&legacy, convo("from 3.2")).unwrap();
 
         let store = SessionStore::new(home.path(), cwd);
-        // Listed before the move, so `session list` shows it straight away.
-        assert_eq!(store.list()[0].title, "from 3.2");
+        // Listed before the move, so `session list` shows it straight away —
+        // and the id it shows still resolves once the file has moved.
+        let before = store.list();
+        assert_eq!(before[0].title, "from 3.2");
+        assert_eq!(store.resolve(&SessionPick::Latest, at(1)).unwrap(), legacy);
         store.prepare().unwrap();
         assert!(!legacy.exists());
         let sessions = store.list();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "from 3.2");
+        assert_eq!(sessions[0].id, before[0].id);
+        assert_eq!(store.find(&before[0].id).unwrap().path, sessions[0].path);
         assert_eq!(
             store.resolve(&SessionPick::Latest, at(1)).unwrap(),
             sessions[0].path
