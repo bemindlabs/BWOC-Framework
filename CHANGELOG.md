@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [v2026.9.19-0] — 2026-09-19 — 3.3.0
 
-**Several conversations per directory.** Bare `bwoc` still resumes where you left off, and now `bwoc --new` starts another conversation, `bwoc --session <id>` resumes a specific one, and `bwoc session list`, `bwoc session fork` and `bwoc session rm` manages them (runtime R4a). Bare `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) opens that vendor CLI on its own subscription, and the chat TUI gets explicit, copy-friendly controls. 3.2 conversations move to the new layout on first open. Nothing that worked in 3.2 breaks.
+**Several conversations per directory.** Bare `bwoc` still resumes where you left off, and now `bwoc --new` starts another conversation, `bwoc --session <id>` resumes a specific one, and `bwoc session list`, `bwoc session fork` and `bwoc session rm` manage them (runtime R4a). Bare `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) opens that vendor CLI on its own subscription, and the chat TUI gets explicit, copy-friendly controls. 3.2 conversations move to the new layout on first open. Nothing that worked in 3.2 breaks.
 
 ### Added
 
