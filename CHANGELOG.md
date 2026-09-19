@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`/` commands and `@` file mentions in the chat TUI.** In the input line, `/` opens a command menu (`/help`, `/clear`, `/mode [default|accept_edits|bypass]`, `/quit`, `/exit`) and `@` completes project files; `↑`/`↓` pick, `Tab` completes, `Esc` hides. Commands run in the TUI and never reach the model. On send, each `@path` naming a text file inside the working directory attaches its content (up to 32 KB per file); paths outside the directory and binary files are reported, not attached. No protocol change.
+
 ## [v2026.9.19-0] — 2026-09-19 — 3.3.0
 
 **Several conversations per directory.** Bare `bwoc` still resumes where you left off, and now `bwoc --new` starts another conversation, `bwoc --session <id>` resumes a specific one, and `bwoc session list`, `bwoc session fork` and `bwoc session rm` manage them (runtime R4a). Bare `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) opens that vendor CLI on its own subscription, and the chat TUI gets explicit, copy-friendly controls. 3.2 conversations move to the new layout on first open. Nothing that worked in 3.2 breaks.
