@@ -95,7 +95,9 @@ struct Cli {
     lang: Option<String>,
 
     /// Bare `bwoc` only: provider backend for the coding session in the current
-    /// directory (overrides BWOC_BACKEND and `[runtime] backend`).
+    /// directory (overrides BWOC_BACKEND and `[runtime] backend`). A vendor CLI
+    /// (`claude`, `codex`, `agy`, `kimi`, `grok`, `copilot`) is exec'd in place,
+    /// on its own login.
     #[arg(long, value_name = "BACKEND")]
     backend: Option<String>,
 

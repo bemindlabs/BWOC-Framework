@@ -35,7 +35,7 @@ Before this crate, `bwoc spawn` worked by exec-ing a vendor agentic CLI (`claude
 
 Run `bwoc` with no arguments, in a terminal, in any directory. It opens the chat TUI on a coding session there, with no workspace, registered agent or manifest. Outside a terminal (a pipe, a script, CI) bare `bwoc` still prints the banner exactly as before, and `bwoc about` prints it on a terminal.
 
-**Providers and keys.** API keys or local models only:
+**Providers and keys.** The chat TUI runs on API keys or local models:
 
 | Backend | Key |
 |---|---|
@@ -45,6 +45,8 @@ Run `bwoc` with no arguments, in a terminal, in any directory. It opens the chat
 | `openai-compatible` | optional: `bwoc auth set openai-compatible` (no env var, so a generic key is never sent to an arbitrary endpoint) |
 | `ollama` | none |
 
+**Subscription CLIs.** With a vendor-CLI backend (`claude`, `codex`, `agy`, `kimi`, `grok`, `copilot`), bare `bwoc` execs that CLI in the current directory, forwarding `--model` when one is set. The CLI runs on its own login, so a Claude Code or Codex subscription needs no API key. It also runs its own tools and permission prompts, so bwoc-harness tools, the capability gate and trust gates do not apply; `bwoc` prints a one-line notice saying so before handing over the terminal. `endpoint`, `max_tokens` and `max_context` are ignored for these backends. `cli` is not a session backend; name the vendor CLI instead.
+
 `bwoc auth set <provider>` reads the key from stdin (hidden on a terminal) or from `--from-env VAR`, and writes `[<provider>] api_key` into `~/.bwoc/secrets.toml`, creating the file `0600`. It refuses to write into a group- or world-readable file (run `chmod 600` first) and keeps every other section. `bwoc auth status` lists which providers have a key and where it comes from. It never prints a key or its length.
 
 **Choosing the runtime**, highest precedence first:
@@ -53,7 +55,7 @@ Run `bwoc` with no arguments, in a terminal, in any directory. It opens the chat
 2. env: `BWOC_BACKEND`, `BWOC_MODEL`, `BWOC_ENDPOINT`
 3. `.bwoc/config.toml` in the directory, or an ancestor up to the git root
 4. `~/.bwoc/config.toml`
-5. auto-detect: an Anthropic key selects `anthropic`; otherwise an Ollama answering on `localhost:11434` selects `ollama` and its first model; otherwise `bwoc` prints setup help and exits `2`
+5. auto-detect: an Anthropic key selects `anthropic`; otherwise an Ollama answering on `localhost:11434` selects `ollama` and its first model; otherwise `bwoc` prints setup help, naming any vendor CLI found on `PATH`, and exits `2`. A vendor CLI is never picked automatically.
 
 A layer that names a different backend from the winning one contributes nothing else, so a model written for one provider is never sent to another.
 
@@ -68,7 +70,7 @@ max_tokens = 8192                          # optional
 max_context = 32768                        # optional: model context window
 ```
 
-An absent `schema_version` is read as legacy; a newer one is refused with an error naming `schema_version`. Unknown keys are ignored.
+When a file has no `[runtime] backend`, its `[defaults] backend` (the fleet default for new agents) is used instead. An absent `schema_version` is read as legacy; a newer one is refused with an error naming `schema_version`. Unknown keys are ignored.
 
 **What the session puts in its system prompt**, in order:
 

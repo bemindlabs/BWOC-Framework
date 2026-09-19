@@ -35,7 +35,7 @@ nav_order: 8
 
 รัน `bwoc` โดยไม่ใส่ argument ใน terminal ที่ directory ใดก็ได้ มันจะเปิด chat TUI เป็น coding session ตรงนั้นทันที ไม่ต้องมี workspace, agent ที่ลงทะเบียน หรือ manifest ถ้าไม่ได้อยู่ใน terminal (pipe, script, CI) `bwoc` เปล่า ๆ ยังพิมพ์ banner เหมือนเดิมทุกไบต์ และ `bwoc about` ใช้พิมพ์ banner บน terminal
 
-**Provider และ key** ใช้ได้เฉพาะ API key หรือ model ในเครื่อง:
+**Provider และ key** chat TUI ทำงานบน API key หรือ model ในเครื่อง:
 
 | Backend | Key |
 |---|---|
@@ -45,6 +45,8 @@ nav_order: 8
 | `openai-compatible` | ไม่บังคับ: `bwoc auth set openai-compatible` (ไม่มี env var เพื่อไม่ให้ key ทั่วไปถูกส่งไป endpoint ใดก็ได้) |
 | `ollama` | ไม่ต้องใช้ |
 
+**CLI แบบ subscription** เมื่อใช้ backend ที่เป็น vendor CLI (`claude`, `codex`, `agy`, `kimi`, `grok`, `copilot`) `bwoc` เปล่า ๆ จะ exec CLI ตัวนั้นใน directory ปัจจุบัน และส่ง `--model` ต่อให้ถ้ากำหนดไว้ CLI ใช้ login ของตัวเอง subscription ของ Claude Code หรือ Codex จึงไม่ต้องมี API key และ CLI รัน tool กับ permission prompt ของตัวเอง tool ของ bwoc-harness, capability gate และ trust gate จึงไม่มีผล `bwoc` จะพิมพ์ข้อความหนึ่งบรรทัดบอกเรื่องนี้ก่อนส่ง terminal ให้ CLI ค่า `endpoint`, `max_tokens` และ `max_context` ถูกข้ามสำหรับ backend กลุ่มนี้ `cli` ไม่ใช่ backend ของ session ให้ระบุชื่อ vendor CLI แทน
+
 `bwoc auth set <provider>` อ่าน key จาก stdin (ซ่อนตัวอักษรเมื่ออยู่ใน terminal) หรือจาก `--from-env VAR` แล้วเขียน `[<provider>] api_key` ลง `~/.bwoc/secrets.toml` โดยสร้างไฟล์เป็น `0600` ถ้าไฟล์เดิมให้ group หรือ world อ่านได้ จะไม่ยอมเขียน (ให้ `chmod 600` ก่อน) และ section อื่นยังอยู่ครบ `bwoc auth status` แสดงว่า provider ไหนมี key และ key มาจากที่ใด ไม่เคยพิมพ์ key หรือความยาวของ key
 
 **การเลือก runtime** เรียงจากลำดับความสำคัญสูงสุด:
@@ -53,7 +55,7 @@ nav_order: 8
 2. env: `BWOC_BACKEND`, `BWOC_MODEL`, `BWOC_ENDPOINT`
 3. `.bwoc/config.toml` ใน directory นั้น หรือ directory แม่ขึ้นไปจนถึง git root
 4. `~/.bwoc/config.toml`
-5. ตรวจหาเอง: มี Anthropic key ใช้ `anthropic`; ไม่มีก็ใช้ `ollama` กับ model แรกถ้า Ollama ตอบที่ `localhost:11434`; ไม่มีทั้งคู่ `bwoc` จะพิมพ์วิธีตั้งค่าแล้วจบด้วย exit `2`
+5. ตรวจหาเอง: มี Anthropic key ใช้ `anthropic`; ไม่มีก็ใช้ `ollama` กับ model แรกถ้า Ollama ตอบที่ `localhost:11434`; ไม่มีทั้งคู่ `bwoc` จะพิมพ์วิธีตั้งค่า พร้อมบอก vendor CLI ที่เจอใน `PATH` แล้วจบด้วย exit `2` โดยไม่เลือก vendor CLI ให้เอง
 
 ชั้นที่ระบุ backend ต่างจาก backend ที่ชนะ จะไม่ส่งค่าอื่นใดมาเลย model ที่เขียนไว้สำหรับ provider หนึ่งจึงไม่ถูกส่งไปอีก provider
 
@@ -68,7 +70,7 @@ max_tokens = 8192                          # ไม่บังคับ
 max_context = 32768                        # ไม่บังคับ: context window ของ model
 ```
 
-ไม่มี `schema_version` ถือเป็น legacy ถ้าเป็น revision ที่ใหม่กว่าจะถูกปฏิเสธพร้อม error ที่ระบุ `schema_version` key ที่ไม่รู้จักจะถูกข้าม
+ถ้าไฟล์ไม่มี `[runtime] backend` จะใช้ `[defaults] backend` (ค่าเริ่มต้นของ fleet สำหรับ agent ใหม่) ในไฟล์เดียวกันแทน ไม่มี `schema_version` ถือเป็น legacy ถ้าเป็น revision ที่ใหม่กว่าจะถูกปฏิเสธพร้อม error ที่ระบุ `schema_version` key ที่ไม่รู้จักจะถูกข้าม
 
 **สิ่งที่ session ใส่ใน system prompt** ตามลำดับ:
 

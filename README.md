@@ -389,7 +389,7 @@ bwoc auth set anthropic   # or export ANTHROPIC_API_KEY=..., or just run Ollama 
 bwoc                      # a coding session right here: no workspace, no agent
 ```
 
-On a terminal, bare `bwoc` opens the chat TUI on `bwoc-harness` in the current directory. The session's prompt holds a built-in coding preamble, the environment (cwd, OS, date, git state) and every `AGENTS.md` / `CLAUDE.md` from the git root down to the cwd. Pin the provider with `--backend` / `--model`, with `BWOC_BACKEND` / `BWOC_MODEL`, or with a `[runtime]` table in `.bwoc/config.toml` or `~/.bwoc/config.toml`. Otherwise an Anthropic key is used, then a local Ollama. In a pipe or script, bare `bwoc` still prints the banner, and `bwoc about` shows it on a terminal. Details: [`HARNESS.en.md` §Quick start](docs/en/HARNESS.en.md#quick-start-bwoc-in-any-repository).
+On a terminal, bare `bwoc` opens the chat TUI on `bwoc-harness` in the current directory. The session's prompt holds a built-in coding preamble, the environment (cwd, OS, date, git state) and every `AGENTS.md` / `CLAUDE.md` from the git root down to the cwd. Pin the provider with `--backend` / `--model`, with `BWOC_BACKEND` / `BWOC_MODEL`, or with a `[runtime]` table in `.bwoc/config.toml` or `~/.bwoc/config.toml`. Otherwise an Anthropic key is used, then a local Ollama. On a Claude Code, Codex, Antigravity, Kimi or Grok subscription, `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`) hands the session to that CLI on its own login, with no API key. In a pipe or script, bare `bwoc` still prints the banner, and `bwoc about` shows it on a terminal. Details: [`HARNESS.en.md` §Quick start](docs/en/HARNESS.en.md#quick-start-bwoc-in-any-repository).
 
 ### As an Agent Author
 
