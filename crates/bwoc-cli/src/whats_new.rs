@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — several conversations per directory: `bwoc --new`, `bwoc --session <id>` and `bwoc session list | fork | rm`, on the zero-setup coding agent from 3.2"
+    " — several conversations per directory: `bwoc --new`, `bwoc --session <id>` and `bwoc session list`, `bwoc session fork` and `bwoc session rm`, on the zero-setup coding agent from 3.2"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,7 +31,7 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
-    "**Several conversations per directory.** Bare `bwoc` still resumes the latest; `bwoc --new` starts another, `bwoc --session <id>` (id or prefix) resumes one, and `bwoc session list | fork | rm` manages them. `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) opens that CLI on its own login (3.3.0, #530–#532)",
+    "**Several conversations per directory.** Bare `bwoc` still resumes the latest; `bwoc --new` starts another, `bwoc --session <id>` (id or prefix) resumes one, and `bwoc session list`, `bwoc session fork` and `bwoc session rm` manages them. `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) opens that CLI on its own login (3.3.0, #530–#532)",
     "**`bwoc` is a coding agent.** On a terminal, bare `bwoc` opens a coding session in the current directory — provider from flags, env, `.bwoc/config.toml` or auto-detect (Anthropic key or local Ollama), keys via `bwoc auth`. Chat runs the batch retry, MCP and sandbox paths, sizes compaction to the model, and adds `glob`, regex `grep`, `multi_edit`, `webfetch`, `todo`, `subagent` and a `run_command` timeout (3.2.0, #519–#526)",
     "**bwoc-bot — one agent, one bot.** A connector `[bot]` block answers slash commands without the model and caps each sender's rate and message length; `public = true` opts into a limited public mode — strangers reach the agent only by DM or @mention, in read-only `plan` mode, inside an isolated workdir with no memories or other chats (3.1.0, #506)",
     "**BWOC 3.0 — the compatibility contract.** Every artifact BWOC owns now declares which revision wrote it (`schema_version`), **`bwoc migrate`** moves a workspace or a whole fleet forward — splicing in place, so comments and keys BWOC does not model survive — and `[plugin].compat` is enforced with bounded ranges instead of merely declared. 3.x reads everything 2.x wrote and names the migration; schema 2 goes away in 4.0 (3.0.0, `docs/en/COMPATIBILITY.en.md`)",
