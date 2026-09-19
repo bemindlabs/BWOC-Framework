@@ -16,7 +16,7 @@
 //!     events on a short (50ms) timeout, draining the channel between polls,
 //!     and writing [`ChatInput`] lines to the child's stdin.
 //!
-//! Layout (one screen, no mouse; PgUp/PgDn/End scroll the conversation):
+//! Layout (one screen; arrows/PgUp/PgDn/End scroll the conversation):
 //!   ┌ status ──────────────────────────────────────────┐
 //!   ┌ conversation ────────────────────────────────────┐
 //!   │ user + assistant turns (streamed tokens inline),  │
@@ -24,12 +24,13 @@
 //!   │ all interleaved into one transcript               │
 //!   └───────────────────────────────────────────────────┘
 //!   ┌ input ───────────────────────────────────────────┐
+//!   ↑/↓ scroll · PgUp/PgDn page · End live · select/copy · Ctrl-C exit
 //!
 //! Keys: Enter sends the input buffer as `ChatInput::User`; on a pending
 //! permission request `a`/`d` allow/deny (only on an empty input line, once the
 //! prompt has been up for a moment, so a prompt that appears mid-sentence never
-//! consumes typed letters); Ctrl-C (or `q` when input is empty)
-//! sends `Quit`, restores the terminal, and exits. In the fleet, a line that
+//! consumes typed letters); Ctrl-C sends `Quit`, restores the terminal, and
+//! exits. In the fleet, a line that
 //! begins with `@<agent>` routes the rest of the message to that fleet member's
 //! live session (opening its pane and switching to it).
 
@@ -335,6 +336,9 @@ struct App {
     thinking: String,
     /// The current input buffer (one line).
     input: String,
+    /// UTF-8 byte offset of the editing cursor in `input`. Kept on a character
+    /// boundary by the input helpers below.
+    input_cursor: usize,
     /// A permission request awaiting `a`/`d`. Only one at a time.
     pending: Option<Pending>,
     /// The last `TurnEnd`'s `(prompt_tokens, completion_tokens)`. Because
@@ -351,7 +355,8 @@ struct App {
     /// Set once the harness sends `Bye` (or its stream closes) — the loop exits.
     done: bool,
     /// Conversation scrollback offset: lines up from the live bottom. `0` pins
-    /// the view to the newest turn; `PageUp` raises it, `End` returns to live.
+    /// the view to the newest turn; arrows move one row, `PageUp`/`PageDown`
+    /// move a page, and `End` returns to live.
     /// New content never yanks the view because the offset is bottom-relative.
     scroll: usize,
     /// Permission mode as last reported by the harness's `ModeChanged` — the
@@ -378,6 +383,7 @@ impl App {
             streaming: String::new(),
             thinking: String::new(),
             input: String::new(),
+            input_cursor: 0,
             pending: None,
             usage: None,
             total_out: 0,
@@ -399,18 +405,50 @@ impl App {
         }
     }
 
-    /// Apply a scroll key. `PageUp`/`PageDown` move by a fixed 10 lines (the
-    /// offset is clamped to the content in `draw_conversation`); `End` returns to
-    /// live. Returns true if the key was a scroll key (caller stops processing).
+    fn input_left(&mut self) {
+        if let Some(ch) = self.input[..self.input_cursor].chars().next_back() {
+            self.input_cursor -= ch.len_utf8();
+        }
+    }
+
+    fn input_right(&mut self) {
+        if let Some(ch) = self.input[self.input_cursor..].chars().next() {
+            self.input_cursor += ch.len_utf8();
+        }
+    }
+
+    fn input_insert(&mut self, ch: char) {
+        self.input.insert(self.input_cursor, ch);
+        self.input_cursor += ch.len_utf8();
+    }
+
+    fn input_backspace(&mut self) {
+        let end = self.input_cursor;
+        self.input_left();
+        if self.input_cursor < end {
+            self.input.drain(self.input_cursor..end);
+        }
+    }
+
+    fn take_input(&mut self) -> String {
+        self.input_cursor = 0;
+        std::mem::take(&mut self.input)
+    }
+
+    /// Apply a scroll key. Arrows move one row, `PageUp`/`PageDown` move by a
+    /// fixed 10 rows (the offset is clamped in `draw_conversation`), and `End`
+    /// returns to live. Returns true when the caller should stop processing.
     fn scroll_key(&mut self, code: KeyCode) -> bool {
         const PAGE: usize = 10;
         match code {
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_add(PAGE);
+            KeyCode::Up | KeyCode::PageUp => {
+                let amount = if code == KeyCode::Up { 1 } else { PAGE };
+                self.scroll = self.scroll.saturating_add(amount);
                 true
             }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_sub(PAGE);
+            KeyCode::Down | KeyCode::PageDown => {
+                let amount = if code == KeyCode::Down { 1 } else { PAGE };
+                self.scroll = self.scroll.saturating_sub(amount);
                 true
             }
             KeyCode::End => {
@@ -605,21 +643,32 @@ fn event_loop(
     rx: &Receiver<ChatEvent>,
     mut stdin: ChildStdin,
 ) -> io::Result<()> {
+    // Redraw only after state changes. Besides avoiding needless work, this
+    // leaves an idle frame untouched so native terminal text selection remains
+    // stable long enough to copy it.
+    let mut dirty = true;
     loop {
-        term.draw(|f| draw_frame(f, app))?;
-
-        // Drain any harness events that arrived since the last draw.
+        // Drain any harness events that arrived since the last poll.
         loop {
             match rx.try_recv() {
-                Ok(ev) => app.apply(ev),
+                Ok(ev) => {
+                    app.apply(ev);
+                    dirty = true;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    // Reader thread ended (child stdout closed). One last redraw
-                    // happens at the top of the loop; mark done so we exit.
+                    // Reader thread ended (child stdout closed). Draw the last
+                    // state once before exiting.
                     app.done = true;
+                    dirty = true;
                     break;
                 }
             }
+        }
+
+        if dirty {
+            term.draw(|f| draw_frame(f, app))?;
+            dirty = false;
         }
 
         if app.done {
@@ -628,15 +677,25 @@ fn event_loop(
             return Ok(());
         }
 
-        if event::poll(Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-            && handle_key(app, &mut stdin, key)?
-        {
-            // Polite quit before we tear down the terminal.
-            let _ = send_input(&mut stdin, &ChatInput::Quit);
-            return Ok(());
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if handle_key(app, &mut stdin, key)? {
+                        // Polite quit before we tear down the terminal.
+                        let _ = send_input(&mut stdin, &ChatInput::Quit);
+                        return Ok(());
+                    }
+                    dirty = true;
+                }
+                Event::Resize(_, _) => dirty = true,
+                _ => {}
+            }
         }
     }
+}
+
+fn is_quit_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char('c' | 'C')) && modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// Process one key event. Returns `Ok(true)` when the user requested quit.
@@ -646,7 +705,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
     } = key;
 
     // Ctrl-C always quits, regardless of input/pending state.
-    if let (KeyCode::Char('c'), KeyModifiers::CONTROL) = (code, modifiers) {
+    if is_quit_key(code, modifiers) {
         return Ok(true);
     }
 
@@ -665,7 +724,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         return Ok(false);
     }
 
-    // Scrollback navigation (PageUp/PageDown/End) — before input editing.
+    // Scrollback navigation (arrows/PageUp/PageDown/End) — before input editing.
     if app.scroll_key(code) {
         return Ok(false);
     }
@@ -682,7 +741,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
             Ok(false)
         }
         KeyCode::Enter => {
-            let text = std::mem::take(&mut app.input);
+            let text = app.take_input();
             if !text.trim().is_empty() {
                 app.scroll = 0; // jump to live so the reply is visible
                 app.conversation.push(format!("you: {text}"));
@@ -698,17 +757,22 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
             Ok(false)
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            app.input_backspace();
             Ok(false)
         }
-        // `q` quits only when the input line is empty (otherwise it's a literal
-        // character the user is typing).
-        KeyCode::Char('q') if app.input.is_empty() => Ok(true),
+        KeyCode::Left => {
+            app.input_left();
+            Ok(false)
+        }
+        KeyCode::Right => {
+            app.input_right();
+            Ok(false)
+        }
         KeyCode::Char(c) => {
-            app.input.push(c);
+            app.input_insert(c);
             Ok(false)
         }
-        KeyCode::Esc => Ok(true),
+        KeyCode::Esc => Ok(false),
         _ => Ok(false),
     }
 }
@@ -723,12 +787,14 @@ fn draw_frame(f: &mut ratatui::Frame, app: &App) {
             Constraint::Length(1), // status
             Constraint::Min(0),    // body (full-width transcript)
             Constraint::Length(3), // input box
+            Constraint::Length(1), // key footer
         ])
         .split(area);
 
     draw_status(f, layout[0], app);
     draw_body(f, layout[1], app);
-    draw_input(f, layout[2], app);
+    draw_input(f, layout[2], app, true);
+    draw_footer(f, layout[3]);
 }
 
 /// Map a design token's ANSI half to ratatui's *named* colour, so the user's
@@ -962,7 +1028,7 @@ fn transcript_style(line: &str) -> Style {
     }
 }
 
-fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App, cursor_visible: bool) {
     let (title, border) = match &app.pending {
         Some(p) => (
             if app.input.is_empty() {
@@ -978,7 +1044,7 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
         None => (
-            " input — Enter send · q/Esc/Ctrl-C quit ".to_string(),
+            " input — Enter send ".to_string(),
             Style::default().fg(tone(design::color::ACCENT)),
         ),
     };
@@ -986,8 +1052,36 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .title(title)
         .border_style(border);
-    let p = Paragraph::new(Line::from(format!("> {}", app.input))).block(block);
+    use unicode_width::UnicodeWidthStr;
+    let cursor_col = app.input[..app.input_cursor].width();
+    let content_cursor = 2usize.saturating_add(cursor_col); // `> ` prefix
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let horizontal_scroll = content_cursor
+        .saturating_sub(inner_width.saturating_sub(1))
+        .min(u16::MAX as usize);
+    let p = Paragraph::new(Line::from(format!("> {}", app.input)))
+        .block(block)
+        .scroll((0, horizontal_scroll as u16));
     f.render_widget(p, area);
+    if cursor_visible && area.width > 2 && area.height > 2 {
+        let visible_cursor = content_cursor
+            .saturating_sub(horizontal_scroll)
+            .min(inner_width.saturating_sub(1));
+        f.set_cursor_position((area.x + 1 + visible_cursor as u16, area.y + 1));
+    }
+}
+
+fn draw_footer(f: &mut ratatui::Frame, area: Rect) {
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" ↑/↓ ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("scroll · ←/→ cursor · PgUp/PgDn · End live · select/copy · "),
+        Span::styled(
+            "Ctrl-C exit ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(footer, area);
 }
 
 // ===========================================================================
@@ -1187,14 +1281,16 @@ impl Fleet {
     /// session's currently-available events first (immutable borrow), then apply
     /// them to the pane (mutable) — two phases so `sessions` and `panes` never
     /// alias, and no manual `try_recv` loop for clippy to grumble about.
-    fn drain(&mut self) {
+    fn drain(&mut self) -> bool {
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         let mut dead = Vec::new();
+        let mut changed = false;
         for id in ids {
             let events: Vec<ChatEvent> = match self.sessions.get(&id) {
                 Some(s) => s.rx.try_iter().collect(),
                 None => continue,
             };
+            changed |= !events.is_empty();
             for ev in events {
                 if matches!(ev, ChatEvent::Bye) {
                     dead.push(id.clone());
@@ -1209,11 +1305,13 @@ impl Fleet {
             // its Child handle would leak.
             if self.sessions.get_mut(&id).is_some_and(|s| !s.is_alive()) {
                 dead.push(id.clone());
+                changed = true;
             }
         }
         for id in dead {
             self.sessions.remove(&id);
         }
+        changed
     }
 
     fn switch(&mut self, delta: i32) {
@@ -1292,14 +1390,24 @@ fn fleet_event_loop(
     term: &mut Terminal<CrosstermBackend<io::Stdout>>,
     fleet: &mut Fleet,
 ) -> io::Result<()> {
+    let mut dirty = true;
     loop {
-        term.draw(|f| draw_fleet(f, fleet))?;
-        fleet.drain();
-        if event::poll(Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-            && fleet_handle_key(fleet, key)?
-        {
-            return Ok(());
+        dirty |= fleet.drain();
+        if dirty {
+            term.draw(|f| draw_fleet(f, fleet))?;
+            dirty = false;
+        }
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if fleet_handle_key(fleet, key)? {
+                        return Ok(());
+                    }
+                    dirty = true;
+                }
+                Event::Resize(_, _) => dirty = true,
+                _ => {}
+            }
         }
     }
 }
@@ -1354,7 +1462,7 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
     let KeyEvent {
         code, modifiers, ..
     } = key;
-    if let (KeyCode::Char('c'), KeyModifiers::CONTROL) = (code, modifiers) {
+    if is_quit_key(code, modifiers) {
         return Ok(true);
     }
 
@@ -1434,7 +1542,7 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
         return Ok(false);
     }
 
-    // Scrollback on the active pane (PageUp/PageDown/End).
+    // Scrollback on the active pane (arrows/PageUp/PageDown/End).
     if let Some(p) = fleet.panes.get_mut(&id) {
         if p.scroll_key(code) {
             return Ok(false);
@@ -1460,7 +1568,7 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
             let text = fleet
                 .panes
                 .get_mut(&id)
-                .map(|p| std::mem::take(&mut p.input))
+                .map(App::take_input)
                 .unwrap_or_default();
             if text.trim().is_empty() {
                 return Ok(false);
@@ -1483,26 +1591,29 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
         }
         KeyCode::Backspace => {
             if let Some(p) = fleet.panes.get_mut(&id) {
-                p.input.pop();
+                p.input_backspace();
             }
             Ok(false)
         }
-        KeyCode::Char('q')
-            if fleet
-                .panes
-                .get(&id)
-                .map(|p| p.input.is_empty())
-                .unwrap_or(true) =>
-        {
-            Ok(true)
+        KeyCode::Left => {
+            if let Some(p) = fleet.panes.get_mut(&id) {
+                p.input_left();
+            }
+            Ok(false)
+        }
+        KeyCode::Right => {
+            if let Some(p) = fleet.panes.get_mut(&id) {
+                p.input_right();
+            }
+            Ok(false)
         }
         KeyCode::Char(c) => {
             if let Some(p) = fleet.panes.get_mut(&id) {
-                p.input.push(c);
+                p.input_insert(c);
             }
             Ok(false)
         }
-        KeyCode::Esc => Ok(true),
+        KeyCode::Esc => Ok(false),
         _ => Ok(false),
     }
 }
@@ -1515,6 +1626,7 @@ fn draw_fleet(f: &mut ratatui::Frame, fleet: &Fleet) {
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(area);
     let cols = Layout::default()
@@ -1527,9 +1639,10 @@ fn draw_fleet(f: &mut ratatui::Frame, fleet: &Fleet) {
         if let Some(app) = fleet.panes.get(&id) {
             draw_status(f, rows[0], app);
             draw_body(f, cols[1], app);
-            draw_input(f, rows[2], app);
+            draw_input(f, rows[2], app, fleet.palette.is_none());
         }
     }
+    draw_footer(f, rows[3]);
     if fleet.palette.is_some() {
         draw_palette(f, area, fleet);
     }
@@ -2109,12 +2222,16 @@ mod tests {
     }
 
     #[test]
-    fn scroll_key_pages_and_end_returns_to_live() {
+    fn scroll_key_moves_rows_pages_and_end_returns_to_live() {
         let mut app = App::new("a".into(), "ollama");
         assert_eq!(app.scroll, 0);
+        assert!(app.scroll_key(KeyCode::Up));
+        assert_eq!(app.scroll, 1);
         assert!(app.scroll_key(KeyCode::PageUp));
-        assert_eq!(app.scroll, 10);
+        assert_eq!(app.scroll, 11);
         assert!(app.scroll_key(KeyCode::PageUp));
+        assert_eq!(app.scroll, 21);
+        assert!(app.scroll_key(KeyCode::Down));
         assert_eq!(app.scroll, 20);
         assert!(app.scroll_key(KeyCode::PageDown));
         assert_eq!(app.scroll, 10);
@@ -2125,6 +2242,41 @@ mod tests {
         assert_eq!(app.scroll, 0);
         // A non-scroll key is not consumed.
         assert!(!app.scroll_key(KeyCode::Enter));
+    }
+
+    #[test]
+    fn ctrl_c_is_the_only_quit_key() {
+        assert!(is_quit_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(is_quit_key(
+            KeyCode::Char('C'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        ));
+        assert!(!is_quit_key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!is_quit_key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!is_quit_key(KeyCode::Char('c'), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn input_cursor_edits_at_unicode_boundaries() {
+        let mut app = App::new("a".into(), "ollama");
+        for ch in "aéz".chars() {
+            app.input_insert(ch);
+        }
+        assert_eq!(app.input_cursor, app.input.len());
+
+        app.input_left();
+        app.input_insert('🙂');
+        assert_eq!(app.input, "aé🙂z");
+        app.input_left();
+        app.input_backspace();
+        assert_eq!(app.input, "a🙂z");
+        app.input_right();
+        app.input_backspace();
+        assert_eq!(app.input, "az");
+
+        assert_eq!(app.take_input(), "az");
+        assert_eq!(app.input_cursor, 0);
+        assert!(app.input.is_empty());
     }
 
     // ── End-to-end render pipeline ────────────────────────────────────────────
@@ -2183,7 +2335,9 @@ mod tests {
             ],
         );
         // Operator has typed the next question but not sent it yet.
-        app.input.push_str("what does it say?");
+        for ch in "what does it say?".chars() {
+            app.input_insert(ch);
+        }
 
         let (w, h) = (80u16, 24u16);
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
@@ -2202,6 +2356,12 @@ mod tests {
             screen.contains("what does it say?"),
             "input echo:\n{screen}"
         );
+        // Footer exposes the complete navigation, copy and exit contract.
+        assert!(screen.contains("↑/↓"), "scroll footer:\n{screen}");
+        assert!(screen.contains("←/→ cursor"), "cursor footer:\n{screen}");
+        assert!(screen.contains("select/copy"), "copy footer:\n{screen}");
+        assert!(screen.contains("Ctrl-C exit"), "exit footer:\n{screen}");
+        assert!(!screen.contains("q/Esc"), "stale exit keys:\n{screen}");
         // The unparseable banner line never reached the transcript.
         assert!(
             !screen.contains("you: read x.txt"),

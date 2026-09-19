@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **Chat TUI controls are explicit and copy-friendly.** `Ctrl-C` is the only exit key, so `q` is always ordinary input and `Esc` no longer closes the session. The chat pane scrolls one row with `↑` / `↓`, retains page navigation with `PgUp` / `PgDn` and `End`, and `←` / `→` move a Unicode-safe input cursor for editing. A persistent footer shows the controls. Idle frames stop repainting so native terminal text selection remains stable for copying.
+
 ### Fixed
 
 - **Bare `bwoc` works on a Claude Code / Codex / Antigravity / Kimi / Grok subscription (#529).** `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) used to exit 2 with "can't run a bwoc session". It now execs that vendor CLI in the current directory, forwarding `--model` when set, after a one-line notice that the CLI's own login, tools and permissions apply and bwoc-harness tools and trust gates do not. A config file's `[defaults] backend` now stands in for an absent `[runtime] backend`, so a declared fleet backend reaches the session. When nothing is configured, the setup help names the vendor CLIs found on `PATH`; none is picked automatically.
