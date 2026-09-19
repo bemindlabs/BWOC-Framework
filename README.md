@@ -490,7 +490,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 | Kalyāṇamitta-7 trust + signed envelopes | Ready (daemon warns by default; refusal behind `BWOC_TRUST_GATING=1`) |
 | `bwoc-harness` self-hosted runtime (`--chat`, sandbox, eval) | Ready |
 | Interconnect (A2A, MQTT) + chat connectors | Ready |
-| Fleet dashboard (`bwoc dashboard`) | Ready |
+| Fleet dashboard (`bwoc dashboard`) | Deprecated in 3.4 → `bwoc fleet` / `bwoc chat <agent> --tui --fleet`; removed in 4.0 |
 | Loop engineering (goal + ticker + gate) | **L1 ✓** · **L2 partial** (`Cron`/`Adaptive` deferred) · **L3 ✓** — see [`LOOP-ENGINEERING.en.md`](docs/en/LOOP-ENGINEERING.en.md) |
 
 For the full phase-by-phase plan with completed / in-progress / remaining items, see [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md) (Thai: [`docs/th/ROADMAP.th.md`](docs/th/ROADMAP.th.md)).

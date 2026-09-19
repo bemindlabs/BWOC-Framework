@@ -42,7 +42,7 @@ Each row: Pali → traditional gloss → BWOC application → observable signal 
 
 **Signal:** `bwoc list --json` returns every agent's `status`, `running` flag, and last `incarnated` timestamp. A workspace where one agent hasn't been touched in N weeks is a warning, not a violation.
 
-**Practice:** Run `bwoc list --json | jq '.[] | select(.status == "active")'` on a regular cadence (daily / weekly). Surface agents whose `inbox` has unread envelopes or whose daemon hasn't pinged in N days. The TUI `bwoc dashboard` view is the natural surface.
+**Practice:** Run `bwoc list --json | jq '.[] | select(.status == "active")'` on a regular cadence (daily / weekly). Surface agents whose `inbox` has unread envelopes or whose daemon hasn't pinged in N days. `bwoc fleet` is the natural surface (`bwoc dashboard` is deprecated as of 3.4).
 
 ### 2. Coordinated start/end — *samaggā sannipatanti*
 
