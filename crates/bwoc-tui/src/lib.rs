@@ -37,6 +37,7 @@
 
 mod complete;
 mod markdown;
+mod panel;
 mod session;
 
 use std::collections::HashMap;
@@ -289,6 +290,7 @@ pub fn run(args: TuiArgs) -> i32 {
         app.workdir = Some(args.agent_path.clone());
         app.sessions = sessions.clone();
         app.environment = environment.clone();
+        app.refresh_panel();
         app.session_id = session_id.clone();
         let flow = event_loop(&mut term, &mut app, &rx, stdin);
 
@@ -498,6 +500,14 @@ struct App {
     last_sent: Option<String>,
     /// Completed turns this session (one per `TurnEnd`).
     turns: u32,
+    /// Files this session changed, newest first (from `Diff` events) — shown in
+    /// the context pane so the worktree damage is visible without scrolling.
+    changed: Vec<String>,
+    /// The context pane's disk-derived content, refreshed at turn boundaries
+    /// rather than per frame.
+    panel: panel::Panel,
+    /// `F3` hides the context pane; it is also hidden on a narrow terminal.
+    panel_open: bool,
     /// Session cost in USD as the provider reported it (`None` = not reported —
     /// the status line then shows no cost rather than a made-up 0.00).
     cost_usd: Option<f64>,
@@ -551,8 +561,68 @@ impl App {
             tools: Vec::new(),
             last_sent: None,
             turns: 0,
+            changed: Vec::new(),
+            panel: panel::Panel::default(),
+            panel_open: true,
             cost_usd: None,
         }
+    }
+
+    /// Re-read the context pane's disk facts (branch, workspace, agents).
+    /// Called at session start and after each turn, never per frame.
+    fn refresh_panel(&mut self) {
+        if let Some(dir) = &self.workdir {
+            self.panel = panel::gather(dir);
+        }
+    }
+
+    /// The pane's rows for this moment: what is on disk plus what this session
+    /// has done. Pure, so the content is testable without a terminal.
+    fn panel_sections(&self) -> Vec<panel::Section> {
+        let mut out: Vec<panel::Section> = Vec::new();
+        for s in &self.panel.sections {
+            out.push(panel::Section {
+                title: s.title.clone(),
+                rows: s.rows.clone(),
+            });
+        }
+        let mut session = Vec::new();
+        if let Some(id) = &self.session_id {
+            session.push(format!("id    {id}"));
+        }
+        session.push(format!("turns {}", self.turns));
+        if let Some((prompt, _)) = self.usage {
+            session.push(format!(
+                "ctx   {} · out {}",
+                fmt_tokens(prompt),
+                fmt_tokens(self.total_out)
+            ));
+        }
+        if let Some(c) = self.cost_usd {
+            session.push(format!("cost  ${c:.4}"));
+        }
+        session.push(format!("mode  {}", self.mode));
+        out.push(panel::Section {
+            title: "session".to_string(),
+            rows: session,
+        });
+        if !self.changed.is_empty() {
+            const MAX_CHANGED: usize = 6;
+            let mut rows: Vec<String> = self
+                .changed
+                .iter()
+                .take(MAX_CHANGED)
+                .map(|p| format!("± {p}"))
+                .collect();
+            if self.changed.len() > MAX_CHANGED {
+                rows.push(format!("… {} more", self.changed.len() - MAX_CHANGED));
+            }
+            out.push(panel::Section {
+                title: "changed".to_string(),
+                rows,
+            });
+        }
+        out
     }
 
     /// The `/` or `@` popup for the current input, if one applies.
@@ -763,6 +833,9 @@ impl App {
                 ..
             } => {
                 let more = if truncated { " (truncated)" } else { "" };
+                if !self.changed.contains(&path) {
+                    self.changed.insert(0, path.clone());
+                }
                 self.conversation.push(format!("± {path}{more}"));
                 self.conversation
                     .extend(diff.lines().map(|l| format!("±{l}")));
@@ -820,6 +893,7 @@ impl App {
             } => {
                 self.busy = false;
                 self.turns = self.turns.saturating_add(1);
+                self.refresh_panel();
                 if cost_usd.is_some() {
                     self.cost_usd = cost_usd;
                 }
@@ -1036,6 +1110,14 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         // second press advances even before the harness echoes `ModeChanged`
         // (it may not, e.g. while a permission prompt is outstanding); the echo
         // overwrites it authoritatively when it arrives.
+        // F3 hides/shows the context pane (F2 cycles the permission mode).
+        KeyCode::F(3) => {
+            app.panel_open = !app.panel_open;
+            if app.panel_open {
+                app.refresh_panel();
+            }
+            Ok(Flow::Continue)
+        }
         KeyCode::F(2) => {
             let next = app.next_mode().to_string();
             app.mode = next.clone();
@@ -1464,7 +1546,12 @@ fn draw_frame(f: &mut ratatui::Frame, app: &App) {
     draw_status(f, layout[0], app);
     draw_body(f, layout[1], app);
     draw_input(f, layout[2], app, true);
-    draw_footer(f, layout[3], app.workdir.is_some());
+    draw_footer(
+        f,
+        layout[3],
+        app.workdir.is_some(),
+        context_pane_width(layout[1].width, true).is_some(),
+    );
     if let Some(popup) = app.popup() {
         draw_popup(f, layout[1], &popup, app.popup_sel);
     }
@@ -1631,10 +1718,56 @@ fn status_line(app: &App) -> String {
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    // Single full-width transcript: tool calls, results, permission prompts, and
-    // errors are interleaved into `conversation` (see `App::apply`), so there is
-    // no longer a separate tools/activity pane to split off.
-    draw_conversation(f, area, app);
+    // Tool calls, results, permission prompts and errors are interleaved into
+    // `conversation` (see `App::apply`), so the transcript is one column. The
+    // context pane on the right is the only split, and only when it fits.
+    let Some(width) = context_pane_width(area.width, app.panel_open) else {
+        draw_conversation(f, area, app);
+        return;
+    };
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(width)])
+        .split(area);
+    draw_conversation(f, split[0], app);
+    draw_context(f, split[1], app);
+}
+
+/// How wide the context pane may be, or `None` when it must not be drawn: a
+/// narrow terminal keeps the whole width for the conversation, which is what
+/// the operator is reading.
+fn context_pane_width(total: u16, open: bool) -> Option<u16> {
+    const PANE: u16 = 34;
+    const MIN_TOTAL: u16 = 100;
+    (open && total >= MIN_TOTAL).then_some(PANE)
+}
+
+/// The fixed right pane: where this session is (directory, branch, workspace,
+/// its agents) and what it has done (usage, files changed).
+fn draw_context(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let inner = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, section) in app.panel_sections().iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            section.title.clone(),
+            Style::default()
+                .fg(tone(design::color::ACCENT))
+                .add_modifier(Modifier::BOLD),
+        )));
+        for row in &section.rows {
+            // Clip rather than wrap: a pane row is a fact, not prose.
+            let text: String = row.chars().take(inner.max(1)).collect();
+            lines.push(Line::from(Span::raw(text)));
+        }
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" context (F3) ")
+        .border_style(Style::default().fg(tone(design::color::ACCENT)));
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1830,10 +1963,13 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App, cursor_visible: boo
     }
 }
 
-fn draw_footer(f: &mut ratatui::Frame, area: Rect, completions: bool) {
+fn draw_footer(f: &mut ratatui::Frame, area: Rect, completions: bool, pane: bool) {
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" ↑/↓ ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("scroll · ←/→ cursor · PgUp/PgDn · End live · "),
+        // Only where the pane could actually be drawn — a narrow terminal has
+        // no room for it, and the footer must keep the exit key visible.
+        Span::raw(if pane { "F3 pane · " } else { "" }),
         Span::raw(if completions {
             "/ commands · @ files · "
         } else {
@@ -2407,7 +2543,7 @@ fn draw_fleet(f: &mut ratatui::Frame, fleet: &Fleet) {
             draw_input(f, rows[2], app, fleet.palette.is_none());
         }
     }
-    draw_footer(f, rows[3], false);
+    draw_footer(f, rows[3], false, false);
     if fleet.palette.is_some() {
         draw_palette(f, area, fleet);
     }
