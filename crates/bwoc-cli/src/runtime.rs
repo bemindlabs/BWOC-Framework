@@ -297,8 +297,9 @@ pub enum Resolution {
 }
 
 /// Answers the in-session `/models`, `/backends`, `/settings` and `/doctor`
-/// (see [`bwoc_tui::EnvironmentInfo`]). It holds what the session resolved from
-/// so every answer is this session's truth, not a fresh guess.
+/// (see [`bwoc_tui::EnvironmentInfo`]). It holds what this session resolved at
+/// start-up, so every answer describes the running session rather than a fresh
+/// guess made later.
 pub struct Environment {
     /// The backend the session runs on.
     pub backend: String,
@@ -315,14 +316,17 @@ impl bwoc_tui::EnvironmentInfo for Environment {
     fn models(&self) -> Result<Vec<String>, String> {
         // Only a backend with a model index can answer honestly. Ollama has
         // one; a hosted API does not expose one we can trust here.
-        if !matches!(self.backend.as_str(), "ollama" | "openai-compatible") {
+        // Only Ollama is probed: the probe speaks Ollama's own `/api/tags`, and
+        // an arbitrary OpenAI-compatible endpoint would fail it in a way that
+        // reads like the endpoint is broken rather than simply not listable.
+        if self.backend != "ollama" {
             return Err(format!(
                 "`{}` does not list models — pass one to /model <name>",
                 self.backend
             ));
         }
         probe_ollama(self.endpoint.as_deref())
-            .ok_or_else(|| "no model list came back from the endpoint".to_string())
+            .ok_or_else(|| "no model list came back from the Ollama endpoint".to_string())
     }
 
     fn backends(&self) -> Vec<(String, String)> {
@@ -340,7 +344,11 @@ impl bwoc_tui::EnvironmentInfo for Environment {
                     None if name == "ollama" => "no key needed".to_string(),
                     None => "no key configured".to_string(),
                 };
-                let mark = if name == self.backend { " (in use)" } else { "" };
+                let mark = if name == self.backend {
+                    " (in use)"
+                } else {
+                    ""
+                };
                 (name.to_string(), format!("{note}{mark}"))
             })
             .collect();
@@ -369,8 +377,13 @@ impl bwoc_tui::EnvironmentInfo for Environment {
             .output()
             .map_err(|e| format!("could not run bwoc doctor: {e}"))?;
         let text = String::from_utf8_lossy(&out.stdout);
-        let parsed: serde_json::Value =
-            serde_json::from_str(text.trim()).map_err(|e| format!("doctor --json: {e}"))?;
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).map_err(|e| {
+            // Without the exit status and stderr, a doctor that failed to start
+            // looks like malformed JSON. Say what actually happened.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let first = stderr.lines().next().unwrap_or("(no stderr)");
+            format!("bwoc doctor --json: {e} (exit {}; {first})", out.status)
+        })?;
         let results = parsed
             .get("results")
             .and_then(|r| r.as_array())
