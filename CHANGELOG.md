@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [v2026.9.21-1] — 2026-09-20 — 3.6.0
 
+> Both 3.5.0 and 3.6.0 were released on 2026-09-20. The `v2026.9.21-*` tags are dated a day ahead: 3.5.0's tag was typed from memory, and a later tag must keep sorting upward, so 3.6.0 stayed on that date. `scripts/next-tag.sh` now derives the tag, and `release.yml` refuses one that is more than a day from the cut.
+
 **A session that can answer for itself.** The chat input gains thirteen commands — what this session is, what it may do, what it costs, what it is connected to — and a fixed context pane shows where you are while you work. Nothing that worked in 3.5 breaks.
 
 ### Added
@@ -17,7 +19,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - **A fixed context pane in the chat TUI.** On a terminal at least 100 columns wide, the right 34 columns show where the session is and what it has done: the directory and its git branch (read from `.git/HEAD`, no `git` process), the workspace above it and that workspace's agents (from `.bwoc/workspace.toml` / `agents.toml`), the conversation id, turns, usage and mode, and the files tools have changed this session. `F3` hides or shows it; a narrower terminal keeps the whole width for the conversation. Disk facts are re-read at turn boundaries, never per frame.
 - **`/compact`, `/permissions`, `/mcp` and `/context` in the chat TUI.** Two protocol additions carry them: `Compact` runs the same context engine the budget triggers and answers with the existing `Compacted` event (`removed = 0` when nothing folded), and `Describe { topic }` answers with `Described { topic, rows }` — one input and one event for every read-only question, so a new topic is a new string rather than a new variant. `/permissions` shows session mode, policy default, per-tool modes and pattern rules; `/mcp` groups the registry's `mcp__<server>__<tool>` entries by server; `/context` reports the system prompt size, messages in context, compaction budget, model and fallbacks. No secret is reachable through any of them.
 
-## [v2026.9.21-0] — 2026-09-21 — 3.5.0
+## [v2026.9.21-0] — 2026-09-20 — 3.5.0
 
 **The chat session grows a spine.** Stop a turn with `Esc`, switch models mid-session, see a diff of every file a tool changed, move between this directory's conversations without leaving the TUI, read answers as rendered Markdown, and take a turn's file changes back with `/undo`. Nothing that worked in 3.4 breaks.
 

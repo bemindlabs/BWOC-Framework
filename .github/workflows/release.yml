@@ -49,6 +49,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # A tag dated far from the day it is cut cannot be corrected afterwards:
+      # its assets are published under it and Homebrew derives the formula
+      # version from it, so a later, correctly-dated tag would sort *below* the
+      # release already shipped. Catch it here, before anything is published.
+      - name: Tag date is sane
+        run: bash scripts/next-tag.sh --check "${GITHUB_REF##refs/tags/}"
       - name: Create empty release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
