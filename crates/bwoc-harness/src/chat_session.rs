@@ -34,6 +34,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bwoc_core::chat_proto::{ChatEvent, ChatInput};
+use std::collections::VecDeque;
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 
 use crate::error::{HarnessError, HarnessResult};
@@ -255,6 +257,13 @@ impl ModelChain {
         &self.models[self.idx]
     }
 
+    /// Switch to `model` (`ChatInput::SetModel`). The operator's choice replaces
+    /// the entry in use, so any fallback models behind it stay available.
+    fn set_active(&mut self, model: String) {
+        self.models[self.idx] = model;
+        self.malformed = 0;
+    }
+
     /// Record one response's tool calls. Returns the model switched to when the
     /// malformed threshold is reached and a fallback remains. Without a fallback
     /// the response is kept and dispatched as before: the tools reject the bad
@@ -273,6 +282,33 @@ impl ModelChain {
             return Some(self.active().to_string());
         }
         None
+    }
+}
+
+/// Input the session read early (while a turn was running) and has not handled
+/// yet, plus the cancel latch.
+///
+/// The session reads stdin at exactly one place per state: the main loop between
+/// turns, [`read_permission`] while a prompt is up, and [`stream_call`] while the
+/// provider streams. Only the last one reads *ahead*, so anything it pulls that
+/// is not a [`ChatInput::Cancel`] is queued verbatim and handled in order later
+/// — a line is never dropped because it raced a turn.
+#[derive(Default)]
+struct Pending {
+    lines: VecDeque<String>,
+    /// A `Cancel` arrived: the running turn stops at its next boundary.
+    cancel: bool,
+}
+
+impl Pending {
+    /// The next queued line, if any (queued input is always handled first).
+    fn pop(&mut self) -> Option<String> {
+        self.lines.pop_front()
+    }
+
+    /// Take the cancel latch, clearing it.
+    fn take_cancel(&mut self) -> bool {
+        std::mem::take(&mut self.cancel)
     }
 }
 
@@ -321,6 +357,9 @@ where
     // Cumulative session usage, reported on every TurnEnd.
     let mut prompt_tokens: u64 = 0;
     let mut completion_tokens: u64 = 0;
+    // Cumulative provider-reported cost. Stays `None` until a provider reports
+    // one, so a frontend can tell "free / not reported" from "0.00 so far".
+    let mut cost_usd: Option<f64> = None;
 
     // Session permission mode (live-toggled via `SetMode`); only relaxes `ask`.
     // Headless / served mode (#301) starts in `Bypass`: with no human frontend
@@ -375,8 +414,10 @@ where
         }
     }
 
-    while let Some(line) = lines.next_line().await.map_err(HarnessError::Io)? {
-        let line = line.trim();
+    let mut pending = Pending::default();
+    while let Some(line) = next_line(&mut lines, &mut pending).await? {
+        let line = line.trim().to_string();
+        let line = line.as_str();
         if line.is_empty() {
             continue; // blank lines are not valid input (per chat_proto contract)
         }
@@ -440,6 +481,26 @@ where
                     .await?;
                 }
             },
+            ChatInput::SetModel { model } => {
+                let model = model.trim().to_string();
+                if model.is_empty() {
+                    emit(
+                        &mut out,
+                        &ChatEvent::Error {
+                            message: "empty model name".to_string(),
+                        },
+                    )
+                    .await?;
+                } else {
+                    models.set_active(model.clone());
+                    emit(&mut out, &ChatEvent::ModelChanged { model }).await?;
+                }
+            }
+            ChatInput::Cancel => {
+                // Nothing is running between turns — acknowledge so a frontend
+                // that raced the turn boundary isn't left waiting.
+                emit(&mut out, &ChatEvent::Cancelled).await?;
+            }
             ChatInput::User { text, principal } => {
                 // Process this turn, then drain any operator message that arrived
                 // mid-permission-prompt (recovered by `read_permission` rather than
@@ -506,9 +567,11 @@ where
                         &tools,
                         &mut history,
                         &mut lines,
+                        &mut pending,
                         &mut out,
                         &mut prompt_tokens,
                         &mut completion_tokens,
+                        &mut cost_usd,
                         &mut session_mode,
                         &mut interjection,
                         &mut models,
@@ -700,14 +763,17 @@ fn restored_display(msg: &ChatMessage) -> Option<(&'static str, String)> {
 /// ([`crate::agent_loop::call_with_retry_live`]), forwarding each streamed delta
 /// to the frontend as it arrives. The provider future and the emitter share a
 /// channel, so events stay in stream order while the call is still running.
-async fn stream_call<W>(
+async fn stream_call<R, W>(
     provider: &dyn ProviderClient,
     messages: Vec<ChatMessage>,
     tools: Vec<crate::provider::Tool>,
     model: &str,
+    lines: &mut Lines<R>,
+    pending: &mut Pending,
     out: &mut W,
-) -> HarnessResult<(ChatMessage, Option<crate::provider::Usage>)>
+) -> HarnessResult<Option<(ChatMessage, Option<crate::provider::Usage>)>>
 where
+    R: AsyncBufReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
 {
     use crate::agent_loop::LiveDelta;
@@ -731,7 +797,34 @@ where
         }
         Ok::<(), HarnessError>(())
     };
-    let (result, drained) = tokio::join!(call, drain);
+    // Watch stdin while the call runs so `Cancel` lands mid-stream instead of
+    // after the answer. Any other line is queued for its turn (see `Pending`).
+    // `Lines::next_line` is cancel-safe, so losing the select race keeps a
+    // partially-read line in its buffer.
+    let both = async { tokio::join!(call, drain) };
+    tokio::pin!(both);
+    let mut eof = false;
+    let joined = loop {
+        tokio::select! {
+            finished = &mut both => break Some(finished),
+            line = lines.next_line(), if !eof => match line {
+                Ok(Some(line)) => {
+                    if matches!(ChatInput::from_line(line.trim()), Ok(ChatInput::Cancel)) {
+                        break None;
+                    }
+                    pending.lines.push_back(line);
+                }
+                // EOF or a read error: stop polling stdin (the main loop sees it
+                // next) and let the call finish.
+                _ => eof = true,
+            },
+        }
+    };
+    let Some((result, drained)) = joined else {
+        // Cancelled: dropping the call future here is safe — nothing from this
+        // step reached `history`.
+        return Ok(None);
+    };
     drained?;
     let (message, usage) = result?;
 
@@ -745,7 +838,7 @@ where
             "provider returned an empty response (no content, no tool calls)".to_string(),
         ));
     }
-    Ok((message, usage))
+    Ok(Some((message, usage)))
 }
 
 /// Run one agentic turn: call the provider, dispatch any tool calls (each
@@ -762,9 +855,11 @@ async fn run_turn<R, W>(
     tools: &[crate::provider::Tool],
     history: &mut Vec<ChatMessage>,
     lines: &mut Lines<R>,
+    pending: &mut Pending,
     out: &mut W,
     prompt_tokens: &mut u64,
     completion_tokens: &mut u64,
+    cost_usd: &mut Option<f64>,
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
     models: &mut ModelChain,
@@ -788,28 +883,32 @@ where
                 },
             )
             .await?;
-            emit(
-                out,
-                &ChatEvent::TurnEnd {
-                    prompt_tokens: *prompt_tokens,
-                    completion_tokens: *completion_tokens,
-                },
-            )
-            .await?;
+            emit_turn_end(out, *prompt_tokens, *completion_tokens, *cost_usd).await?;
             return Ok(());
         }
 
         // ── Provider call (streaming, with retry) — emit `Token` deltas live ──
-        let (message, usage) = match stream_call(
+        let call = stream_call(
             provider,
             history.clone(),
             tools.to_vec(),
             models.active(),
+            lines,
+            pending,
             out,
         )
-        .await
-        {
-            Ok(r) => r,
+        .await;
+        let (message, usage) = match call {
+            // Cancelled mid-stream: the partial answer is dropped and the turn
+            // ends here. Nothing from this step reached `history`, so the next
+            // turn starts clean.
+            Ok(None) => {
+                pending.take_cancel();
+                emit(out, &ChatEvent::Cancelled).await?;
+                emit_turn_end(out, *prompt_tokens, *completion_tokens, *cost_usd).await?;
+                return Ok(());
+            }
+            Ok(Some(r)) => r,
             Err(e) => {
                 // Recoverable: surface, close the turn, keep the session.
                 emit(
@@ -819,7 +918,7 @@ where
                     },
                 )
                 .await?;
-                emit_turn_end(out, *prompt_tokens, *completion_tokens).await?;
+                emit_turn_end(out, *prompt_tokens, *completion_tokens, *cost_usd).await?;
                 return Ok(());
             }
         };
@@ -827,6 +926,11 @@ where
         if let Some(usage) = &usage {
             *prompt_tokens += u64::from(usage.prompt_tokens);
             *completion_tokens += u64::from(usage.completion_tokens);
+            // Only a provider that reports a cost contributes one; the session
+            // total stays `None` until then (never a locally estimated price).
+            if let Some(c) = usage.cost {
+                *cost_usd = Some(cost_usd.unwrap_or(0.0) + c);
+            }
         }
 
         let tool_calls = message.tool_calls.clone().unwrap_or_default();
@@ -869,14 +973,7 @@ where
             }
             history.push(message);
             emit(out, &ChatEvent::Message { text: final_text }).await?;
-            emit(
-                out,
-                &ChatEvent::TurnEnd {
-                    prompt_tokens: *prompt_tokens,
-                    completion_tokens: *completion_tokens,
-                },
-            )
-            .await?;
+            emit_turn_end(out, *prompt_tokens, *completion_tokens, *cost_usd).await?;
             return Ok(());
         }
 
@@ -894,6 +991,7 @@ where
                 turn_trust,
                 call,
                 lines,
+                pending,
                 out,
                 session_mode,
                 interjection,
@@ -904,12 +1002,20 @@ where
                     .with_images(images),
             );
         }
+        // A `Cancel` that arrived while the provider streamed (or during a
+        // permission prompt) stops the turn here: every tool_call in this batch
+        // now has its tool_result, so `history` stays well-formed.
+        if pending.take_cancel() {
+            emit(out, &ChatEvent::Cancelled).await?;
+            emit_turn_end(out, *prompt_tokens, *completion_tokens, *cost_usd).await?;
+            return Ok(());
+        }
         // If the operator interjected with a message mid-prompt, stop the turn at
         // this batch boundary (every tool_call now has a matching tool_result, so
         // history stays well-formed) and let the loop replay their text as the
         // next user turn instead of continuing on our own (#480).
         if interjection.is_some() {
-            emit_turn_end(out, *prompt_tokens, *completion_tokens).await?;
+            emit_turn_end(out, *prompt_tokens, *completion_tokens, *cost_usd).await?;
             return Ok(());
         }
         // Loop: feed the tool results back for the next provider call.
@@ -937,6 +1043,7 @@ async fn dispatch_call<R, W>(
     turn_trust: TrustLevel,
     call: &ToolCall,
     lines: &mut Lines<R>,
+    pending: &mut Pending,
     out: &mut W,
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
@@ -1012,7 +1119,7 @@ where
             },
         )
         .await?;
-        match read_permission(lines, &call.id, session_mode).await? {
+        match read_permission(lines, pending, &call.id, session_mode).await? {
             PermissionOutcome::Allow => {}
             PermissionOutcome::Deny => {
                 let msg = format!("DENIED by operator: `{name}` was declined");
@@ -1033,6 +1140,15 @@ where
             }
         }
     }
+
+    // What the file looked like before the call, so the frontend can be shown
+    // the change the tool made (R4c). Only for the file-mutating tools, and only
+    // for a path that resolves inside the workdir — the same confinement the
+    // tools themselves apply.
+    let diff_target = diff_target(name, args, ctx);
+    let before = diff_target
+        .as_ref()
+        .map(|p| std::fs::read(p).unwrap_or_default());
 
     // ── Execute (approved): sandbox + turn executor, as in `run_loop` ────────
     emit(
@@ -1065,6 +1181,9 @@ where
     // renders it distinctly, while feeding the same text back to the model.
     let ok = !result.denied && !result.content.starts_with("error:");
     emit_tool_result(out, call, ok, &result.content).await?;
+    if ok && let (Some(path), Some(before)) = (&diff_target, &before) {
+        emit_diff(out, call, path, before, ctx).await?;
+    }
     Ok((result.content, result.images))
 }
 
@@ -1101,13 +1220,14 @@ enum PermissionOutcome {
 /// user turn instead of losing it silently.
 async fn read_permission<R>(
     lines: &mut Lines<R>,
+    pending: &mut Pending,
     expect_id: &str,
     session_mode: &mut SessionMode,
 ) -> HarnessResult<PermissionOutcome>
 where
     R: AsyncBufReadExt + Unpin,
 {
-    while let Some(line) = lines.next_line().await.map_err(HarnessError::Io)? {
+    while let Some(line) = next_line(lines, pending).await? {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -1121,6 +1241,14 @@ where
                 });
             }
             Ok(ChatInput::Quit) => return Ok(PermissionOutcome::Deny),
+            // Cancel while a prompt is up: deny the tool (fail-safe) and latch
+            // the cancel so the turn ends at the batch boundary.
+            Ok(ChatInput::Cancel) => {
+                pending.cancel = true;
+                return Ok(PermissionOutcome::Deny);
+            }
+            // A model switch mid-prompt applies to later calls; keep waiting.
+            Ok(ChatInput::SetModel { .. }) => continue,
             // A mode switch mid-prompt is applied to `session_mode` (effective
             // for later calls) but does not answer this prompt — keep waiting.
             Ok(ChatInput::SetMode { mode }) => {
@@ -1140,6 +1268,68 @@ where
     }
     // EOF before an answer: deny.
     Ok(PermissionOutcome::Deny)
+}
+
+/// The file a call is about to change, when it is one of the file-mutating
+/// tools and its `path` argument resolves inside the workdir. `None` for every
+/// other tool — a diff is only offered where the harness knows the target.
+fn diff_target(name: &str, args: &str, ctx: &ToolContext) -> Option<std::path::PathBuf> {
+    const MUTATING: &[&str] = &["write_file", "edit_file", "multi_edit"];
+    if !MUTATING.contains(&name) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(args).ok()?;
+    let raw = value.get("path")?.as_str()?;
+    ctx.resolve_path(raw).ok()
+}
+
+/// Emit the change a file-mutating tool made, as a unified diff. Silent when the
+/// file is unchanged, binary, or unreadable afterwards — a display extra must
+/// never fail a turn.
+async fn emit_diff<W>(
+    out: &mut W,
+    call: &ToolCall,
+    path: &std::path::Path,
+    before: &[u8],
+    ctx: &ToolContext,
+) -> HarnessResult<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    let Ok(after) = std::fs::read(path) else {
+        return Ok(());
+    };
+    let Some(diff) = crate::diff::unified(before, &after) else {
+        return Ok(());
+    };
+    // Relative to the workdir when possible: an absolute path in the transcript
+    // leaks the operator's directory layout for no gain.
+    let shown = path
+        .strip_prefix(&ctx.workdir)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    emit(
+        out,
+        &ChatEvent::Diff {
+            id: call.id.clone(),
+            path: shown,
+            diff: diff.text,
+            truncated: diff.truncated,
+        },
+    )
+    .await
+}
+
+/// The next input line: anything [`stream_call`] read ahead first, then stdin.
+async fn next_line<R>(lines: &mut Lines<R>, pending: &mut Pending) -> HarnessResult<Option<String>>
+where
+    R: AsyncBufReadExt + Unpin,
+{
+    if let Some(queued) = pending.pop() {
+        return Ok(Some(queued));
+    }
+    lines.next_line().await.map_err(HarnessError::Io)
 }
 
 /// Serialize and write one event as a single JSON line, then flush.
@@ -1165,6 +1355,7 @@ async fn emit_turn_end<W>(
     out: &mut W,
     prompt_tokens: u64,
     completion_tokens: u64,
+    cost_usd: Option<f64>,
 ) -> HarnessResult<()>
 where
     W: AsyncWriteExt + Unpin,
@@ -1174,6 +1365,7 @@ where
         &ChatEvent::TurnEnd {
             prompt_tokens,
             completion_tokens,
+            cost_usd,
         },
     )
     .await
@@ -1493,6 +1685,175 @@ mod tests {
     // ── Tests ────────────────────────────────────────────────────────────────
 
     #[tokio::test]
+    async fn set_model_switches_the_model_used_for_later_calls() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let lines = run_scripted(
+            vec![final_response("hi")],
+            allow_all(),
+            "{\"type\":\"set_model\",\"model\":\"other-model\"}\n\
+             {\"type\":\"user\",\"text\":\"hello\"}\n\
+             {\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ModelChanged { model } if model == "other-model")),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_set_model_is_an_error_not_a_switch() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let lines = run_scripted(
+            vec![],
+            allow_all(),
+            "{\"type\":\"set_model\",\"model\":\"  \"}\n{\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(events.iter().any(|e| matches!(e, ChatEvent::Error { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ModelChanged { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_between_turns_is_acknowledged() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let lines = run_scripted(
+            vec![],
+            allow_all(),
+            "{\"type\":\"cancel\"}\n{\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(events.iter().any(|e| matches!(e, ChatEvent::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_a_running_turn_stops_it_at_a_safe_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        // `ask` on every tool, so the write waits for an answer; the queued
+        // `cancel` is seen either while the provider streams or as the answer to
+        // that prompt — both end the turn, and neither may leave a tool_call
+        // without its tool_result.
+        let policy = Policy {
+            default_mode: Mode::Ask,
+            tools: HashMap::new(),
+            patterns: Vec::new(),
+            ..Default::default()
+        };
+        let lines = run_scripted(
+            vec![
+                tool_call_response("write_file", r#"{"path":"a.txt","content":"x"}"#),
+                final_response("unreachable"),
+            ],
+            policy,
+            "{\"type\":\"user\",\"text\":\"write it\"}\n\
+             {\"type\":\"cancel\"}\n\
+             {\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        let cancelled = events
+            .iter()
+            .position(|e| matches!(e, ChatEvent::Cancelled));
+        let turn_end = events
+            .iter()
+            .position(|e| matches!(e, ChatEvent::TurnEnd { .. }));
+        assert!(cancelled.is_some() && turn_end.is_some(), "{events:?}");
+        assert!(
+            cancelled < turn_end,
+            "Cancelled precedes TurnEnd: {events:?}"
+        );
+        // No announced tool call is left without a result (a denial reports one
+        // without an announcement, so results can exceed calls — never fewer).
+        let calls = events
+            .iter()
+            .filter(|e| matches!(e, ChatEvent::ToolCall { .. }))
+            .count();
+        let results = events
+            .iter()
+            .filter(|e| matches!(e, ChatEvent::ToolResult { .. }))
+            .count();
+        assert!(results >= calls, "{events:?}");
+        // The turn stopped: the second provider response was never consumed.
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Message { text } if text == "unreachable"))
+        );
+        // The file was never written — a cancelled write is not a silent write.
+        assert!(!tmp.path().join("a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_file_write_emits_a_diff_for_the_frontend() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "old\n").unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let lines = run_scripted(
+            vec![
+                tool_call_response("write_file", r#"{"path":"a.txt","content":"new\n"}"#),
+                final_response("done"),
+            ],
+            allow_all(),
+            "{\"type\":\"user\",\"text\":\"change it\"}\n{\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        let diff = events.iter().find_map(|e| match e {
+            ChatEvent::Diff {
+                path,
+                diff,
+                truncated,
+                ..
+            } => Some((path.clone(), diff.clone(), *truncated)),
+            _ => None,
+        });
+        let (path, diff, truncated) = diff.expect("a Diff event");
+        assert_eq!(path, "a.txt");
+        assert!(diff.contains("-old") && diff.contains("+new"), "{diff}");
+        assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_touches_no_file_emits_no_diff() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "same\n").unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let lines = run_scripted(
+            vec![
+                tool_call_response("read_file", r#"{"path":"a.txt"}"#),
+                final_response("done"),
+            ],
+            allow_all(),
+            "{\"type\":\"user\",\"text\":\"read it\"}\n{\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        assert!(
+            !parse(&lines)
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Diff { .. }))
+        );
+    }
+
+    #[tokio::test]
     async fn quit_ends_session() {
         let tmp = TempDir::new().unwrap();
         let ctx = ToolContext::new(tmp.path());
@@ -1635,7 +1996,8 @@ mod tests {
             e,
             ChatEvent::TurnEnd {
                 prompt_tokens: 10,
-                completion_tokens: 5
+                completion_tokens: 5,
+                cost_usd: None
             }
         )));
         assert!(matches!(events.last(), Some(ChatEvent::Bye)));

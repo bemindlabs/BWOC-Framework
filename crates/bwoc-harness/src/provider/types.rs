@@ -445,6 +445,11 @@ pub struct Usage {
     /// Anthropic `cache_read_input_tokens` (flat). `None` on OpenAI-compat.
     #[serde(default)]
     pub cache_read_tokens: Option<u32>,
+    /// Cost of this call in USD **as the provider reported it** (OpenRouter's
+    /// `usage.cost`). `None` on providers that don't report one — nothing here
+    /// estimates a price from a local table.
+    #[serde(default)]
+    pub cost: Option<f64>,
     /// Anthropic `cache_creation_input_tokens` (flat). `None` on OpenAI-compat.
     #[serde(default)]
     pub cache_creation_tokens: Option<u32>,

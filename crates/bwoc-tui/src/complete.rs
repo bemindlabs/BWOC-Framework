@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/mode",
         "show or set permission mode: default | accept_edits | bypass",
     ),
+    ("/model", "show or switch the model used for later turns"),
     ("/quit", "end the session"),
     ("/exit", "end the session"),
 ];
@@ -33,6 +34,7 @@ pub enum Slash {
     Help,
     Clear,
     Mode(Option<String>),
+    Model(Option<String>),
     Quit,
     Unknown(String),
 }
@@ -52,6 +54,7 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "help" | "?" => Slash::Help,
         "clear" => Slash::Clear,
         "mode" => Slash::Mode(words.next().map(str::to_string)),
+        "model" => Slash::Model(words.next().map(str::to_string)),
         "quit" | "exit" => Slash::Quit,
         other => Slash::Unknown(other.to_string()),
     })
@@ -287,6 +290,11 @@ mod tests {
             Some(Slash::Mode(Some("bypass".into())))
         );
         assert_eq!(parse_slash("/exit"), Some(Slash::Quit));
+        assert_eq!(
+            parse_slash("/model qwen3.8:27b"),
+            Some(Slash::Model(Some("qwen3.8:27b".into())))
+        );
+        assert_eq!(parse_slash("/model"), Some(Slash::Model(None)));
         assert_eq!(parse_slash("/nope"), Some(Slash::Unknown("nope".into())));
         assert_eq!(parse_slash("/etc/hosts is empty"), None);
         assert_eq!(parse_slash("hello /help"), None);
@@ -299,6 +307,7 @@ mod tests {
         }
         assert_eq!(names(slash_matches("/").unwrap()).len(), COMMANDS.len());
         assert_eq!(names(slash_matches("/cl").unwrap()), ["/clear"]);
+        assert_eq!(names(slash_matches("/mod").unwrap()), ["/mode", "/model"]);
         assert_eq!(names(slash_matches("/e").unwrap()), ["/exit"]);
         assert!(slash_matches("/mode by").is_none());
         assert!(slash_matches("/etc/").is_none());

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Cancel a running turn, switch models live, see file diffs and provider cost (runtime R4c).** The chat protocol gains `Cancel` and `SetModel` inputs and `Cancelled`, `ModelChanged` and `Diff` events; `TurnEnd` gains an optional `cost_usd`.
+  - **`Esc` cancels the turn in flight.** The harness watches stdin while the provider streams (dropping the partial answer) and at each tool-call boundary, so a cancel mid-tool still lands once that call has its result and the conversation stays well-formed. Input that arrives while a turn runs is queued, never dropped.
+  - **`/model` / `/model <name>`** shows or switches the model later turns use. The operator's choice replaces the entry in use, leaving the fallback chain intact.
+  - **A file-mutating tool (`write_file`, `edit_file`, `multi_edit`) emits a unified diff** of the file it changed, capped at 8 KB and marked when truncated; a rewrite larger than 1,000 lines is summarized instead of aligned. Display-only, dependency-free, and confined to paths inside the working directory.
+  - **Session cost** is reported only when the provider reports one (`usage.cost`, e.g. OpenRouter). The status line shows nothing otherwise — no price is estimated locally.
+
 ## [v2026.9.20-0] — 2026-09-20 — 3.4.0
 
 **A chat input that works like the rest of your tools.** `/` opens a command menu in the chat TUI and `@` completes project files and attaches them to your message. `bwoc dashboard` is deprecated in favour of `bwoc fleet`. Nothing that worked in 3.3 breaks.
