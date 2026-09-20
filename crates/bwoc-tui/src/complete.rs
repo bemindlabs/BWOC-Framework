@@ -37,6 +37,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "the resolved runtime and where each value came from",
     ),
     ("/doctor", "run the environment health checks"),
+    ("/compact", "fold the oldest turns into a summary now"),
+    (
+        "/permissions",
+        "the permission policy this session runs under",
+    ),
+    ("/mcp", "MCP servers connected to this session"),
+    ("/context", "what fills the model's context right now"),
     (
         "/cost",
         "tokens used, and cost when the provider reports one",
@@ -66,6 +73,10 @@ pub enum Slash {
     Backends,
     Settings,
     Doctor,
+    Compact,
+    Permissions,
+    Mcp,
+    Context,
     Tools,
     Cost,
     Retry,
@@ -101,6 +112,10 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "backends" => Slash::Backends,
         "settings" | "config" => Slash::Settings,
         "doctor" => Slash::Doctor,
+        "compact" => Slash::Compact,
+        "permissions" => Slash::Permissions,
+        "mcp" => Slash::Mcp,
+        "context" => Slash::Context,
         "tools" => Slash::Tools,
         "cost" => Slash::Cost,
         "retry" => Slash::Retry,
@@ -365,6 +380,10 @@ mod tests {
         assert_eq!(parse_slash("/settings"), Some(Slash::Settings));
         assert_eq!(parse_slash("/config"), Some(Slash::Settings));
         assert_eq!(parse_slash("/doctor"), Some(Slash::Doctor));
+        assert_eq!(parse_slash("/compact"), Some(Slash::Compact));
+        assert_eq!(parse_slash("/permissions"), Some(Slash::Permissions));
+        assert_eq!(parse_slash("/mcp"), Some(Slash::Mcp));
+        assert_eq!(parse_slash("/context"), Some(Slash::Context));
         assert_eq!(parse_slash("/tools"), Some(Slash::Tools));
         assert_eq!(parse_slash("/save"), Some(Slash::Save(None)));
         assert_eq!(

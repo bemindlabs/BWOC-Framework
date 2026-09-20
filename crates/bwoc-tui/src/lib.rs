@@ -846,6 +846,16 @@ impl App {
                     s.model = model;
                 }
             }
+            ChatEvent::Described { topic, rows } => {
+                if rows.is_empty() {
+                    self.conversation.push(format!("● no {topic} to report"));
+                } else {
+                    self.conversation.push(format!("● {topic}:"));
+                    for line in aligned_rows(&rows) {
+                        self.conversation.push(line);
+                    }
+                }
+            }
             ChatEvent::Reverted {
                 undo,
                 restored,
@@ -1316,6 +1326,10 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
             let line = save_transcript(app, path.as_deref());
             app.conversation.push(line);
         }
+        Slash::Compact => send_input(stdin, &ChatInput::Compact)?,
+        Slash::Permissions => describe(stdin, "permissions")?,
+        Slash::Mcp => describe(stdin, "mcp")?,
+        Slash::Context => describe(stdin, "context")?,
         Slash::Undo => send_input(stdin, &ChatInput::Undo)?,
         Slash::Redo => send_input(stdin, &ChatInput::Redo)?,
         Slash::Sessions => match app.sessions.as_ref() {
@@ -1354,6 +1368,21 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
     Ok(Flow::Continue)
 }
 
+/// `(label, value)` rows as transcript lines with the values lined up. Padding
+/// counts **terminal columns**, not characters, so a label with wide or
+/// combining characters still aligns (the same rule the transcript wrapping
+/// uses).
+fn aligned_rows(rows: &[(String, String)]) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    let width = rows.iter().map(|(k, _)| k.width()).max().unwrap_or(0);
+    rows.iter()
+        .map(|(key, value)| {
+            let pad = " ".repeat(width.saturating_sub(key.width()));
+            format!("●   {key}{pad}  {value}")
+        })
+        .collect()
+}
+
 /// What `/models`, `/backends`, `/settings` and `/doctor` say when the caller
 /// provided no [`EnvironmentInfo`] (an agent session, or a frontend that only
 /// wired the chat).
@@ -1374,15 +1403,7 @@ fn report_rows(
         Ok(rows) if rows.is_empty() => app.conversation.push(format!("● no {title} to report")),
         Ok(rows) => {
             app.conversation.push(format!("● {title}:"));
-            let width = rows
-                .iter()
-                .map(|(k, _)| k.chars().count())
-                .max()
-                .unwrap_or(0);
-            for (key, value) in rows {
-                let pad = " ".repeat(width - key.chars().count());
-                app.conversation.push(format!("●   {key}{pad}  {value}"));
-            }
+            app.conversation.extend(aligned_rows(&rows));
         }
         Err(why) => app.conversation.push(format!("✗ {why}")),
     }
@@ -1510,6 +1531,17 @@ fn switch_session(app: &mut App, arg: &complete::SessionArg) -> io::Result<Flow>
             Ok(Flow::Continue)
         }
     }
+}
+
+/// Ask the harness to describe one of its read-only topics; the answer arrives
+/// as a `Described` event and is rendered there.
+fn describe(stdin: &mut ChildStdin, topic: &str) -> io::Result<()> {
+    send_input(
+        stdin,
+        &ChatInput::Describe {
+            topic: topic.to_string(),
+        },
+    )
 }
 
 /// Transcript line for one `@` mention resolved at send time.
@@ -3126,6 +3158,20 @@ mod tests {
         });
         app.apply(ChatEvent::ModelChanged { model: "m2".into() });
         assert!(status_line(&app).contains("model m2"));
+    }
+
+    #[test]
+    fn rows_align_on_terminal_columns_not_character_counts() {
+        // A Thai label is 12 chars but wider on screen than an ASCII one of the
+        // same length would be; the value column must still line up.
+        let rows = vec![
+            ("ab".to_string(), "one".to_string()),
+            ("กขค".to_string(), "two".to_string()),
+        ];
+        let lines = aligned_rows(&rows);
+        use unicode_width::UnicodeWidthStr;
+        let value_col = |line: &str| line.split("  ").next().unwrap().width();
+        assert_eq!(value_col(&lines[0]), value_col(&lines[1]), "{lines:?}");
     }
 
     #[test]
