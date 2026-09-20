@@ -26,7 +26,7 @@ We use a single **trunk-based** branching standard across every BWOC repo: `main
    git checkout -b fix/<short-name>      # for bug fixes
    git checkout -b docs/<short-name>     # for documentation
    ```
-   No `release/*` or `hotfix/*` branches — version tags (CalVer `v<YYYY>.<M>.<D>-<patch>`) are cut directly on `main`.
+   No `release/*` or `hotfix/*` branches — version tags (CalVer `v<YYYY>.<M>.<D>-<patch>`) are cut directly on `main`. Take the tag from `scripts/next-tag.sh` rather than typing the date: a published tag cannot be re-dated, and `release.yml` refuses one more than a day from the cut.
 2. **Make your changes** — keep diffs focused. One concern per PR.
 3. **Verify** before committing:
    - Documentation renders correctly (Markdown lint, link check).
