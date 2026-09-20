@@ -141,7 +141,13 @@ fn cap(text: String) -> Diff {
             truncated: false,
         };
     }
-    let cut = text[..MAX_DIFF_BYTES].rfind('\n').map_or(0, |i| i + 1);
+    // Search the BYTES for the last newline inside the cap: slicing the `str`
+    // there would panic when the cut lands inside a multi-byte character. A
+    // newline index is always a char boundary.
+    let cut = text.as_bytes()[..MAX_DIFF_BYTES]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |i| i + 1);
     Diff {
         text: text[..cut].to_string(),
         truncated: true,
@@ -193,6 +199,21 @@ mod tests {
             "{d}"
         );
         assert!(d.contains("+<3 lines>"), "{d}");
+    }
+
+    #[test]
+    fn a_long_non_ascii_diff_is_cut_without_panicking() {
+        // The byte cap lands inside a 3-byte character on at least one line.
+        let before = (0..900)
+            .map(|i| format!("บรรทัด {i} ................\n"))
+            .collect::<String>();
+        let after = (0..900)
+            .map(|i| format!("บรรทัด {i} ++++++++++++++++\n"))
+            .collect::<String>();
+        let d = unified(before.as_bytes(), after.as_bytes()).unwrap();
+        assert!(d.truncated);
+        assert!(d.text.ends_with('\n'));
+        assert!(d.text.len() <= MAX_DIFF_BYTES);
     }
 
     #[test]

@@ -80,9 +80,10 @@ pub enum ChatEvent {
     Compacted { removed: usize },
     /// A file-mutating tool changed the worktree: a unified diff of the file as
     /// it was before the call against the file after it. Display-only — the
-    /// model already sees the tool result. `diff` is empty when the tool wrote
-    /// the file's existing bytes; it is capped by the harness, which sets
-    /// `truncated` when the real diff was longer.
+    /// model already sees the tool result. No event is sent when the file is
+    /// unchanged (the tool wrote the bytes already there) or is not UTF-8 text.
+    /// `diff` is capped by the harness, which sets `truncated` when the real
+    /// diff was longer.
     Diff {
         id: String,
         path: String,
