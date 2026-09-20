@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Nine more `/` commands in the chat TUI.** `/status`, `/tools`, `/cost`, `/retry` and `/save [path]` report what the TUI already knows (the tool list the harness sends on `Ready` was being dropped); `/models`, `/backends`, `/settings` (alias `/config`) and `/doctor` answer through a new `EnvironmentInfo` trait the caller implements, so `bwoc-tui` still compile-depends on `bwoc-core` alone. `/models` enumerates only where a backend really can (Ollama), `/backends` names each key's source but never a key, and `/doctor` runs `bwoc doctor --json` rather than a second copy of the checks.
+
 ## [v2026.9.21-0] — 2026-09-21 — 3.5.0
 
 **The chat session grows a spine.** Stop a turn with `Esc`, switch models mid-session, see a diff of every file a tool changed, move between this directory's conversations without leaving the TUI, read answers as rendered Markdown, and take a turn's file changes back with `/undo`. Nothing that worked in 3.4 breaks.
