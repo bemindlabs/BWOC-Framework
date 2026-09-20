@@ -95,6 +95,14 @@ pub enum ChatEvent {
     /// session use `model`. Also sent when the harness switches models on its
     /// own (the malformed-tool-call fallback chain).
     ModelChanged { model: String },
+    /// The answer to a [`ChatInput::Describe`]: `rows` are `(label, value)`
+    /// pairs to render in order. Display-only, and never a secret — a session
+    /// describes what it is configured to do, not the credentials it does it
+    /// with.
+    Described {
+        topic: String,
+        rows: Vec<(String, String)>,
+    },
     /// An [`ChatInput::Undo`] or [`ChatInput::Redo`] finished. `restored` lists
     /// the files put back, `conflicts` those left alone because something else
     /// changed them since, and `skipped` those the turn changed but never
@@ -169,6 +177,17 @@ pub enum ChatInput {
     /// harness replies with [`ChatEvent::ModelChanged`], or with
     /// [`ChatEvent::Error`] when the name is empty.
     SetModel { model: String },
+    /// Fold the oldest turns into a summary now, instead of waiting for the
+    /// context budget to force it. The harness replies with
+    /// [`ChatEvent::Compacted`] — `removed = 0` when there was nothing to fold.
+    Compact,
+    /// Ask the session to describe part of itself: `"permissions"`, `"mcp"` or
+    /// `"context"`. The harness replies with [`ChatEvent::Described`], or with
+    /// [`ChatEvent::Error`] for a topic it does not know.
+    ///
+    /// One input for every read-only question keeps the protocol small: a new
+    /// topic is a new string, not a new variant a frontend must learn.
+    Describe { topic: String },
     /// Undo the file changes of the most recent turn that made any (R4b), or
     /// [`Redo`] the most recently undone one. Only between turns; the harness
     /// replies with [`ChatEvent::Reverted`].

@@ -499,6 +499,43 @@ where
                     emit(&mut out, &ChatEvent::ModelChanged { model }).await?;
                 }
             }
+            ChatInput::Compact => {
+                // The same engine the budget triggers, run on demand.
+                let outcome = crate::compact::compact_context(
+                    &*provider,
+                    models.active(),
+                    config.max_context_tokens.max(1),
+                    &mut history,
+                    &ctx.workdir,
+                )
+                .await;
+                emit(
+                    &mut out,
+                    &ChatEvent::Compacted {
+                        removed: outcome.removed(),
+                    },
+                )
+                .await?;
+            }
+            ChatInput::Describe { topic } => {
+                match describe(&topic, &config, &registry, &history, session_mode) {
+                    Some(rows) => {
+                        emit(&mut out, &ChatEvent::Described { topic, rows }).await?;
+                    }
+                    None => {
+                        emit(
+                            &mut out,
+                            &ChatEvent::Error {
+                                message: format!(
+                                    "unknown topic `{topic}` \
+                                     (permissions | mcp | context)"
+                                ),
+                            },
+                        )
+                        .await?;
+                    }
+                }
+            }
             ChatInput::Undo | ChatInput::Redo => {
                 let undo = matches!(input, ChatInput::Undo);
                 let result = if undo { journal.undo() } else { journal.redo() };
@@ -1427,6 +1464,120 @@ where
     .await
 }
 
+/// Answer a [`ChatInput::Describe`]. `None` for an unknown topic.
+///
+/// Every row is configuration the operator already owns — modes, server labels,
+/// sizes. No secret is reachable from here: the policy holds modes and patterns,
+/// and MCP tokens live in the transport, not the registry.
+fn describe(
+    topic: &str,
+    config: &ChatConfig,
+    registry: &ToolRegistry,
+    history: &[ChatMessage],
+    session_mode: SessionMode,
+) -> Option<Vec<(String, String)>> {
+    match topic {
+        "permissions" => {
+            let policy = &config.policy;
+            let mut rows = vec![
+                ("session mode".to_string(), session_mode.wire().to_string()),
+                (
+                    "policy default".to_string(),
+                    format!("{:?}", policy.default_mode).to_lowercase(),
+                ),
+            ];
+            if config.headless {
+                rows.push((
+                    "headless".to_string(),
+                    "no operator — `ask` tools auto-approve".to_string(),
+                ));
+            }
+            let mut tools: Vec<_> = policy.tools.iter().collect();
+            tools.sort_by(|a, b| a.0.cmp(b.0));
+            for (tool, mode) in tools {
+                rows.push((tool.clone(), format!("{mode:?}").to_lowercase()));
+            }
+            for rule in &policy.patterns {
+                let reason = rule
+                    .reason
+                    .as_deref()
+                    .map(|r| format!("  ({r})"))
+                    .unwrap_or_default();
+                rows.push((
+                    format!("pattern {}", rule.pattern),
+                    format!("{:?}{reason}", rule.mode).to_lowercase(),
+                ));
+            }
+            Some(rows)
+        }
+        "mcp" => {
+            // MCP tools register as `mcp__<server>__<tool>` (see `mcp.rs`), so
+            // the registry itself is the list of connected servers.
+            let mut servers: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            for tool in registry.tool_schemas() {
+                let name = tool.function.name;
+                let Some(rest) = name.strip_prefix("mcp__") else {
+                    continue;
+                };
+                let Some((server, tool_name)) = rest.split_once("__") else {
+                    continue;
+                };
+                servers
+                    .entry(server.to_string())
+                    .or_default()
+                    .push(tool_name.to_string());
+            }
+            Some(
+                servers
+                    .into_iter()
+                    .map(|(server, mut tools)| {
+                        tools.sort();
+                        (
+                            server,
+                            format!("{} tool(s): {}", tools.len(), tools.join(", ")),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        "context" => {
+            let system = history
+                .first()
+                .and_then(|m| m.content.as_deref())
+                .map(str::len)
+                .unwrap_or(0);
+            let mut rows = vec![
+                (
+                    "system prompt".to_string(),
+                    format!("{system} bytes (AGENTS.md / CLAUDE.md and the preamble)"),
+                ),
+                (
+                    "messages".to_string(),
+                    format!("{} in context", history.len().saturating_sub(1)),
+                ),
+                (
+                    "budget".to_string(),
+                    if config.max_context_tokens == 0 {
+                        "compaction disabled".to_string()
+                    } else {
+                        format!("{} tokens before compaction", config.max_context_tokens)
+                    },
+                ),
+                ("model".to_string(), config.model.clone()),
+            ];
+            if !config.fallback_models.is_empty() {
+                rows.push(("fallbacks".to_string(), config.fallback_models.join(", ")));
+            }
+            if let Some(log) = &config.team_chat_log {
+                rows.push(("team chat".to_string(), log.display().to_string()));
+            }
+            Some(rows)
+        }
+        _ => None,
+    }
+}
+
 /// The next input line: anything [`stream_call`] read ahead first, then stdin.
 async fn next_line<R>(lines: &mut Lines<R>, pending: &mut Pending) -> HarnessResult<Option<String>>
 where
@@ -1789,6 +1940,79 @@ mod tests {
     }
 
     // ── Tests ────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn describe_reports_permissions_mcp_and_context() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let lines = run_scripted(
+            vec![],
+            allow_all(),
+            "{\"type\":\"describe\",\"topic\":\"permissions\"}\n\
+             {\"type\":\"describe\",\"topic\":\"mcp\"}\n\
+             {\"type\":\"describe\",\"topic\":\"context\"}\n\
+             {\"type\":\"describe\",\"topic\":\"nope\"}\n\
+             {\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        let described: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Described { topic, rows } => Some((topic.as_str(), rows.clone())),
+                _ => None,
+            })
+            .collect();
+        let topics: Vec<_> = described.iter().map(|(t, _)| *t).collect();
+        assert_eq!(topics, ["permissions", "mcp", "context"]);
+
+        let rows = |topic: &str| {
+            described
+                .iter()
+                .find(|(t, _)| *t == topic)
+                .expect("topic")
+                .1
+                .clone()
+        };
+        let perms = rows("permissions");
+        assert_eq!(perms[0], ("session mode".into(), "default".into()));
+        assert_eq!(perms[1], ("policy default".into(), "allow".into()));
+        // No MCP server is registered in a scripted session.
+        assert!(rows("mcp").is_empty());
+        let context = rows("context");
+        assert!(
+            context
+                .iter()
+                .any(|(k, v)| k == "system prompt" && v.contains("bytes")),
+            "{context:?}"
+        );
+        assert!(context.iter().any(|(k, _)| k == "budget"));
+        // An unknown topic is an error, not a silent no-op.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ChatEvent::Error { message } if message.contains("unknown topic `nope`")
+        )));
+    }
+
+    #[tokio::test]
+    async fn compact_on_demand_reports_what_it_folded() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        // Nothing to fold in a fresh session: the report is honest, not silent.
+        let lines = run_scripted(
+            vec![],
+            allow_all(),
+            "{\"type\":\"compact\"}\n{\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        assert!(
+            parse(&lines)
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Compacted { removed: 0 }))
+        );
+    }
 
     #[tokio::test]
     async fn undo_takes_back_a_turns_file_changes_and_redo_reapplies_them() {
