@@ -54,6 +54,7 @@ pub mod system_prompt;
 pub mod telemetry;
 pub mod tools;
 pub mod turn_executor;
+pub mod undo;
 pub mod worker;
 
 /// Control tokens that models emit as **plain text** when they attempt a tool

@@ -25,6 +25,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/session", "open another conversation: /session <id>"),
     ("/new", "start another conversation here"),
     ("/fork", "copy this conversation and open the copy"),
+    ("/undo", "take back the last turn's file changes"),
+    ("/redo", "reapply the changes /undo took back"),
     ("/quit", "end the session"),
     ("/exit", "end the session"),
 ];
@@ -39,6 +41,8 @@ pub enum Slash {
     Clear,
     Mode(Option<String>),
     Model(Option<String>),
+    Undo,
+    Redo,
     Sessions,
     Session(Option<String>),
     NewSession,
@@ -63,6 +67,8 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "clear" => Slash::Clear,
         "mode" => Slash::Mode(words.next().map(str::to_string)),
         "model" => Slash::Model(words.next().map(str::to_string)),
+        "undo" => Slash::Undo,
+        "redo" => Slash::Redo,
         "sessions" => Slash::Sessions,
         "session" => Slash::Session(words.next().map(str::to_string)),
         "new" => Slash::NewSession,
@@ -315,6 +321,8 @@ mod tests {
         );
         assert_eq!(parse_slash("/model"), Some(Slash::Model(None)));
         assert_eq!(parse_slash("/sessions"), Some(Slash::Sessions));
+        assert_eq!(parse_slash("/undo"), Some(Slash::Undo));
+        assert_eq!(parse_slash("/redo"), Some(Slash::Redo));
         assert_eq!(parse_slash("/new"), Some(Slash::NewSession));
         assert_eq!(
             parse_slash("/session 2026"),

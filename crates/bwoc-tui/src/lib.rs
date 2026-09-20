@@ -732,6 +732,33 @@ impl App {
                     s.model = model;
                 }
             }
+            ChatEvent::Reverted {
+                undo,
+                restored,
+                conflicts,
+                skipped,
+            } => {
+                let verb = if undo { "undid" } else { "redid" };
+                if restored.is_empty() && conflicts.is_empty() && skipped.is_empty() {
+                    let what = if undo { "to undo" } else { "to redo" };
+                    self.conversation.push(format!("● nothing {what}"));
+                } else {
+                    self.conversation
+                        .push(format!("● {verb} {} file(s)", restored.len()));
+                    self.conversation
+                        .extend(restored.iter().map(|p| format!("●   {p}")));
+                }
+                self.conversation.extend(
+                    conflicts
+                        .iter()
+                        .map(|p| format!("✗ {p}: changed since — left alone")),
+                );
+                self.conversation.extend(
+                    skipped
+                        .iter()
+                        .map(|p| format!("✗ {p}: not journalled (binary or too large)")),
+                );
+            }
             ChatEvent::Cancelled => {
                 self.conversation.push("● cancelled".to_string());
             }
@@ -1092,6 +1119,8 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
         Slash::Model(Some(model)) => {
             send_input(stdin, &ChatInput::SetModel { model })?;
         }
+        Slash::Undo => send_input(stdin, &ChatInput::Undo)?,
+        Slash::Redo => send_input(stdin, &ChatInput::Redo)?,
         Slash::Sessions => match app.sessions.as_ref() {
             Some(ctl) => {
                 app.conversation.push("● conversations here:".to_string());
