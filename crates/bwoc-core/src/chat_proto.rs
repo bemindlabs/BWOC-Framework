@@ -78,11 +78,40 @@ pub enum ChatEvent {
     /// just before the turn proceeds, so the frontend can show a notice. Purely
     /// informational — the conversation continues seamlessly.
     Compacted { removed: usize },
+    /// A file-mutating tool changed the worktree: a unified diff of the file as
+    /// it was before the call against the file after it. Display-only — the
+    /// model already sees the tool result. `diff` is empty when the tool wrote
+    /// the file's existing bytes; it is capped by the harness, which sets
+    /// `truncated` when the real diff was longer.
+    Diff {
+        id: String,
+        path: String,
+        diff: String,
+        #[serde(default)]
+        truncated: bool,
+    },
+    /// Acknowledges a [`ChatInput::SetModel`]: later provider calls in this
+    /// session use `model`. Also sent when the harness switches models on its
+    /// own (the malformed-tool-call fallback chain).
+    ModelChanged { model: String },
+    /// A turn was stopped by [`ChatInput::Cancel`] before it finished. The
+    /// session stays alive and the conversation keeps whatever completed; a
+    /// [`TurnEnd`] follows.
+    ///
+    /// [`TurnEnd`]: ChatEvent::TurnEnd
+    Cancelled,
     /// The assistant turn is complete; the session is ready for the next
     /// [`ChatInput::User`]. Usage counts are cumulative for the session.
+    ///
+    /// `cost_usd` is the session's cumulative cost **as reported by the
+    /// provider** (e.g. OpenRouter's `usage.cost`). It is `None` whenever the
+    /// provider does not report one — the harness never estimates a price from
+    /// a local table.
     TurnEnd {
         prompt_tokens: u64,
         completion_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_usd: Option<f64>,
     },
     /// A teammate's message from the shared team chat log (HV3-3a), surfaced so
     /// the frontend can render it distinctly from this agent's own turns.
@@ -122,6 +151,14 @@ pub enum ChatInput {
     /// Forget the persisted conversation — clears the in-memory history back to
     /// the system prompt and deletes the on-disk session file.
     Forget,
+    /// Switch the model used for later provider calls in this session. The
+    /// harness replies with [`ChatEvent::ModelChanged`], or with
+    /// [`ChatEvent::Error`] when the name is empty.
+    SetModel { model: String },
+    /// Stop the turn that is running. The harness finishes the tool call in
+    /// flight (so the conversation stays well-formed), emits
+    /// [`ChatEvent::Cancelled`] and ends the turn. Ignored between turns.
+    Cancel,
     /// Switch the session permission mode. `mode` is one of `"default"` (prompt
     /// for every `ask`-mode tool), `"accept_edits"` (auto-approve file
     /// write/edit tools, still prompt for the rest), or `"bypass"` (auto-approve

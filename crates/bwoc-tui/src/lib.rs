@@ -377,6 +377,12 @@ struct App {
     popup_sel: usize,
     /// `Esc` hid the popup; it comes back once the input changes.
     popup_hidden: bool,
+    /// A turn is running (between sending a message and its `TurnEnd`). `Esc`
+    /// cancels it; between turns `Esc` is ordinary input.
+    busy: bool,
+    /// Session cost in USD as the provider reported it (`None` = not reported —
+    /// the status line then shows no cost rather than a made-up 0.00).
+    cost_usd: Option<f64>,
 }
 
 /// The completion popup over the input line, derived from the input + cursor.
@@ -420,6 +426,8 @@ impl App {
             files: None,
             popup_sel: 0,
             popup_hidden: false,
+            busy: false,
+            cost_usd: None,
         }
     }
 
@@ -623,6 +631,26 @@ impl App {
                     shown_at: std::time::Instant::now(),
                 });
             }
+            ChatEvent::Diff {
+                path,
+                diff,
+                truncated,
+                ..
+            } => {
+                let more = if truncated { " (truncated)" } else { "" };
+                self.conversation.push(format!("± {path}{more}"));
+                self.conversation
+                    .extend(diff.lines().map(|l| format!("±{l}")));
+            }
+            ChatEvent::ModelChanged { model } => {
+                self.conversation.push(format!("● model: {model}"));
+                if let Some(s) = &mut self.status {
+                    s.model = model;
+                }
+            }
+            ChatEvent::Cancelled => {
+                self.conversation.push("● cancelled".to_string());
+            }
             ChatEvent::ModeChanged { mode } => {
                 self.conversation.push(format!("● permission mode: {mode}"));
                 self.mode = mode;
@@ -636,7 +664,12 @@ impl App {
             ChatEvent::TurnEnd {
                 prompt_tokens,
                 completion_tokens,
+                cost_usd,
             } => {
+                self.busy = false;
+                if cost_usd.is_some() {
+                    self.cost_usd = cost_usd;
+                }
                 // Flush any streamed-but-not-Message'd tokens as the turn's text.
                 if !self.streaming.is_empty() {
                     let text = std::mem::take(&mut self.streaming);
@@ -868,6 +901,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                 return run_slash(app, stdin, cmd);
             }
             app.conversation.push(format!("you: {text}"));
+            app.busy = true;
             let text = match &app.workdir {
                 Some(root) => {
                     let (expanded, report) = complete::expand_mentions(&text, root);
@@ -906,7 +940,15 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
             app.input_changed();
             Ok(false)
         }
-        KeyCode::Esc => Ok(false),
+        // Esc cancels the turn in flight; between turns it stays inert (it must
+        // never close the session — #531).
+        KeyCode::Esc => {
+            if app.busy {
+                app.conversation.push("● cancelling…".to_string());
+                send_input(stdin, &ChatInput::Cancel)?;
+            }
+            Ok(false)
+        }
         _ => Ok(false),
     }
 }
@@ -952,6 +994,17 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
                 "✗ unknown mode `{m}` — one of {}",
                 complete::MODES.join(", ")
             ));
+        }
+        Slash::Model(None) => {
+            let current = app
+                .status
+                .as_ref()
+                .map_or("(unknown)", |s| s.model.as_str());
+            app.conversation
+                .push(format!("● model: {current} — /model <name> switches it"));
+        }
+        Slash::Model(Some(model)) => {
+            send_input(stdin, &ChatInput::SetModel { model })?;
         }
         Slash::Quit => return Ok(true),
         Slash::Unknown(name) => {
@@ -1149,12 +1202,17 @@ fn status_line(app: &App) -> String {
         ),
         None => base,
     };
+    let cost = match app.cost_usd {
+        // Provider-reported only; 4 decimals because a turn is often sub-cent.
+        Some(c) => format!("· ${c:.4} "),
+        None => String::new(),
+    };
     let compacted = if app.compactions > 0 {
         format!("· ⟳{} ", app.compactions)
     } else {
         String::new()
     };
-    format!("{usage}{compacted}· mode {} (F2) ", app.mode)
+    format!("{usage}{cost}{compacted}· mode {} (F2) ", app.mode)
 }
 
 fn draw_body(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1270,6 +1328,14 @@ fn styled_lines(text: &str, style: Style) -> Vec<Line<'static>> {
 /// (⚠ permission, ✗ error/denied, ✓ result/allowed, → tool call) so they stand
 /// out from plain user/assistant turns now that they share one column.
 fn transcript_style(line: &str) -> Style {
+    if let Some(body) = line.strip_prefix('±') {
+        // A diff row: colour additions and removals, dim the rest.
+        return match body.chars().next() {
+            Some('+') => Style::default().fg(tone(design::color::SUCCESS)),
+            Some('-') => Style::default().fg(tone(design::color::DANGER)),
+            _ => Style::default().add_modifier(Modifier::DIM),
+        };
+    }
     if line.starts_with('⚠') {
         Style::default()
             .fg(tone(design::color::WARNING))
@@ -2290,6 +2356,7 @@ mod tests {
         app.apply(ChatEvent::TurnEnd {
             prompt_tokens: 10,
             completion_tokens: 20,
+            cost_usd: None,
         });
         assert_eq!(app.usage, Some((10, 20)));
         assert!(app.streaming.is_empty());
@@ -2302,10 +2369,12 @@ mod tests {
         app.apply(ChatEvent::TurnEnd {
             prompt_tokens: 1_000,
             completion_tokens: 200,
+            cost_usd: None,
         });
         app.apply(ChatEvent::TurnEnd {
             prompt_tokens: 1_500, // grew as history was resent
             completion_tokens: 300,
+            cost_usd: None,
         });
         // out is Σ completion; ctx is the *latest* prompt (not summed).
         assert_eq!(app.total_out, 500);
@@ -2416,6 +2485,81 @@ mod tests {
             app.input_insert(c);
             app.input_changed();
         }
+    }
+
+    #[test]
+    fn a_diff_event_renders_as_marked_rows() {
+        let mut app = App::new("a".into(), "ollama");
+        app.apply(ChatEvent::Diff {
+            id: "c1".into(),
+            path: "src/main.rs".into(),
+            diff: "@@ -1,1 +1,1 @@\n-old\n+new\n".into(),
+            truncated: true,
+        });
+        assert!(
+            app.conversation
+                .iter()
+                .any(|l| l == "± src/main.rs (truncated)")
+        );
+        assert!(app.conversation.iter().any(|l| l == "±-old"));
+        // Added rows read as success, removed as danger, the rest dimmed.
+        assert_eq!(
+            transcript_style("±+new").fg,
+            Some(tone(design::color::SUCCESS))
+        );
+        assert_eq!(
+            transcript_style("±-old").fg,
+            Some(tone(design::color::DANGER))
+        );
+    }
+
+    #[test]
+    fn turn_end_clears_busy_and_keeps_a_reported_cost() {
+        let mut app = App::new("a".into(), "ollama");
+        app.busy = true;
+        app.apply(ChatEvent::TurnEnd {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            cost_usd: Some(0.0123),
+        });
+        assert!(!app.busy);
+        assert!(
+            status_line(&app).contains("$0.0123"),
+            "{}",
+            status_line(&app)
+        );
+        // A later turn without a reported cost keeps the last known total
+        // instead of dropping it.
+        app.apply(ChatEvent::TurnEnd {
+            prompt_tokens: 20,
+            completion_tokens: 4,
+            cost_usd: None,
+        });
+        assert_eq!(app.cost_usd, Some(0.0123));
+    }
+
+    #[test]
+    fn a_provider_that_reports_no_cost_shows_none() {
+        let mut app = App::new("a".into(), "ollama");
+        app.apply(ChatEvent::TurnEnd {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            cost_usd: None,
+        });
+        assert!(!status_line(&app).contains('$'));
+    }
+
+    #[test]
+    fn model_changed_updates_the_status_line() {
+        let mut app = App::new("a".into(), "ollama");
+        app.apply(ChatEvent::Ready {
+            agent: "a".into(),
+            model: "m1".into(),
+            backend: "ollama".into(),
+            tools: vec![],
+        });
+        app.apply(ChatEvent::ModelChanged { model: "m2".into() });
+        assert!(status_line(&app).contains("model m2"));
     }
 
     #[test]

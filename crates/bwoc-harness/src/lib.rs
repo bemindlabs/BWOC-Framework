@@ -34,6 +34,7 @@ pub mod chat_session;
 pub mod checkpoint;
 pub mod compact;
 pub mod deep_memory;
+pub mod diff;
 pub mod error;
 pub mod eval;
 pub mod jail;
