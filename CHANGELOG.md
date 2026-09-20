@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
+- **A fixed context pane in the chat TUI.** On a terminal at least 100 columns wide, the right 34 columns show where the session is and what it has done: the directory and its git branch (read from `.git/HEAD`, no `git` process), the workspace above it and that workspace's agents (from `.bwoc/workspace.toml` / `agents.toml`), the conversation id, turns, usage and mode, and the files tools have changed this session. `F3` hides or shows it; a narrower terminal keeps the whole width for the conversation. Disk facts are re-read at turn boundaries, never per frame.
 - **Nine more `/` commands in the chat TUI.** `/status`, `/tools`, `/cost`, `/retry` and `/save [path]` report what the TUI already knows (the tool list the harness sends on `Ready` was being dropped); `/models`, `/backends`, `/settings` (alias `/config`) and `/doctor` answer through a new `EnvironmentInfo` trait the caller implements, so `bwoc-tui` still compile-depends on `bwoc-core` alone. `/models` enumerates only where a backend really can (Ollama), `/backends` names each key's source but never a key, and `/doctor` runs `bwoc doctor --json` rather than a second copy of the checks.
 
 ## [v2026.9.21-0] — 2026-09-21 — 3.5.0
