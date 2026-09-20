@@ -141,10 +141,7 @@ fn cap(text: String) -> Diff {
             truncated: false,
         };
     }
-    let cut = text[..MAX_DIFF_BYTES]
-        .rfind('\n')
-        .map_or(0, |i| i + 1)
-        .max(0);
+    let cut = text[..MAX_DIFF_BYTES].rfind('\n').map_or(0, |i| i + 1);
     Diff {
         text: text[..cut].to_string(),
         truncated: true,

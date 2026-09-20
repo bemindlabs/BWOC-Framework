@@ -286,6 +286,87 @@ impl SessionStore {
     }
 }
 
+/// The TUI's in-session `/sessions`, `/session`, `/new` and `/fork`, backed by
+/// this store (R5). `bwoc-tui` owns no on-disk layout, so it asks through this
+/// trait object; the open conversation's id is remembered so the listing can
+/// mark it.
+pub struct TuiSessions {
+    store: SessionStore,
+    open: std::sync::Mutex<Option<String>>,
+}
+
+impl TuiSessions {
+    pub fn new(store: SessionStore, open: Option<String>) -> Self {
+        Self {
+            store,
+            open: std::sync::Mutex::new(open),
+        }
+    }
+
+    fn remember(&self, id: &str) {
+        if let Ok(mut open) = self.open.lock() {
+            *open = Some(id.to_string());
+        }
+    }
+}
+
+impl bwoc_tui::SessionControl for TuiSessions {
+    fn list(&self) -> Vec<bwoc_tui::SessionRow> {
+        let open = self.open.lock().ok().and_then(|o| o.clone());
+        self.store
+            .list()
+            .into_iter()
+            .map(|s| bwoc_tui::SessionRow {
+                current: Some(&s.id) == open.as_ref(),
+                last: s
+                    .updated
+                    .split('T')
+                    .nth(1)
+                    .map(|t| t.trim_end_matches('Z').to_string())
+                    .unwrap_or_else(|| s.updated.clone()),
+                id: s.id,
+                title: s.title,
+                messages: s.messages,
+            })
+            .collect()
+    }
+
+    fn pick(&self, pick: &bwoc_tui::SessionPick) -> Result<(String, PathBuf), String> {
+        self.store.prepare().map_err(|e| e.to_string())?;
+        let now = SystemTime::now();
+        let picked = match pick {
+            bwoc_tui::SessionPick::New => {
+                let path = self
+                    .store
+                    .resolve(&SessionPick::New, now)
+                    .map_err(|e| e.to_string())?;
+                let id = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (id, path)
+            }
+            bwoc_tui::SessionPick::Id(prefix) => {
+                let found = self.store.find(prefix).map_err(|e| e.to_string())?;
+                (found.id, found.path)
+            }
+            bwoc_tui::SessionPick::Fork(from) => {
+                // `None` forks the conversation this TUI has open, not merely
+                // the newest — the operator means "this one".
+                let open = self.open.lock().ok().and_then(|o| o.clone());
+                let from = from.clone().or(open);
+                let forked = self
+                    .store
+                    .fork(from.as_deref(), now)
+                    .map_err(|e| e.to_string())?;
+                (forked.id, forked.path)
+            }
+        };
+        self.remember(&picked.0);
+        Ok(picked)
+    }
+}
+
 /// Every stored session across all directories, most recently written first.
 pub fn list_all(bwoc_home: &Path) -> Vec<SessionInfo> {
     let root = bwoc_home.join("sessions");

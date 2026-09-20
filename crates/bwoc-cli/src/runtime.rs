@@ -566,6 +566,7 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
         Resolution::Ready(r) => {
             // The conversation lives under ~/.bwoc/sessions/, never in the
             // repository. No home means no persistence, as before.
+            let mut sessions: Option<Box<dyn bwoc_tui::SessionControl>> = None;
             let session_file = match home.as_deref() {
                 Some(h) => {
                     let store = crate::coding_session::SessionStore::new(h, &cwd);
@@ -573,7 +574,16 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
                         .prepare()
                         .and_then(|()| store.resolve(&pick, std::time::SystemTime::now()))
                     {
-                        Ok(path) => Some(path),
+                        Ok(path) => {
+                            // Same store, handed to the TUI so `/session`,
+                            // `/new` and `/fork` work from inside the session.
+                            let open = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+                            sessions = Some(Box::new(crate::coding_session::TuiSessions::new(
+                                crate::coding_session::SessionStore::new(h, &cwd),
+                                open,
+                            )));
+                            Some(path)
+                        }
                         Err(e) => {
                             eprintln!("bwoc: {e}");
                             return match e {
@@ -600,6 +610,7 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
                     max_tokens: r.max_tokens,
                     max_context: r.max_context,
                     session_file,
+                    sessions,
                 }),
             })
         }

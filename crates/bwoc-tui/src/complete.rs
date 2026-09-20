@@ -21,6 +21,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "show or set permission mode: default | accept_edits | bypass",
     ),
     ("/model", "show or switch the model used for later turns"),
+    ("/sessions", "list this directory's conversations"),
+    ("/session", "open another conversation: /session <id>"),
+    ("/new", "start another conversation here"),
+    ("/fork", "copy this conversation and open the copy"),
     ("/quit", "end the session"),
     ("/exit", "end the session"),
 ];
@@ -35,6 +39,10 @@ pub enum Slash {
     Clear,
     Mode(Option<String>),
     Model(Option<String>),
+    Sessions,
+    Session(Option<String>),
+    NewSession,
+    Fork(Option<String>),
     Quit,
     Unknown(String),
 }
@@ -55,6 +63,10 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "clear" => Slash::Clear,
         "mode" => Slash::Mode(words.next().map(str::to_string)),
         "model" => Slash::Model(words.next().map(str::to_string)),
+        "sessions" => Slash::Sessions,
+        "session" => Slash::Session(words.next().map(str::to_string)),
+        "new" => Slash::NewSession,
+        "fork" => Slash::Fork(words.next().map(str::to_string)),
         "quit" | "exit" => Slash::Quit,
         other => Slash::Unknown(other.to_string()),
     })
@@ -74,6 +86,13 @@ pub fn slash_matches(input: &str) -> Option<Vec<(&'static str, &'static str)>> {
             .copied()
             .collect(),
     )
+}
+
+/// Which conversation a session command names.
+pub enum SessionArg {
+    New,
+    Id(String),
+    Fork(Option<String>),
 }
 
 /// The `@token` the cursor sits in: `(byte offset of '@', text after '@')`.
@@ -295,6 +314,13 @@ mod tests {
             Some(Slash::Model(Some("qwen3.8:27b".into())))
         );
         assert_eq!(parse_slash("/model"), Some(Slash::Model(None)));
+        assert_eq!(parse_slash("/sessions"), Some(Slash::Sessions));
+        assert_eq!(parse_slash("/new"), Some(Slash::NewSession));
+        assert_eq!(
+            parse_slash("/session 2026"),
+            Some(Slash::Session(Some("2026".into())))
+        );
+        assert_eq!(parse_slash("/fork"), Some(Slash::Fork(None)));
         assert_eq!(parse_slash("/nope"), Some(Slash::Unknown("nope".into())));
         assert_eq!(parse_slash("/etc/hosts is empty"), None);
         assert_eq!(parse_slash("hello /help"), None);
