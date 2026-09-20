@@ -95,6 +95,19 @@ pub enum ChatEvent {
     /// session use `model`. Also sent when the harness switches models on its
     /// own (the malformed-tool-call fallback chain).
     ModelChanged { model: String },
+    /// An [`ChatInput::Undo`] or [`ChatInput::Redo`] finished. `restored` lists
+    /// the files put back, `conflicts` those left alone because something else
+    /// changed them since, and `skipped` those the turn changed but never
+    /// journalled (binary or oversized). All three empty with `undo = true`
+    /// means there was nothing left to undo.
+    Reverted {
+        undo: bool,
+        restored: Vec<String>,
+        #[serde(default)]
+        conflicts: Vec<String>,
+        #[serde(default)]
+        skipped: Vec<String>,
+    },
     /// A turn was stopped by [`ChatInput::Cancel`] before it finished. The
     /// session stays alive and the conversation keeps whatever completed; a
     /// [`TurnEnd`] follows.
@@ -156,6 +169,14 @@ pub enum ChatInput {
     /// harness replies with [`ChatEvent::ModelChanged`], or with
     /// [`ChatEvent::Error`] when the name is empty.
     SetModel { model: String },
+    /// Undo the file changes of the most recent turn that made any (R4b), or
+    /// [`Redo`] the most recently undone one. Only between turns; the harness
+    /// replies with [`ChatEvent::Reverted`].
+    ///
+    /// [`Redo`]: ChatInput::Redo
+    Undo,
+    /// Reapply the most recently undone turn's file changes.
+    Redo,
     /// Stop the turn that is running. The harness finishes the tool call in
     /// flight (so the conversation stays well-formed), emits
     /// [`ChatEvent::Cancelled`] and ends the turn. Ignored between turns.

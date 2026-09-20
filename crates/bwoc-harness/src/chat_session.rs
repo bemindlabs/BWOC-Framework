@@ -351,6 +351,9 @@ where
     // persisted conversation (if any) is reloaded so the agent *remembers* across
     // restarts, not just the displayed transcript.
     let session_path = session_path_for(&ctx.workdir, &config);
+    // Undo journal for this conversation (R4b): per-turn file edits, beside the
+    // conversation file so a `/session` switch carries its own history.
+    let journal = crate::undo::Journal::for_session(&session_path);
     let mut history: Vec<ChatMessage> = vec![ChatMessage::system(&config.system_prompt)];
     history.extend(load_session(&session_path));
 
@@ -496,6 +499,46 @@ where
                     emit(&mut out, &ChatEvent::ModelChanged { model }).await?;
                 }
             }
+            ChatInput::Undo | ChatInput::Redo => {
+                let undo = matches!(input, ChatInput::Undo);
+                let result = if undo { journal.undo() } else { journal.redo() };
+                match result {
+                    Ok(Some(batch)) => {
+                        emit(
+                            &mut out,
+                            &ChatEvent::Reverted {
+                                undo,
+                                restored: batch.restored,
+                                conflicts: batch.conflicts,
+                                skipped: batch.skipped,
+                            },
+                        )
+                        .await?;
+                    }
+                    // Nothing to undo / redo: an empty report, not an error.
+                    Ok(None) => {
+                        emit(
+                            &mut out,
+                            &ChatEvent::Reverted {
+                                undo,
+                                restored: Vec::new(),
+                                conflicts: Vec::new(),
+                                skipped: Vec::new(),
+                            },
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        emit(
+                            &mut out,
+                            &ChatEvent::Error {
+                                message: format!("undo journal: {e}"),
+                            },
+                        )
+                        .await?;
+                    }
+                }
+            }
             ChatInput::Cancel => {
                 // Nothing is running between turns — acknowledge so a frontend
                 // that raced the turn boundary isn't left waiting.
@@ -559,6 +602,7 @@ where
                     // scanning all of `history` would re-broadcast the previous
                     // turn's reply (#480 review).
                     let turn_start = history.len();
+                    let mut edits = crate::undo::Turn::default();
                     run_turn(
                         &*provider,
                         &registry,
@@ -576,8 +620,20 @@ where
                         &mut interjection,
                         &mut models,
                         &mut session_trust,
+                        &mut edits,
                     )
                     .await?;
+                    // Record what this turn changed on disk, so `/undo` can put
+                    // it back. A turn that changed nothing records nothing.
+                    if let Err(e) = journal.record(&edits) {
+                        emit(
+                            &mut out,
+                            &ChatEvent::Error {
+                                message: format!("undo journal: {e}"),
+                            },
+                        )
+                        .await?;
+                    }
                     // Persist the conversation after the turn settles (incl. tool
                     // results) so the next launch resumes with full context.
                     save_session(&session_path, &history);
@@ -864,6 +920,7 @@ async fn run_turn<R, W>(
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
     models: &mut ModelChain,
     session_trust: &mut SessionTrust,
+    edits: &mut crate::undo::Turn,
 ) -> HarnessResult<()>
 where
     R: AsyncBufReadExt + Unpin,
@@ -995,6 +1052,7 @@ where
                 out,
                 session_mode,
                 interjection,
+                edits,
             )
             .await?;
             history.push(
@@ -1047,6 +1105,7 @@ async fn dispatch_call<R, W>(
     out: &mut W,
     session_mode: &mut SessionMode,
     interjection: &mut Option<(String, bwoc_core::trust::Principal)>,
+    edits: &mut crate::undo::Turn,
 ) -> HarnessResult<(String, Vec<ImageBlock>)>
 where
     R: AsyncBufReadExt + Unpin,
@@ -1149,6 +1208,9 @@ where
     let before = diff_target
         .as_ref()
         .map(|p| std::fs::read(p).unwrap_or_default());
+    // The same read, as journalled text (R4b): `Err` means binary or oversized,
+    // which is recorded as skipped rather than silently un-undoable.
+    let before_text = diff_target.as_ref().map(|p| crate::undo::journalled(p));
 
     // ── Execute (approved): sandbox + turn executor, as in `run_loop` ────────
     emit(
@@ -1183,6 +1245,9 @@ where
     emit_tool_result(out, call, ok, &result.content).await?;
     if ok && let (Some(path), Some(before)) = (&diff_target, &before) {
         emit_diff(out, call, path, before, ctx).await?;
+    }
+    if ok && let (Some(path), Some(before_text)) = (&diff_target, &before_text) {
+        record_edit(edits, path, before_text, ctx);
     }
     Ok((result.content, result.images))
 }
@@ -1281,6 +1346,47 @@ fn diff_target(name: &str, args: &str, ctx: &ToolContext) -> Option<std::path::P
     let value: serde_json::Value = serde_json::from_str(args).ok()?;
     let raw = value.get("path")?.as_str()?;
     ctx.resolve_path(raw).ok()
+}
+
+/// Add one file-mutating call to the turn's undo entry. A file the journal
+/// cannot hold (binary, oversized — `before` is `None` for those) is recorded by
+/// name as skipped, so an undo reports what it cannot restore.
+fn record_edit(
+    edits: &mut crate::undo::Turn,
+    path: &std::path::Path,
+    before: &crate::undo::Journalled,
+    ctx: &ToolContext,
+) {
+    let shown = path
+        .strip_prefix(&ctx.workdir)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    let skip = |edits: &mut crate::undo::Turn| {
+        if !edits.skipped.contains(&shown) {
+            edits.skipped.push(shown.clone());
+        }
+    };
+    let crate::undo::Journalled::Text(before) = before else {
+        skip(edits);
+        return;
+    };
+    let crate::undo::Journalled::Text(after) = crate::undo::journalled(path) else {
+        skip(edits);
+        return;
+    };
+    // A file touched twice in one turn keeps the ORIGINAL `before`, so one undo
+    // takes the whole turn back.
+    if let Some(existing) = edits.entries.iter_mut().find(|e| e.full == path) {
+        existing.after = after;
+        return;
+    }
+    edits.entries.push(crate::undo::Entry {
+        path: shown,
+        full: path.to_path_buf(),
+        before: before.clone(),
+        after,
+    });
 }
 
 /// Emit the change a file-mutating tool made, as a unified diff. Silent when the
@@ -1683,6 +1789,73 @@ mod tests {
     }
 
     // ── Tests ────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn undo_takes_back_a_turns_file_changes_and_redo_reapplies_them() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "old\n").unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        // Turn 1 writes the file; then undo, then redo, in one session.
+        let lines = run_scripted(
+            vec![
+                tool_call_response("write_file", r#"{"path":"a.txt","content":"new\n"}"#),
+                final_response("done"),
+            ],
+            allow_all(),
+            "{\"type\":\"user\",\"text\":\"change it\"}\n\
+             {\"type\":\"undo\"}\n\
+             {\"type\":\"redo\"}\n\
+             {\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let reverted: Vec<_> = parse(&lines)
+            .into_iter()
+            .filter_map(|e| match e {
+                ChatEvent::Reverted {
+                    undo,
+                    restored,
+                    conflicts,
+                    ..
+                } => Some((undo, restored, conflicts)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reverted,
+            [
+                (true, vec!["a.txt".to_string()], vec![]),
+                (false, vec!["a.txt".to_string()], vec![]),
+            ]
+        );
+        // Redo put the tool's content back.
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "new\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn undo_with_no_recorded_turn_reports_nothing_restored() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let lines = run_scripted(
+            vec![],
+            allow_all(),
+            "{\"type\":\"undo\"}\n{\"type\":\"quit\"}\n",
+            ctx,
+        )
+        .await;
+        let events = parse(&lines);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ChatEvent::Reverted {
+                undo: true,
+                restored,
+                ..
+            } if restored.is_empty()
+        )));
+    }
 
     #[tokio::test]
     async fn set_model_switches_the_model_used_for_later_calls() {
