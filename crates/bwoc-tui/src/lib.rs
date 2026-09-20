@@ -1099,7 +1099,7 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
                     let mark = if row.current { "▸" } else { " " };
                     app.conversation.push(format!(
                         "●  {mark} {}  {:>3} msgs  {:<8}  {}",
-                        &row.id,
+                        row.id,
                         row.messages,
                         row.last,
                         shorten(&row.title, 48)
