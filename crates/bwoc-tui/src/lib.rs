@@ -36,11 +36,12 @@
 //! live session (opening its pane and switching to it).
 
 mod complete;
+mod markdown;
 mod session;
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
@@ -85,6 +86,37 @@ pub struct TuiArgs {
     pub project: Option<ProjectSession>,
 }
 
+/// One conversation in this directory, as [`SessionControl::list`] reports it.
+pub struct SessionRow {
+    pub id: String,
+    pub title: String,
+    pub messages: usize,
+    /// Human-readable "last written" (e.g. `2m ago`).
+    pub last: String,
+    /// True for the conversation this TUI currently has open.
+    pub current: bool,
+}
+
+/// Which conversation to open next.
+pub enum SessionPick {
+    New,
+    /// An id or unique prefix.
+    Id(String),
+    /// Copy one (the open one when `None`) and open the copy.
+    Fork(Option<String>),
+}
+
+/// Session management for the in-TUI `/session` commands, provided by the
+/// caller. The TUI knows nothing about where conversations live — that belongs
+/// to `bwoc-cli`, which owns the on-disk layout. Keeping it a trait is what lets
+/// `bwoc-tui` compile-depend on `bwoc-core` alone (the dep quarantine).
+pub trait SessionControl: Send {
+    /// This directory's conversations, newest first.
+    fn list(&self) -> Vec<SessionRow>;
+    /// Resolve a pick to `(id, session file)`, creating or copying as needed.
+    fn pick(&self, pick: &SessionPick) -> Result<(String, PathBuf), String>;
+}
+
 /// Runtime for a project session, resolved by the caller (`bwoc`).
 pub struct ProjectSession {
     pub model: String,
@@ -97,6 +129,10 @@ pub struct ProjectSession {
     /// Where the harness persists the conversation. `None` keeps the harness
     /// default, `<workdir>/.bwoc/chat-session.json`.
     pub session_file: Option<PathBuf>,
+    /// Lets the in-TUI `/new`, `/session`, `/sessions` and `/fork` commands
+    /// switch conversations. `None` (an agent session, or no home directory)
+    /// leaves those commands reporting that they are unavailable.
+    pub sessions: Option<Box<dyn SessionControl>>,
 }
 
 pub fn run(args: TuiArgs) -> i32 {
@@ -124,6 +160,13 @@ pub fn run(args: TuiArgs) -> i32 {
         return 2;
     };
 
+    // Cloned before `args.project` is consumed below: the per-session argv is
+    // rebuilt on every switch, but everything except the session file is fixed.
+    let project_argv_base = args.project.as_ref().map(|p| ProjectRuntime {
+        max_tokens: p.max_tokens,
+        max_context: p.max_context,
+    });
+
     // Project session: the caller already resolved the runtime. Agent session:
     // model + endpoint come from the agent's manifest (best-effort). A missing
     // manifest is not fatal — the harness falls back to its own defaults.
@@ -147,73 +190,95 @@ pub fn run(args: TuiArgs) -> i32 {
         }
     };
 
-    let mut argv = harness_argv(
-        &args.agent_path,
-        model.as_deref(),
-        &endpoint,
-        &args.backend_name,
-        args.team_chat.as_deref(),
-    );
-    if let Some(p) = &args.project {
-        argv.extend(project_argv(&args.agent_id, p));
-    }
-
-    let mut child = match Command::new(&harness)
-        .args(&argv)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(harness_stderr())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "bwoc chat --tui: failed to spawn bwoc-harness ({}): {e}",
-                harness.display()
-            );
-            return 1;
-        }
-    };
-
-    // Reader thread: child stdout → ChatEvent → channel.
-    let stdout = child.stdout.take().expect("stdout piped above");
-    let (tx, rx) = mpsc::channel::<ChatEvent>();
-    let reader = std::thread::spawn(move || {
-        let buf = BufReader::new(stdout);
-        for line in buf.lines() {
-            let Ok(line) = line else { break };
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // Skip lines that aren't valid chat_proto events (the harness prints
-            // a human banner before the stream begins). Forward-compatible:
-            // unparseable lines are dropped, not fatal.
-            if let Ok(ev) = serde_json::from_str::<ChatEvent>(line) {
-                if tx.send(ev).is_err() {
-                    break; // UI hung up.
-                }
-            }
-        }
-    });
-
-    let stdin = child.stdin.take().expect("stdin piped above");
+    // The conversation this TUI has open. A `/session`, `/new` or `/fork`
+    // swaps it and the harness is reopened on the new file, in the same
+    // terminal — the alt screen is entered once, below, and left once.
+    let mut session_file = args.project.as_ref().and_then(|p| p.session_file.clone());
+    let sessions: Option<std::rc::Rc<dyn SessionControl>> =
+        args.project.and_then(|p| p.sessions).map(std::rc::Rc::from);
+    let mut session_id: Option<String> = None;
 
     let mut term = match setup_terminal() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("bwoc chat --tui: failed to enter alt screen: {e}");
-            let _ = child.kill();
             return 1;
         }
     };
-
-    // Restore the terminal even if the event loop below panics (#481).
+    // Restore the terminal even if the loop below panics (#481).
     let mut terminal_guard = TerminalGuard::new();
 
-    let mut app = App::new(args.agent_id, &args.backend_name);
-    app.workdir = Some(args.agent_path.clone());
-    let result = event_loop(&mut term, &mut app, &rx, stdin);
+    let result = loop {
+        let mut argv = harness_argv(
+            &args.agent_path,
+            model.as_deref(),
+            &endpoint,
+            &args.backend_name,
+            args.team_chat.as_deref(),
+        );
+        if let Some(p) = &project_argv_base {
+            argv.extend(project_argv(&args.agent_id, p, session_file.as_deref()));
+        }
+
+        let mut child = match Command::new(&harness)
+            .args(&argv)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(harness_stderr())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                break Err(io::Error::other(format!(
+                    "failed to spawn bwoc-harness ({}): {e}",
+                    harness.display()
+                )));
+            }
+        };
+
+        // Reader thread: child stdout → ChatEvent → channel.
+        let stdout = child.stdout.take().expect("stdout piped above");
+        let (tx, rx) = mpsc::channel::<ChatEvent>();
+        let reader = std::thread::spawn(move || {
+            let buf = BufReader::new(stdout);
+            for line in buf.lines() {
+                let Ok(line) = line else { break };
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                // Skip lines that aren't valid chat_proto events (the harness
+                // prints a human banner before the stream begins).
+                // Forward-compatible: unparseable lines are dropped, not fatal.
+                if let Ok(ev) = serde_json::from_str::<ChatEvent>(line) {
+                    if tx.send(ev).is_err() {
+                        break; // UI hung up.
+                    }
+                }
+            }
+        });
+
+        let stdin = child.stdin.take().expect("stdin piped above");
+        let mut app = App::new(args.agent_id.clone(), &args.backend_name);
+        app.workdir = Some(args.agent_path.clone());
+        app.sessions = sessions.clone();
+        app.session_id = session_id.clone();
+        let flow = event_loop(&mut term, &mut app, &rx, stdin);
+
+        // Reap this harness before the next one starts (or before we leave).
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = reader.join();
+
+        match flow {
+            Ok(Flow::Switch { id, file }) => {
+                session_file = Some(file);
+                session_id = Some(id);
+            }
+            Ok(_) => break Ok(()),
+            Err(e) => break Err(e),
+        }
+    };
 
     // Explicit restore on the happy path; disarm the guard so it doesn't restore
     // a second time (the guard remains armed only for the panic path).
@@ -221,12 +286,6 @@ pub fn run(args: TuiArgs) -> i32 {
         eprintln!("bwoc chat --tui: warning — failed to restore terminal: {e}");
     }
     terminal_guard.disarm();
-
-    // The Quit/EOF path already asked the child to exit; reap it so we don't
-    // leave a zombie, killing it if it ignored Quit.
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = reader.join();
 
     match result {
         Ok(()) => 0,
@@ -278,7 +337,7 @@ fn harness_argv(
 /// the `Ready` status), optional `--max-tokens` / `--max-context`, and the
 /// per-directory `--session-file` so the conversation is not written into the
 /// repository.
-fn project_argv(name: &str, p: &ProjectSession) -> Vec<String> {
+fn project_argv(name: &str, p: &ProjectRuntime, session_file: Option<&Path>) -> Vec<String> {
     let mut argv = vec!["--agent".to_string(), name.to_string()];
     if let Some(n) = p.max_tokens {
         argv.push("--max-tokens".to_string());
@@ -288,14 +347,32 @@ fn project_argv(name: &str, p: &ProjectSession) -> Vec<String> {
         argv.push("--max-context".to_string());
         argv.push(n.to_string());
     }
-    if let Some(file) = &p.session_file {
+    if let Some(file) = session_file {
         argv.push("--session-file".to_string());
         argv.push(file.to_string_lossy().into_owned());
     }
     argv
 }
 
+/// The part of a project session that stays fixed across a conversation switch
+/// (the session file is the part that changes, so it is passed separately).
+struct ProjectRuntime {
+    max_tokens: Option<u32>,
+    max_context: Option<u32>,
+}
+
 // --- app state ------------------------------------------------------------
+
+/// What the event loop should do after a key press.
+enum Flow {
+    /// Keep the session running.
+    Continue,
+    /// Tear down: `Ctrl-C`, `/quit`.
+    Quit,
+    /// Restart the harness on another conversation (`/new`, `/session`,
+    /// `/fork`), keeping the same terminal.
+    Switch { id: String, file: PathBuf },
+}
 
 /// A pending permission request awaiting the operator's `a`/`d` decision.
 struct Pending {
@@ -380,6 +457,11 @@ struct App {
     /// A turn is running (between sending a message and its `TurnEnd`). `Esc`
     /// cancels it; between turns `Esc` is ordinary input.
     busy: bool,
+    /// Session management for `/session`, `/sessions`, `/new` and `/fork`.
+    /// `None` in a fleet pane or an agent session — those commands then say so.
+    sessions: Option<std::rc::Rc<dyn SessionControl>>,
+    /// The open conversation's id, shown in the status line when known.
+    session_id: Option<String>,
     /// Session cost in USD as the provider reported it (`None` = not reported —
     /// the status line then shows no cost rather than a made-up 0.00).
     cost_usd: Option<f64>,
@@ -427,6 +509,8 @@ impl App {
             popup_sel: 0,
             popup_hidden: false,
             busy: false,
+            sessions: None,
+            session_id: None,
             cost_usd: None,
         }
     }
@@ -759,7 +843,7 @@ fn event_loop(
     app: &mut App,
     rx: &Receiver<ChatEvent>,
     mut stdin: ChildStdin,
-) -> io::Result<()> {
+) -> io::Result<Flow> {
     // Redraw only after state changes. Besides avoiding needless work, this
     // leaves an idle frame untouched so native terminal text selection remains
     // stable long enough to copy it.
@@ -791,19 +875,20 @@ fn event_loop(
         if app.done {
             // Best-effort polite quit; ignore a broken pipe (child already gone).
             let _ = send_input(&mut stdin, &ChatInput::Quit);
-            return Ok(());
+            return Ok(Flow::Quit);
         }
 
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
-                Event::Key(key) => {
-                    if handle_key(app, &mut stdin, key)? {
-                        // Polite quit before we tear down the terminal.
+                Event::Key(key) => match handle_key(app, &mut stdin, key)? {
+                    Flow::Continue => dirty = true,
+                    // Polite quit before we tear down the terminal (or restart
+                    // the harness on another conversation).
+                    flow => {
                         let _ = send_input(&mut stdin, &ChatInput::Quit);
-                        return Ok(());
+                        return Ok(flow);
                     }
-                    dirty = true;
-                }
+                },
                 Event::Resize(_, _) => dirty = true,
                 _ => {}
             }
@@ -815,15 +900,15 @@ fn is_quit_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     matches!(code, KeyCode::Char('c' | 'C')) && modifiers.contains(KeyModifiers::CONTROL)
 }
 
-/// Process one key event. Returns `Ok(true)` when the user requested quit.
-fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Result<bool> {
+/// Process one key event, returning what the event loop should do next.
+fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Result<Flow> {
     let KeyEvent {
         code, modifiers, ..
     } = key;
 
     // Ctrl-C always quits, regardless of input/pending state.
     if is_quit_key(code, modifiers) {
-        return Ok(true);
+        return Ok(Flow::Quit);
     }
 
     // A pending permission request captures a/d (see `permission_answer`);
@@ -838,7 +923,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         app.conversation.push(format!("{mark} {tool}"));
         app.scroll = 0; // show the decision even if scrolled up
         send_input(stdin, &ChatInput::Permission { id, allow })?;
-        return Ok(false);
+        return Ok(Flow::Continue);
     }
 
     // An open `/` / `@` popup takes the arrows, Tab, Enter and Esc.
@@ -849,24 +934,24 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                     .popup_sel
                     .checked_sub(1)
                     .unwrap_or(popup.items.len() - 1);
-                return Ok(false);
+                return Ok(Flow::Continue);
             }
             KeyCode::Down => {
                 app.popup_sel = (app.popup_sel + 1) % popup.items.len();
-                return Ok(false);
+                return Ok(Flow::Continue);
             }
             KeyCode::Tab => {
                 app.accept_popup(&popup);
-                return Ok(false);
+                return Ok(Flow::Continue);
             }
             KeyCode::Enter if !popup.is_command => {
                 app.accept_popup(&popup);
-                return Ok(false);
+                return Ok(Flow::Continue);
             }
             KeyCode::Enter => app.accept_popup(&popup), // then run it below
             KeyCode::Esc => {
                 app.popup_hidden = true;
-                return Ok(false);
+                return Ok(Flow::Continue);
             }
             _ => {}
         }
@@ -874,7 +959,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
 
     // Scrollback navigation (arrows/PageUp/PageDown/End) — before input editing.
     if app.scroll_key(code) {
-        return Ok(false);
+        return Ok(Flow::Continue);
     }
 
     match code {
@@ -886,13 +971,13 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
             let next = app.next_mode().to_string();
             app.mode = next.clone();
             send_input(stdin, &ChatInput::SetMode { mode: next })?;
-            Ok(false)
+            Ok(Flow::Continue)
         }
         KeyCode::Enter => {
             let text = app.take_input();
             app.input_changed();
             if text.trim().is_empty() {
-                return Ok(false);
+                return Ok(Flow::Continue);
             }
             app.scroll = 0; // jump to live so the reply is visible
             if app.workdir.is_some()
@@ -918,27 +1003,27 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                     principal: Principal::LocalOperator,
                 },
             )?;
-            Ok(false)
+            Ok(Flow::Continue)
         }
         KeyCode::Backspace => {
             app.input_backspace();
             app.input_changed();
-            Ok(false)
+            Ok(Flow::Continue)
         }
         KeyCode::Left => {
             app.input_left();
             app.input_changed();
-            Ok(false)
+            Ok(Flow::Continue)
         }
         KeyCode::Right => {
             app.input_right();
             app.input_changed();
-            Ok(false)
+            Ok(Flow::Continue)
         }
         KeyCode::Char(c) => {
             app.input_insert(c);
             app.input_changed();
-            Ok(false)
+            Ok(Flow::Continue)
         }
         // Esc cancels the turn in flight; between turns it stays inert (it must
         // never close the session — #531).
@@ -947,15 +1032,16 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                 app.conversation.push("● cancelling…".to_string());
                 send_input(stdin, &ChatInput::Cancel)?;
             }
-            Ok(false)
+            Ok(Flow::Continue)
         }
-        _ => Ok(false),
+        _ => Ok(Flow::Continue),
     }
 }
 
-/// Run a `/` command locally. Every command maps onto an existing `ChatInput`;
-/// nothing reaches the model. Returns `Ok(true)` for `/quit`.
-fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io::Result<bool> {
+/// Run a `/` command locally. Session commands ask the event loop to restart
+/// the harness; the rest map onto an existing `ChatInput`, and nothing reaches
+/// the model.
+fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io::Result<Flow> {
     use complete::Slash;
     match cmd {
         Slash::Help => {
@@ -1006,13 +1092,84 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
         Slash::Model(Some(model)) => {
             send_input(stdin, &ChatInput::SetModel { model })?;
         }
-        Slash::Quit => return Ok(true),
+        Slash::Sessions => match app.sessions.as_ref() {
+            Some(ctl) => {
+                app.conversation.push("● conversations here:".to_string());
+                for row in ctl.list() {
+                    let mark = if row.current { "▸" } else { " " };
+                    app.conversation.push(format!(
+                        "●  {mark} {}  {:>3} msgs  {:<8}  {}",
+                        row.id,
+                        row.messages,
+                        row.last,
+                        shorten(&row.title, 48)
+                    ));
+                }
+                app.conversation
+                    .push("●   /session <id> switches · /new · /fork".to_string());
+            }
+            None => app.conversation.push(UNAVAILABLE.to_string()),
+        },
+        Slash::NewSession => return switch_session(app, &complete::SessionArg::New),
+        Slash::Session(Some(id)) => {
+            return switch_session(app, &complete::SessionArg::Id(id));
+        }
+        Slash::Session(None) => {
+            app.conversation
+                .push("✗ /session <id> needs an id — /sessions lists them".to_string());
+        }
+        Slash::Fork(id) => return switch_session(app, &complete::SessionArg::Fork(id)),
+        Slash::Quit => return Ok(Flow::Quit),
         Slash::Unknown(name) => {
             app.conversation
                 .push(format!("✗ unknown command /{name} — /help lists them"));
         }
     }
-    Ok(false)
+    Ok(Flow::Continue)
+}
+
+/// Why the session commands are unavailable: an agent session has no
+/// conversation store, and a project session without a home directory keeps no
+/// history to switch between.
+const UNAVAILABLE: &str =
+    "✗ switching conversations needs a project session with a bwoc home directory";
+
+/// Truncate a title to `max` characters, with an ellipsis when cut.
+fn shorten(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+/// Resolve a session pick through the caller's [`SessionControl`] and ask the
+/// event loop to reopen the harness on it. A failure is reported in the
+/// transcript and the current conversation continues — switching must never
+/// lose the session you are in.
+fn switch_session(app: &mut App, arg: &complete::SessionArg) -> io::Result<Flow> {
+    // Switching restarts the harness, which would drop a turn mid-flight.
+    if app.busy {
+        app.conversation
+            .push("✗ a turn is running — press Esc to cancel it first".to_string());
+        return Ok(Flow::Continue);
+    }
+    let Some(ctl) = app.sessions.as_ref() else {
+        app.conversation.push(UNAVAILABLE.to_string());
+        return Ok(Flow::Continue);
+    };
+    let pick = match arg {
+        complete::SessionArg::New => SessionPick::New,
+        complete::SessionArg::Id(id) => SessionPick::Id(id.clone()),
+        complete::SessionArg::Fork(id) => SessionPick::Fork(id.clone()),
+    };
+    match ctl.pick(&pick) {
+        Ok((id, file)) => Ok(Flow::Switch { id, file }),
+        Err(e) => {
+            app.conversation.push(format!("✗ {e}"));
+            Ok(Flow::Continue)
+        }
+    }
 }
 
 /// Transcript line for one `@` mention resolved at send time.
@@ -1226,7 +1383,7 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = app
         .conversation
         .iter()
-        .flat_map(|l| styled_lines(l, transcript_style(l)))
+        .flat_map(|l| entry_lines(l, transcript_style(l)))
         .collect();
     // Reasoning still arriving: one dimmed progress line (collapsed later).
     if app.streaming.is_empty() && !app.thinking.is_empty() {
@@ -1237,7 +1394,7 @@ fn draw_conversation(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     // Show the in-flight streamed turn live, below the committed history.
     if !app.streaming.is_empty() {
-        lines.extend(styled_lines(
+        lines.extend(entry_lines(
             &format!("assistant: {}", app.streaming),
             Style::default().add_modifier(Modifier::DIM),
         ));
@@ -1308,6 +1465,23 @@ fn hard_wrap(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
         rows.push(Line::from(row).style(line_style));
     }
     rows
+}
+
+/// A transcript entry as display lines. An assistant turn is Markdown, so it is
+/// rendered (headings, bullets, quotes, code, emphasis); everything else — user
+/// text, tool traffic, diffs, notices — is shown verbatim, since a tool result
+/// that happens to contain `*` is not prose.
+fn entry_lines(text: &str, style: Style) -> Vec<Line<'static>> {
+    let Some(body) = text.strip_prefix("assistant: ") else {
+        return styled_lines(text, style);
+    };
+    let code = style.fg(tone(design::color::ACCENT));
+    let mut lines = markdown::render(body, style, code);
+    // Keep the speaker label on the first row.
+    if let Some(first) = lines.first_mut() {
+        first.spans.insert(0, Span::styled("assistant: ", style));
+    }
+    lines
 }
 
 /// One transcript entry as display lines: split on `\n` (a trailing `\r` is
@@ -2129,15 +2303,13 @@ fn harness_log_path(home: Option<PathBuf>) -> Option<PathBuf> {
 mod tests {
     #[test]
     fn project_argv_carries_name_max_tokens_and_session_file() {
-        let p = super::ProjectSession {
-            model: "m".into(),
-            endpoint: None,
+        let p = super::ProjectRuntime {
             max_tokens: Some(4096),
             max_context: Some(32768),
-            session_file: Some(std::path::PathBuf::from("/h/.bwoc/sessions/abc.json")),
         };
+        let file = std::path::PathBuf::from("/h/.bwoc/sessions/dir/abc.json");
         assert_eq!(
-            super::project_argv("repo", &p),
+            super::project_argv("repo", &p, Some(&file)),
             [
                 "--agent",
                 "repo",
@@ -2146,17 +2318,17 @@ mod tests {
                 "--max-context",
                 "32768",
                 "--session-file",
-                "/h/.bwoc/sessions/abc.json"
+                "/h/.bwoc/sessions/dir/abc.json"
             ]
         );
-        let bare = super::ProjectSession {
-            model: "m".into(),
-            endpoint: None,
+        let bare = super::ProjectRuntime {
             max_tokens: None,
             max_context: None,
-            session_file: None,
         };
-        assert_eq!(super::project_argv("repo", &bare), ["--agent", "repo"]);
+        assert_eq!(
+            super::project_argv("repo", &bare, None),
+            ["--agent", "repo"]
+        );
     }
 
     use super::*;

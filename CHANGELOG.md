@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
+- **Switch conversations and read Markdown without leaving the chat TUI (runtime R5).** `/sessions` lists this directory's conversations (the open one marked), `/session <id>` opens another, `/new` starts one, `/fork [<id>]` copies one and opens the copy. The TUI reopens the harness on the chosen conversation in the same terminal, so the alt screen is entered once. An assistant turn now renders as Markdown — headings, bullets, quotes, fenced and inline code, bold and italic — while tool results, diffs and notices stay verbatim. Session management arrives through a `SessionControl` trait the caller implements, so `bwoc-tui` still compile-depends on `bwoc-core` alone.
 - **Cancel a running turn, switch models live, see file diffs and provider cost (runtime R4c).** The chat protocol gains `Cancel` and `SetModel` inputs and `Cancelled`, `ModelChanged` and `Diff` events; `TurnEnd` gains an optional `cost_usd`.
   - **`Esc` cancels the turn in flight.** The harness watches stdin while the provider streams (dropping the partial answer) and at each tool-call boundary, so a cancel mid-tool still lands once that call has its result and the conversation stays well-formed. Input that arrives while a turn runs is queued, never dropped.
   - **`/model` / `/model <name>`** shows or switches the model later turns use. The operator's choice replaces the entry in use, leaving the fallback chain intact.
