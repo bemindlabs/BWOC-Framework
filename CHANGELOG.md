@@ -6,15 +6,20 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.21-0] — 2026-09-21 — 3.5.0
+
+**The chat session grows a spine.** Stop a turn with `Esc`, switch models mid-session, see a diff of every file a tool changed, move between this directory's conversations without leaving the TUI, read answers as rendered Markdown, and take a turn's file changes back with `/undo`. Nothing that worked in 3.4 breaks.
+
 ### Added
 
-- **`/undo` and `/redo` for a turn's file changes (runtime R4b).** The session keeps an edit journal beside the conversation (`<session-file>.undo/`): every `write_file` / `edit_file` / `multi_edit` in a turn is recorded with the text before and after, and `/undo` puts the newest such turn back, `/redo` reapplies it. A file whose content on disk is neither side of the step — changed by `run_command` or by you — is reported and **left alone**, never overwritten; a binary or over-1 MB write is reported as not journalled. Recording a new turn drops the redo future. Protocol: `Undo` / `Redo` inputs and a `Reverted` event.
-- **Switch conversations and read Markdown without leaving the chat TUI (runtime R5).** `/sessions` lists this directory's conversations (the open one marked), `/session <id>` opens another, `/new` starts one, `/fork [<id>]` copies one and opens the copy. The TUI reopens the harness on the chosen conversation in the same terminal, so the alt screen is entered once. An assistant turn now renders as Markdown — headings, bullets, quotes, fenced and inline code, bold and italic — while tool results, diffs and notices stay verbatim. Session management arrives through a `SessionControl` trait the caller implements, so `bwoc-tui` still compile-depends on `bwoc-core` alone.
 - **Cancel a running turn, switch models live, see file diffs and provider cost (runtime R4c).** The chat protocol gains `Cancel` and `SetModel` inputs and `Cancelled`, `ModelChanged` and `Diff` events; `TurnEnd` gains an optional `cost_usd`.
   - **`Esc` cancels the turn in flight.** The harness watches stdin while the provider streams (dropping the partial answer) and at each tool-call boundary, so a cancel mid-tool still lands once that call has its result and the conversation stays well-formed. Input that arrives while a turn runs is queued, never dropped.
   - **`/model` / `/model <name>`** shows or switches the model later turns use. The operator's choice replaces the entry in use, leaving the fallback chain intact.
   - **A file-mutating tool (`write_file`, `edit_file`, `multi_edit`) emits a unified diff** of the file it changed, capped at 8 KB and marked when truncated; a rewrite larger than 1,000 lines is summarized instead of aligned. Display-only, dependency-free, and confined to paths inside the working directory.
   - **Session cost** is reported only when the provider reports one (`usage.cost`, e.g. OpenRouter). The status line shows nothing otherwise — no price is estimated locally.
+
+- **Switch conversations and read Markdown without leaving the chat TUI (runtime R5).** `/sessions` lists this directory's conversations (the open one marked), `/session <id>` opens another, `/new` starts one, `/fork [<id>]` copies one and opens the copy. The TUI reopens the harness on the chosen conversation in the same terminal, so the alt screen is entered once. An assistant turn now renders as Markdown — headings, bullets, quotes, fenced and inline code, bold and italic — while tool results, diffs and notices stay verbatim. Session management arrives through a `SessionControl` trait the caller implements, so `bwoc-tui` still compile-depends on `bwoc-core` alone.
+- **`/undo` and `/redo` for a turn's file changes (runtime R4b).** The session keeps an edit journal beside the conversation (`<session-file>.undo/`): every `write_file` / `edit_file` / `multi_edit` in a turn is recorded with the text before and after, and `/undo` puts the newest such turn back, `/redo` reapplies it. A file whose content on disk is neither side of the step — changed by `run_command` or by you — is reported and **left alone**, never overwritten; a binary or over-1 MB write is reported as not journalled. Recording a new turn drops the redo future. Protocol: `Undo` / `Redo` inputs and a `Reverted` event.
 
 ## [v2026.9.20-0] — 2026-09-20 — 3.4.0
 
