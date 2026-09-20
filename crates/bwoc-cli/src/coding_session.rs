@@ -286,6 +286,47 @@ impl SessionStore {
     }
 }
 
+/// A compact "how long ago" for an ISO-8601 UTC timestamp: `just now`, `4m`,
+/// `3h`, `2d`. Falls back to the raw value when it cannot be parsed, so the
+/// listing never invents a time.
+fn since(updated: &str, now: SystemTime) -> String {
+    let Some(then) = parse_iso8601(updated) else {
+        return updated.to_string();
+    };
+    let secs = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_sub(then);
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3_599 => format!("{}m ago", secs / 60),
+        3_600..=86_399 => format!("{}h ago", secs / 3_600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
+}
+
+/// Seconds since the epoch for `YYYY-MM-DDTHH:MM:SSZ`, or `None`.
+fn parse_iso8601(s: &str) -> Option<u64> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    let num = |a: usize, b: usize| s.get(a..b)?.parse::<u64>().ok();
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    // Days since 1970-01-01 (civil-from-days, Howard Hinnant's algorithm).
+    let y_adj = if mo <= 2 { y - 1 } else { y };
+    let era = y_adj / 400;
+    let yoe = y_adj - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe;
+    // 719_468 = days from 0000-03-01 to 1970-01-01.
+    Some((days - 719_468) * 86_400 + h * 3_600 + mi * 60 + sec)
+}
+
 /// The TUI's in-session `/sessions`, `/session`, `/new` and `/fork`, backed by
 /// this store (R5). `bwoc-tui` owns no on-disk layout, so it asks through this
 /// trait object; the open conversation's id is remembered so the listing can
@@ -318,12 +359,7 @@ impl bwoc_tui::SessionControl for TuiSessions {
             .into_iter()
             .map(|s| bwoc_tui::SessionRow {
                 current: Some(&s.id) == open.as_ref(),
-                last: s
-                    .updated
-                    .split('T')
-                    .nth(1)
-                    .map(|t| t.trim_end_matches('Z').to_string())
-                    .unwrap_or_else(|| s.updated.clone()),
+                last: since(&s.updated, SystemTime::now()),
                 id: s.id,
                 title: s.title,
                 messages: s.messages,
@@ -351,6 +387,17 @@ impl bwoc_tui::SessionControl for TuiSessions {
                 (found.id, found.path)
             }
             bwoc_tui::SessionPick::Fork(from) => {
+                // A conversation opened with `/new` has no file until its first
+                // turn is saved; say that rather than "not found".
+                if from.is_none()
+                    && let Ok(open) = self.open.lock()
+                    && let Some(id) = open.as_deref()
+                    && self.store.find(id).is_err()
+                {
+                    return Err(
+                        "this conversation has no saved turns yet — nothing to fork".to_string()
+                    );
+                }
                 // `None` forks the conversation this TUI has open, not merely
                 // the newest — the operator means "this one".
                 let open = self.open.lock().ok().and_then(|o| o.clone());
@@ -590,6 +637,35 @@ mod tests {
             .unwrap()
             .set_modified(mtime)
             .unwrap();
+    }
+
+    #[test]
+    fn since_reads_as_a_relative_age() {
+        // 2026-09-20T05:52:27Z, and "now" at fixed offsets after it.
+        let stamp = "2026-09-20T05:52:27Z";
+        let base = super::parse_iso8601(stamp).unwrap();
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(base + secs);
+        assert_eq!(since(stamp, at(0)), "just now");
+        assert_eq!(since(stamp, at(59)), "just now");
+        assert_eq!(since(stamp, at(4 * 60)), "4m ago");
+        assert_eq!(since(stamp, at(3 * 3_600)), "3h ago");
+        assert_eq!(since(stamp, at(2 * 86_400)), "2d ago");
+        // Unparseable input is passed through, never invented.
+        assert_eq!(since("not a date", at(0)), "not a date");
+    }
+
+    #[test]
+    fn parse_iso8601_matches_known_epochs() {
+        assert_eq!(super::parse_iso8601("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            super::parse_iso8601("2000-03-01T00:00:00Z"),
+            Some(951_868_800)
+        );
+        assert_eq!(
+            super::parse_iso8601("2026-09-20T05:52:27Z"),
+            Some(1_789_883_547)
+        );
+        assert_eq!(super::parse_iso8601("short"), None);
     }
 
     #[test]

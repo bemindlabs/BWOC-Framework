@@ -1108,9 +1108,7 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
                 app.conversation
                     .push("●   /session <id> switches · /new · /fork".to_string());
             }
-            None => app
-                .conversation
-                .push("✗ conversations are only available in a project session".to_string()),
+            None => app.conversation.push(UNAVAILABLE.to_string()),
         },
         Slash::NewSession => return switch_session(app, &complete::SessionArg::New),
         Slash::Session(Some(id)) => {
@@ -1130,6 +1128,12 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
     Ok(Flow::Continue)
 }
 
+/// Why the session commands are unavailable: an agent session has no
+/// conversation store, and a project session without a home directory keeps no
+/// history to switch between.
+const UNAVAILABLE: &str =
+    "✗ switching conversations needs a project session with a bwoc home directory";
+
 /// Truncate a title to `max` characters, with an ellipsis when cut.
 fn shorten(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -1144,9 +1148,14 @@ fn shorten(s: &str, max: usize) -> String {
 /// transcript and the current conversation continues — switching must never
 /// lose the session you are in.
 fn switch_session(app: &mut App, arg: &complete::SessionArg) -> io::Result<Flow> {
-    let Some(ctl) = app.sessions.as_ref() else {
+    // Switching restarts the harness, which would drop a turn mid-flight.
+    if app.busy {
         app.conversation
-            .push("✗ conversations are only available in a project session".to_string());
+            .push("✗ a turn is running — press Esc to cancel it first".to_string());
+        return Ok(Flow::Continue);
+    }
+    let Some(ctl) = app.sessions.as_ref() else {
+        app.conversation.push(UNAVAILABLE.to_string());
         return Ok(Flow::Continue);
     };
     let pick = match arg {
