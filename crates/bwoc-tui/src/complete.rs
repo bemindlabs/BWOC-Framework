@@ -25,6 +25,24 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/session", "open another conversation: /session <id>"),
     ("/new", "start another conversation here"),
     ("/fork", "copy this conversation and open the copy"),
+    (
+        "/status",
+        "this session: agent, model, usage, mode, conversation",
+    ),
+    ("/tools", "list the tools this agent can call"),
+    ("/models", "models the active backend can list"),
+    ("/backends", "which backends are usable here, and how"),
+    (
+        "/settings",
+        "the resolved runtime and where each value came from",
+    ),
+    ("/doctor", "run the environment health checks"),
+    (
+        "/cost",
+        "tokens used, and cost when the provider reports one",
+    ),
+    ("/retry", "send the last message again"),
+    ("/save", "write the transcript to a file: /save [path]"),
     ("/undo", "take back the last turn's file changes"),
     ("/redo", "reapply the changes /undo took back"),
     ("/quit", "end the session"),
@@ -43,6 +61,15 @@ pub enum Slash {
     Model(Option<String>),
     Undo,
     Redo,
+    Status,
+    Models,
+    Backends,
+    Settings,
+    Doctor,
+    Tools,
+    Cost,
+    Retry,
+    Save(Option<String>),
     Sessions,
     Session(Option<String>),
     NewSession,
@@ -69,6 +96,15 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "model" => Slash::Model(words.next().map(str::to_string)),
         "undo" => Slash::Undo,
         "redo" => Slash::Redo,
+        "status" => Slash::Status,
+        "models" => Slash::Models,
+        "backends" => Slash::Backends,
+        "settings" | "config" => Slash::Settings,
+        "doctor" => Slash::Doctor,
+        "tools" => Slash::Tools,
+        "cost" => Slash::Cost,
+        "retry" => Slash::Retry,
+        "save" => Slash::Save(words.next().map(str::to_string)),
         "sessions" => Slash::Sessions,
         "session" => Slash::Session(words.next().map(str::to_string)),
         "new" => Slash::NewSession,
@@ -322,6 +358,19 @@ mod tests {
         assert_eq!(parse_slash("/model"), Some(Slash::Model(None)));
         assert_eq!(parse_slash("/sessions"), Some(Slash::Sessions));
         assert_eq!(parse_slash("/undo"), Some(Slash::Undo));
+        assert_eq!(parse_slash("/status"), Some(Slash::Status));
+        assert_eq!(parse_slash("/models"), Some(Slash::Models));
+        assert_eq!(parse_slash("/backends"), Some(Slash::Backends));
+        // `/config` is the name people reach for; same command.
+        assert_eq!(parse_slash("/settings"), Some(Slash::Settings));
+        assert_eq!(parse_slash("/config"), Some(Slash::Settings));
+        assert_eq!(parse_slash("/doctor"), Some(Slash::Doctor));
+        assert_eq!(parse_slash("/tools"), Some(Slash::Tools));
+        assert_eq!(parse_slash("/save"), Some(Slash::Save(None)));
+        assert_eq!(
+            parse_slash("/save out.md"),
+            Some(Slash::Save(Some("out.md".into())))
+        );
         assert_eq!(parse_slash("/redo"), Some(Slash::Redo));
         assert_eq!(parse_slash("/new"), Some(Slash::NewSession));
         assert_eq!(
@@ -341,7 +390,10 @@ mod tests {
         }
         assert_eq!(names(slash_matches("/").unwrap()).len(), COMMANDS.len());
         assert_eq!(names(slash_matches("/cl").unwrap()), ["/clear"]);
-        assert_eq!(names(slash_matches("/mod").unwrap()), ["/mode", "/model"]);
+        assert_eq!(
+            names(slash_matches("/mod").unwrap()),
+            ["/mode", "/model", "/models"]
+        );
         assert_eq!(names(slash_matches("/e").unwrap()), ["/exit"]);
         assert!(slash_matches("/mode by").is_none());
         assert!(slash_matches("/etc/").is_none());

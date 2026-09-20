@@ -117,6 +117,24 @@ pub trait SessionControl: Send {
     fn pick(&self, pick: &SessionPick) -> Result<(String, PathBuf), String>;
 }
 
+/// Environment facts the caller can answer for `/models`, `/backends`,
+/// `/settings` and `/doctor`. Like [`SessionControl`], this is a trait so the
+/// TUI keeps compile-depending on `bwoc-core` alone: probing Ollama, reading
+/// `~/.bwoc/secrets.toml` and running `bwoc doctor` all belong to `bwoc-cli`.
+///
+/// Every method returns rows to print, not a model to interpret; a row is
+/// `(label, value)` and is rendered as written.
+pub trait EnvironmentInfo: Send {
+    /// Models the active backend can enumerate, or why it cannot.
+    fn models(&self) -> Result<Vec<String>, String>;
+    /// One row per backend: whether it is usable here, and how.
+    fn backends(&self) -> Vec<(String, String)>;
+    /// The resolved runtime settings and where each value came from.
+    fn settings(&self) -> Vec<(String, String)>;
+    /// Health checks, as `bwoc doctor` reports them.
+    fn doctor(&self) -> Result<Vec<(String, String)>, String>;
+}
+
 /// Runtime for a project session, resolved by the caller (`bwoc`).
 pub struct ProjectSession {
     pub model: String,
@@ -129,6 +147,9 @@ pub struct ProjectSession {
     /// Where the harness persists the conversation. `None` keeps the harness
     /// default, `<workdir>/.bwoc/chat-session.json`.
     pub session_file: Option<PathBuf>,
+    /// Answers `/models`, `/backends`, `/settings` and `/doctor`. `None` leaves
+    /// those commands reporting that they are unavailable.
+    pub environment: Option<Box<dyn EnvironmentInfo>>,
     /// Lets the in-TUI `/new`, `/session`, `/sessions` and `/fork` commands
     /// switch conversations. `None` (an agent session, or no home directory)
     /// leaves those commands reporting that they are unavailable.
@@ -194,8 +215,13 @@ pub fn run(args: TuiArgs) -> i32 {
     // swaps it and the harness is reopened on the new file, in the same
     // terminal — the alt screen is entered once, below, and left once.
     let mut session_file = args.project.as_ref().and_then(|p| p.session_file.clone());
+    let mut project = args.project;
+    let environment: Option<std::rc::Rc<dyn EnvironmentInfo>> = project
+        .as_mut()
+        .and_then(|p| p.environment.take())
+        .map(std::rc::Rc::from);
     let sessions: Option<std::rc::Rc<dyn SessionControl>> =
-        args.project.and_then(|p| p.sessions).map(std::rc::Rc::from);
+        project.and_then(|p| p.sessions).map(std::rc::Rc::from);
     let mut session_id: Option<String> = None;
 
     let mut term = match setup_terminal() {
@@ -262,6 +288,7 @@ pub fn run(args: TuiArgs) -> i32 {
         let mut app = App::new(args.agent_id.clone(), &args.backend_name);
         app.workdir = Some(args.agent_path.clone());
         app.sessions = sessions.clone();
+        app.environment = environment.clone();
         app.session_id = session_id.clone();
         let flow = event_loop(&mut term, &mut app, &rx, stdin);
 
@@ -462,6 +489,15 @@ struct App {
     sessions: Option<std::rc::Rc<dyn SessionControl>>,
     /// The open conversation's id, shown in the status line when known.
     session_id: Option<String>,
+    /// Answers `/models`, `/backends`, `/settings`, `/doctor`.
+    environment: Option<std::rc::Rc<dyn EnvironmentInfo>>,
+    /// Tool names the harness registered, from `Ready` — the agent's reach, for
+    /// `/tools`.
+    tools: Vec<String>,
+    /// The last message sent, so `/retry` can send it again.
+    last_sent: Option<String>,
+    /// Completed turns this session (one per `TurnEnd`).
+    turns: u32,
     /// Session cost in USD as the provider reported it (`None` = not reported —
     /// the status line then shows no cost rather than a made-up 0.00).
     cost_usd: Option<f64>,
@@ -511,6 +547,10 @@ impl App {
             busy: false,
             sessions: None,
             session_id: None,
+            environment: None,
+            tools: Vec::new(),
+            last_sent: None,
+            turns: 0,
             cost_usd: None,
         }
     }
@@ -663,8 +703,9 @@ impl App {
                 agent,
                 model,
                 backend,
-                ..
+                tools,
             } => {
+                self.tools = tools;
                 self.conversation.clear();
                 self.conversation
                     .push(format!("● ready — {agent} · {model} · {backend}"));
@@ -778,6 +819,7 @@ impl App {
                 cost_usd,
             } => {
                 self.busy = false;
+                self.turns = self.turns.saturating_add(1);
                 if cost_usd.is_some() {
                     self.cost_usd = cost_usd;
                 }
@@ -1023,6 +1065,7 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
                 None => text,
             };
             // The local TUI is the trusted operator channel (Phase 5 t1).
+            app.last_sent = Some(text.clone());
             send_input(
                 stdin,
                 &ChatInput::User {
@@ -1119,6 +1162,78 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
         Slash::Model(Some(model)) => {
             send_input(stdin, &ChatInput::SetModel { model })?;
         }
+        Slash::Status => {
+            for line in status_report(app) {
+                app.conversation.push(line);
+            }
+        }
+        Slash::Models => match app.environment.as_ref() {
+            Some(env) => match env.models() {
+                Ok(models) if models.is_empty() => app
+                    .conversation
+                    .push("✗ the backend listed no models".to_string()),
+                Ok(models) => {
+                    let current = app.status.as_ref().map(|s| s.model.clone());
+                    app.conversation.push(format!("● {} models:", models.len()));
+                    for m in models {
+                        let mark = if Some(&m) == current.as_ref() {
+                            "▸"
+                        } else {
+                            " "
+                        };
+                        app.conversation.push(format!("●  {mark} {m}"));
+                    }
+                    app.conversation
+                        .push("●   /model <name> switches".to_string());
+                }
+                Err(why) => app.conversation.push(format!("✗ {why}")),
+            },
+            None => app.conversation.push(NO_ENVIRONMENT.to_string()),
+        },
+        Slash::Backends => report_rows(app, "backends", |env| Ok(env.backends())),
+        Slash::Settings => report_rows(app, "runtime", |env| Ok(env.settings())),
+        Slash::Doctor => report_rows(app, "checks", |env| env.doctor()),
+        Slash::Tools => {
+            if app.tools.is_empty() {
+                app.conversation
+                    .push("✗ the harness reported no tools for this session".to_string());
+            } else {
+                app.conversation
+                    .push(format!("● {} tools:", app.tools.len()));
+                // Three per row: the list is long and mostly short names.
+                for row in app.tools.chunks(3) {
+                    app.conversation.push(format!("●   {}", row.join("  ")));
+                }
+            }
+        }
+        Slash::Cost => {
+            for line in cost_report(app) {
+                app.conversation.push(line);
+            }
+        }
+        Slash::Retry => {
+            if app.busy {
+                app.conversation
+                    .push("✗ a turn is running — press Esc to cancel it first".to_string());
+            } else if let Some(text) = app.last_sent.clone() {
+                app.conversation.push(format!("you: {text}"));
+                app.busy = true;
+                send_input(
+                    stdin,
+                    &ChatInput::User {
+                        text,
+                        principal: Principal::LocalOperator,
+                    },
+                )?;
+            } else {
+                app.conversation
+                    .push("✗ nothing sent yet in this conversation".to_string());
+            }
+        }
+        Slash::Save(path) => {
+            let line = save_transcript(app, path.as_deref());
+            app.conversation.push(line);
+        }
         Slash::Undo => send_input(stdin, &ChatInput::Undo)?,
         Slash::Redo => send_input(stdin, &ChatInput::Redo)?,
         Slash::Sessions => match app.sessions.as_ref() {
@@ -1155,6 +1270,120 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
         }
     }
     Ok(Flow::Continue)
+}
+
+/// What `/models`, `/backends`, `/settings` and `/doctor` say when the caller
+/// provided no [`EnvironmentInfo`] (an agent session, or a frontend that only
+/// wired the chat).
+const NO_ENVIRONMENT: &str = "✗ this session has no environment information";
+
+/// Print one of the row-shaped environment reports, or why it is unavailable.
+/// A check that fails is the report, not an error — the session stays alive.
+fn report_rows(
+    app: &mut App,
+    title: &str,
+    rows: impl Fn(&dyn EnvironmentInfo) -> Result<Vec<(String, String)>, String>,
+) {
+    let Some(env) = app.environment.clone() else {
+        app.conversation.push(NO_ENVIRONMENT.to_string());
+        return;
+    };
+    match rows(env.as_ref()) {
+        Ok(rows) if rows.is_empty() => app.conversation.push(format!("● no {title} to report")),
+        Ok(rows) => {
+            app.conversation.push(format!("● {title}:"));
+            let width = rows
+                .iter()
+                .map(|(k, _)| k.chars().count())
+                .max()
+                .unwrap_or(0);
+            for (key, value) in rows {
+                let pad = " ".repeat(width - key.chars().count());
+                app.conversation.push(format!("●   {key}{pad}  {value}"));
+            }
+        }
+        Err(why) => app.conversation.push(format!("✗ {why}")),
+    }
+}
+
+/// `/status`: what this session is, in one place — the status line is one row
+/// and elides on a narrow terminal, and `--json` is not available from inside a
+/// TUI. Pure, so the wording is testable.
+fn status_report(app: &App) -> Vec<String> {
+    let mut out = vec!["● session:".to_string()];
+    let (agent, model, backend) = match &app.status {
+        Some(s) => (s.agent.as_str(), s.model.as_str(), s.backend.as_str()),
+        None => (app.agent_id.as_str(), "(not ready)", app.backend.as_str()),
+    };
+    out.push(format!("●   agent     {agent}"));
+    out.push(format!("●   model     {model}  ({backend})"));
+    if let Some(dir) = &app.workdir {
+        out.push(format!("●   directory {}", dir.display()));
+    }
+    if let Some(id) = &app.session_id {
+        out.push(format!("●   conversation {id}"));
+    }
+    out.push(format!("●   mode      {} (F2)", app.mode));
+    out.push(format!(
+        "●   turns     {} · {} tool(s) available",
+        app.turns,
+        app.tools.len()
+    ));
+    if app.compactions > 0 {
+        out.push(format!("●   compacted {}×", app.compactions));
+    }
+    out.extend(cost_report(app).into_iter().skip(1));
+    out
+}
+
+/// `/cost`: token usage, and a price only when a provider reported one.
+fn cost_report(app: &App) -> Vec<String> {
+    let mut out = vec!["● usage:".to_string()];
+    match app.usage {
+        Some((prompt, _)) => {
+            out.push(format!(
+                "●   context   {} tokens (last turn's prompt)",
+                fmt_tokens(prompt)
+            ));
+            out.push(format!(
+                "●   output    {} tokens this session",
+                fmt_tokens(app.total_out)
+            ));
+        }
+        None => out.push("●   no usage reported yet".to_string()),
+    }
+    out.push(match app.cost_usd {
+        Some(c) => format!("●   cost      ${c:.4} (provider-reported)"),
+        None => "●   cost      not reported by this provider".to_string(),
+    });
+    out
+}
+
+/// `/save`: write the transcript as Markdown. Returns the transcript line to
+/// show — the path written, or why it could not be.
+fn save_transcript(app: &App, path: Option<&str>) -> String {
+    let default = format!(
+        "bwoc-transcript-{}.md",
+        app.session_id.as_deref().unwrap_or("session")
+    );
+    let name = path.unwrap_or(&default);
+    let target = match app.workdir.as_ref() {
+        Some(dir) if Path::new(name).is_relative() => dir.join(name),
+        _ => PathBuf::from(name),
+    };
+    let mut body = String::new();
+    for line in &app.conversation {
+        body.push_str(line);
+        body.push('\n');
+    }
+    match std::fs::write(&target, body) {
+        Ok(()) => format!(
+            "● saved {} line(s) to {}",
+            app.conversation.len(),
+            target.display()
+        ),
+        Err(e) => format!("✗ could not write {}: {e}", target.display()),
+    }
 }
 
 /// Why the session commands are unavailable: an agent session has no
@@ -2761,6 +2990,81 @@ mod tests {
         });
         app.apply(ChatEvent::ModelChanged { model: "m2".into() });
         assert!(status_line(&app).contains("model m2"));
+    }
+
+    #[test]
+    fn status_report_names_the_session_without_a_json_flag() {
+        let mut app = App::new("repo".into(), "ollama");
+        app.workdir = Some(std::path::PathBuf::from("/src/repo"));
+        app.session_id = Some("20260920T055214Z-80e6".into());
+        app.apply(ChatEvent::Ready {
+            agent: "repo".into(),
+            model: "qwen3.8:27b".into(),
+            backend: "ollama".into(),
+            tools: vec!["read_file".into(), "write_file".into()],
+        });
+        app.apply(ChatEvent::TurnEnd {
+            prompt_tokens: 1_200,
+            completion_tokens: 30,
+            cost_usd: None,
+        });
+        let report = status_report(&app).join("\n");
+        assert!(report.contains("qwen3.8:27b  (ollama)"), "{report}");
+        assert!(report.contains("/src/repo"), "{report}");
+        assert!(report.contains("20260920T055214Z-80e6"), "{report}");
+        assert!(report.contains("turns     1 · 2 tool(s)"), "{report}");
+        assert!(report.contains("not reported by this provider"), "{report}");
+    }
+
+    #[test]
+    fn cost_report_shows_a_price_only_when_one_was_reported() {
+        let mut app = App::new("a".into(), "openrouter");
+        assert!(
+            cost_report(&app)
+                .join("\n")
+                .contains("no usage reported yet")
+        );
+        app.apply(ChatEvent::TurnEnd {
+            prompt_tokens: 2_000,
+            completion_tokens: 100,
+            cost_usd: Some(0.25),
+        });
+        let report = cost_report(&app).join("\n");
+        assert!(report.contains("context   2k tokens"), "{report}");
+        assert!(report.contains("$0.2500 (provider-reported)"), "{report}");
+    }
+
+    #[test]
+    fn save_writes_the_transcript_under_the_workdir() {
+        let dir = std::env::temp_dir().join(format!("bwoc-tui-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new("a".into(), "ollama");
+        app.workdir = Some(dir.clone());
+        app.conversation = vec!["you: hi".into(), "assistant: hello".into()];
+
+        let line = save_transcript(&app, Some("out.md"));
+        assert!(line.starts_with("● saved 2 line(s)"), "{line}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("out.md")).unwrap(),
+            "you: hi\nassistant: hello\n"
+        );
+        // A path that cannot be written reports why instead of failing silently.
+        let line = save_transcript(&app, Some("no-such-dir/out.md"));
+        assert!(line.starts_with("✗ could not write"), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ready_keeps_the_tool_list_for_slash_tools() {
+        let mut app = App::new("a".into(), "ollama");
+        app.apply(ChatEvent::Ready {
+            agent: "a".into(),
+            model: "m".into(),
+            backend: "ollama".into(),
+            tools: vec!["glob".into(), "grep".into()],
+        });
+        assert_eq!(app.tools, ["glob", "grep"]);
     }
 
     #[test]

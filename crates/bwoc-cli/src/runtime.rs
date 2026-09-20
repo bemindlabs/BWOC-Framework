@@ -296,6 +296,120 @@ pub enum Resolution {
     Invalid(String),
 }
 
+/// Answers the in-session `/models`, `/backends`, `/settings` and `/doctor`
+/// (see [`bwoc_tui::EnvironmentInfo`]). It holds what this session resolved at
+/// start-up, so every answer describes the running session rather than a fresh
+/// guess made later.
+pub struct Environment {
+    /// The backend the session runs on.
+    pub backend: String,
+    /// The endpoint in use, when one was resolved.
+    pub endpoint: Option<String>,
+    /// Resolved runtime values with the layer each came from, captured when the
+    /// session started (the layers cannot change under a running session).
+    pub settings: Vec<(String, String)>,
+    /// `~/.bwoc`, when the user has one.
+    pub home: Option<PathBuf>,
+}
+
+impl bwoc_tui::EnvironmentInfo for Environment {
+    fn models(&self) -> Result<Vec<String>, String> {
+        // Only a backend with a model index can answer honestly. Ollama has
+        // one; a hosted API does not expose one we can trust here.
+        // Only Ollama is probed: the probe speaks Ollama's own `/api/tags`, and
+        // an arbitrary OpenAI-compatible endpoint would fail it in a way that
+        // reads like the endpoint is broken rather than simply not listable.
+        if self.backend != "ollama" {
+            return Err(format!(
+                "`{}` does not list models — pass one to /model <name>",
+                self.backend
+            ));
+        }
+        probe_ollama(self.endpoint.as_deref())
+            .ok_or_else(|| "no model list came back from the Ollama endpoint".to_string())
+    }
+
+    fn backends(&self) -> Vec<(String, String)> {
+        let getenv = |k: &str| std::env::var(k).ok();
+        let secrets = self
+            .home
+            .as_ref()
+            .map(|h| crate::auth::read_secrets(&h.join("secrets.toml")))
+            .unwrap_or(crate::auth::Secrets::Missing);
+        let mut rows: Vec<(String, String)> = session_backends()
+            .into_iter()
+            .map(|name| {
+                let note = match crate::auth::key_source(name, &getenv, &secrets) {
+                    Some(src) => format!("key from {src}"),
+                    None if name == "ollama" => "no key needed".to_string(),
+                    None => "no key configured".to_string(),
+                };
+                let mark = if name == self.backend {
+                    " (in use)"
+                } else {
+                    ""
+                };
+                (name.to_string(), format!("{note}{mark}"))
+            })
+            .collect();
+        let on_path = vendor_clis_on_path();
+        for cli in vendor_cli_backends() {
+            let note = if on_path.contains(&cli) {
+                "vendor CLI on PATH — runs on its own login"
+            } else {
+                "vendor CLI not installed"
+            };
+            rows.push((cli.to_string(), note.to_string()));
+        }
+        rows
+    }
+
+    fn settings(&self) -> Vec<(String, String)> {
+        self.settings.clone()
+    }
+
+    fn doctor(&self) -> Result<Vec<(String, String)>, String> {
+        // Run the real `bwoc doctor --json` rather than reimplementing checks:
+        // a second implementation would drift from the one operators trust.
+        let exe = std::env::current_exe().map_err(|e| format!("cannot find bwoc: {e}"))?;
+        let out = std::process::Command::new(exe)
+            .args(["doctor", "--json"])
+            .output()
+            .map_err(|e| format!("could not run bwoc doctor: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).map_err(|e| {
+            // Without the exit status and stderr, a doctor that failed to start
+            // looks like malformed JSON. Say what actually happened.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let first = stderr.lines().next().unwrap_or("(no stderr)");
+            format!("bwoc doctor --json: {e} (exit {}; {first})", out.status)
+        })?;
+        let results = parsed
+            .get("results")
+            .and_then(|r| r.as_array())
+            .ok_or_else(|| "doctor --json had no results".to_string())?;
+        Ok(results
+            .iter()
+            .map(|r| {
+                let field = |k: &str| {
+                    r.get(k)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                let status = field("status");
+                let detail = field("detail");
+                let mark = match status.as_str() {
+                    "pass" => "✓",
+                    "warn" => "⚠",
+                    _ => "✗",
+                };
+                (field("name"), format!("{mark} {status}  {detail}"))
+            })
+            .collect())
+    }
+}
+
 /// Registry backend names that run on `bwoc-harness` (the chat TUI).
 pub fn session_backends() -> Vec<&'static str> {
     use clap::ValueEnum;
@@ -401,6 +515,17 @@ pub fn vendor_clis_on_path() -> Vec<&'static str> {
     Backend::value_variants()
         .iter()
         .filter(|b| b.cli_name().is_some_and(found))
+        .map(|b| b.display_name())
+        .collect()
+}
+
+/// Every vendor-CLI backend in the registry, installed or not (the `/backends`
+/// view says which). [`vendor_clis_on_path`] is the installed subset.
+pub fn vendor_cli_backends() -> Vec<&'static str> {
+    use clap::ValueEnum;
+    Backend::value_variants()
+        .iter()
+        .filter(|b| b.cli_name().is_some())
         .map(|b| b.display_name())
         .collect()
 }
@@ -595,6 +720,48 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
                 }
                 None => None,
             };
+            // Labelled now, while the layers that produced them are in scope.
+            let project_config = find_project_config(&cwd);
+            let mut settings = vec![
+                ("backend".to_string(), r.backend.clone()),
+                ("model".to_string(), r.model.clone()),
+            ];
+            if let Some(e) = &r.endpoint {
+                settings.push(("endpoint".to_string(), e.clone()));
+            }
+            if let Some(n) = r.max_tokens {
+                settings.push(("max_tokens".to_string(), n.to_string()));
+            }
+            if let Some(n) = r.max_context {
+                settings.push(("max_context".to_string(), n.to_string()));
+            }
+            settings.push((
+                "project config".to_string(),
+                project_config
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(none)".to_string()),
+            ));
+            settings.push((
+                "user config".to_string(),
+                user_config
+                    .as_ref()
+                    .filter(|p| p.is_file())
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(none)".to_string()),
+            ));
+            settings.push((
+                "precedence".to_string(),
+                "flags → env → project config → user config → auto-detect".to_string(),
+            ));
+            let environment: Option<Box<dyn bwoc_tui::EnvironmentInfo>> =
+                Some(Box::new(Environment {
+                    backend: r.backend.clone(),
+                    endpoint: r.endpoint.clone(),
+                    settings,
+                    home: home.clone(),
+                }));
+
             let name = cwd
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -611,6 +778,7 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
                     max_context: r.max_context,
                     session_file,
                     sessions,
+                    environment,
                 }),
             })
         }
