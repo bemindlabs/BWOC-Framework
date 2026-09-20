@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — a session that can answer for itself: `/status`, `/tools`, `/cost`, `/models`, `/backends`, `/settings`, `/doctor`, `/permissions`, `/mcp`, `/context`, `/compact`, and a fixed context pane"
+    " — a session that can answer for itself: thirteen `/` commands for what it is, what it may do and what it costs, plus a fixed context pane"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
