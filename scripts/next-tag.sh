@@ -77,11 +77,17 @@ days_apart() {
 
 check_tag() {
   local tag="$1" stamp y m d
+  # The whole shape, not just "three dots": `v2026.9.21-foo` and
+  # `v2026.9.21-1-extra` must be refused, not silently mis-parsed.
+  if [[ ! "$tag" =~ ^v([0-9]{4})\.([0-9]{1,2})\.([0-9]{1,2})-([0-9]+)$ ]]; then
+    echo "next-tag: '$tag' is not v<YYYY>.<M>.<D>-<patch>" >&2
+    return 2
+  fi
   stamp="${tag#v}"
   stamp="${stamp%-*}"
   IFS=. read -r y m d <<<"$stamp"
-  if [[ -z "${y:-}" || -z "${m:-}" || -z "${d:-}" ]]; then
-    echo "next-tag: '$tag' is not v<YYYY>.<M>.<D>-<patch>" >&2
+  if ((m < 1 || m > 12 || d < 1 || d > 31)); then
+    echo "next-tag: '$tag' has no such date ($y-$m-$d)" >&2
     return 2
   fi
   local tag_date now_date apart
