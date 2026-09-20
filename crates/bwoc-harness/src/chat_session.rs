@@ -500,22 +500,38 @@ where
                 }
             }
             ChatInput::Compact => {
-                // The same engine the budget triggers, run on demand.
-                let outcome = crate::compact::compact_context(
-                    &*provider,
-                    models.active(),
-                    config.max_context_tokens.max(1),
-                    &mut history,
-                    &ctx.workdir,
-                )
-                .await;
-                emit(
-                    &mut out,
-                    &ChatEvent::Compacted {
-                        removed: outcome.removed(),
-                    },
-                )
-                .await?;
+                // `max_context_tokens == 0` means compaction is off for this
+                // session (and `/context` says so). Folding anyway — against a
+                // 1-token budget, which would fold nearly everything — would
+                // contradict what the session reports about itself.
+                if config.max_context_tokens == 0 {
+                    emit(
+                        &mut out,
+                        &ChatEvent::Error {
+                            message: "compaction is disabled for this session \
+                                      (max_context is 0)"
+                                .to_string(),
+                        },
+                    )
+                    .await?;
+                } else {
+                    // Otherwise: the same engine the budget triggers.
+                    let outcome = crate::compact::compact_context(
+                        &*provider,
+                        models.active(),
+                        config.max_context_tokens,
+                        &mut history,
+                        &ctx.workdir,
+                    )
+                    .await;
+                    emit(
+                        &mut out,
+                        &ChatEvent::Compacted {
+                            removed: outcome.removed(),
+                        },
+                    )
+                    .await?;
+                }
             }
             ChatInput::Describe { topic } => {
                 match describe(&topic, &config, &registry, &history, session_mode) {
@@ -1996,21 +2012,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compact_refuses_when_the_session_disabled_compaction() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let provider = Arc::new(MockProvider::new(vec![]));
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let lines =
+            BufReader::new("{\"type\":\"compact\"}\n{\"type\":\"quit\"}\n".as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        let cfg = ChatConfig {
+            max_context_tokens: 0, // compaction disabled
+            ..config(allow_all())
+        };
+        drive(provider, registry, ctx, cfg, lines, &mut out)
+            .await
+            .unwrap();
+        let events = parse(
+            &String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ChatEvent::Error { message } if message.contains("compaction is disabled")
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Compacted { .. }))
+        );
+    }
+
+    #[tokio::test]
     async fn compact_on_demand_reports_what_it_folded() {
         let tmp = TempDir::new().unwrap();
         let ctx = ToolContext::new(tmp.path());
+        let provider = Arc::new(MockProvider::new(vec![]));
+        let registry = Arc::new(crate::tools::registry::default_registry());
+        let lines =
+            BufReader::new("{\"type\":\"compact\"}\n{\"type\":\"quit\"}\n".as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        let cfg = ChatConfig {
+            max_context_tokens: 8_000,
+            ..config(allow_all())
+        };
+        drive(provider, registry, ctx, cfg, lines, &mut out)
+            .await
+            .unwrap();
+        let events = parse(
+            &String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
         // Nothing to fold in a fresh session: the report is honest, not silent.
-        let lines = run_scripted(
-            vec![],
-            allow_all(),
-            "{\"type\":\"compact\"}\n{\"type\":\"quit\"}\n",
-            ctx,
-        )
-        .await;
         assert!(
-            parse(&lines)
+            events
                 .iter()
-                .any(|e| matches!(e, ChatEvent::Compacted { removed: 0 }))
+                .any(|e| matches!(e, ChatEvent::Compacted { removed: 0 })),
+            "{events:?}"
         );
     }
 
