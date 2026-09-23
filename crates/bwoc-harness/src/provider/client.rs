@@ -83,6 +83,14 @@ pub trait ProviderClient: Send + Sync {
     async fn list_models(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// [`Self::list_models`] for a caller that shows the answer to a person
+    /// (`bwoc-harness --list-models`, behind the TUI's `/models`): a failure
+    /// says what went wrong — unreachable, `HTTP 401`, a body with no `data` —
+    /// instead of reading as an empty list. The default wraps `list_models`.
+    async fn try_list_models(&self) -> Result<Vec<String>, HarnessError> {
+        Ok(self.list_models().await)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,28 +462,43 @@ impl ProviderClient for OllamaClient {
 
     /// List served model IDs via `GET /v1/models`.
     ///
-    /// Mirrors [`Self::validate_model`]'s parsing of the OpenAI-compat list
-    /// shape (`{"data": [{"id": ...}, ...]}`). Any failure — request error,
-    /// non-2xx, or parse error — yields an empty Vec so the auto-resolver
-    /// degrades to "availability unknown" instead of failing the run.
+    /// Any failure yields an empty Vec so the auto-resolver degrades to
+    /// "availability unknown" instead of failing the run; see
+    /// [`Self::try_list_models`] for the failure itself.
     async fn list_models(&self) -> Vec<String> {
-        let Ok(resp) = self.auth(self.client.get(self.models_url())).send().await else {
-            return Vec::new();
-        };
-        if !resp.status().is_success() {
-            return Vec::new();
+        self.try_list_models().await.unwrap_or_default()
+    }
+
+    /// `GET /v1/models` with this client's auth, parsed from the OpenAI-compat
+    /// list shape (`{"data": [{"id": ...}, ...]}`). LiteLLM answers with only
+    /// the models the key may call, so the list is already the right one.
+    async fn try_list_models(&self) -> Result<Vec<String>, HarnessError> {
+        let url = self.models_url();
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| HarnessError::Provider(format!("GET {url}: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let first = body.lines().next().unwrap_or("").trim();
+            let first: String = first.chars().take(200).collect();
+            return Err(HarnessError::Provider(format!(
+                "GET {url}: HTTP {status} {first}"
+            )));
         }
-        let Ok(body) = resp.json::<Value>().await else {
-            return Vec::new();
-        };
-        body["data"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m["id"].as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default()
+        let body = resp
+            .json::<Value>()
+            .await
+            .map_err(|e| HarnessError::Provider(format!("GET {url}: not JSON: {e}")))?;
+        let arr = body["data"].as_array().ok_or_else(|| {
+            HarnessError::Provider(format!("GET {url}: no `data` list in the reply"))
+        })?;
+        Ok(arr
+            .iter()
+            .filter_map(|m| m["id"].as_str().map(str::to_string))
+            .collect())
     }
 
     /// Query Ollama's native `POST /api/show` endpoint for the model's

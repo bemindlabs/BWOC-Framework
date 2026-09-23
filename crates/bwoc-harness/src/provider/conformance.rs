@@ -385,3 +385,40 @@ async fn cli_client_context_limit_defaults_none() {
         "a CLI backend cannot report a context window; the loop must fall back to its default"
     );
 }
+
+// ── try_list_models: the listing `/models` shows a person (#551) ─────────────
+//
+// LiteLLM scopes `GET /v1/models` to the key, so the listing must carry the same
+// bearer as the chat; and a refused listing must say why rather than come back
+// as an empty list (which `list_models` still does, for auto-resolution).
+
+#[tokio::test]
+async fn try_list_models_sends_the_key_and_reports_a_refusal() {
+    use wiremock::matchers::header;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("authorization", "Bearer sk-scoped"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"data": [{"id": "local-chat"}, {"id": "local-coder"}]}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("No api key passed in."))
+        .mount(&server)
+        .await;
+
+    let keyed = OllamaClient::new(format!("{}/v1", server.uri()))
+        .with_api_key(Some("sk-scoped".to_string()));
+    assert_eq!(
+        keyed.try_list_models().await.unwrap(),
+        vec!["local-chat", "local-coder"]
+    );
+
+    let keyless = OllamaClient::new(format!("{}/v1", server.uri()));
+    let err = keyless.try_list_models().await.unwrap_err().to_string();
+    assert!(err.contains("401") && err.contains("No api key"), "{err}");
+    assert!(keyless.list_models().await.is_empty());
+}

@@ -72,6 +72,12 @@ struct Args {
     #[arg(long, conflicts_with_all = ["task", "resume", "lead", "chat", "headless"])]
     eval: Option<PathBuf>,
 
+    /// Print the model ids `--backend` serves at `--endpoint`, one per line,
+    /// and exit — resolved with the same endpoint and key as a chat session
+    /// (the TUI's `/models` runs this). A failure goes to stderr, exit 1.
+    #[arg(long, conflicts_with_all = ["task", "resume", "lead", "chat", "headless", "eval"])]
+    list_models: bool,
+
     /// Emit machine-readable JSON instead of a human report. Eval-mode only —
     /// `--chat` already speaks a JSONL event stream, so clap requires `--eval`.
     #[arg(long, requires = "eval")]
@@ -399,6 +405,23 @@ async fn run() -> HarnessResult<()> {
     // no human to answer prompts (see `run_chat_mode`'s `headless` arg).
     if args.headless {
         return run_chat_mode(&args, &workdir, true).await;
+    }
+
+    if args.list_models {
+        ensure_backend_credentials(&args.backend)?;
+        let provider = build_provider(
+            &args.backend,
+            &args.endpoint,
+            &args.cli_cmd,
+            None,
+            None,
+            true,
+            false,
+        );
+        for id in provider.try_list_models().await? {
+            println!("{id}");
+        }
+        return Ok(());
     }
 
     // ── Eval mode: run one fixture, score it, exit. Runs before the banner so
