@@ -301,15 +301,111 @@ pub enum Resolution {
 /// start-up, so every answer describes the running session rather than a fresh
 /// guess made later.
 pub struct Environment {
+    /// What `/settings` can change under a running session.
+    pub state: std::sync::Mutex<EnvState>,
+    /// `~/.bwoc`, when the user has one.
+    pub home: Option<PathBuf>,
+    /// The session's directory — where a `/settings` change is saved.
+    pub cwd: PathBuf,
+    /// Flags the session started with; they still outrank a saved setting.
+    pub flags: RuntimeLayer,
+    /// `~/.bwoc/config.toml`, the lowest config layer.
+    pub user_config: Option<PathBuf>,
+}
+
+/// The resolved runtime a session runs on, refreshed by `/settings`.
+pub struct EnvState {
     /// The backend the session runs on.
     pub backend: String,
     /// The endpoint in use, when one was resolved.
     pub endpoint: Option<String>,
-    /// Resolved runtime values with the layer each came from, captured when the
-    /// session started (the layers cannot change under a running session).
+    /// Resolved runtime values plus the config files behind them.
     pub settings: Vec<(String, String)>,
-    /// `~/.bwoc`, when the user has one.
-    pub home: Option<PathBuf>,
+}
+
+/// Keys `/settings` may write under `[runtime]`.
+const SETTABLE: &[&str] = &["backend", "model", "endpoint", "max_tokens", "max_context"];
+
+/// Resolve `merged` with the live probes (an Anthropic key from env or
+/// `secrets.toml`, Ollama's model index).
+fn resolve_live(merged: &RuntimeLayer, home: Option<&Path>) -> Resolution {
+    let getenv = |k: &str| std::env::var(k).ok();
+    let secrets = home.map(|h| h.join("secrets.toml"));
+    let anthropic_key = || {
+        let table = secrets
+            .as_deref()
+            .map(crate::auth::read_secrets)
+            .unwrap_or(crate::auth::Secrets::Missing);
+        crate::auth::key_source("anthropic", &getenv, &table).is_some()
+    };
+    let probes = Probes {
+        anthropic_key: &anthropic_key,
+        ollama_models: &probe_ollama,
+    };
+    resolve(merged, &probes)
+}
+
+/// `/settings` rows: the resolved values, the config files behind them, and
+/// the precedence that decides between them.
+fn settings_rows(r: &Resolved, cwd: &Path, user_config: Option<&Path>) -> Vec<(String, String)> {
+    let mut rows = vec![
+        ("backend".to_string(), r.backend.clone()),
+        ("model".to_string(), r.model.clone()),
+    ];
+    if let Some(e) = &r.endpoint {
+        rows.push(("endpoint".to_string(), e.clone()));
+    }
+    if let Some(n) = r.max_tokens {
+        rows.push(("max_tokens".to_string(), n.to_string()));
+    }
+    if let Some(n) = r.max_context {
+        rows.push(("max_context".to_string(), n.to_string()));
+    }
+    let shown = |p: Option<&Path>| {
+        p.filter(|p| p.is_file())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string())
+    };
+    rows.push((
+        "project config".to_string(),
+        shown(find_project_config(cwd).as_deref()),
+    ));
+    rows.push(("user config".to_string(), shown(user_config)));
+    rows.push((
+        "precedence".to_string(),
+        "flags → env → project config → user config → auto-detect".to_string(),
+    ));
+    rows
+}
+
+/// Write `key = value` under `[runtime]` in the TOML at `path`, keeping the
+/// rest of the file (comments, other tables) as it was.
+fn write_runtime_key(path: &Path, key: &str, value: &str) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| format!("{} is not valid TOML: {e}", path.display()))?;
+    if !doc.contains_table("runtime") {
+        doc["runtime"] = toml_edit::table();
+    }
+    doc["runtime"][key] = match key {
+        "max_tokens" | "max_context" => toml_edit::value(i64::from(
+            value
+                .parse::<u32>()
+                .map_err(|_| format!("{key} must be a whole number, got `{value}`"))?,
+        )),
+        _ => toml_edit::value(value),
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, doc.to_string())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 impl bwoc_tui::EnvironmentInfo for Environment {
@@ -318,15 +414,19 @@ impl bwoc_tui::EnvironmentInfo for Environment {
         // backend asks the harness itself (`--list-models`), so the listing
         // uses the exact endpoint and key the chat resolves — LiteLLM's
         // `/v1/models` then returns only what that key may call (#551).
-        if self.backend == "ollama" {
-            return probe_ollama(self.endpoint.as_deref())
+        let (backend, endpoint) = {
+            let st = self.state.lock().expect("env state");
+            (st.backend.clone(), st.endpoint.clone())
+        };
+        if backend == "ollama" {
+            return probe_ollama(endpoint.as_deref())
                 .ok_or_else(|| "no model list came back from the Ollama endpoint".to_string());
         }
         let harness = crate::spawn::Backend::harness_binary()
             .ok_or_else(|| "bwoc-harness not found — cannot list models".to_string())?;
         let mut cmd = std::process::Command::new(harness);
-        cmd.args(["--list-models", "--backend", &self.backend]);
-        if let Some(e) = &self.endpoint {
+        cmd.args(["--list-models", "--backend", &backend]);
+        if let Some(e) = &endpoint {
             cmd.args(["--endpoint", e]);
         }
         let out = cmd
@@ -340,7 +440,7 @@ impl bwoc_tui::EnvironmentInfo for Environment {
                 .find_map(|l| l.strip_prefix("bwoc-harness error: "))
                 .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
                 .unwrap_or("no reason given");
-            return Err(format!("`{}` did not list models: {why}", self.backend));
+            return Err(format!("`{backend}` did not list models: {why}"));
         }
         Ok(String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -351,6 +451,7 @@ impl bwoc_tui::EnvironmentInfo for Environment {
     }
 
     fn backends(&self) -> Vec<(String, String)> {
+        let in_use = self.state.lock().expect("env state").backend.clone();
         let getenv = |k: &str| std::env::var(k).ok();
         let secrets = self
             .home
@@ -365,11 +466,7 @@ impl bwoc_tui::EnvironmentInfo for Environment {
                     None if name == "ollama" => "no key needed".to_string(),
                     None => "no key configured".to_string(),
                 };
-                let mark = if name == self.backend {
-                    " (in use)"
-                } else {
-                    ""
-                };
+                let mark = if name == in_use { " (in use)" } else { "" };
                 (name.to_string(), format!("{note}{mark}"))
             })
             .collect();
@@ -386,7 +483,100 @@ impl bwoc_tui::EnvironmentInfo for Environment {
     }
 
     fn settings(&self) -> Vec<(String, String)> {
-        self.settings.clone()
+        self.state.lock().expect("env state").settings.clone()
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<(String, bwoc_tui::Runtime), String> {
+        let value = value.trim();
+        if !SETTABLE.contains(&key) {
+            return Err(format!(
+                "`{key}` is not a setting — one of {}",
+                SETTABLE.join(", ")
+            ));
+        }
+        if value.is_empty() {
+            return Err(format!("/settings {key} <value> needs a value"));
+        }
+        // A running TUI can only restart onto a harness backend; a vendor CLI
+        // takes over the terminal and has to be started as its own session.
+        if key == "backend" && !session_backends().contains(&value) {
+            return Err(format!(
+                "`{value}` cannot run in this session — one of {} (a vendor CLI starts with \
+                 `bwoc --backend {value}`)",
+                session_backends().join(", ")
+            ));
+        }
+        // Saved to this project's config, so the change stays with this
+        // project rather than every session on the machine.
+        let path = find_project_config(&self.cwd)
+            .unwrap_or_else(|| self.cwd.join(".bwoc").join("config.toml"));
+        let before = std::fs::read_to_string(&path).ok();
+        write_runtime_key(&path, key, value)?;
+
+        let getenv = |k: &str| std::env::var(k).ok();
+        let resolved = gather_layers(
+            self.flags.clone(),
+            &getenv,
+            &self.cwd,
+            self.user_config.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+        .map(|layers| resolve_live(&merge(&layers), self.home.as_deref()));
+        let r = match resolved {
+            Ok(Resolution::Ready(r)) => r,
+            // Put the file back: a setting that leaves no usable runtime
+            // must not stay behind to break the next start.
+            other => {
+                let restored = match &before {
+                    Some(text) => std::fs::write(&path, text),
+                    None => std::fs::remove_file(&path),
+                };
+                let why = match other {
+                    Err(e) => e,
+                    Ok(Resolution::Invalid(msg)) => msg,
+                    Ok(Resolution::Vendor(_)) => "that resolves to a vendor CLI".to_string(),
+                    _ => "no usable runtime".to_string(),
+                };
+                return Err(match restored {
+                    Ok(()) => format!("{key} not saved: {why}"),
+                    // Say so plainly: the file now holds a value that failed.
+                    Err(e) => format!(
+                        "{key} was written but does not resolve ({why}), and restoring {} \
+                         failed: {e} — fix or remove `{key}` there by hand",
+                        path.display()
+                    ),
+                });
+            }
+        };
+
+        let now = match key {
+            "backend" => Some(r.backend.clone()),
+            "model" => Some(r.model.clone()),
+            "endpoint" => r.endpoint.clone(),
+            "max_tokens" => r.max_tokens.map(|n| n.to_string()),
+            _ => r.max_context.map(|n| n.to_string()),
+        };
+        let mut message = format!("{key} = {value} saved to {}", path.display());
+        if now.as_deref() != Some(value) {
+            message.push_str(&format!(
+                " — but a flag or environment variable outranks it; this session uses {}",
+                now.unwrap_or_else(|| "(unset)".to_string())
+            ));
+        }
+        let mut st = self.state.lock().expect("env state");
+        st.backend = r.backend.clone();
+        st.endpoint = r.endpoint.clone();
+        st.settings = settings_rows(&r, &self.cwd, self.user_config.as_deref());
+        Ok((
+            message,
+            bwoc_tui::Runtime {
+                backend: r.backend,
+                model: r.model,
+                endpoint: r.endpoint,
+                max_tokens: r.max_tokens,
+                max_context: r.max_context,
+            },
+        ))
     }
 
     fn doctor(&self) -> Result<Vec<(String, String)>, String> {
@@ -686,6 +876,7 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
     let home = crate::user_home::bwoc_home().ok();
     let getenv = |k: &str| std::env::var(k).ok();
     let user_config = home.as_ref().map(|h| h.join("config.toml"));
+    let flags_for_env = flags.clone();
     let layers = match gather_layers(flags, &getenv, &cwd, user_config.as_deref()) {
         Ok(l) => l,
         Err(e) => {
@@ -695,20 +886,7 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
     };
     let merged = merge(&layers);
 
-    let secrets = home.as_ref().map(|h| h.join("secrets.toml"));
-    let anthropic_key = || {
-        let table = secrets
-            .as_deref()
-            .map(crate::auth::read_secrets)
-            .unwrap_or(crate::auth::Secrets::Missing);
-        crate::auth::key_source("anthropic", &getenv, &table).is_some()
-    };
-    let probes = Probes {
-        anthropic_key: &anthropic_key,
-        ollama_models: &probe_ollama,
-    };
-
-    match resolve(&merged, &probes) {
+    match resolve_live(&merged, home.as_deref()) {
         Resolution::Ready(r) => {
             // The conversation lives under ~/.bwoc/sessions/, never in the
             // repository. No home means no persistence, as before.
@@ -741,46 +919,17 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
                 }
                 None => None,
             };
-            // Labelled now, while the layers that produced them are in scope.
-            let project_config = find_project_config(&cwd);
-            let mut settings = vec![
-                ("backend".to_string(), r.backend.clone()),
-                ("model".to_string(), r.model.clone()),
-            ];
-            if let Some(e) = &r.endpoint {
-                settings.push(("endpoint".to_string(), e.clone()));
-            }
-            if let Some(n) = r.max_tokens {
-                settings.push(("max_tokens".to_string(), n.to_string()));
-            }
-            if let Some(n) = r.max_context {
-                settings.push(("max_context".to_string(), n.to_string()));
-            }
-            settings.push((
-                "project config".to_string(),
-                project_config
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(none)".to_string()),
-            ));
-            settings.push((
-                "user config".to_string(),
-                user_config
-                    .as_ref()
-                    .filter(|p| p.is_file())
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(none)".to_string()),
-            ));
-            settings.push((
-                "precedence".to_string(),
-                "flags → env → project config → user config → auto-detect".to_string(),
-            ));
             let environment: Option<Box<dyn bwoc_tui::EnvironmentInfo>> =
                 Some(Box::new(Environment {
-                    backend: r.backend.clone(),
-                    endpoint: r.endpoint.clone(),
-                    settings,
+                    state: std::sync::Mutex::new(EnvState {
+                        backend: r.backend.clone(),
+                        endpoint: r.endpoint.clone(),
+                        settings: settings_rows(&r, &cwd, user_config.as_deref()),
+                    }),
                     home: home.clone(),
+                    cwd: cwd.clone(),
+                    flags: flags_for_env,
+                    user_config: user_config.clone(),
                 }));
 
             let name = cwd
@@ -825,6 +974,108 @@ pub fn run_session(flags: RuntimeLayer, pick: crate::coding_session::SessionPick
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_in(cwd: &Path, flags: RuntimeLayer) -> Environment {
+        Environment {
+            state: std::sync::Mutex::new(EnvState {
+                backend: "litellm".into(),
+                endpoint: None,
+                settings: Vec::new(),
+            }),
+            home: None,
+            cwd: cwd.to_path_buf(),
+            flags,
+            user_config: None,
+        }
+    }
+
+    #[test]
+    fn write_runtime_key_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".bwoc/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "# mine\n[runtime]\nbackend = \"litellm\" # keep\n").unwrap();
+        write_runtime_key(&path, "model", "local-coder").unwrap();
+        write_runtime_key(&path, "max_context", "32000").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine") && text.contains("# keep"), "{text}");
+        let layer = parse_config(&text, &path).unwrap();
+        assert_eq!(layer.model.as_deref(), Some("local-coder"));
+        assert_eq!(layer.max_context, Some(32000));
+        assert!(write_runtime_key(&path, "max_tokens", "lots").is_err());
+    }
+
+    #[test]
+    fn settings_set_saves_to_the_project_and_re_resolves() {
+        use bwoc_tui::EnvironmentInfo;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".bwoc/config.toml");
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            "[runtime]\nbackend = \"litellm\"\nmodel = \"local-chat\"\n",
+        )
+        .unwrap();
+        let env = env_in(dir.path(), RuntimeLayer::default());
+        let (msg, rt) = env.set("model", "local-coder").unwrap();
+        assert!(msg.contains("saved to"), "{msg}");
+        assert_eq!(
+            (rt.backend.as_str(), rt.model.as_str()),
+            ("litellm", "local-coder")
+        );
+        assert!(dir.path().join(".bwoc/config.toml").is_file());
+        assert!(
+            env.settings()
+                .iter()
+                .any(|(k, v)| k == "model" && v == "local-coder")
+        );
+    }
+
+    #[test]
+    fn settings_set_refuses_what_it_cannot_apply() {
+        use bwoc_tui::EnvironmentInfo;
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path(), RuntimeLayer::default());
+        assert!(
+            env.set("colour", "blue")
+                .unwrap_err()
+                .contains("not a setting")
+        );
+        assert!(
+            env.set("backend", "codex")
+                .unwrap_err()
+                .contains("cannot run in this session")
+        );
+        assert!(env.set("model", " ").unwrap_err().contains("needs a value"));
+        // Nothing was written for a refused setting.
+        assert!(!dir.path().join(".bwoc/config.toml").exists());
+    }
+
+    #[test]
+    fn a_setting_that_leaves_no_runtime_is_rolled_back() {
+        use bwoc_tui::EnvironmentInfo;
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path(), RuntimeLayer::default());
+        // litellm with no model resolves to nothing runnable.
+        let err = env.set("backend", "litellm").unwrap_err();
+        assert!(err.contains("not saved"), "{err}");
+        assert!(!dir.path().join(".bwoc/config.toml").exists());
+    }
+
+    #[test]
+    fn settings_set_says_when_a_flag_outranks_it() {
+        use bwoc_tui::EnvironmentInfo;
+        let dir = tempfile::tempdir().unwrap();
+        let flags = RuntimeLayer {
+            backend: Some("litellm".into()),
+            model: Some("from-flag".into()),
+            ..RuntimeLayer::default()
+        };
+        let env = env_in(dir.path(), flags);
+        let (msg, rt) = env.set("model", "saved-one").unwrap();
+        assert_eq!(rt.model, "from-flag");
+        assert!(msg.contains("outranks"), "{msg}");
+    }
 
     fn layer(backend: Option<&str>, model: Option<&str>) -> RuntimeLayer {
         RuntimeLayer {

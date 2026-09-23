@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - **Assistant Markdown renders correctly in the chat TUI.** The hand-written line scanner took every `_` and `*` as emphasis — `snake_case` showed as `snakecase`, `2 * 3 * 4` as `2  3  4` — and left links, tables, `1)` lists, task boxes, escapes, rules, `~~~` fences and nested emphasis raw. `bwoc-tui` now parses CommonMark with GitHub tables, task lists and strikethrough (`pulldown-cmark`, no default features): tables line up in columns, links show their text then the URL, nested lists indent, and line breaks stay as written.
 ### Changed
 - **A bare `bwoc` session works by the BWOC philosophy.** An agent session reads its `AGENTS.md`, which is grounded in the 22 frameworks, but a project session got a generic coding preamble that never named one. The built-in preamble now states each working rule with the principle it applies — Ariyasacca, Yoniso manasikāra, Mattaññutā, Paṭiccasamuppāda, Anattā, Attaññutā, the Sīla care rules and Kalyāṇamitta — at about the same length (53 lines).
+### Added
+- **`/settings` changes the runtime, not just shows it.** `/settings` opens a key picker (with each current value); `/settings <key> <value>` saves `model`, `backend`, `endpoint`, `max_tokens` or `max_context` under `[runtime]` in the project's `.bwoc/config.toml` (comments and other keys kept), re-resolves with the usual precedence (a flag or env var still wins, and the message says so), and restarts the harness on the same conversation. A value that leaves no runnable runtime is rolled back; a vendor-CLI backend is refused.
 
 ## [v2026.9.23-0] — 2026-09-23 — 3.7.0
 

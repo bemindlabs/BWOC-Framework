@@ -34,7 +34,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/backends", "which backends are usable here, and how"),
     (
         "/settings",
-        "the resolved runtime and where each value came from",
+        "show or change the runtime: /settings <key> <value>",
     ),
     ("/doctor", "run the environment health checks"),
     ("/compact", "fold the oldest turns into a summary now"),
@@ -88,6 +88,29 @@ fn arg_word<'a>(input: &'a str, prefix: &str) -> Option<(usize, &'a str)> {
     Some((input.len() - word.len(), word))
 }
 
+/// Runtime keys `/settings` can change, each with what it does.
+pub const SETTING_KEYS: &[(&str, &str)] = &[
+    ("model", "the model later turns use"),
+    ("backend", "the provider the harness talks to"),
+    ("endpoint", "the provider's base URL"),
+    ("max_tokens", "the response token cap"),
+    ("max_context", "the context window compaction sizes against"),
+];
+
+/// The `/settings` key picker: keys starting with the partial word after
+/// `/settings `, and where that word starts.
+pub fn setting_key_matches(input: &str) -> Option<(usize, Vec<(&'static str, &'static str)>)> {
+    let (start, word) = arg_word(input, "/settings ")?;
+    Some((
+        start,
+        SETTING_KEYS
+            .iter()
+            .filter(|(k, _)| k.starts_with(word))
+            .copied()
+            .collect(),
+    ))
+}
+
 /// The `/model` picker: the listed models containing the partial word after
 /// `/model ` (substring, case-insensitive — ids like `vendor/name` are matched
 /// by any part), and where that word starts.
@@ -135,7 +158,8 @@ pub enum Slash {
     Status,
     Models,
     Backends,
-    Settings,
+    /// `/settings [key [value]]` — bare lists and opens the key picker.
+    Settings(Option<String>, Option<String>),
     Doctor,
     Compact,
     Permissions,
@@ -174,7 +198,11 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "status" => Slash::Status,
         "models" => Slash::Models,
         "backends" => Slash::Backends,
-        "settings" | "config" => Slash::Settings,
+        "settings" | "config" => {
+            let key = words.next().map(str::to_string);
+            let value = words.collect::<Vec<_>>().join(" ");
+            Slash::Settings(key, (!value.is_empty()).then_some(value))
+        }
         "doctor" => Slash::Doctor,
         "compact" => Slash::Compact,
         "permissions" => Slash::Permissions,
@@ -453,6 +481,14 @@ mod tests {
     }
 
     #[test]
+    fn setting_keys_are_picked_after_the_command_word() {
+        let (start, all) = setting_key_matches("/settings ").unwrap();
+        assert_eq!((start, all.len()), (10, SETTING_KEYS.len()));
+        assert_eq!(setting_key_matches("/settings max").unwrap().1.len(), 2);
+        assert!(setting_key_matches("/settings model x").is_none());
+    }
+
+    #[test]
     fn window_keeps_the_selection_in_view() {
         assert_eq!(window_start(0, 8), 0);
         assert_eq!(window_start(7, 8), 0);
@@ -481,8 +517,19 @@ mod tests {
         assert_eq!(parse_slash("/models"), Some(Slash::Models));
         assert_eq!(parse_slash("/backends"), Some(Slash::Backends));
         // `/config` is the name people reach for; same command.
-        assert_eq!(parse_slash("/settings"), Some(Slash::Settings));
-        assert_eq!(parse_slash("/config"), Some(Slash::Settings));
+        assert_eq!(parse_slash("/settings"), Some(Slash::Settings(None, None)));
+        assert_eq!(parse_slash("/config"), Some(Slash::Settings(None, None)));
+        assert_eq!(
+            parse_slash("/settings model"),
+            Some(Slash::Settings(Some("model".into()), None))
+        );
+        assert_eq!(
+            parse_slash("/settings endpoint http://h:1/v1"),
+            Some(Slash::Settings(
+                Some("endpoint".into()),
+                Some("http://h:1/v1".into())
+            ))
+        );
         assert_eq!(parse_slash("/doctor"), Some(Slash::Doctor));
         assert_eq!(parse_slash("/compact"), Some(Slash::Compact));
         assert_eq!(parse_slash("/permissions"), Some(Slash::Permissions));

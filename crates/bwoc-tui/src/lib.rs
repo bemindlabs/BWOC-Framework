@@ -134,6 +134,23 @@ pub trait EnvironmentInfo: Send {
     fn settings(&self) -> Vec<(String, String)>;
     /// Health checks, as `bwoc doctor` reports them.
     fn doctor(&self) -> Result<Vec<(String, String)>, String>;
+    /// Save one runtime setting (`/settings <key> <value>`) and re-resolve
+    /// the runtime. `Ok` carries a line to show and the runtime the session
+    /// should restart on; the default says settings are read-only here.
+    fn set(&self, key: &str, value: &str) -> Result<(String, Runtime), String> {
+        let _ = (key, value);
+        Err("settings are read-only in this session".to_string())
+    }
+}
+
+/// The runtime a project session runs on — what `/settings` re-resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Runtime {
+    pub backend: String,
+    pub model: String,
+    pub endpoint: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub max_context: Option<u32>,
 }
 
 /// Runtime for a project session, resolved by the caller (`bwoc`).
@@ -184,7 +201,7 @@ pub fn run(args: TuiArgs) -> i32 {
 
     // Cloned before `args.project` is consumed below: the per-session argv is
     // rebuilt on every switch, but everything except the session file is fixed.
-    let project_argv_base = args.project.as_ref().map(|p| ProjectRuntime {
+    let mut project_argv_base = args.project.as_ref().map(|p| ProjectRuntime {
         max_tokens: p.max_tokens,
         max_context: p.max_context,
     });
@@ -192,7 +209,8 @@ pub fn run(args: TuiArgs) -> i32 {
     // Project session: the caller already resolved the runtime. Agent session:
     // model + endpoint come from the agent's manifest (best-effort). A missing
     // manifest is not fatal — the harness falls back to its own defaults.
-    let (model, endpoint) = match &args.project {
+    let mut backend_name = args.backend_name.clone();
+    let (mut model, mut endpoint) = match &args.project {
         Some(p) => (
             Some(p.model.clone()),
             p.endpoint
@@ -224,6 +242,7 @@ pub fn run(args: TuiArgs) -> i32 {
     let sessions: Option<std::rc::Rc<dyn SessionControl>> =
         project.and_then(|p| p.sessions).map(std::rc::Rc::from);
     let mut session_id: Option<String> = None;
+    let mut notice: Option<String> = None;
 
     let mut term = match setup_terminal() {
         Ok(t) => t,
@@ -240,7 +259,7 @@ pub fn run(args: TuiArgs) -> i32 {
             &args.agent_path,
             model.as_deref(),
             &endpoint,
-            &args.backend_name,
+            &backend_name,
             args.team_chat.as_deref(),
         );
         if let Some(p) = &project_argv_base {
@@ -286,12 +305,15 @@ pub fn run(args: TuiArgs) -> i32 {
         });
 
         let stdin = child.stdin.take().expect("stdin piped above");
-        let mut app = App::new(args.agent_id.clone(), &args.backend_name);
+        let mut app = App::new(args.agent_id.clone(), &backend_name);
         app.workdir = Some(args.agent_path.clone());
         app.sessions = sessions.clone();
         app.environment = environment.clone();
         app.refresh_panel();
         app.session_id = session_id.clone();
+        // A `/settings` change restarted us: say what was saved, under the
+        // `ready` line (`Ready` clears the transcript before replaying it).
+        app.after_ready = notice.take();
         let flow = event_loop(&mut term, &mut app, &rx, stdin);
 
         // Reap this harness before the next one starts (or before we leave).
@@ -303,6 +325,16 @@ pub fn run(args: TuiArgs) -> i32 {
             Ok(Flow::Switch { id, file }) => {
                 session_file = Some(file);
                 session_id = Some(id);
+            }
+            Ok(Flow::Reconfigure(rt, line)) => {
+                notice = Some(line);
+                backend_name = rt.backend;
+                model = Some(rt.model);
+                endpoint = rt.endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+                project_argv_base = project_argv_base.map(|_| ProjectRuntime {
+                    max_tokens: rt.max_tokens,
+                    max_context: rt.max_context,
+                });
             }
             Ok(_) => break Ok(()),
             Err(e) => break Err(e),
@@ -401,6 +433,9 @@ enum Flow {
     /// Restart the harness on another conversation (`/new`, `/session`,
     /// `/fork`), keeping the same terminal.
     Switch { id: String, file: PathBuf },
+    /// Restart the harness on the same conversation with a runtime a
+    /// `/settings` change resolved to; the line is shown once it is back.
+    Reconfigure(Runtime, String),
 }
 
 /// A pending permission request awaiting the operator's `a`/`d` decision.
@@ -484,6 +519,8 @@ struct App {
     /// Models the backend listed for the `/model` picker, fetched when a bare
     /// `/model` opens it (`None` until then).
     models: Option<Vec<String>>,
+    /// A line to show once the harness is `Ready` (a `/settings` restart).
+    after_ready: Option<String>,
     /// `Esc` hid the popup; it comes back once the input changes.
     popup_hidden: bool,
     /// A turn is running (between sending a message and its `TurnEnd`). `Esc`
@@ -558,6 +595,7 @@ impl App {
             popup_sel: 0,
             popup_hidden: false,
             models: None,
+            after_ready: None,
             busy: false,
             sessions: None,
             session_id: None,
@@ -648,6 +686,31 @@ impl App {
                     .map(|m| {
                         let now = if Some(m) == current { "· current" } else { "" };
                         (m.to_string(), now.to_string())
+                    })
+                    .collect(),
+                is_command: true,
+            });
+        }
+        if let Some((start, keys)) = complete::setting_key_matches(&self.input) {
+            if self.input_cursor != self.input.len() || keys.is_empty() {
+                return None;
+            }
+            let now: Vec<(String, String)> = self
+                .environment
+                .as_ref()
+                .map(|e| e.settings())
+                .unwrap_or_default();
+            return Some(Popup {
+                start,
+                items: keys
+                    .into_iter()
+                    .map(|(k, d)| {
+                        let cur = now
+                            .iter()
+                            .find(|(label, _)| label == k)
+                            .map(|(_, v)| format!(" · now {v}"))
+                            .unwrap_or_default();
+                        (k.to_string(), format!("{d}{cur}"))
                     })
                     .collect(),
                 is_command: true,
@@ -818,6 +881,9 @@ impl App {
                 self.conversation.clear();
                 self.conversation
                     .push(format!("● ready — {agent} · {model} · {backend}"));
+                if let Some(line) = self.after_ready.take() {
+                    self.conversation.push(line);
+                }
                 self.status = Some(ReadyStatus {
                     agent,
                     model,
@@ -1350,7 +1416,25 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
             None => app.conversation.push(NO_ENVIRONMENT.to_string()),
         },
         Slash::Backends => report_rows(app, "backends", |env| Ok(env.backends())),
-        Slash::Settings => report_rows(app, "runtime", |env| Ok(env.settings())),
+        Slash::Settings(None, _) => {
+            report_rows(app, "runtime", |env| Ok(env.settings()));
+            if app.environment.is_some() {
+                // Open the key picker: `/settings ` back in the input.
+                app.input = "/settings ".to_string();
+                app.input_cursor = app.input.len();
+                app.input_changed();
+                app.conversation
+                    .push("●   pick a key below, then /settings <key> <value>".to_string());
+            }
+        }
+        Slash::Settings(Some(key), None) => {
+            app.input = format!("/settings {key} ");
+            app.input_cursor = app.input.len();
+            app.input_changed();
+            app.conversation
+                .push(format!("● type the new {key} and press Enter"));
+        }
+        Slash::Settings(Some(key), Some(value)) => return apply_setting(app, &key, &value),
         Slash::Doctor => report_rows(app, "checks", |env| env.doctor()),
         Slash::Tools => {
             if app.tools.is_empty() {
@@ -1575,6 +1659,28 @@ fn shorten(s: &str, max: usize) -> String {
 /// event loop to reopen the harness on it. A failure is reported in the
 /// transcript and the current conversation continues — switching must never
 /// lose the session you are in.
+/// `/settings <key> <value>`: save it through the caller, then restart the
+/// harness on the same conversation with the runtime it resolved to.
+fn apply_setting(app: &mut App, key: &str, value: &str) -> io::Result<Flow> {
+    // Applying restarts the harness, which would drop a turn mid-flight.
+    if app.busy {
+        app.conversation
+            .push("✗ a turn is running — press Esc to cancel it first".to_string());
+        return Ok(Flow::Continue);
+    }
+    let Some(env) = app.environment.as_ref() else {
+        app.conversation.push(NO_ENVIRONMENT.to_string());
+        return Ok(Flow::Continue);
+    };
+    match env.set(key, value) {
+        Ok((message, runtime)) => Ok(Flow::Reconfigure(runtime, format!("● {message}"))),
+        Err(why) => {
+            app.conversation.push(format!("✗ {why}"));
+            Ok(Flow::Continue)
+        }
+    }
+}
+
 fn switch_session(app: &mut App, arg: &complete::SessionArg) -> io::Result<Flow> {
     // Switching restarts the harness, which would drop a turn mid-flight.
     if app.busy {
