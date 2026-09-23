@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.24-0] — 2026-09-24 — 3.8.0
+
+**Your agents, in the same window.** `/agents` opens a workspace agent in its own pane and you talk to it there, with six layouts to arrange them; `/settings` now changes the runtime and applies it without leaving the session; a bare `bwoc` session works by the BWOC principles; and assistant Markdown renders as CommonMark — tables, links, nesting — without eating `snake_case`. Nothing that worked in 3.7 breaks.
+
 ### Fixed
 - **Assistant Markdown renders correctly in the chat TUI.** The hand-written line scanner took every `_` and `*` as emphasis — `snake_case` showed as `snakecase`, `2 * 3 * 4` as `2  3  4` — and left links, tables, `1)` lists, task boxes, escapes, rules, `~~~` fences and nested emphasis raw. `bwoc-tui` now parses CommonMark with GitHub tables, task lists and strikethrough (`pulldown-cmark`, no default features): tables line up in columns, links show their text then the URL, nested lists indent, and line breaks stay as written.
 ### Changed
