@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.23-0] — 2026-09-23 — 3.7.0
+
+**Pick from a list, plan before acting.** `/mode` and `/model` open pickers — the model list comes from the backend itself, now including LiteLLM, OpenRouter and OpenAI-compatible servers — `plan` mode lets the agent look and propose without changing anything, and a session on vLLM or LiteLLM learns the model's real context window instead of compacting at 8k. Nothing that worked in 3.6 breaks.
+
 ### Added
 
 - **`/mode plan` in the chat TUI.** The harness has had a read-only planning mode; the TUI now accepts it by name and lists it in the `/mode` picker. `F2` still cycles `default` → `accept_edits` → `bypass`, so plan mode is never entered by accident.
