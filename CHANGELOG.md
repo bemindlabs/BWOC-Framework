@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **`/mode` opens a picker.** A bare `/mode` lists `default`, `accept_edits` and `bypass` in the input popup with what each allows and the current one marked; `↑`/`↓` and `Enter` set it, `Esc` keeps it. `/mode <name>` and `F2` work as before.
+
 ### Fixed
 
 - **`/models` lists models on `litellm`, `openrouter`, `openai-compatible` and `anthropic`** (#551). It refused every backend but Ollama; it now asks the harness (`bwoc-harness --list-models`), which calls `GET /models` with the same endpoint and key the chat resolves, so a scoped LiteLLM virtual key lists exactly the models it may call. A refused listing says why (`HTTP 401 …`, no key, unreachable) instead of showing an empty list.

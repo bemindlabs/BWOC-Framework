@@ -18,7 +18,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "/mode",
-        "show or set permission mode: default | accept_edits | bypass",
+        "pick the permission mode: default | accept_edits | bypass",
     ),
     ("/model", "show or switch the model used for later turns"),
     ("/sessions", "list this directory's conversations"),
@@ -58,6 +58,38 @@ pub const COMMANDS: &[(&str, &str)] = &[
 
 /// Permission modes `/mode` accepts — the ones `F2` cycles.
 pub const MODES: &[&str] = &["default", "accept_edits", "bypass"];
+
+/// What each of [`MODES`] does, shown beside it in the `/mode` picker.
+pub const MODE_CHOICES: &[(&str, &str)] = &[
+    ("default", "ask before every tool the policy marks `ask`"),
+    (
+        "accept_edits",
+        "file writes and edits run without asking; the rest still ask",
+    ),
+    (
+        "bypass",
+        "no prompts — deny rules, guardrails and sandbox still hold",
+    ),
+];
+
+/// The `/mode` picker: while the input is `/mode ` plus a partial word, the
+/// modes starting with that word and the byte offset where the word begins.
+pub fn mode_matches(input: &str) -> Option<(usize, Vec<(&'static str, &'static str)>)> {
+    let arg = input.strip_prefix("/mode ")?;
+    let word = arg.trim_start();
+    if word.contains(char::is_whitespace) {
+        return None;
+    }
+    let start = input.len() - word.len();
+    Some((
+        start,
+        MODE_CHOICES
+            .iter()
+            .filter(|(m, _)| m.starts_with(word))
+            .copied()
+            .collect(),
+    ))
+}
 
 /// A parsed `/` command line.
 #[derive(Debug, PartialEq, Eq)]
@@ -355,6 +387,19 @@ fn escape_attr(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mode_matches_lists_modes_after_the_command_word() {
+        let (start, all) = mode_matches("/mode ").unwrap();
+        assert_eq!(start, 6);
+        assert_eq!(all.len(), MODES.len());
+        let (start, hits) = mode_matches("/mode  ac").unwrap();
+        assert_eq!((start, hits[0].0, hits.len()), (7, "accept_edits", 1));
+        assert!(mode_matches("/mode").is_none()); // still typing the command
+        assert!(mode_matches("/model ").is_none());
+        assert!(mode_matches("/mode bypass now").is_none());
+        assert!(mode_matches("/mode zz").unwrap().1.is_empty());
+    }
 
     #[test]
     fn parse_slash_commands_and_prose() {

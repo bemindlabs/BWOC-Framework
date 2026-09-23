@@ -630,6 +630,22 @@ impl App {
         if self.workdir.is_none() || self.popup_hidden {
             return None;
         }
+        if let Some((start, modes)) = complete::mode_matches(&self.input) {
+            if self.input_cursor != self.input.len() || modes.is_empty() {
+                return None;
+            }
+            return Some(Popup {
+                start,
+                items: modes
+                    .into_iter()
+                    .map(|(m, d)| {
+                        let now = if m == self.mode { " · current" } else { "" };
+                        (m.to_string(), format!("{d}{now}"))
+                    })
+                    .collect(),
+                is_command: true,
+            });
+        }
         if let Some(cmds) = complete::slash_matches(&self.input) {
             if self.input_cursor != self.input.len() || cmds.is_empty() {
                 return None;
@@ -1227,10 +1243,14 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
                 .push("● conversation forgotten — starting fresh".to_string());
         }
         Slash::Mode(None) => {
+            // Open the picker: `/mode ` back in the input lists the modes;
+            // ↑/↓ choose, Enter sets, Esc leaves the mode as it is.
+            app.input = "/mode ".to_string();
+            app.input_cursor = app.input.len();
+            app.input_changed();
             app.conversation.push(format!(
-                "● permission mode: {} — /mode {} (or F2)",
-                app.mode,
-                complete::MODES.join("|")
+                "● permission mode: {} — pick one below (↑/↓, Enter), or F2",
+                app.mode
             ));
         }
         Slash::Mode(Some(m)) if complete::MODES.contains(&m.as_str()) => {
