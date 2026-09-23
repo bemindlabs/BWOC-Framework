@@ -1075,7 +1075,9 @@ where
                     out,
                     &ChatEvent::Error {
                         message: "the model emitted a tool call as plain text — it was NOT \
-                                  executed (the model may be too weak for structured tool use)"
+                                  executed. Usually the server's tool-call parser does not \
+                                  match this model's format (vLLM: `--tool-call-parser`); \
+                                  otherwise the model is too weak for structured tool use"
                             .to_string(),
                     },
                 )
