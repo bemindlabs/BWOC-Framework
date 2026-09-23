@@ -444,6 +444,8 @@ enum Flow {
     Reconfigure(Runtime, String),
     /// Open a workspace agent in its own pane (`/agents <name>`).
     OpenAgent(String),
+    /// Arrange the panes (`/layout <name>`).
+    Layout(String),
 }
 
 /// A pending permission request awaiting the operator's `a`/`d` decision.
@@ -738,6 +740,19 @@ impl App {
                             .unwrap_or_default();
                         (k.to_string(), format!("{d}{cur}"))
                     })
+                    .collect(),
+                is_command: true,
+            });
+        }
+        if let Some((start, layouts)) = complete::layout_matches(&self.input) {
+            if self.input_cursor != self.input.len() || layouts.is_empty() {
+                return None;
+            }
+            return Some(Popup {
+                start,
+                items: layouts
+                    .into_iter()
+                    .map(|(l, d)| (l.to_string(), d.to_string()))
                     .collect(),
                 is_command: true,
             });
@@ -1180,6 +1195,14 @@ fn event_loop(
                         let _ = send_input(&mut stdin, &ChatInput::Quit);
                         return Ok(Flow::Quit);
                     }
+                    // Ctrl-L cycles the layout while agent panes are open.
+                    if !panes.side.is_empty()
+                        && key.code == KeyCode::Char('l')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        panes.layout = (panes.layout + 1) % complete::LAYOUTS.len();
+                        continue;
+                    }
                     // Tab / Shift-Tab move focus between panes, unless the
                     // focused pane's `/` or `@` popup wants Tab to complete.
                     if !panes.side.is_empty()
@@ -1196,6 +1219,11 @@ fn event_loop(
                     match handle_key(app, &mut stdin, key)? {
                         Flow::Continue => {}
                         Flow::OpenAgent(name) => panes.open(&name, app),
+                        Flow::Layout(name) => {
+                            if let Err(why) = panes.set_layout(&name) {
+                                app.conversation.push(why);
+                            }
+                        }
                         // Polite quit before we tear down the terminal (or
                         // restart the harness on another conversation).
                         flow => {
@@ -1442,6 +1470,14 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
             }
         }
         Slash::Agents(None) => list_agents(app),
+        Slash::Layout(None) => {
+            app.input = "/layout ".to_string();
+            app.input_cursor = app.input.len();
+            app.input_changed();
+            app.conversation
+                .push("● pick a layout below (↑/↓, Enter) — Ctrl-L cycles them".to_string());
+        }
+        Slash::Layout(Some(name)) => return Ok(Flow::Layout(name)),
         Slash::Agents(Some(name)) => return Ok(Flow::OpenAgent(name)),
         Slash::Model(Some(model)) => {
             send_input(stdin, &ChatInput::SetModel { model })?;
@@ -1762,6 +1798,8 @@ struct AgentPane {
 struct Panes {
     side: Vec<AgentPane>,
     focus: usize,
+    /// Index into [`complete::LAYOUTS`].
+    layout: usize,
     harness_bin: String,
     /// Main session's backend, model and endpoint — an agent's manifest
     /// overrides them, as in fleet mode.
@@ -1773,6 +1811,7 @@ impl Panes {
         Self {
             side: Vec::new(),
             focus: 0,
+            layout: 0,
             harness_bin,
             defaults: (String::new(), None, DEFAULT_ENDPOINT.to_string()),
         }
@@ -1863,6 +1902,24 @@ impl Panes {
         }
     }
 
+    /// `/layout <name>`: `Err` names the layouts when `name` is not one.
+    fn set_layout(&mut self, name: &str) -> Result<(), String> {
+        match complete::LAYOUTS.iter().position(|(l, _)| *l == name) {
+            Some(i) => {
+                self.layout = i;
+                Ok(())
+            }
+            None => Err(format!(
+                "✗ unknown layout `{name}` — one of {}",
+                complete::LAYOUTS
+                    .iter()
+                    .map(|(l, _)| *l)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
     /// A key for the focused agent pane. `/quit` there closes the pane.
     fn key(&mut self, key: KeyEvent) -> io::Result<()> {
         let i = self.focus - 1;
@@ -1871,6 +1928,11 @@ impl Panes {
             Flow::Quit => {
                 self.side.remove(i);
                 self.focus = 0;
+            }
+            Flow::Layout(name) => {
+                if let Err(why) = self.set_layout(&name) {
+                    self.side[i].app.conversation.push(why);
+                }
             }
             Flow::OpenAgent(name) => {
                 // `open` reports into a pane; use the one that asked.
@@ -2019,22 +2081,18 @@ fn draw_panes(f: &mut ratatui::Frame, main: &App, panes: &Panes) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(f.area());
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(rows[0]);
-    draw_pane(f, cols[0], main, panes.focus == 0);
-    let n = panes.side.len() as u32;
-    let stack = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints((0..n).map(|_| Constraint::Ratio(1, n)).collect::<Vec<_>>())
-        .split(cols[1]);
-    for (i, p) in panes.side.iter().enumerate() {
-        draw_pane(f, stack[i], &p.app, panes.focus == i + 1);
+    let layout = complete::LAYOUTS[panes.layout].0;
+    for (i, rect) in pane_rects(rows[0], layout, panes.side.len() + 1, panes.focus) {
+        let app = if i == 0 { main } else { &panes.side[i - 1].app };
+        draw_pane(f, rect, app, panes.focus == i);
     }
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" Tab ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("next pane · /agents open another · /quit in a pane closes it · "),
+        Span::raw("next pane · "),
+        Span::styled("Ctrl-L ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(format!(
+            "layout ({layout}) · /agents open another · /quit in a pane closes it · "
+        )),
         Span::styled(
             "Ctrl-C exit ",
             Style::default().add_modifier(Modifier::BOLD),
@@ -2042,6 +2100,79 @@ fn draw_panes(f: &mut ratatui::Frame, main: &App, panes: &Panes) {
     ]))
     .style(Style::default().fg(Color::DarkGray));
     f.render_widget(footer, rows[1]);
+}
+
+/// Where each pane goes (`0` = main session) for a layout over `count` panes.
+/// Pure, so every layout is tested without a terminal.
+fn pane_rects(area: Rect, layout: &str, count: usize, focus: usize) -> Vec<(usize, Rect)> {
+    let split = |area: Rect, dir: Direction, n: usize| {
+        let n32 = n as u32;
+        Layout::default()
+            .direction(dir)
+            .constraints(
+                (0..n32)
+                    .map(|_| Constraint::Ratio(1, n32))
+                    .collect::<Vec<_>>(),
+            )
+            .split(area)
+    };
+    if count <= 1 || layout == "single" {
+        return vec![(focus.min(count.saturating_sub(1)), area)];
+    }
+    match layout {
+        "main-vertical" | "main-horizontal" => {
+            let dir = if layout == "main-vertical" {
+                Direction::Horizontal
+            } else {
+                Direction::Vertical
+            };
+            let halves = Layout::default()
+                .direction(dir)
+                .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+                .split(area);
+            let rest_dir = if layout == "main-vertical" {
+                Direction::Vertical
+            } else {
+                Direction::Horizontal
+            };
+            let mut out = vec![(0, halves[0])];
+            out.extend(
+                split(halves[1], rest_dir, count - 1)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| (i + 1, *r)),
+            );
+            out
+        }
+        "columns" | "rows" => {
+            let dir = if layout == "columns" {
+                Direction::Horizontal
+            } else {
+                Direction::Vertical
+            };
+            split(area, dir, count)
+                .iter()
+                .copied()
+                .enumerate()
+                .collect()
+        }
+        _ => {
+            // grid: as square as possible, filled row by row.
+            let cols = (1..=count).find(|c| c * c >= count).unwrap_or(1);
+            let rows_n = count.div_ceil(cols);
+            let mut out = Vec::new();
+            for (r, row) in split(area, Direction::Vertical, rows_n).iter().enumerate() {
+                let in_row = (count - r * cols).min(cols);
+                for (c, cell) in split(*row, Direction::Horizontal, in_row)
+                    .iter()
+                    .enumerate()
+                {
+                    out.push((r * cols + c, *cell));
+                }
+            }
+            out
+        }
+    }
 }
 
 /// One session in a bordered pane: status line, transcript, input.
@@ -3253,6 +3384,34 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn every_layout_places_every_pane_inside_the_area() {
+        let area = Rect::new(0, 0, 120, 40);
+        for (layout, _) in complete::LAYOUTS {
+            for count in 1..=5 {
+                let rects = pane_rects(area, layout, count, 0);
+                let want = if *layout == "single" { 1 } else { count };
+                assert_eq!(rects.len(), want, "{layout} × {count}");
+                let mut ids: Vec<usize> = rects.iter().map(|(i, _)| *i).collect();
+                ids.sort_unstable();
+                ids.dedup();
+                assert_eq!(ids.len(), want, "{layout} × {count}: a pane drawn twice");
+                for (_, r) in &rects {
+                    assert!(r.width > 0 && r.height > 0 && r.right() <= 120 && r.bottom() <= 40);
+                }
+            }
+        }
+        // main-vertical: main on the left, wider than each agent.
+        let mv = pane_rects(area, "main-vertical", 3, 0);
+        assert!(mv[0].1.width > mv[1].1.width && mv[1].1.x > mv[0].1.x);
+        // single shows the focused pane.
+        assert_eq!(pane_rects(area, "single", 3, 2)[0].0, 2);
+        // grid of 4 is 2 × 2.
+        let g = pane_rects(area, "grid", 4, 0);
+        assert_eq!(g[0].1.y, g[1].1.y);
+        assert!(g[2].1.y > g[0].1.y);
+    }
 
     #[test]
     fn pane_focus_cycles_through_main_and_agents() {

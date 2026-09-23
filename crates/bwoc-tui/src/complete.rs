@@ -25,6 +25,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/agents",
         "open a workspace agent in its own pane and talk to it",
     ),
+    (
+        "/layout",
+        "arrange the panes: main-vertical | main-horizontal | columns | rows | grid | single",
+    ),
     ("/sessions", "list this directory's conversations"),
     ("/session", "open another conversation: /session <id>"),
     ("/new", "start another conversation here"),
@@ -90,6 +94,33 @@ fn arg_word<'a>(input: &'a str, prefix: &str) -> Option<(usize, &'a str)> {
         return None;
     }
     Some((input.len() - word.len(), word))
+}
+
+/// Pane layouts, in `Ctrl-L` order, each with how it arranges the panes. The
+/// names match `bwoc fleet term --layout`.
+pub const LAYOUTS: &[(&str, &str)] = &[
+    ("main-vertical", "main session left, agents stacked right"),
+    (
+        "main-horizontal",
+        "main session on top, agents side by side below",
+    ),
+    ("columns", "every pane side by side"),
+    ("rows", "every pane stacked"),
+    ("grid", "panes tiled in a grid"),
+    ("single", "only the focused pane, full screen"),
+];
+
+/// The `/layout` picker: layouts starting with the partial word.
+pub fn layout_matches(input: &str) -> Option<(usize, Vec<(&'static str, &'static str)>)> {
+    let (start, word) = arg_word(input, "/layout ")?;
+    Some((
+        start,
+        LAYOUTS
+            .iter()
+            .filter(|(l, _)| l.starts_with(word))
+            .copied()
+            .collect(),
+    ))
 }
 
 /// Runtime keys `/settings` can change, each with what it does.
@@ -173,6 +204,8 @@ pub enum Slash {
     Model(Option<String>),
     /// `/agents [name]` — bare lists the workspace's agents and opens a picker.
     Agents(Option<String>),
+    /// `/layout [name]` — bare opens the layout picker.
+    Layout(Option<String>),
     Undo,
     Redo,
     Status,
@@ -214,6 +247,7 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "mode" => Slash::Mode(words.next().map(str::to_string)),
         "model" => Slash::Model(words.next().map(str::to_string)),
         "agents" | "agent" => Slash::Agents(words.next().map(str::to_string)),
+        "layout" => Slash::Layout(words.next().map(str::to_string)),
         "undo" => Slash::Undo,
         "redo" => Slash::Redo,
         "status" => Slash::Status,
@@ -521,6 +555,16 @@ mod tests {
             agent_matches("/agents lu", &names).unwrap().1,
             ["agent-luban"]
         );
+    }
+
+    #[test]
+    fn layouts_parse_and_pick() {
+        assert_eq!(
+            parse_slash("/layout grid"),
+            Some(Slash::Layout(Some("grid".into())))
+        );
+        assert_eq!(layout_matches("/layout main").unwrap().1.len(), 2);
+        assert_eq!(layout_matches("/layout ").unwrap().1.len(), LAYOUTS.len());
     }
 
     #[test]
