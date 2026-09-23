@@ -498,6 +498,14 @@ async fn context_limit_reads_litellm_model_info_with_the_key() {
         })))
         .mount(&server)
         .await;
+    // Anything else on the info route is the proxy refusing (lower priority
+    // than the keyed mock, so it only answers a request without the key).
+    Mock::given(method("GET"))
+        .and(path("/v1/model/info"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("No api key passed in."))
+        .with_priority(10)
+        .mount(&server)
+        .await;
     let keyed = OllamaClient::new(format!("{}/v1", server.uri()))
         .with_api_key(Some("sk-scoped".to_string()));
     assert_eq!(keyed.model_context_limit("local-chat").await, Some(65536));
