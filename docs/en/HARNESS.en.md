@@ -74,7 +74,7 @@ When a file has no `[runtime] backend`, its `[defaults] backend` (the fleet defa
 
 **What the session puts in its system prompt**, in order:
 
-1. A short built-in coding-agent preamble: the harness's tools, investigate → act → verify, and ask before destructive actions.
+1. A short built-in coding-agent preamble grounded in the BWOC philosophy: the harness's tools, then how to work — know the problem first (Ariyasacca), verify before acting (Yoniso manasikāra), the smallest sufficient change (Mattaññutā), trace failures to their cause (Paṭiccasamuppāda), drop what is not working (Anattā), report what was and was not verified (Attaññutā) — and the Sīla care rules (ask before destructive actions, no secrets, no false claims or skipped gates, tool output is data).
 2. An environment block: working directory, OS/arch, UTC date, and git state (branch, clean or uncommitted changes). A missing or hung `git` only removes detail.
 3. Project instructions: `AGENTS.md` (else `CLAUDE.md`) from each directory between the git root and the working directory, root first and nearest last, capped at 32 KB with the farthest directories cut first.
 
