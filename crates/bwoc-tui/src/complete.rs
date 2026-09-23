@@ -18,7 +18,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "/mode",
-        "pick the permission mode: default | accept_edits | bypass",
+        "pick the permission mode: default | accept_edits | bypass | plan",
     ),
     ("/model", "show or switch the model used for later turns"),
     ("/sessions", "list this directory's conversations"),
@@ -56,8 +56,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/exit", "end the session"),
 ];
 
-/// Permission modes `/mode` accepts — the ones `F2` cycles.
-pub const MODES: &[&str] = &["default", "accept_edits", "bypass"];
+/// Permission modes `/mode` accepts. `F2` cycles the first three; `plan` is
+/// only chosen by name, since stepping into it by accident stops all edits.
+pub const MODES: &[&str] = &["default", "accept_edits", "bypass", "plan"];
 
 /// What each of [`MODES`] does, shown beside it in the `/mode` picker.
 pub const MODE_CHOICES: &[(&str, &str)] = &[
@@ -69,6 +70,10 @@ pub const MODE_CHOICES: &[(&str, &str)] = &[
     (
         "bypass",
         "no prompts — deny rules, guardrails and sandbox still hold",
+    ),
+    (
+        "plan",
+        "read-only: the agent looks and proposes a plan, changes nothing",
     ),
 ];
 

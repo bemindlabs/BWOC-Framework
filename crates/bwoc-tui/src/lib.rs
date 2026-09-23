@@ -470,9 +470,9 @@ struct App {
     scroll: usize,
     /// Permission mode as last reported by the harness's `ModeChanged` — the
     /// harness is authoritative, so this mirrors whatever it sends (`default` |
-    /// `accept_edits` | `bypass`, and `plan` if the harness enters it). `F2`
-    /// cycles the first three; `plan` (only ever entered harness-side) falls
-    /// back to `default` on the next `F2`. Shown in the status line.
+    /// `accept_edits` | `bypass` | `plan`). `F2` cycles the first three; `plan`
+    /// is set by name (`/mode plan`) and falls back to `default` on the next
+    /// `F2`. Shown in the status line.
     mode: String,
     /// Session working directory for `@` file mentions. `None` (fleet panes)
     /// disables `/` and `@` handling so a fleet `@agent` line routes as before.
