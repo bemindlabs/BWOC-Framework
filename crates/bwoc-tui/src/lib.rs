@@ -1293,6 +1293,8 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
                 .map_or_else(|| "(unknown)".to_string(), |s| s.model.clone());
             // Open the picker when the backend can list; otherwise say how to
             // switch by name, and why there is no list.
+            // A fresh list each time: never complete from a stale one.
+            app.models = None;
             match app.environment.as_ref().map(|env| env.models()) {
                 Some(Ok(models)) if !models.is_empty() => {
                     app.conversation.push(format!(
@@ -1306,8 +1308,12 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
                 listing => {
                     app.conversation
                         .push(format!("● model: {current} — /model <name> switches it"));
-                    if let Some(Err(why)) = listing {
-                        app.conversation.push(format!("✗ {why}"));
+                    match listing {
+                        Some(Err(why)) => app.conversation.push(format!("✗ {why}")),
+                        Some(Ok(_)) => app
+                            .conversation
+                            .push("✗ the backend listed no models".to_string()),
+                        None => {}
                     }
                 }
             }
