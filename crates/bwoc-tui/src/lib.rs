@@ -1847,7 +1847,13 @@ impl Panes {
         match Session::spawn(&agent.id, &cfg) {
             Ok(session) => {
                 let mut app = App::new(agent.id.clone(), &agent.backend);
-                app.workdir = Some(root.join(&agent.path));
+                // `path` comes from `bwoc list`: keep `@` files inside the
+                // workspace unless it is a plain relative path (as `for_agent`).
+                app.workdir = Some(if session::is_safe_relative_path(&agent.path) {
+                    root.join(&agent.path)
+                } else {
+                    root.clone()
+                });
                 self.side.push(AgentPane { app, session });
                 self.focus = self.side.len();
             }
@@ -1899,8 +1905,11 @@ fn list_agents(app: &mut App) {
     };
     let agents = session::fetch_fleet(&bwoc_bin(), &root.to_string_lossy());
     if agents.is_empty() {
-        app.conversation
-            .push(format!("✗ no agents in {} (bwoc list)", root.display()));
+        app.conversation.push(format!(
+            "✗ no agents listed for {} — none registered, or `bwoc list --json` failed \
+             (run it there to see which)",
+            root.display()
+        ));
         return;
     }
     app.conversation.push(format!("● {} agents:", agents.len()));

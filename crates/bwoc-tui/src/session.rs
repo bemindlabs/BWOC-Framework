@@ -45,7 +45,7 @@ pub fn is_harness_drivable(backend: &str) -> bool {
 /// component a plain name — no root (`/`), drive prefix (`C:\`), or `..` that
 /// could escape the workspace. Guards the untrusted `path` from
 /// `bwoc list --json` before it selects which `config.manifest.json` to read.
-fn is_safe_relative_path(path: &str) -> bool {
+pub(crate) fn is_safe_relative_path(path: &str) -> bool {
     use std::path::Component;
     let mut has_name = false;
     for component in Path::new(path).components() {
