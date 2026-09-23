@@ -87,9 +87,12 @@ pub trait ProviderClient: Send + Sync {
     /// [`Self::list_models`] for a caller that shows the answer to a person
     /// (`bwoc-harness --list-models`, behind the TUI's `/models`): a failure
     /// says what went wrong — unreachable, `HTTP 401`, a body with no `data` —
-    /// instead of reading as an empty list. The default wraps `list_models`.
+    /// instead of reading as an empty list. The default is an error, so a
+    /// provider without a listing never passes for one that listed nothing.
     async fn try_list_models(&self) -> Result<Vec<String>, HarnessError> {
-        Ok(self.list_models().await)
+        Err(HarnessError::Provider(
+            "this backend does not list models".to_string(),
+        ))
     }
 }
 
@@ -101,6 +104,46 @@ pub trait ProviderClient: Send + Sync {
 /// of truth — the CLI `--endpoint` default, worker config defaults, and
 /// [`OllamaClient::default_endpoint`] all reference this so they cannot drift.
 pub const DEFAULT_ENDPOINT: &str = "http://localhost:11434/v1";
+
+/// Send a prepared `GET …/models` and read the ids from the list shape both
+/// OpenAI-compatible servers and Anthropic return (`{"data": [{"id": ...}]}`).
+/// Every failure names the URL and what went wrong, so a person reading
+/// `/models` can tell a refused key from an unreachable host.
+pub(crate) async fn fetch_model_ids(
+    rb: reqwest::RequestBuilder,
+) -> Result<Vec<String>, HarnessError> {
+    let resp = rb
+        .send()
+        .await
+        .map_err(|e| HarnessError::Provider(format!("listing models: {e}")))?;
+    let url = resp.url().to_string();
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let first: String = body
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(200)
+            .collect();
+        return Err(HarnessError::Provider(format!(
+            "GET {url}: HTTP {status} {first}"
+        )));
+    }
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| HarnessError::Provider(format!("GET {url}: not JSON: {e}")))?;
+    let arr = body["data"]
+        .as_array()
+        .ok_or_else(|| HarnessError::Provider(format!("GET {url}: no `data` list in the reply")))?;
+    Ok(arr
+        .iter()
+        .filter_map(|m| m["id"].as_str().map(str::to_string))
+        .collect())
+}
 
 /// Default OpenRouter base URL. OpenRouter is a hosted, OpenAI-compatible
 /// aggregator that routes one key to any vendor's models (`openai/…`,
@@ -473,32 +516,7 @@ impl ProviderClient for OllamaClient {
     /// list shape (`{"data": [{"id": ...}, ...]}`). LiteLLM answers with only
     /// the models the key may call, so the list is already the right one.
     async fn try_list_models(&self) -> Result<Vec<String>, HarnessError> {
-        let url = self.models_url();
-        let resp = self
-            .auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| HarnessError::Provider(format!("GET {url}: {e}")))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            let first = body.lines().next().unwrap_or("").trim();
-            let first: String = first.chars().take(200).collect();
-            return Err(HarnessError::Provider(format!(
-                "GET {url}: HTTP {status} {first}"
-            )));
-        }
-        let body = resp
-            .json::<Value>()
-            .await
-            .map_err(|e| HarnessError::Provider(format!("GET {url}: not JSON: {e}")))?;
-        let arr = body["data"].as_array().ok_or_else(|| {
-            HarnessError::Provider(format!("GET {url}: no `data` list in the reply"))
-        })?;
-        Ok(arr
-            .iter()
-            .filter_map(|m| m["id"].as_str().map(str::to_string))
-            .collect())
+        fetch_model_ids(self.auth(self.client.get(self.models_url()))).await
     }
 
     /// Query Ollama's native `POST /api/show` endpoint for the model's

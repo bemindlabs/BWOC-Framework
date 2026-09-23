@@ -422,3 +422,32 @@ async fn try_list_models_sends_the_key_and_reports_a_refusal() {
     assert!(err.contains("401") && err.contains("No api key"), "{err}");
     assert!(keyless.list_models().await.is_empty());
 }
+
+#[tokio::test]
+async fn anthropic_try_list_models_reports_a_refusal() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("invalid x-api-key"))
+        .mount(&server)
+        .await;
+    let client = AnthropicClient::new(server.uri()).with_api_key("bad-key");
+    let err = client.try_list_models().await.unwrap_err().to_string();
+    assert!(
+        err.contains("401") && err.contains("invalid x-api-key"),
+        "{err}"
+    );
+    assert!(client.list_models().await.is_empty());
+
+    // No key: said before any request, not an empty list.
+    let keyless = AnthropicClient::new(server.uri()).with_api_key("");
+    let err = keyless.try_list_models().await.unwrap_err().to_string();
+    assert!(err.contains("no Anthropic API key"), "{err}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_client_try_list_models_says_it_cannot_list() {
+    let client = super::CliClient::new("/nonexistent/fake-cli");
+    assert!(client.try_list_models().await.is_err());
+}

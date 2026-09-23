@@ -470,26 +470,12 @@ impl ProviderClient for AnthropicClient {
     }
 
     async fn list_models(&self) -> Vec<String> {
-        if self.api_key.is_empty() {
-            return Vec::new();
-        }
-        let Ok(resp) = self.auth(self.client.get(self.models_url())).send().await else {
-            return Vec::new();
-        };
-        if !resp.status().is_success() {
-            return Vec::new();
-        }
-        let Ok(body) = resp.json::<Value>().await else {
-            return Vec::new();
-        };
-        body["data"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m["id"].as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.try_list_models().await.unwrap_or_default()
+    }
+
+    async fn try_list_models(&self) -> Result<Vec<String>, HarnessError> {
+        self.require_key()?;
+        super::client::fetch_model_ids(self.auth(self.client.get(self.models_url()))).await
     }
 }
 
