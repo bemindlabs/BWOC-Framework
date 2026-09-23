@@ -451,3 +451,65 @@ async fn cli_client_try_list_models_says_it_cannot_list() {
     let client = super::CliClient::new("/nonexistent/fake-cli");
     assert!(client.try_list_models().await.is_err());
 }
+
+// ── Context window from OpenAI-compatible servers (vLLM, LiteLLM) ────────────
+//
+// Without Ollama's `/api/show` the chat budget fell back to 8k tokens, so a
+// 64k vLLM model behind LiteLLM compacted eight times too early.
+
+#[tokio::test]
+async fn context_limit_reads_vllm_max_model_len() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "other", "max_model_len": 4096},
+                     {"id": "qwen", "max_model_len": 65536}]
+        })))
+        .mount(&server)
+        .await;
+    let client = OllamaClient::new(format!("{}/v1", server.uri()));
+    assert_eq!(client.model_context_limit("qwen").await, Some(65536));
+    assert_eq!(client.model_context_limit("missing").await, None);
+}
+
+#[tokio::test]
+async fn context_limit_reads_litellm_model_info_with_the_key() {
+    use wiremock::matchers::header;
+    let server = MockServer::start().await;
+    // LiteLLM's /models carries no window.
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"data": [{"id": "local-chat"}]})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/model/info"))
+        .and(header("authorization", "Bearer sk-scoped"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [
+                {"model_name": "local-chat-fast", "model_info": {"max_input_tokens": 8192}},
+                {"model_name": "local-chat", "model_info": {"max_input_tokens": null}},
+                {"model_name": "local-chat", "model_info": {"max_input_tokens": 65536}}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    // Anything else on the info route is the proxy refusing (lower priority
+    // than the keyed mock, so it only answers a request without the key).
+    Mock::given(method("GET"))
+        .and(path("/v1/model/info"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("No api key passed in."))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    let keyed = OllamaClient::new(format!("{}/v1", server.uri()))
+        .with_api_key(Some("sk-scoped".to_string()));
+    assert_eq!(keyed.model_context_limit("local-chat").await, Some(65536));
+    // Without the key the proxy refuses the info route: unknown, not a guess.
+    let keyless = OllamaClient::new(format!("{}/v1", server.uri()));
+    assert_eq!(keyless.model_context_limit("local-chat").await, None);
+}

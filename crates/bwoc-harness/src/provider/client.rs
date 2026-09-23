@@ -531,8 +531,19 @@ impl ProviderClient for OllamaClient {
     ///    the model was loaded with a custom context override.
     ///
     /// If neither is present, or if the request fails for any reason, we
-    /// return `None` — best-effort, never hard-fails the loop.
+    /// fall through to [`Self::openai_compat_context_limit`] (vLLM, LiteLLM),
+    /// then `None` — best-effort, never hard-fails the loop.
     async fn model_context_limit(&self, model: &str) -> Option<u32> {
+        match self.ollama_context_limit(model).await {
+            Some(n) => Some(n),
+            None => self.openai_compat_context_limit(model).await,
+        }
+    }
+}
+
+impl OllamaClient {
+    /// Ollama's `POST /api/show` (see [`ProviderClient::model_context_limit`]).
+    async fn ollama_context_limit(&self, model: &str) -> Option<u32> {
         let body = json!({"name": model});
 
         let resp = self
@@ -576,6 +587,40 @@ impl ProviderClient for OllamaClient {
         }
 
         None
+    }
+
+    /// The window an OpenAI-compatible server reports without an Ollama
+    /// `/api/show`: vLLM puts `max_model_len` on its `GET /models` entries;
+    /// LiteLLM hides that, but its `GET /model/info` carries
+    /// `model_info.max_input_tokens` when the proxy config sets it. Both use
+    /// this client's auth, so a scoped key reads only its own models.
+    async fn openai_compat_context_limit(&self, model: &str) -> Option<u32> {
+        let as_u32 = |v: &Value| v.as_u64().and_then(|n| u32::try_from(n).ok());
+        if let Some(n) = self.get_json(&self.models_url()).await.and_then(|body| {
+            body["data"]
+                .as_array()?
+                .iter()
+                .find(|m| m["id"].as_str() == Some(model))
+                .and_then(|m| as_u32(&m["max_model_len"]))
+        }) {
+            return Some(n);
+        }
+        let info_url = format!("{}/model/info", self.base_url);
+        self.get_json(&info_url).await.and_then(|body| {
+            body["data"]
+                .as_array()?
+                .iter()
+                .filter(|m| m["model_name"].as_str() == Some(model))
+                .find_map(|m| as_u32(&m["model_info"]["max_input_tokens"]))
+        })
+    }
+
+    async fn get_json(&self, url: &str) -> Option<Value> {
+        let resp = self.auth(self.client.get(url)).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.json().await.ok()
     }
 }
 

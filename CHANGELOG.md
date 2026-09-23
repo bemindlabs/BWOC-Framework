@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 - **The `/` popup keeps the highlighted row in view.** It showed the first 8 rows only, so arrowing past `/fork` highlighted a row off screen; the list now scrolls with the selection.
 - **A tool call left as text now names the likely cause.** The warning (#403) blamed a weak model; the usual cause is a server tool-call parser that does not match the model's format (vLLM `--tool-call-parser hermes` on Qwen3, which emits XML), so it now says that first.
+- **Chat sessions learn the context window from vLLM and LiteLLM.** Only Ollama's `/api/show` was asked, so any other OpenAI-compatible server fell back to an 8k-token budget and compacted far too early (a 64k vLLM model: 8k). The harness now also reads vLLM's `max_model_len` on `GET /models` and LiteLLM's `model_info.max_input_tokens` on `GET /model/info` (set it in the proxy config), with the session's key.
 - **`/models` lists models on `litellm`, `openrouter`, `openai-compatible` and `anthropic`** (#551). It refused every backend but Ollama; it now asks the harness (`bwoc-harness --list-models`), which calls `GET /models` with the same endpoint and key the chat resolves, so a scoped LiteLLM virtual key lists exactly the models it may call. A refused listing says why (`HTTP 401 …`, no key, unreachable) instead of showing an empty list.
 
 ## [v2026.9.21-1] — 2026-09-20 — 3.6.0
