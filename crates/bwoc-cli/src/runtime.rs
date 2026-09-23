@@ -314,19 +314,40 @@ pub struct Environment {
 
 impl bwoc_tui::EnvironmentInfo for Environment {
     fn models(&self) -> Result<Vec<String>, String> {
-        // Only a backend with a model index can answer honestly. Ollama has
-        // one; a hosted API does not expose one we can trust here.
-        // Only Ollama is probed: the probe speaks Ollama's own `/api/tags`, and
-        // an arbitrary OpenAI-compatible endpoint would fail it in a way that
-        // reads like the endpoint is broken rather than simply not listable.
-        if self.backend != "ollama" {
-            return Err(format!(
-                "`{}` does not list models — pass one to /model <name>",
-                self.backend
-            ));
+        // Ollama keeps its native `/api/tags` probe. Every other harness
+        // backend asks the harness itself (`--list-models`), so the listing
+        // uses the exact endpoint and key the chat resolves — LiteLLM's
+        // `/v1/models` then returns only what that key may call (#551).
+        if self.backend == "ollama" {
+            return probe_ollama(self.endpoint.as_deref())
+                .ok_or_else(|| "no model list came back from the Ollama endpoint".to_string());
         }
-        probe_ollama(self.endpoint.as_deref())
-            .ok_or_else(|| "no model list came back from the Ollama endpoint".to_string())
+        let harness = crate::spawn::Backend::harness_binary()
+            .ok_or_else(|| "bwoc-harness not found — cannot list models".to_string())?;
+        let mut cmd = std::process::Command::new(harness);
+        cmd.args(["--list-models", "--backend", &self.backend]);
+        if let Some(e) = &self.endpoint {
+            cmd.args(["--endpoint", e]);
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("could not run bwoc-harness: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // The error line, not a start-up warning printed before it.
+            let why = stderr
+                .lines()
+                .find_map(|l| l.strip_prefix("bwoc-harness error: "))
+                .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
+                .unwrap_or("no reason given");
+            return Err(format!("`{}` did not list models: {why}", self.backend));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     fn backends(&self) -> Vec<(String, String)> {
