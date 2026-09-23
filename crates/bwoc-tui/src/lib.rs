@@ -481,6 +481,9 @@ struct App {
     files: Option<Vec<String>>,
     /// Highlighted row in the `/` / `@` popup.
     popup_sel: usize,
+    /// Models the backend listed for the `/model` picker, fetched when a bare
+    /// `/model` opens it (`None` until then).
+    models: Option<Vec<String>>,
     /// `Esc` hid the popup; it comes back once the input changes.
     popup_hidden: bool,
     /// A turn is running (between sending a message and its `TurnEnd`). `Esc`
@@ -554,6 +557,7 @@ impl App {
             files: None,
             popup_sel: 0,
             popup_hidden: false,
+            models: None,
             busy: false,
             sessions: None,
             session_id: None,
@@ -629,6 +633,25 @@ impl App {
     fn popup(&self) -> Option<Popup> {
         if self.workdir.is_none() || self.popup_hidden {
             return None;
+        }
+        if let Some(models) = &self.models
+            && let Some((start, hits)) = complete::model_matches(&self.input, models)
+        {
+            if self.input_cursor != self.input.len() || hits.is_empty() {
+                return None;
+            }
+            let current = self.status.as_ref().map(|s| s.model.as_str());
+            return Some(Popup {
+                start,
+                items: hits
+                    .into_iter()
+                    .map(|m| {
+                        let now = if Some(m) == current { "· current" } else { "" };
+                        (m.to_string(), now.to_string())
+                    })
+                    .collect(),
+                is_command: true,
+            });
         }
         if let Some((start, modes)) = complete::mode_matches(&self.input) {
             if self.input_cursor != self.input.len() || modes.is_empty() {
@@ -1267,9 +1290,33 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
             let current = app
                 .status
                 .as_ref()
-                .map_or("(unknown)", |s| s.model.as_str());
-            app.conversation
-                .push(format!("● model: {current} — /model <name> switches it"));
+                .map_or_else(|| "(unknown)".to_string(), |s| s.model.clone());
+            // Open the picker when the backend can list; otherwise say how to
+            // switch by name, and why there is no list.
+            // A fresh list each time: never complete from a stale one.
+            app.models = None;
+            match app.environment.as_ref().map(|env| env.models()) {
+                Some(Ok(models)) if !models.is_empty() => {
+                    app.conversation.push(format!(
+                        "● model: {current} — pick one below (type to filter, ↑/↓, Enter)"
+                    ));
+                    app.models = Some(models);
+                    app.input = "/model ".to_string();
+                    app.input_cursor = app.input.len();
+                    app.input_changed();
+                }
+                listing => {
+                    app.conversation
+                        .push(format!("● model: {current} — /model <name> switches it"));
+                    match listing {
+                        Some(Err(why)) => app.conversation.push(format!("✗ {why}")),
+                        Some(Ok(_)) => app
+                            .conversation
+                            .push("✗ the backend listed no models".to_string()),
+                        None => {}
+                    }
+                }
+            }
         }
         Slash::Model(Some(model)) => {
             send_input(stdin, &ChatInput::SetModel { model })?;
@@ -1626,10 +1673,15 @@ fn draw_popup(f: &mut ratatui::Frame, body: Rect, popup: &Popup, sel: usize) {
         height,
     };
     let sel = sel.min(popup.items.len() - 1);
+    // Rows that fit after clamping to the pane, not the ideal count.
+    let shown = usize::from(height - 2);
+    let first = complete::window_start(sel, shown);
     let items: Vec<ListItem> = popup
         .items
         .iter()
         .enumerate()
+        .skip(first)
+        .take(shown)
         .map(|(i, (name, desc))| {
             let style = if i == sel {
                 Style::default()

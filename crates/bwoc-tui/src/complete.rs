@@ -77,15 +77,42 @@ pub const MODE_CHOICES: &[(&str, &str)] = &[
     ),
 ];
 
-/// The `/mode` picker: while the input is `/mode ` plus a partial word, the
-/// modes starting with that word and the byte offset where the word begins.
-pub fn mode_matches(input: &str) -> Option<(usize, Vec<(&'static str, &'static str)>)> {
-    let arg = input.strip_prefix("/mode ")?;
-    let word = arg.trim_start();
+/// While the input is `prefix` (a command and one space) plus a single partial
+/// word, that word and the byte offset where it starts. A second word closes
+/// the picker, so a finished `/mode bypass now` is not re-completed.
+fn arg_word<'a>(input: &'a str, prefix: &str) -> Option<(usize, &'a str)> {
+    let word = input.strip_prefix(prefix)?.trim_start();
     if word.contains(char::is_whitespace) {
         return None;
     }
-    let start = input.len() - word.len();
+    Some((input.len() - word.len(), word))
+}
+
+/// The `/model` picker: the listed models containing the partial word after
+/// `/model ` (substring, case-insensitive — ids like `vendor/name` are matched
+/// by any part), and where that word starts.
+pub fn model_matches<'m>(input: &str, models: &'m [String]) -> Option<(usize, Vec<&'m str>)> {
+    let (start, word) = arg_word(input, "/model ")?;
+    let word = word.to_lowercase();
+    Some((
+        start,
+        models
+            .iter()
+            .filter(|m| m.to_lowercase().contains(&word))
+            .map(String::as_str)
+            .collect(),
+    ))
+}
+
+/// First row of a `rows`-high window over a list that keeps `sel` in view.
+pub fn window_start(sel: usize, rows: usize) -> usize {
+    (sel + 1).saturating_sub(rows)
+}
+
+/// The `/mode` picker: while the input is `/mode ` plus a partial word, the
+/// modes starting with that word and the byte offset where the word begins.
+pub fn mode_matches(input: &str) -> Option<(usize, Vec<(&'static str, &'static str)>)> {
+    let (start, word) = arg_word(input, "/mode ")?;
     Some((
         start,
         MODE_CHOICES
@@ -404,6 +431,33 @@ mod tests {
         assert!(mode_matches("/model ").is_none());
         assert!(mode_matches("/mode bypass now").is_none());
         assert!(mode_matches("/mode zz").unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn model_matches_filters_by_any_part_of_the_id() {
+        let models: Vec<String> = ["local-chat", "local-coder", "openai/gpt-x"]
+            .map(String::from)
+            .to_vec();
+        let (start, all) = model_matches("/model ", &models).unwrap();
+        assert_eq!((start, all.len()), (7, 3));
+        assert_eq!(
+            model_matches("/model CODE", &models).unwrap().1,
+            ["local-coder"]
+        );
+        assert_eq!(
+            model_matches("/model gpt", &models).unwrap().1,
+            ["openai/gpt-x"]
+        );
+        assert!(model_matches("/models", &models).is_none());
+        assert!(model_matches("/model a b", &models).is_none());
+    }
+
+    #[test]
+    fn window_keeps_the_selection_in_view() {
+        assert_eq!(window_start(0, 8), 0);
+        assert_eq!(window_start(7, 8), 0);
+        assert_eq!(window_start(8, 8), 1);
+        assert_eq!(window_start(26, 8), 19);
     }
 
     #[test]
