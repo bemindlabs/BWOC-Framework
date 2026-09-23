@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — pick from a list, plan before acting: `/mode` and `/model` pickers, `/mode plan`, and the real context window on vLLM and LiteLLM"
+    " — your agents, in the same window: `/agents` panes and layouts, `/settings` that applies live, CommonMark rendering"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "**Your agents, in the same window (3.8).** `/agents` opens a workspace agent in its own pane — `Tab` moves focus, `Ctrl-L` or `/layout` picks one of six layouts; `/settings <key> <value>` saves to the project config and restarts the session on it; a bare `bwoc` session works by the BWOC principles; Markdown renders as CommonMark (tables, links, nesting) without eating `snake_case`.",
     "**Pick from a list, plan before acting (3.7).** A bare `/mode` or `/model` opens a picker — models come from the backend, and `/models` now lists LiteLLM (only what your key may call), OpenRouter and OpenAI-compatible servers; `/mode plan` lets the agent read and propose without changing anything; a session on vLLM or LiteLLM compacts against the model's real context window instead of 8k.",
     "**A session that can answer for itself.** `/status`, `/tools`, `/cost`, `/models`, `/backends`, `/settings` and `/doctor` report what the session is and what it runs on; `/permissions`, `/mcp` and `/context` report what it may do, what it is connected to and what fills the model's window; `/compact` folds context on demand, `/retry` resends and `/save` writes the transcript. A fixed right pane shows the directory and branch, the workspace and its agents, and the files this session changed (3.6.0, #545–#547)",
     "**A chat session you can steer.** `Esc` cancels the turn in flight; `/model <name>` switches models mid-session; `write_file` / `edit_file` / `multi_edit` show a unified diff of what changed on disk; `/sessions`, `/session <id>`, `/new` and `/fork` move between this directory's conversations without leaving the TUI; answers render as Markdown; `/undo` and `/redo` take a turn's file changes back and put them again (3.5.0, #540–#542)",
     "**`/` commands and `@` files in the chat input.** `/` opens a command menu (`/help`, `/clear`, `/mode`, `/quit`) that runs in the TUI, never reaching the model; `@` completes project files and attaches each text file inside the working directory to your message (32 KB cap). `bwoc dashboard` is deprecated — use `bwoc fleet` (3.4.0, #535, #537)",
     "**Several conversations per directory.** Bare `bwoc` still resumes the latest; `bwoc --new` starts another, `bwoc --session <id>` (id or prefix) resumes one, and `bwoc session list`, `bwoc session fork` and `bwoc session rm` manage them. `bwoc --backend claude` (or `codex`, `agy`, `kimi`, `grok`, `copilot`) opens that CLI on its own login (3.3.0, #530–#532)",
-    "**`bwoc` is a coding agent.** On a terminal, bare `bwoc` opens a coding session in the current directory — provider from flags, env, `.bwoc/config.toml` or auto-detect (Anthropic key or local Ollama), keys via `bwoc auth`. Chat runs the batch retry, MCP and sandbox paths, sizes compaction to the model, and adds `glob`, regex `grep`, `multi_edit`, `webfetch`, `todo`, `subagent` and a `run_command` timeout (3.2.0, #519–#526)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
