@@ -64,7 +64,7 @@ pub const MODE_CHOICES: &[(&str, &str)] = &[
     ("default", "ask before every tool the policy marks `ask`"),
     (
         "accept_edits",
-        "file edits run without asking; the rest still ask",
+        "file writes and edits run without asking; the rest still ask",
     ),
     (
         "bypass",
