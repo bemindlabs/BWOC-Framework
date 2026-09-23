@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Assistant Markdown renders correctly in the chat TUI.** The hand-written line scanner took every `_` and `*` as emphasis — `snake_case` showed as `snakecase`, `2 * 3 * 4` as `2  3  4` — and left links, tables, `1)` lists, task boxes, escapes, rules, `~~~` fences and nested emphasis raw. `bwoc-tui` now parses CommonMark with GitHub tables, task lists and strikethrough (`pulldown-cmark`, no default features): tables line up in columns, links show their text then the URL, nested lists indent, and line breaks stay as written.
+
 ## [v2026.9.23-0] — 2026-09-23 — 3.7.0
 
 **Pick from a list, plan before acting.** `/mode` and `/model` open pickers — the model list comes from the backend itself, now including LiteLLM, OpenRouter and OpenAI-compatible servers — `plan` mode lets the agent look and propose without changing anything, and a session on vLLM or LiteLLM learns the model's real context window instead of compacting at 8k. Nothing that worked in 3.6 breaks.
