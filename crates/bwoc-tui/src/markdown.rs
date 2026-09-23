@@ -26,6 +26,9 @@ use unicode_width::UnicodeWidthStr;
 /// span inherits it and adds its own emphasis. `code` styles inline code and
 /// code blocks.
 pub fn render(text: &str, base: Style, code: Style) -> Vec<Line<'static>> {
+    // CRLF text (a Windows-side model or proxy) would leave `\r` in the rows.
+    let text = text.replace("\r\n", "\n");
+    let text = text.as_str();
     let mut r = Renderer::new(text, base, code);
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
@@ -231,6 +234,10 @@ impl<'a> Renderer<'a> {
             Event::TaskListMarker(done) => {
                 let mark = if done { "☑" } else { "☐" };
                 if self.marker.is_some() {
+                    // Continuation rows line up under the box, not the old marker.
+                    if let Some(w) = self.indents.last_mut() {
+                        *w = mark.width() + 1;
+                    }
                     self.marker = Some(mark.to_string());
                 } else {
                     self.text(&format!("{mark} "), self.style());
@@ -506,6 +513,22 @@ mod tests {
     #[test]
     fn task_items_show_a_box() {
         assert_eq!(all("- [ ] todo\n- [x] done"), ["☐ todo", "☑ done"]);
+    }
+
+    #[test]
+    fn a_task_item_continues_under_its_box() {
+        assert_eq!(
+            all("1. [ ] first\n   still first"),
+            ["☐ first", "  still first"]
+        );
+    }
+
+    #[test]
+    fn crlf_text_leaves_no_carriage_returns() {
+        assert_eq!(
+            all("one\r\ntwo\r\n\r\n- item\r\n"),
+            ["one", "two", "", "• item"]
+        );
     }
 
     #[test]
