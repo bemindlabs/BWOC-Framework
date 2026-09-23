@@ -9,11 +9,12 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 ### Added
 
 - **`/mode plan` in the chat TUI.** The harness has had a read-only planning mode; the TUI now accepts it by name and lists it in the `/mode` picker. `F2` still cycles `default` → `accept_edits` → `bypass`, so plan mode is never entered by accident.
-
+- **`/model` opens a picker.** A bare `/model` lists what `/models` would, filtered as you type (any part of the id, so `gpt` finds `openai/gpt-…`), with the current model marked; `Enter` switches. A backend that cannot list says why and `/model <name>` still works.
 - **`/mode` opens a picker.** A bare `/mode` lists `default`, `accept_edits` and `bypass` in the input popup with what each allows and the current one marked; `↑`/`↓` and `Enter` set it, `Esc` keeps it. `/mode <name>` and `F2` work as before.
 
 ### Fixed
 
+- **The `/` popup keeps the highlighted row in view.** It showed the first 8 rows only, so arrowing past `/fork` highlighted a row off screen; the list now scrolls with the selection.
 - **`/models` lists models on `litellm`, `openrouter`, `openai-compatible` and `anthropic`** (#551). It refused every backend but Ollama; it now asks the harness (`bwoc-harness --list-models`), which calls `GET /models` with the same endpoint and key the chat resolves, so a scoped LiteLLM virtual key lists exactly the models it may call. A refused listing says why (`HTTP 401 …`, no key, unreachable) instead of showing an empty list.
 
 ## [v2026.9.21-1] — 2026-09-20 — 3.6.0
