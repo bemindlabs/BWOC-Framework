@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Added
 
+- **`/mode plan` in the chat TUI.** The harness has had a read-only planning mode; the TUI now accepts it by name and lists it in the `/mode` picker. `F2` still cycles `default` → `accept_edits` → `bypass`, so plan mode is never entered by accident.
+
 - **`/mode` opens a picker.** A bare `/mode` lists `default`, `accept_edits` and `bypass` in the input popup with what each allows and the current one marked; `↑`/`↓` and `Enter` set it, `Esc` keeps it. `/mode <name>` and `F2` work as before.
 
 ### Fixed
