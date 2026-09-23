@@ -527,7 +527,7 @@ impl bwoc_tui::EnvironmentInfo for Environment {
             // Put the file back: a setting that leaves no usable runtime
             // must not stay behind to break the next start.
             other => {
-                let _ = match &before {
+                let restored = match &before {
                     Some(text) => std::fs::write(&path, text),
                     None => std::fs::remove_file(&path),
                 };
@@ -537,7 +537,15 @@ impl bwoc_tui::EnvironmentInfo for Environment {
                     Ok(Resolution::Vendor(_)) => "that resolves to a vendor CLI".to_string(),
                     _ => "no usable runtime".to_string(),
                 };
-                return Err(format!("{key} not saved: {why}"));
+                return Err(match restored {
+                    Ok(()) => format!("{key} not saved: {why}"),
+                    // Say so plainly: the file now holds a value that failed.
+                    Err(e) => format!(
+                        "{key} was written but does not resolve ({why}), and restoring {} \
+                         failed: {e} — fix or remove `{key}` there by hand",
+                        path.display()
+                    ),
+                });
             }
         };
 
