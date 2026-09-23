@@ -652,7 +652,9 @@ pub async fn run_loop(
             if crate::looks_like_text_tool_call(&final_response) {
                 eprintln!(
                     "[bwoc-harness] WARNING: `{active_model}` emitted a tool call as plain text \
-                     — it was NOT executed (the model may be too weak for structured tool use)"
+                     — it was NOT executed. Usually the server's tool-call parser does not match \
+                     this model's format (vLLM: `--tool-call-parser`); otherwise the model is too \
+                     weak for structured tool use"
                 );
             }
             history.push(completion);
