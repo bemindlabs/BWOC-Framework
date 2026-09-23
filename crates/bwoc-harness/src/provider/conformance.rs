@@ -3,7 +3,8 @@
 //! Hermetic — every backend is a `wiremock` HTTP server or (for the CLI) a fake
 //! subprocess; **no live network**. These assert that the trait *contract* holds
 //! uniformly across the two implementations that speak HTTP — [`OllamaClient`]
-//! (which backs `ollama`, `openrouter`, and `litellm`) and [`AnthropicClient`] —
+//! (which backs `ollama`, `openrouter`, and `litellm` — the last also run as its
+//! own keyed subject) and [`AnthropicClient`] —
 //! so a new OpenAI-compatible or Anthropic-shaped backend cannot silently drift
 //! from the behaviour the agent loop relies on.
 //!
@@ -116,6 +117,93 @@ impl HttpSubject for Ollama {
                     data: [DONE]\n\n";
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(server)
+            .await;
+    }
+}
+
+// ── Subject: LiteLLM (OllamaClient + a virtual key, as `build_provider` wires it) ─
+//
+// Every route answers only with the bearer attached, so a request site that
+// forgot the key fails the whole contract (a real proxy answers 401). The stream
+// ends the way LiteLLM's does: a usage-only chunk with an empty `choices`.
+
+struct LiteLlm;
+
+const LITELLM_KEY: &str = "sk-litellm-virtual";
+
+fn keyed(m: wiremock::MockBuilder) -> wiremock::MockBuilder {
+    m.and(wiremock::matchers::header(
+        "authorization",
+        format!("Bearer {LITELLM_KEY}").as_str(),
+    ))
+}
+
+#[async_trait::async_trait]
+impl HttpSubject for LiteLlm {
+    const NAME: &'static str = "litellm";
+    const MODEL: &'static str = "local-chat";
+
+    fn client(uri: &str) -> Box<dyn ProviderClient> {
+        Box::new(OllamaClient::new(format!("{uri}/v1")).with_api_key(Some(LITELLM_KEY.into())))
+    }
+
+    async fn mount_models(server: &MockServer, ids: &[&str]) {
+        let data: Vec<_> = ids
+            .iter()
+            .map(|id| serde_json::json!({"id": id, "object": "model", "owned_by": "openai"}))
+            .collect();
+        keyed(Mock::given(method("GET")).and(path("/v1/models")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": data})),
+            )
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_completion_ok(server: &MockServer) {
+        keyed(Mock::given(method("POST")).and(path("/v1/chat/completions")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "c1",
+                "model": "local-chat",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hello"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+            })))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_completion_status(server: &MockServer, status: u16) {
+        keyed(Mock::given(method("POST")).and(path("/v1/chat/completions")))
+            .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                "error": {"message": "upstream error", "type": "None", "code": status.to_string()}
+            })))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_completion_malformed(server: &MockServer) {
+        keyed(Mock::given(method("POST")).and(path("/v1/chat/completions")))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json {"))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_stream_ok(server: &MockServer) {
+        let body = "data: {\"id\":\"c1\",\"model\":\"local-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"},\"finish_reason\":null}]}\n\n\
+                    data: {\"id\":\"c1\",\"model\":\"local-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n\
+                    data: {\"id\":\"c1\",\"model\":\"local-chat\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n\
+                    data: [DONE]\n\n";
+        keyed(Mock::given(method("POST")).and(path("/v1/chat/completions")))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
@@ -353,6 +441,11 @@ async fn ollama_client_satisfies_provider_contract() {
 #[tokio::test]
 async fn anthropic_client_satisfies_provider_contract() {
     assert_http_contract::<Anthropic>().await;
+}
+
+#[tokio::test]
+async fn litellm_satisfies_the_http_contract() {
+    assert_http_contract::<LiteLlm>().await;
 }
 
 // ── CliClient graceful-default contract ───────────────────────────────────────
