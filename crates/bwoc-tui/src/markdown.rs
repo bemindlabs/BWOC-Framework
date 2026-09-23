@@ -204,7 +204,8 @@ impl<'a> Renderer<'a> {
                     }
                     self.text(part, self.style());
                 }
-                if matches!(event_kind_is_block(&t), true) {
+                // Block-level HTML arrives with its trailing newline; inline does not.
+                if t.ends_with('\n') {
                     self.end_line();
                 }
             }
@@ -439,11 +440,6 @@ impl<'a> Renderer<'a> {
         }
         self.out
     }
-}
-
-/// Block-level HTML arrives with its trailing newline; inline HTML does not.
-fn event_kind_is_block(html: &str) -> bool {
-    html.ends_with('\n')
 }
 
 #[cfg(test)]
