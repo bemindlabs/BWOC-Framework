@@ -254,6 +254,10 @@ pub fn run(args: TuiArgs) -> i32 {
     // Restore the terminal even if the loop below panics (#481).
     let mut terminal_guard = TerminalGuard::new();
 
+    // Agent panes opened with `/agents` outlive a harness restart of the main
+    // pane (`/session`, `/new`): they are their own sessions.
+    let mut panes = Panes::new(harness.to_string_lossy().into_owned());
+
     let result = loop {
         let mut argv = harness_argv(
             &args.agent_path,
@@ -314,7 +318,9 @@ pub fn run(args: TuiArgs) -> i32 {
         // A `/settings` change restarted us: say what was saved, under the
         // `ready` line (`Ready` clears the transcript before replaying it).
         app.after_ready = notice.take();
-        let flow = event_loop(&mut term, &mut app, &rx, stdin);
+        // Agent panes take the main session's current runtime as defaults.
+        panes.defaults = (backend_name.clone(), model.clone(), endpoint.clone());
+        let flow = event_loop(&mut term, &mut app, &rx, stdin, &mut panes);
 
         // Reap this harness before the next one starts (or before we leave).
         let _ = child.kill();
@@ -436,6 +442,8 @@ enum Flow {
     /// Restart the harness on the same conversation with a runtime a
     /// `/settings` change resolved to; the line is shown once it is back.
     Reconfigure(Runtime, String),
+    /// Open a workspace agent in its own pane (`/agents <name>`).
+    OpenAgent(String),
 }
 
 /// A pending permission request awaiting the operator's `a`/`d` decision.
@@ -521,6 +529,8 @@ struct App {
     models: Option<Vec<String>>,
     /// A line to show once the harness is `Ready` (a `/settings` restart).
     after_ready: Option<String>,
+    /// Workspace agents for the `/agents` picker, fetched by a bare `/agents`.
+    agents: Option<Vec<String>>,
     /// `Esc` hid the popup; it comes back once the input changes.
     popup_hidden: bool,
     /// A turn is running (between sending a message and its `TurnEnd`). `Esc`
@@ -596,6 +606,7 @@ impl App {
             popup_hidden: false,
             models: None,
             after_ready: None,
+            agents: None,
             busy: false,
             sessions: None,
             session_id: None,
@@ -671,6 +682,21 @@ impl App {
     fn popup(&self) -> Option<Popup> {
         if self.workdir.is_none() || self.popup_hidden {
             return None;
+        }
+        if let Some(agents) = &self.agents
+            && let Some((start, hits)) = complete::agent_matches(&self.input, agents)
+        {
+            if self.input_cursor != self.input.len() || hits.is_empty() {
+                return None;
+            }
+            return Some(Popup {
+                start,
+                items: hits
+                    .into_iter()
+                    .map(|a| (a.to_string(), String::new()))
+                    .collect(),
+                is_command: true,
+            });
         }
         if let Some(models) = &self.models
             && let Some((start, hits)) = complete::model_matches(&self.input, models)
@@ -1101,6 +1127,7 @@ fn event_loop(
     app: &mut App,
     rx: &Receiver<ChatEvent>,
     mut stdin: ChildStdin,
+    panes: &mut Panes,
 ) -> io::Result<Flow> {
     // Redraw only after state changes. Besides avoiding needless work, this
     // leaves an idle frame untouched so native terminal text selection remains
@@ -1125,8 +1152,16 @@ fn event_loop(
             }
         }
 
+        if panes.drain() {
+            dirty = true;
+        }
+
         if dirty {
-            term.draw(|f| draw_frame(f, app))?;
+            if panes.side.is_empty() {
+                term.draw(|f| draw_frame(f, app))?;
+            } else {
+                term.draw(|f| draw_panes(f, app, panes))?;
+            }
             dirty = false;
         }
 
@@ -1138,15 +1173,37 @@ fn event_loop(
 
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
-                Event::Key(key) => match handle_key(app, &mut stdin, key)? {
-                    Flow::Continue => dirty = true,
-                    // Polite quit before we tear down the terminal (or restart
-                    // the harness on another conversation).
-                    flow => {
+                Event::Key(key) => {
+                    dirty = true;
+                    // Ctrl-C ends everything, whichever pane has focus.
+                    if is_quit_key(key.code, key.modifiers) {
                         let _ = send_input(&mut stdin, &ChatInput::Quit);
-                        return Ok(flow);
+                        return Ok(Flow::Quit);
                     }
-                },
+                    // Tab / Shift-Tab move focus between panes, unless the
+                    // focused pane's `/` or `@` popup wants Tab to complete.
+                    if !panes.side.is_empty()
+                        && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                        && panes.focused(app).popup().is_none()
+                    {
+                        panes.cycle(key.code == KeyCode::Tab);
+                        continue;
+                    }
+                    if panes.focus > 0 {
+                        panes.key(key)?;
+                        continue;
+                    }
+                    match handle_key(app, &mut stdin, key)? {
+                        Flow::Continue => {}
+                        Flow::OpenAgent(name) => panes.open(&name, app),
+                        // Polite quit before we tear down the terminal (or
+                        // restart the harness on another conversation).
+                        flow => {
+                            let _ = send_input(&mut stdin, &ChatInput::Quit);
+                            return Ok(flow);
+                        }
+                    }
+                }
                 Event::Resize(_, _) => dirty = true,
                 _ => {}
             }
@@ -1384,6 +1441,8 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
                 }
             }
         }
+        Slash::Agents(None) => list_agents(app),
+        Slash::Agents(Some(name)) => return Ok(Flow::OpenAgent(name)),
         Slash::Model(Some(model)) => {
             send_input(stdin, &ChatInput::SetModel { model })?;
         }
@@ -1681,6 +1740,196 @@ fn apply_setting(app: &mut App, key: &str, value: &str) -> io::Result<Flow> {
     }
 }
 
+/// Focus after Tab (`forward`) or Shift-Tab over the main pane plus `agents`
+/// agent panes, wrapping at both ends.
+fn next_focus(focus: usize, agents: usize, forward: bool) -> usize {
+    let n = agents + 1;
+    if forward {
+        (focus + 1) % n
+    } else {
+        (focus + n - 1) % n
+    }
+}
+
+/// A workspace agent opened next to the main session with `/agents`.
+struct AgentPane {
+    app: App,
+    session: Session,
+}
+
+/// The agent panes beside the main session, and which pane has focus
+/// (`0` = the main session, `i` = `side[i - 1]`).
+struct Panes {
+    side: Vec<AgentPane>,
+    focus: usize,
+    harness_bin: String,
+    /// Main session's backend, model and endpoint — an agent's manifest
+    /// overrides them, as in fleet mode.
+    defaults: (String, Option<String>, String),
+}
+
+impl Panes {
+    fn new(harness_bin: String) -> Self {
+        Self {
+            side: Vec::new(),
+            focus: 0,
+            harness_bin,
+            defaults: (String::new(), None, DEFAULT_ENDPOINT.to_string()),
+        }
+    }
+
+    fn focused<'a>(&'a self, main: &'a App) -> &'a App {
+        match self.focus {
+            0 => main,
+            i => &self.side[i - 1].app,
+        }
+    }
+
+    fn cycle(&mut self, forward: bool) {
+        self.focus = next_focus(self.focus, self.side.len(), forward);
+    }
+
+    /// Apply every agent session's pending events. `true` when anything changed.
+    fn drain(&mut self) -> bool {
+        let mut changed = false;
+        for p in &mut self.side {
+            for ev in p.session.rx.try_iter().collect::<Vec<_>>() {
+                p.app.apply(ev);
+                changed = true;
+            }
+            if !p.app.done && !p.session.is_alive() {
+                p.app.done = true;
+                p.app.conversation.push("● session ended".to_string());
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Open `name` from the main session's workspace, or focus it if open.
+    fn open(&mut self, name: &str, main: &mut App) {
+        if let Some(i) = self.side.iter().position(|p| p.app.agent_id == name) {
+            self.focus = i + 1;
+            return;
+        }
+        let Some(root) = workspace_of(main) else {
+            main.conversation
+                .push("✗ not in a BWOC workspace — no agents to open".to_string());
+            return;
+        };
+        let agents = session::fetch_fleet(&bwoc_bin(), &root.to_string_lossy());
+        let Some(agent) = agents
+            .iter()
+            .find(|a| a.id == name || a.id == format!("agent-{name}"))
+        else {
+            main.conversation.push(format!(
+                "✗ no agent `{name}` in {} — /agents lists them",
+                root.display()
+            ));
+            return;
+        };
+        if !session::is_harness_drivable(&agent.backend) {
+            main.conversation.push(format!(
+                "✗ {} runs on the `{}` vendor CLI — open it with `bwoc chat {}`",
+                agent.id, agent.backend, agent.id
+            ));
+            return;
+        }
+        let (backend, model, endpoint) = &self.defaults;
+        let base = SessionConfig {
+            harness_bin: self.harness_bin.clone(),
+            workdir: root.to_string_lossy().into_owned(),
+            backend: backend.clone(),
+            model: model.clone().unwrap_or_default(),
+            endpoint: endpoint.clone(),
+        };
+        let cfg = base.for_agent(agent);
+        match Session::spawn(&agent.id, &cfg) {
+            Ok(session) => {
+                let mut app = App::new(agent.id.clone(), &agent.backend);
+                // `path` comes from `bwoc list`: keep `@` files inside the
+                // workspace unless it is a plain relative path (as `for_agent`).
+                app.workdir = Some(if session::is_safe_relative_path(&agent.path) {
+                    root.join(&agent.path)
+                } else {
+                    root.clone()
+                });
+                self.side.push(AgentPane { app, session });
+                self.focus = self.side.len();
+            }
+            Err(e) => main
+                .conversation
+                .push(format!("✗ could not start {}: {e}", agent.id)),
+        }
+    }
+
+    /// A key for the focused agent pane. `/quit` there closes the pane.
+    fn key(&mut self, key: KeyEvent) -> io::Result<()> {
+        let i = self.focus - 1;
+        let p = &mut self.side[i];
+        match handle_key(&mut p.app, p.session.stdin_mut(), key)? {
+            Flow::Quit => {
+                self.side.remove(i);
+                self.focus = 0;
+            }
+            Flow::OpenAgent(name) => {
+                // `open` reports into a pane; use the one that asked.
+                let mut asker =
+                    std::mem::replace(&mut self.side[i].app, App::new(String::new(), ""));
+                self.open(&name, &mut asker);
+                self.side[i].app = asker;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// The workspace a session's directory sits in, and the `bwoc` to ask.
+fn workspace_of(app: &App) -> Option<PathBuf> {
+    app.workdir.as_deref().and_then(panel::workspace_root)
+}
+
+fn bwoc_bin() -> String {
+    bwoc_core::exec::sibling_binary("bwoc")
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "bwoc".to_string())
+}
+
+/// Bare `/agents`: list the workspace's agents and open the picker.
+fn list_agents(app: &mut App) {
+    let Some(root) = workspace_of(app) else {
+        app.conversation
+            .push("✗ not in a BWOC workspace — /agents lists a workspace's agents".to_string());
+        return;
+    };
+    let agents = session::fetch_fleet(&bwoc_bin(), &root.to_string_lossy());
+    if agents.is_empty() {
+        app.conversation.push(format!(
+            "✗ no agents listed for {} — none registered, or `bwoc list --json` failed \
+             (run it there to see which)",
+            root.display()
+        ));
+        return;
+    }
+    app.conversation.push(format!("● {} agents:", agents.len()));
+    for a in &agents {
+        let note = if session::is_harness_drivable(&a.backend) {
+            ""
+        } else {
+            " — vendor CLI, open it with `bwoc chat`"
+        };
+        app.conversation
+            .push(format!("●   {} ({}){note}", a.id, a.backend));
+    }
+    app.conversation
+        .push("●   pick one below — it opens in its own pane (Tab moves focus)".to_string());
+    app.agents = Some(agents.into_iter().map(|a| a.id).collect());
+    app.input = "/agents ".to_string();
+    app.input_cursor = app.input.len();
+    app.input_changed();
+}
+
 fn switch_session(app: &mut App, arg: &complete::SessionArg) -> io::Result<Flow> {
     // Switching restarts the harness, which would drop a turn mid-flight.
     if app.busy {
@@ -1759,6 +2008,74 @@ fn draw_frame(f: &mut ratatui::Frame, app: &App) {
     );
     if let Some(popup) = app.popup() {
         draw_popup(f, layout[1], &popup, app.popup_sel);
+    }
+}
+
+/// The main session with agent panes beside it: the main pane on the left,
+/// the agents stacked on the right, each with its own status, transcript and
+/// input; the focused pane's border is the accent colour.
+fn draw_panes(f: &mut ratatui::Frame, main: &App, panes: &Panes) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(f.area());
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(rows[0]);
+    draw_pane(f, cols[0], main, panes.focus == 0);
+    let n = panes.side.len() as u32;
+    let stack = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints((0..n).map(|_| Constraint::Ratio(1, n)).collect::<Vec<_>>())
+        .split(cols[1]);
+    for (i, p) in panes.side.iter().enumerate() {
+        draw_pane(f, stack[i], &p.app, panes.focus == i + 1);
+    }
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" Tab ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("next pane · /agents open another · /quit in a pane closes it · "),
+        Span::styled(
+            "Ctrl-C exit ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(footer, rows[1]);
+}
+
+/// One session in a bordered pane: status line, transcript, input.
+fn draw_pane(f: &mut ratatui::Frame, area: Rect, app: &App, focused: bool) {
+    let mut title = format!(" {} ", app.agent_id);
+    if app.pending.is_some() {
+        title.push_str("⚠ approval ");
+    } else if app.busy {
+        title.push_str("● working ");
+    }
+    let border = if focused {
+        Style::default().fg(tone(design::color::ACCENT))
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(border);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(inner);
+    draw_status(f, parts[0], app);
+    draw_body(f, parts[1], app);
+    draw_input(f, parts[2], app, focused);
+    if focused && let Some(popup) = app.popup() {
+        draw_popup(f, parts[1], &popup, app.popup_sel);
     }
 }
 
@@ -2936,6 +3253,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn pane_focus_cycles_through_main_and_agents() {
+        assert_eq!(next_focus(0, 0, true), 0); // no agents: stays on main
+        assert_eq!(next_focus(0, 2, true), 1);
+        assert_eq!(next_focus(2, 2, true), 0); // wraps to main
+        assert_eq!(next_focus(0, 2, false), 2); // Shift-Tab wraps backwards
+        let mut panes = Panes::new(String::new());
+        panes.cycle(true);
+        assert_eq!(panes.focus, 0);
+    }
 
     #[test]
     fn harness_argv_includes_chat_workdir_model_endpoint() {

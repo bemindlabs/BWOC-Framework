@@ -21,6 +21,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "pick the permission mode: default | accept_edits | bypass | plan",
     ),
     ("/model", "show or switch the model used for later turns"),
+    (
+        "/agents",
+        "open a workspace agent in its own pane and talk to it",
+    ),
     ("/sessions", "list this directory's conversations"),
     ("/session", "open another conversation: /session <id>"),
     ("/new", "start another conversation here"),
@@ -115,11 +119,25 @@ pub fn setting_key_matches(input: &str) -> Option<(usize, Vec<(&'static str, &'s
 /// `/model ` (substring, case-insensitive — ids like `vendor/name` are matched
 /// by any part), and where that word starts.
 pub fn model_matches<'m>(input: &str, models: &'m [String]) -> Option<(usize, Vec<&'m str>)> {
-    let (start, word) = arg_word(input, "/model ")?;
+    list_matches(input, "/model ", models)
+}
+
+/// The `/agents` picker: the workspace's agents containing the partial word.
+pub fn agent_matches<'m>(input: &str, agents: &'m [String]) -> Option<(usize, Vec<&'m str>)> {
+    list_matches(input, "/agents ", agents)
+}
+
+/// Items containing the partial word after `prefix` (case-insensitive).
+fn list_matches<'m>(
+    input: &str,
+    prefix: &str,
+    items: &'m [String],
+) -> Option<(usize, Vec<&'m str>)> {
+    let (start, word) = arg_word(input, prefix)?;
     let word = word.to_lowercase();
     Some((
         start,
-        models
+        items
             .iter()
             .filter(|m| m.to_lowercase().contains(&word))
             .map(String::as_str)
@@ -153,6 +171,8 @@ pub enum Slash {
     Clear,
     Mode(Option<String>),
     Model(Option<String>),
+    /// `/agents [name]` — bare lists the workspace's agents and opens a picker.
+    Agents(Option<String>),
     Undo,
     Redo,
     Status,
@@ -193,6 +213,7 @@ pub fn parse_slash(line: &str) -> Option<Slash> {
         "clear" => Slash::Clear,
         "mode" => Slash::Mode(words.next().map(str::to_string)),
         "model" => Slash::Model(words.next().map(str::to_string)),
+        "agents" | "agent" => Slash::Agents(words.next().map(str::to_string)),
         "undo" => Slash::Undo,
         "redo" => Slash::Redo,
         "status" => Slash::Status,
@@ -486,6 +507,20 @@ mod tests {
         assert_eq!((start, all.len()), (10, SETTING_KEYS.len()));
         assert_eq!(setting_key_matches("/settings max").unwrap().1.len(), 2);
         assert!(setting_key_matches("/settings model x").is_none());
+    }
+
+    #[test]
+    fn agents_parse_and_pick() {
+        assert_eq!(parse_slash("/agents"), Some(Slash::Agents(None)));
+        assert_eq!(
+            parse_slash("/agents agent-luban"),
+            Some(Slash::Agents(Some("agent-luban".into())))
+        );
+        let names: Vec<String> = ["agent-luban", "agent-nezha"].map(String::from).to_vec();
+        assert_eq!(
+            agent_matches("/agents lu", &names).unwrap().1,
+            ["agent-luban"]
+        );
     }
 
     #[test]

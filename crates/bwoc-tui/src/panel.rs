@@ -104,7 +104,7 @@ fn agents_section(root: &Path) -> Section {
 }
 
 /// The nearest ancestor (including `dir`) holding `.bwoc/workspace.toml`.
-fn workspace_root(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn workspace_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(".bwoc").join("workspace.toml").is_file())
         .map(Path::to_path_buf)
