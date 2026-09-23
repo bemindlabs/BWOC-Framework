@@ -209,6 +209,11 @@ impl Session {
         Ok(Self { child, stdin, rx })
     }
 
+    /// The child's stdin, for the same key handling the main pane uses.
+    pub fn stdin_mut(&mut self) -> &mut ChildStdin {
+        &mut self.stdin
+    }
+
     /// Whether the child is still running. Used to reap a session whose harness
     /// exited *without* emitting `Bye` (channel disconnect alone can't be told
     /// apart from "no messages yet" via `try_iter`).
