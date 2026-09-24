@@ -1906,6 +1906,19 @@ impl Panes {
         if via_cli {
             cfg.backend = "cli".to_string();
         }
+        // Run in the agent's own directory, as `bwoc chat <agent>` does: the
+        // harness reads the agent's AGENTS.md, persona and memory, and keeps
+        // its own session file, from the workdir. The workspace root would
+        // give every pane the same generic prompt and shared history.
+        let agent_dir = session::is_safe_relative_path(&agent.path).then(|| root.join(&agent.path));
+        let Some(agent_dir) = agent_dir else {
+            main.conversation.push(format!(
+                "✗ {} has an unsafe path `{}` in the registry — not opening it",
+                agent.id, agent.path
+            ));
+            return;
+        };
+        cfg.workdir = agent_dir.to_string_lossy().into_owned();
         match Session::spawn(&agent.id, &cfg) {
             Ok(session) => {
                 let mut app = App::new(agent.id.clone(), &agent.backend);
@@ -1921,13 +1934,7 @@ impl Panes {
                         agent.id, agent.backend
                     ));
                 }
-                // `path` comes from `bwoc list`: keep `@` files inside the
-                // workspace unless it is a plain relative path (as `for_agent`).
-                app.workdir = Some(if session::is_safe_relative_path(&agent.path) {
-                    root.join(&agent.path)
-                } else {
-                    root.clone()
-                });
+                app.workdir = Some(agent_dir);
                 self.side.push(AgentPane { app, session });
                 self.focus = self.side.len();
             }
