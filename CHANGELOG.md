@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **The chat says when LiteLLM answered from another model.** When the model you asked for rejects a request — for example a `max_tokens` above its limit — LiteLLM retries on a fallback group and returns HTTP 200 as if nothing happened, so a 4B model could answer in place of the one on the status line. The harness now reads `x-litellm-attempted-fallbacks` and `x-litellm-model-group` and sends a new `model_fallback` chat event before the reply; the TUI shows `⚠ this reply is from <group>, not <model>`. The session keeps asking for the model you chose. Non-chat runs log the same warning to stderr.
+
 ## [v2026.9.24-2] — 2026-09-24 — 3.9.1
 
 **Agents opened with `/agents` answer as themselves.** A patch for 3.8–3.9 panes, which ran in the workspace root instead of the agent's directory.

@@ -901,6 +901,10 @@ where
             let event = match delta {
                 LiveDelta::Content(text) => ChatEvent::Token { text },
                 LiveDelta::Thinking(text) => ChatEvent::Thinking { text },
+                LiveDelta::Fallback(served) => ChatEvent::ModelFallback {
+                    requested: model.to_string(),
+                    served,
+                },
             };
             emit(out, &event).await?;
         }
@@ -1747,6 +1751,8 @@ mod tests {
         responses: Mutex<Vec<Result<ChatCompletion, HarnessError>>>,
         /// The model named on each `stream` call, in order.
         models: Mutex<Vec<String>>,
+        /// When set, every stream leads with a fallback carrier naming it.
+        served_by: Option<String>,
     }
 
     impl MockProvider {
@@ -1758,6 +1764,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 models: Mutex::new(Vec::new()),
+                served_by: None,
             }
         }
     }
@@ -1826,9 +1833,19 @@ mod tests {
                 }],
                 usage,
                 thinking_block: None,
+                fallback: None,
             };
-            Ok(Box::pin(futures_util::stream::once(
-                async move { Ok(chunk) },
+            let lead = self.served_by.clone().map(|served| {
+                Ok(StreamChunk {
+                    id: "mock".to_string(),
+                    choices: Vec::new(),
+                    usage: None,
+                    thinking_block: None,
+                    fallback: Some(served),
+                })
+            });
+            Ok(Box::pin(futures_util::stream::iter(
+                lead.into_iter().chain([Ok(chunk)]),
             )))
         }
 
@@ -2425,6 +2442,39 @@ mod tests {
         assert!(
             !tmp.path().join(".bwoc/chat-session.json").exists(),
             "default session file untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_router_fallback_is_reported_before_the_reply() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+        let mut provider = MockProvider::new(vec![final_response("hi")]);
+        provider.served_by = Some("local-chat-fast".to_string());
+        let stdin = "{\"type\":\"user\",\"text\":\"hi\"}\n{\"type\":\"quit\"}\n";
+        let lines = BufReader::new(stdin.as_bytes()).lines();
+        let mut out: Vec<u8> = Vec::new();
+        drive(
+            Arc::new(provider),
+            Arc::new(crate::tools::registry::default_registry()),
+            ctx,
+            config(allow_all()),
+            lines,
+            &mut out,
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let events = parse(&text.lines().map(str::to_string).collect::<Vec<_>>());
+        let at = |f: &dyn Fn(&ChatEvent) -> bool| events.iter().position(f).unwrap();
+        let fell = at(&|e| {
+            matches!(e, ChatEvent::ModelFallback { requested, served }
+                if requested == "mock" && served == "local-chat-fast")
+        });
+        let token = at(&|e| matches!(e, ChatEvent::Token { .. }));
+        assert!(
+            fell < token,
+            "the warning comes before the reply: {events:?}"
         );
     }
 

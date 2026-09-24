@@ -510,6 +510,11 @@ pub struct StreamChunk {
     /// sent by any provider — this is the harness's own stream-carrier field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_block: Option<serde_json::Value>,
+    /// The model that actually served this response when the endpoint fell
+    /// back to another one (LiteLLM's `x-litellm-attempted-fallbacks`), set on
+    /// one leading carrier chunk. Read from response headers, never the body.
+    #[serde(skip)]
+    pub fallback: Option<String>,
 }
 
 /// One streaming choice delta.

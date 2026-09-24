@@ -160,6 +160,9 @@ pub(crate) enum LiveDelta {
     Content(String),
     /// Reasoning / thinking text, when the provider streams it.
     Thinking(String),
+    /// The endpoint served this response from another model (named here)
+    /// than the one requested — a router fallback.
+    Fallback(String),
 }
 
 /// A sink for [`LiveDelta`]s. `None` everywhere except the chat driver.
@@ -208,6 +211,15 @@ pub(super) async fn stream_and_accumulate_live(
         }
         if let Some(block) = chunk.thinking_block {
             thinking_blocks.push(block);
+        }
+        if let Some(served) = chunk.fallback {
+            match live.as_deref_mut() {
+                Some(sink) => sink(LiveDelta::Fallback(served)),
+                None => eprintln!(
+                    "[bwoc-harness] ⚠ `{model}` was not used: the endpoint answered from \
+                     `{served}` (LiteLLM fallback)"
+                ),
+            }
         }
         for delta_choice in chunk.choices {
             let delta = delta_choice.delta;

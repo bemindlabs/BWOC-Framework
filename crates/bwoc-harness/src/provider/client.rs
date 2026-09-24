@@ -397,6 +397,12 @@ impl ProviderClient for OllamaClient {
             return Err(classify_http_error(status.as_u16(), &text, retry_after));
         }
 
+        if let Some(served) = litellm_fallback(resp.headers()) {
+            eprintln!(
+                "[bwoc-harness] ⚠ `{model}` was not used: the endpoint answered from `{served}` \
+                 (LiteLLM fallback)"
+            );
+        }
         resp.json::<ChatCompletion>()
             .await
             .map_err(|e| HarnessError::Provider(format!("Failed to parse response: {e}")))
@@ -437,6 +443,16 @@ impl ProviderClient for OllamaClient {
             return Err(classify_http_error(status.as_u16(), &text, retry_after));
         }
 
+        // A silent router fallback is only visible in the headers: surface it
+        // as one leading carrier chunk before the content.
+        let fallback = litellm_fallback(resp.headers()).map(|served| StreamChunk {
+            id: String::new(),
+            choices: Vec::new(),
+            usage: None,
+            thinking_block: None,
+            fallback: Some(served),
+        });
+
         // Parse SSE: each line starting with "data: " is a JSON chunk.
         // "[DONE]" signals end of stream.
         let byte_stream = resp.bytes_stream();
@@ -469,7 +485,8 @@ impl ProviderClient for OllamaClient {
                 futures_util::stream::iter(lines)
             });
 
-        Ok(Box::pin(stream))
+        let lead = futures_util::stream::iter(fallback.map(Ok));
+        Ok(Box::pin(lead.chain(stream)))
     }
 
     async fn validate_model(&self, model: &str) -> Result<(), HarnessError> {
@@ -792,9 +809,80 @@ pub(crate) fn parse_retry_after(
     Some(std::time::Duration::from_secs(secs))
 }
 
+/// The model group that served a response LiteLLM answered from a fallback:
+/// `x-litellm-attempted-fallbacks` above zero means the requested model failed
+/// (e.g. a 400 for `max_tokens` over its limit) and the router retried on
+/// another group, returning 200 as if nothing happened. `None` when no
+/// fallback was attempted or the endpoint is not LiteLLM. The group name comes
+/// from the endpoint and is shown to the user, so it is cleaned and capped.
+pub(crate) fn litellm_fallback(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let attempts: u32 = headers
+        .get("x-litellm-attempted-fallbacks")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    if attempts == 0 {
+        return None;
+    }
+    let group: String = headers
+        .get("x-litellm-model-group")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(80)
+        .collect();
+    Some(if group.trim().is_empty() {
+        "another model".to_string()
+    } else {
+        group.trim().to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn litellm_fallback_needs_an_attempt_and_cleans_the_group() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let h = |pairs: &[(&'static str, &str)]| {
+            let mut m = HeaderMap::new();
+            for (k, v) in pairs {
+                m.insert(*k, HeaderValue::from_str(v).unwrap());
+            }
+            m
+        };
+        assert_eq!(litellm_fallback(&h(&[])), None);
+        assert_eq!(
+            litellm_fallback(&h(&[("x-litellm-attempted-fallbacks", "0")])),
+            None
+        );
+        assert_eq!(
+            litellm_fallback(&h(&[("x-litellm-attempted-fallbacks", "yes")])),
+            None
+        );
+        assert_eq!(
+            litellm_fallback(&h(&[
+                ("x-litellm-attempted-fallbacks", "1"),
+                ("x-litellm-model-group", "local-chat-fast"),
+            ])),
+            Some("local-chat-fast".to_string())
+        );
+        assert_eq!(
+            litellm_fallback(&h(&[("x-litellm-attempted-fallbacks", "2")])),
+            Some("another model".to_string())
+        );
+        let long = "g".repeat(200);
+        let got = litellm_fallback(&h(&[
+            ("x-litellm-attempted-fallbacks", "1"),
+            ("x-litellm-model-group", &long),
+        ]))
+        .unwrap();
+        assert_eq!(got.len(), 80);
+    }
 
     #[test]
     fn classify_429_and_408_are_transient() {

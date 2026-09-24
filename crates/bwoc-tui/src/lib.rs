@@ -992,6 +992,14 @@ impl App {
                     s.model = model;
                 }
             }
+            ChatEvent::ModelFallback { requested, served } => {
+                // The status line keeps `requested`: the next turn asks for it
+                // again. Only this reply came from elsewhere.
+                self.conversation.push(format!(
+                    "⚠ this reply is from `{served}`, not `{requested}` — the endpoint fell back \
+                     without an error"
+                ));
+            }
             ChatEvent::Described { topic, rows } => {
                 if rows.is_empty() {
                     self.conversation.push(format!("● no {topic} to report"));
@@ -3865,6 +3873,27 @@ mod tests {
         });
         app.apply(ChatEvent::ModelChanged { model: "m2".into() });
         assert!(status_line(&app).contains("model m2"));
+    }
+
+    #[test]
+    fn model_fallback_warns_but_keeps_the_requested_model() {
+        let mut app = App::new("a".into(), "litellm");
+        app.apply(ChatEvent::Ready {
+            agent: "a".into(),
+            model: "local-chat".into(),
+            backend: "litellm".into(),
+            tools: vec![],
+        });
+        app.apply(ChatEvent::ModelFallback {
+            requested: "local-chat".into(),
+            served: "local-chat-fast".into(),
+        });
+        let last = app.conversation.last().unwrap();
+        assert!(
+            last.starts_with('⚠') && last.contains("`local-chat-fast`"),
+            "{last}"
+        );
+        assert!(status_line(&app).contains("model local-chat "));
     }
 
     #[test]

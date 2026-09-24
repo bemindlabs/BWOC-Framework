@@ -285,6 +285,7 @@ impl ProviderClient for CliClient {
             }],
             usage: None,
             thinking_block: None,
+            fallback: None,
         };
         Ok(Box::pin(futures_util::stream::iter(vec![Ok(chunk)])))
     }

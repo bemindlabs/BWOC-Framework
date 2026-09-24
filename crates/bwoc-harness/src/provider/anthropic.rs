@@ -815,6 +815,7 @@ fn translate_sse_event(ev: &Value, state: &mut SseState) -> Vec<Result<StreamChu
         choices,
         usage,
         thinking_block: None,
+        fallback: None,
     };
     let text_chunk = |content: Option<String>, tool_calls: Option<Vec<ToolCallDelta>>| {
         mk(
