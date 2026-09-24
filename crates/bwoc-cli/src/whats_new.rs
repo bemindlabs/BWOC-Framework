@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — every agent in the workspace, one window: `/agents` opens `claude` agents in panes too, on the CLI's own login"
+    " — every agent in the workspace, one window: `/agents` opens `claude`-backend agents in panes too, on the CLI's own login"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
