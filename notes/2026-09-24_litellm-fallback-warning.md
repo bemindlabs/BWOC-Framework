@@ -7,7 +7,7 @@ Fern reported in #551 that LiteLLM can answer from a different model. She reprod
 - `provider::client::litellm_fallback(headers)`: returns the serving group when the attempted-fallback count is above 0. The group name comes from the endpoint and is shown on screen, so control characters are stripped and it is capped at 80 characters.
 - `OllamaClient::stream` puts one carrier chunk ahead of the content, with `StreamChunk.fallback = Some(group)`. The field is `#[serde(skip)]`: only headers set it, never the body. `complete()` logs the warning to stderr.
 - The accumulator turns that chunk into `LiveDelta::Fallback`. The chat driver turns it into the new `ChatEvent::ModelFallback { requested, served }`. Runs without a live sink write it to stderr.
-- The TUI shows `⚠ this reply is from `<served>`, not `<requested>``. The status-line model stays the same, because the next turn asks for the requested model again.
+- The TUI shows ``⚠ this reply is from `<served>`, not `<requested>` ``. The status-line model stays the same, because the next turn asks for the requested model again.
 
 ## Decisions
 
