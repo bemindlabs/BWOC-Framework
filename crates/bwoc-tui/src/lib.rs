@@ -1888,7 +1888,8 @@ impl Panes {
             .filter(|m| !m.trim().is_empty());
         if via_cli && own_model.is_none() {
             main.conversation.push(format!(
-                "✗ {} has no primaryModel in its manifest — the `{}` CLI needs one",
+                "✗ {} has no readable, non-empty primaryModel in its manifest — the `{}` CLI \
+                 needs one",
                 agent.id, agent.backend
             ));
             return;
