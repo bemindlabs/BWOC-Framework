@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — every agent in the workspace, one window: `/agents` opens `claude`-backend agents in panes too, on the CLI's own login"
+    " — the model you see is the model that answered: a silent LiteLLM fallback is flagged, and every `/agents` pane is its own agent"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "**The model you see is the model that answered (3.10).** When LiteLLM quietly answers from a fallback model — a `max_tokens` over the limit sends `local-chat` to a 4B group — the chat shows `⚠ this reply is from …` before the reply and keeps asking for the model you chose; `/agents` panes run in the agent's own directory, so each answers with its own `AGENTS.md`, persona, memory and history (3.9.1).",
     "**Every agent in the workspace, one window (3.9).** `/agents` opens `claude`-backend agents in panes too — the harness's chat-only `cli` provider on the CLI's own login, no API key; the pane says the CLI runs its own tools outside the harness sandbox.",
     "**Your agents, in the same window (3.8).** `/agents` opens a workspace agent in its own pane — `Tab` moves focus, `Ctrl-L` or `/layout` picks one of six layouts; `/settings <key> <value>` saves to the project config and restarts the session on it; a bare `bwoc` session works by the BWOC principles; Markdown renders as CommonMark (tables, links, nesting) without eating `snake_case`.",
     "**Pick from a list, plan before acting (3.7).** A bare `/mode` or `/model` opens a picker — models come from the backend, and `/models` now lists LiteLLM (only what your key may call), OpenRouter and OpenAI-compatible servers; `/mode plan` lets the agent read and propose without changing anything; a session on vLLM or LiteLLM compacts against the model's real context window instead of 8k.",
     "**A session that can answer for itself.** `/status`, `/tools`, `/cost`, `/models`, `/backends`, `/settings` and `/doctor` report what the session is and what it runs on; `/permissions`, `/mcp` and `/context` report what it may do, what it is connected to and what fills the model's window; `/compact` folds context on demand, `/retry` resends and `/save` writes the transcript. A fixed right pane shows the directory and branch, the workspace and its agents, and the files this session changed (3.6.0, #545–#547)",
     "**A chat session you can steer.** `Esc` cancels the turn in flight; `/model <name>` switches models mid-session; `write_file` / `edit_file` / `multi_edit` show a unified diff of what changed on disk; `/sessions`, `/session <id>`, `/new` and `/fork` move between this directory's conversations without leaving the TUI; answers render as Markdown; `/undo` and `/redo` take a turn's file changes back and put them again (3.5.0, #540–#542)",
-    "**`/` commands and `@` files in the chat input.** `/` opens a command menu (`/help`, `/clear`, `/mode`, `/quit`) that runs in the TUI, never reaching the model; `@` completes project files and attaches each text file inside the working directory to your message (32 KB cap). `bwoc dashboard` is deprecated — use `bwoc fleet` (3.4.0, #535, #537)",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
