@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.25-0] — 2026-09-25 — 3.10.0
+
+**The model you see is the model that answered.** A LiteLLM router that answers from a fallback model now says so in the chat instead of passing a smaller model's reply off as the one you chose. Nothing that worked in 3.9 breaks; frontends that do not know the new `model_fallback` event skip it.
+
 ### Added
 
 - **The chat says when LiteLLM answered from another model.** When the model you asked for rejects a request — for example a `max_tokens` above its limit — LiteLLM retries on a fallback group and returns HTTP 200 as if nothing happened, so a 4B model could answer in place of the one on the status line. The harness now reads `x-litellm-attempted-fallbacks` and `x-litellm-model-group` and sends a new `model_fallback` chat event before the reply; the TUI shows `⚠ this reply is from <group>, not <model>`. The session keeps asking for the model you chose. Non-chat runs log the same warning to stderr.

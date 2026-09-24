@@ -480,7 +480,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 **Current phase:** Phase 7 — _anicca_ (versioned change & the compatibility contract) — **3.0 shipped** (`v2026.9.13-0`, patch `v2026.9.13-1`): every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward, specification 3.0 is validated, and `[plugin].compat` is enforced. Phase 6 — _paññā_ (harness eval & cross-platform hardening) DoD met; Phases 1–5 DoD met and signed off: Phase 1 end-to-end **uppāda** for one backend; Phase 2 _ṭhiti operations_; Phase 3 the cross-workspace interconnect mesh + Kalyāṇamitta-7 trust; Phase 4 fleet governance; Phase 5 _saṃvara_ trust-boundary & sandbox hardening. Per-phase detail is in [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md).
 
-**Latest release:** [`v2026.9.24-2`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.24-2) (3.9.1) — **agents opened with `/agents` answer as themselves**: panes run in the agent's own directory (its `AGENTS.md`, persona, memory and history), and a `claude`-backend pane no longer takes the identity of wherever `bwoc` was started.
+**Latest release:** [`v2026.9.25-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.25-0) (3.10.0) — **the model you see is the model that answered**: when LiteLLM quietly answers from a fallback model, the chat shows `⚠ this reply is from …` before the reply and keeps asking for the model you chose.
 
 | Area | Status |
 | --- | --- |
