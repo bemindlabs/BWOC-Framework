@@ -1867,10 +1867,30 @@ impl Panes {
             ));
             return;
         };
-        if !session::is_harness_drivable(&agent.backend) {
+        // A `claude` agent runs through the harness's chat-only `cli`
+        // provider; other vendor CLIs have no print mode the harness speaks.
+        let via_cli = !session::is_harness_drivable(&agent.backend)
+            && session::runs_on_harness_cli(&agent.backend);
+        if !session::is_harness_drivable(&agent.backend) && !via_cli {
             main.conversation.push(format!(
-                "✗ {} runs on the `{}` vendor CLI — open it with `bwoc chat {}`",
+                "✗ {} runs on the `{}` vendor CLI, which a pane cannot drive — open it with \
+                 `bwoc chat {}`",
                 agent.id, agent.backend, agent.id
+            ));
+            return;
+        }
+        // The CLI needs the agent's own model; the main session's would be a
+        // model name the vendor does not know.
+        let own_model = session::is_safe_relative_path(&agent.path)
+            .then(|| root.join(&agent.path).join("config.manifest.json"))
+            .and_then(|p| Manifest::load_from_path(&p).ok())
+            .map(|m| m.primary_model)
+            .filter(|m| !m.trim().is_empty());
+        if via_cli && own_model.is_none() {
+            main.conversation.push(format!(
+                "✗ {} has no readable, non-empty primaryModel in its manifest — the `{}` CLI \
+                 needs one",
+                agent.id, agent.backend
             ));
             return;
         }
@@ -1882,10 +1902,25 @@ impl Panes {
             model: model.clone().unwrap_or_default(),
             endpoint: endpoint.clone(),
         };
-        let cfg = base.for_agent(agent);
+        let mut cfg = base.for_agent(agent);
+        if via_cli {
+            cfg.backend = "cli".to_string();
+        }
         match Session::spawn(&agent.id, &cfg) {
             Ok(session) => {
                 let mut app = App::new(agent.id.clone(), &agent.backend);
+                if via_cli {
+                    // Say plainly what this pane is: the vendor CLI runs its
+                    // own tools under its own permissions (Sīla — no claim of
+                    // a guard that is not there). Shown under `ready`, which
+                    // clears the transcript.
+                    app.after_ready = Some(format!(
+                        "● {} via the `{}` CLI (its login, no API key) — chat-only here; the CLI \
+                         runs its own tools with its own permissions, outside the harness \
+                         sandbox and guardrails",
+                        agent.id, agent.backend
+                    ));
+                }
                 // `path` comes from `bwoc list`: keep `@` files inside the
                 // workspace unless it is a plain relative path (as `for_agent`).
                 app.workdir = Some(if session::is_safe_relative_path(&agent.path) {

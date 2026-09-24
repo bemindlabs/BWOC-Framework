@@ -33,12 +33,22 @@ pub struct AgentInfo {
 /// `bwoc-cli`): the OpenAI-compatible family and `anthropic` (the harness's
 /// Anthropic Messages provider) speak `chat_proto`, while vendor CLIs
 /// (claude / agy / codex / kimi / copilot / grok) speak their own interactive
-/// protocol and must be opened with `bwoc chat` directly.
+/// protocol. The exception is `claude`, which an `/agents` pane runs through
+/// the harness's chat-only `cli` provider (see [`runs_on_harness_cli`]); the
+/// others are opened with `bwoc chat` directly.
 pub fn is_harness_drivable(backend: &str) -> bool {
     matches!(
         backend,
         "ollama" | "openai-compatible" | "openrouter" | "litellm" | "anthropic"
     )
+}
+
+/// Vendor-CLI backends the harness can still drive, through its chat-only
+/// `cli` provider (`<cli> -p --model <m> --output-format json`, the CLI's own
+/// login, no API key). Only `claude` speaks that print-mode contract; the
+/// harness's `--cli-cmd` defaults to it.
+pub fn runs_on_harness_cli(backend: &str) -> bool {
+    backend == "claude"
 }
 
 /// Whether `path` is safe to join under the workspace root: non-empty and every
@@ -244,6 +254,22 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_claude_runs_through_the_harness_cli_provider() {
+        assert!(runs_on_harness_cli("claude"));
+        for other in [
+            "codex",
+            "kimi",
+            "antigravity",
+            "copilot",
+            "grok",
+            "ollama",
+            "litellm",
+        ] {
+            assert!(!runs_on_harness_cli(other), "{other}");
+        }
+    }
 
     fn defaults() -> SessionConfig {
         SessionConfig {
