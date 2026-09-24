@@ -57,11 +57,24 @@ pub const DEFAULT_CLI_CMD: &str = "claude";
 /// [`ProviderClient`] that shells out to a local vendor CLI per turn.
 pub struct CliClient {
     cmd: String,
+    /// Directory each turn runs in. The CLI reads its own instruction files
+    /// (`CLAUDE.md`) from its cwd, so it must be the session's workdir — the
+    /// agent's directory — not wherever the harness happened to be started.
+    cwd: Option<std::path::PathBuf>,
 }
 
 impl CliClient {
     pub fn new(cmd: impl Into<String>) -> Self {
-        Self { cmd: cmd.into() }
+        Self {
+            cmd: cmd.into(),
+            cwd: None,
+        }
+    }
+
+    /// Run every turn in `dir` (the session's workdir).
+    pub fn with_cwd(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.cwd = Some(dir.into());
+        self
     }
 
     /// Flatten the OpenAI-shaped history into one print-mode prompt. Tool
@@ -101,7 +114,11 @@ impl CliClient {
 
     /// Run one CLI turn: spawn, pipe the prompt on stdin, collect stdout.
     async fn run_turn(&self, prompt: String, model: &str) -> Result<String, HarnessError> {
-        let mut child = Command::new(&self.cmd)
+        let mut command = Command::new(&self.cmd);
+        if let Some(dir) = &self.cwd {
+            command.current_dir(dir);
+        }
+        let mut child = command
             .arg("-p")
             .arg("--model")
             .arg(model)
@@ -420,6 +437,23 @@ mod tests {
                 done.choices[0].finish_reason,
                 Some(FinishReason::Stop)
             ));
+        }
+
+        #[tokio::test]
+        async fn turn_runs_in_the_session_workdir() {
+            let _serial = serial().await;
+            let dir = tempfile::tempdir().unwrap();
+            let workdir = tempfile::tempdir().unwrap();
+            let cli = fake_cli(dir.path(), "cat > /dev/null; pwd -P");
+            let client = CliClient::new(cli).with_cwd(workdir.path());
+            let done = client
+                .complete(vec![msg(Role::User, "hi")], vec![], "m1")
+                .await
+                .unwrap();
+            assert_eq!(
+                done.choices[0].message.content.as_deref(),
+                Some(workdir.path().canonicalize().unwrap().to_str().unwrap())
+            );
         }
 
         #[tokio::test]

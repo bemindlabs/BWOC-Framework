@@ -4,7 +4,7 @@
 //! in the working directory (if present), validates the model, and runs the
 //! agentic loop.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -417,6 +417,7 @@ async fn run() -> HarnessResult<()> {
             None,
             true,
             false,
+            None,
         );
         for id in provider.try_list_models().await? {
             println!("{id}");
@@ -482,6 +483,7 @@ async fn run() -> HarnessResult<()> {
         max_tokens,
         prompt_cache,
         thinking,
+        Some(&workdir),
     );
 
     // ── Auto model selection (primaryModel: "auto") ───────────────────────
@@ -1056,6 +1058,7 @@ async fn run_eval_mode(
         max_tokens,
         prompt_cache,
         thinking,
+        None,
     );
 
     let config = LoopConfig {
@@ -1138,6 +1141,7 @@ async fn run_eval_mode(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_provider(
     backend: &str,
     endpoint: &str,
@@ -1146,6 +1150,7 @@ fn build_provider(
     max_tokens: Option<u32>,
     prompt_cache: bool,
     thinking: bool,
+    workdir: Option<&Path>,
 ) -> Arc<dyn ProviderClient> {
     use bwoc_harness::provider::client as oai;
     match backend {
@@ -1165,7 +1170,11 @@ fn build_provider(
                  the Untrusted-turn read-only guarantee (#271) is NOT enforced. Use an HTTP \
                  backend for any session that processes untrusted input."
             );
-            Arc::new(CliClient::new(cli_cmd))
+            let client = CliClient::new(cli_cmd);
+            Arc::new(match workdir {
+                Some(dir) => client.with_cwd(dir),
+                None => client,
+            })
         }
         "claude" | "anthropic" => {
             let base = if endpoint == oai::DEFAULT_ENDPOINT {
@@ -1303,6 +1312,7 @@ async fn run_chat_mode(
         max_tokens,
         prompt_cache,
         thinking,
+        Some(workdir),
     );
 
     // Resolve the `auto` model sentinel the same way the batch path does (see
