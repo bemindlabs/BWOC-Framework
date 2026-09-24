@@ -1058,7 +1058,7 @@ async fn run_eval_mode(
         max_tokens,
         prompt_cache,
         thinking,
-        None,
+        Some(workdir),
     );
 
     let config = LoopConfig {
