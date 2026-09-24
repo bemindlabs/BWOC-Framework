@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.24-2] — 2026-09-24 — 3.9.1
+
+**Agents opened with `/agents` answer as themselves.** A patch for 3.8–3.9 panes, which ran in the workspace root instead of the agent's directory.
+
 ### Fixed
 
 - **An agent opened with `/agents` answers as itself.** The pane ran the harness in the workspace root instead of the agent's directory, so it got the generic project prompt instead of the agent's `AGENTS.md`, persona and memory, and shared one session file (and so one history) with the main session and every other pane. A `claude`-backend agent was worse: the `claude` CLI ran wherever `bwoc` was started and took its identity from the `CLAUDE.md` and hooks it found there — agent-inao said it was agent-fern. Panes now run in the agent's directory, as `bwoc chat <agent>` does, and the `cli` provider runs each turn in the session's workdir.
