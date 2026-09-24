@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — ordinary feature branches leave these shared lines alone (so concurrent PRs never collide on the version); release and version-bump PRs are the ones that edit them. The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `3.8.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.15.0`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `3.9.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.16.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 7 — *anicca* (versioned change & the compatibility contract), **in progress** — producing 3.0. Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** *(t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature — see `reports/retro/t32-deep-memory-design.md`)*. **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant)*; Phase 3 vaya + Phase 4 fleet-governance also met
-**Latest release:** [`v2026.9.24-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.24-0) *(2026-09-24 — **3.8.0** — your agents, in the same window: `/agents` panes with six layouts, `/settings` that applies live, a BWOC-grounded session preamble, CommonMark rendering)*
+**Latest release:** [`v2026.9.24-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.24-1) *(2026-09-24 — **3.9.0** — every agent in the workspace, one window: `/agents` opens `claude`-backend agents in panes via the harness `cli` provider)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v3.0
-**Last-Updated:** `2026-09-23T23:12:13Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-09-24T05:30:37Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
