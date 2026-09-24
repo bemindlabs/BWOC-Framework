@@ -41,6 +41,14 @@ pub fn is_harness_drivable(backend: &str) -> bool {
     )
 }
 
+/// Vendor-CLI backends the harness can still drive, through its chat-only
+/// `cli` provider (`<cli> -p --model <m> --output-format json`, the CLI's own
+/// login, no API key). Only `claude` speaks that print-mode contract; the
+/// harness's `--cli-cmd` defaults to it.
+pub fn runs_on_harness_cli(backend: &str) -> bool {
+    backend == "claude"
+}
+
 /// Whether `path` is safe to join under the workspace root: non-empty and every
 /// component a plain name — no root (`/`), drive prefix (`C:\`), or `..` that
 /// could escape the workspace. Guards the untrusted `path` from
@@ -244,6 +252,22 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_claude_runs_through_the_harness_cli_provider() {
+        assert!(runs_on_harness_cli("claude"));
+        for other in [
+            "codex",
+            "kimi",
+            "antigravity",
+            "copilot",
+            "grok",
+            "ollama",
+            "litellm",
+        ] {
+            assert!(!runs_on_harness_cli(other), "{other}");
+        }
+    }
 
     fn defaults() -> SessionConfig {
         SessionConfig {
