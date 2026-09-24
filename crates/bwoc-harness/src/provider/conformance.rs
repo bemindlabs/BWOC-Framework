@@ -606,3 +606,65 @@ async fn context_limit_reads_litellm_model_info_with_the_key() {
     let keyless = OllamaClient::new(format!("{}/v1", server.uri()));
     assert_eq!(keyless.model_context_limit("local-chat").await, None);
 }
+
+// ── Silent LiteLLM fallback (#551) ───────────────────────────────────────────
+//
+// LiteLLM answers a request its model rejects (e.g. `max_tokens` over the
+// limit) from a fallback group with HTTP 200; only the headers say so.
+
+#[tokio::test]
+async fn stream_flags_a_litellm_fallback_before_the_content() {
+    use futures_util::StreamExt;
+    let sse = "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .insert_header("x-litellm-attempted-fallbacks", "1")
+                .insert_header("x-litellm-model-group", "local-chat-fast")
+                .set_body_string(sse),
+        )
+        .mount(&server)
+        .await;
+    let client = OllamaClient::new(format!("{}/v1", server.uri()));
+    let chunks: Vec<_> = client
+        .stream(user(), vec![], "local-chat")
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    let first = chunks[0].as_ref().unwrap();
+    assert_eq!(first.fallback.as_deref(), Some("local-chat-fast"));
+    assert!(first.choices.is_empty(), "the carrier chunk has no content");
+    let rest: Vec<_> = chunks[1..].iter().map(|c| c.as_ref().unwrap()).collect();
+    assert!(rest.iter().all(|c| c.fallback.is_none()));
+    assert_eq!(rest[0].choices[0].delta.content.as_deref(), Some("hi"));
+}
+
+#[tokio::test]
+async fn stream_without_a_fallback_adds_no_carrier_chunk() {
+    use futures_util::StreamExt;
+    let sse = "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .insert_header("x-litellm-attempted-fallbacks", "0")
+                .set_body_string(sse),
+        )
+        .mount(&server)
+        .await;
+    let client = OllamaClient::new(format!("{}/v1", server.uri()));
+    let chunks: Vec<_> = client
+        .stream(user(), vec![], "local-chat")
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert_eq!(chunks.len(), 1);
+    assert!(chunks[0].as_ref().unwrap().fallback.is_none());
+}

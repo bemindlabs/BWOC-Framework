@@ -95,6 +95,11 @@ pub enum ChatEvent {
     /// session use `model`. Also sent when the harness switches models on its
     /// own (the malformed-tool-call fallback chain).
     ModelChanged { model: String },
+    /// The endpoint answered this turn from another model than the one asked
+    /// for (a LiteLLM router fallback), without an error. Display-only: the
+    /// session keeps asking for `requested`; `served` is what the endpoint says
+    /// produced this reply.
+    ModelFallback { requested: String, served: String },
     /// The answer to a [`ChatInput::Describe`]: `rows` are `(label, value)`
     /// pairs to render in order. Display-only, and never a secret — a session
     /// describes what it is configured to do, not the credentials it does it

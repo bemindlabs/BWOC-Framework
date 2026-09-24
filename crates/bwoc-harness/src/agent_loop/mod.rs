@@ -2590,6 +2590,7 @@ mod tests {
             }],
             usage: None,
             thinking_block: None,
+            fallback: None,
         }
     }
 
@@ -2645,6 +2646,7 @@ mod tests {
                         ..Usage::default()
                     }),
                     thinking_block: None,
+                    fallback: None,
                 },
             ],
         };
