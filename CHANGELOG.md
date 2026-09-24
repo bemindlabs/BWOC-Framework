@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.24-1] — 2026-09-24 — 3.9.0
+
+**Every agent in the workspace, one window.** `/agents` now opens `claude`-backend agents too — through the harness's chat-only `cli` provider on the CLI's own login, no API key — so a workspace of Claude agents can be talked to from panes beside your session. Nothing that worked in 3.8 breaks.
+
 ### Added
 
 - **`/agents` opens `claude`-backend agents too.** They were refused with "open it with `bwoc chat`". They now open in a pane through the harness's chat-only `cli` provider (`claude -p`, the CLI's own login, no API key) with the agent's `primaryModel`; the pane says plainly that the CLI runs its own tools under its own permissions, outside the harness sandbox. Other vendor CLIs have no print mode the harness speaks and still point to `bwoc chat`.
