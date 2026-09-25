@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Fixed
 
+- **`/undo` no longer deletes a file it could not read.** The undo journal recorded any read failure — permissions, an I/O error, a directory — as "the file did not exist", so undoing that turn deleted whatever was there. Only a genuinely missing file counts as absent now; anything else is left out of the journal. A corrupt or hand-edited journal cursor is clamped instead of indexed, so it cannot panic the session. (Review fix from #542 that was pushed after the PR merged and never reached `main`.)
 - **The context pane's `changed` list follows re-edits and stays bounded, and a linked worktree shows its branch.** A file edited twice kept its first position, and the list grew for as long as the session ran; it is now most-recent-first and capped at 50. A worktree whose `.git` file holds a relative `gitdir:` (what `git worktree add` writes) was resolved against the process's cwd, so the pane showed no branch; the pointer now resolves against the worktree. (Review fix from #546 that was pushed after the PR merged and never reached `main`.)
 
 ### Added

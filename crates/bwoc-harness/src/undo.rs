@@ -91,7 +91,9 @@ impl Journal {
     /// nothing left to undo.
     pub fn undo(&self) -> std::io::Result<Option<Batch>> {
         let turns = self.turns();
-        let cursor = self.cursor();
+        // The cursor is a file on disk: clamp it rather than trust it, so a
+        // corrupted or hand-edited journal cannot panic the session.
+        let cursor = self.cursor().min(turns.len());
         let Some(index) = turns.len().checked_sub(cursor + 1) else {
             return Ok(None);
         };
@@ -103,11 +105,11 @@ impl Journal {
 
     /// Reapply the most recently undone turn. `None` when nothing was undone.
     pub fn redo(&self) -> std::io::Result<Option<Batch>> {
-        let cursor = self.cursor();
+        let turns = self.turns();
+        let cursor = self.cursor().min(turns.len());
         if cursor == 0 {
             return Ok(None);
         }
-        let turns = self.turns();
         let index = turns.len() - cursor;
         let turn = self.read(&turns[index])?;
         let batch = apply(&turn, Direction::Redo);
@@ -149,11 +151,11 @@ impl Journal {
 
     /// Forget the undone tail: a new turn after an undo replaces that future.
     fn drop_undone(&self) -> std::io::Result<()> {
-        let cursor = self.cursor();
+        let turns = self.turns();
+        let cursor = self.cursor().min(turns.len());
         if cursor == 0 {
             return Ok(());
         }
-        let turns = self.turns();
         for path in turns.iter().skip(turns.len() - cursor) {
             std::fs::remove_file(path)?;
         }
@@ -213,10 +215,14 @@ pub enum Journalled {
     Unsupported,
 }
 
-/// Read a file for the journal.
+/// Read a file for the journal. Only a genuinely absent file is `Text(None)`:
+/// any other read failure (permissions, an I/O error, a directory) would make
+/// the journal claim the file did not exist, and a later undo would delete
+/// whatever is there.
 pub fn journalled(path: &Path) -> Journalled {
     match std::fs::read(path) {
-        Err(_) => Journalled::Text(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Journalled::Text(None),
+        Err(_) => Journalled::Unsupported,
         Ok(bytes) if bytes.len() > MAX_JOURNAL_BYTES => Journalled::Unsupported,
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => Journalled::Text(Some(text)),
@@ -340,6 +346,29 @@ mod tests {
         let j = journal(tmp.path());
         j.record(&turn(Vec::new())).unwrap();
         assert!(j.undo().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_corrupt_cursor_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let j = journal(dir);
+        std::fs::write(dir.join("a.txt"), "v1").unwrap();
+        j.record(&turn(vec![entry(dir, "a.txt", None, Some("v1"))]))
+            .unwrap();
+        // A cursor past the end of the journal (hand-edited, or turn files
+        // removed behind us).
+        std::fs::write(j.dir.join("cursor"), "99").unwrap();
+        assert!(j.undo().unwrap().is_none());
+        assert!(j.redo().unwrap().is_some());
+    }
+
+    #[test]
+    fn an_unreadable_file_is_not_treated_as_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A directory is readable as a path but never as file content: the
+        // journal must not report it as "did not exist".
+        assert_eq!(journalled(tmp.path()), Journalled::Unsupported);
     }
 
     #[test]
