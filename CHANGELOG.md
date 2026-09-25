@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/undo` no longer deletes a file it could not read.** The undo journal recorded any read failure — permissions, an I/O error, a directory — as "the file did not exist", so undoing that turn deleted whatever was there. Only a genuinely missing file counts as absent now; anything else is left out of the journal. A corrupt or hand-edited journal cursor is clamped instead of indexed, so it cannot panic the session. (Review fix from #542 that was pushed after the PR merged and never reached `main`.)
+
 ### Added
 
 - **Click a pane's input box to focus it.** With agent panes open, a left click on a pane's input box moves focus there, as `Tab` does; clicks elsewhere change nothing. The TUI asks the terminal for mouse presses only while panes are open (press/release, no motion), so a single session keeps the terminal's own drag-to-select. With panes open, select text with Shift-drag (Option-drag in macOS Terminal/iTerm); the wheel still scrolls the focused pane.
