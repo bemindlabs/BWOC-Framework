@@ -552,7 +552,8 @@ struct App {
     last_sent: Option<String>,
     /// Completed turns this session (one per `TurnEnd`).
     turns: u32,
-    /// Files this session changed, newest first (from `Diff` events) — shown in
+    /// Files this session changed, most recently touched first (from `Diff`
+    /// events) — shown in
     /// the context pane so the worktree damage is visible without scrolling.
     changed: Vec<String>,
     /// The context pane's disk-derived content, refreshed at turn boundaries
@@ -574,6 +575,10 @@ struct Popup {
     /// `/` commands run on `Enter`; `@` files only complete.
     is_command: bool,
 }
+
+/// Files remembered for the context pane's `changed` section. Bounded because
+/// a long session can touch many files, and the pane shows only the newest few.
+const MAX_CHANGED_TRACKED: usize = 50;
 
 /// Rows shown in the popup at once.
 const POPUP_ROWS: usize = 8;
@@ -979,9 +984,11 @@ impl App {
                 ..
             } => {
                 let more = if truncated { " (truncated)" } else { "" };
-                if !self.changed.contains(&path) {
-                    self.changed.insert(0, path.clone());
-                }
+                // Most recently touched first, and bounded: a long session can
+                // touch a file many times and many files once.
+                self.changed.retain(|p| p != &path);
+                self.changed.insert(0, path.clone());
+                self.changed.truncate(MAX_CHANGED_TRACKED);
                 self.conversation.push(format!("± {path}{more}"));
                 self.conversation
                     .extend(diff.lines().map(|l| format!("±{l}")));
@@ -3897,6 +3904,36 @@ mod tests {
             app.input_insert(c);
             app.input_changed();
         }
+    }
+
+    #[test]
+    fn changed_files_are_most_recent_first_and_bounded() {
+        let mut app = App::new("a".into(), "ollama");
+        let mut touch = |path: &str| {
+            app.apply(ChatEvent::Diff {
+                id: "c".into(),
+                path: path.into(),
+                diff: String::new(),
+                truncated: false,
+            })
+        };
+        touch("a.rs");
+        touch("b.rs");
+        touch("a.rs");
+        assert_eq!(
+            app.changed,
+            vec!["a.rs", "b.rs"],
+            "a re-edit moves to the top"
+        );
+        for i in 0..MAX_CHANGED_TRACKED + 10 {
+            app.apply(ChatEvent::Diff {
+                id: "c".into(),
+                path: format!("f{i}.rs"),
+                diff: String::new(),
+                truncated: false,
+            });
+        }
+        assert_eq!(app.changed.len(), MAX_CHANGED_TRACKED);
     }
 
     #[test]
