@@ -398,9 +398,15 @@ mod tests {
                 "sh",
             ])
             .arg(&script)
-            .status()
+            .output()
             .unwrap();
-        assert!(wrote.success(), "failed to write {}", script.display());
+        assert!(
+            wrote.status.success(),
+            "failed to write {}: {} — {}",
+            script.display(),
+            wrote.status,
+            String::from_utf8_lossy(&wrote.stderr)
+        );
 
         let runner =
             SubprocessRunner::with_exe(&script).with_timeout(Some(Duration::from_millis(150)));

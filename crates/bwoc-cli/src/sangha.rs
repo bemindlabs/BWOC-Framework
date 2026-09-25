@@ -937,15 +937,20 @@ mod tests {
     /// busy"). `mode` is octal, e.g. `"755"`.
     #[cfg(unix)]
     fn write_script(path: &std::path::Path, body: &str, mode: &str) {
-        let ok = std::process::Command::new("/bin/sh")
+        let out = std::process::Command::new("/bin/sh")
             .args(["-c", r#"printf '%s' "$1" > "$2" && chmod "$3" "$2""#, "sh"])
             .arg(body)
             .arg(path)
             .arg(mode)
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok, "failed to write {}", path.display());
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "failed to write {}: {} — {}",
+            path.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[cfg(unix)]

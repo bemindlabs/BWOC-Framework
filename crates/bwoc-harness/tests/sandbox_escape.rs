@@ -223,9 +223,15 @@ fn c7_parent_git_does_not_run_planted_worktree_code() {
         .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh"])
         .arg(format!("#!/bin/sh\necho pwned > {}\n", marker.display()))
         .arg(&evil)
-        .status()
+        .output()
         .unwrap();
-    assert!(wrote.success(), "failed to write {}", evil.display());
+    assert!(
+        wrote.status.success(),
+        "failed to write {}: {} — {}",
+        evil.display(),
+        wrote.status,
+        String::from_utf8_lossy(&wrote.stderr)
+    );
     git(&["config", "core.fsmonitor", evil.to_str().unwrap()]);
 
     // A pending change so the production diff/ls-files refresh the index.
