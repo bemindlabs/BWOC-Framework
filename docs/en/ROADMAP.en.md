@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Latest phase:** Phase 7 — *anicca* (versioned change & the compatibility contract) — **DoD met; 3.0 shipped** as `v2026.9.13-0`, followed by 3.1–3.10 inside its contract (see *Shipped beyond Phase 7*). No next phase is defined yet. Phase 7 delivered: every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward without losing comments or unmodeled keys, specification 3.0 is validated rather than merely written, and `[plugin].compat` is enforced with bounded ranges. The contract itself is in [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md). Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** (t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature, resume order recorded in `reports/retro/t32-deep-memory-design.md`). **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off; Phase 3 *vaya* + Phase 4 fleet-governance DoDs met; Phase 1 v2.0 and Phase 2 met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Latest phase:** Phase 7 — *anicca* (versioned change & the compatibility contract) — **DoD met; 3.0 shipped** as `v2026.9.13-0`, followed by 3.1 onward inside its contract (see *Shipped beyond Phase 7*). No next phase is defined yet. Phase 7 delivered: every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward without losing comments or unmodeled keys, specification 3.0 is validated rather than merely written, and `[plugin].compat` is enforced with bounded ranges. The contract itself is in [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md). Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** (t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature, resume order recorded in `reports/retro/t32-deep-memory-design.md`). **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off; Phase 3 *vaya* + Phase 4 fleet-governance DoDs met; Phase 1 v2.0 and Phase 2 met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -257,7 +257,7 @@ Each of these is deferred with a reason, not forgotten:
 - **Code signing** (Apple notarization / Windows Authenticode) — blocked on the maintainer provisioning certificates, not on code. Still listed in [`RELEASING.en.md`](RELEASING.en.md).
 - **crates.io publish** — the Rust API is deliberately not a public surface; see [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md#what-is-a-public-surface).
 
-## Shipped beyond Phase 7 — 3.1 to 3.10
+## Shipped beyond Phase 7 — 3.1 onward
 
 Released after 3.0 and inside its compatibility contract — no breaking change, no new phase. Most of it makes a bare `bwoc` a coding agent you can talk to in the terminal. Full detail is in [`CHANGELOG.md`](../../CHANGELOG.md).
 
@@ -273,6 +273,7 @@ Released after 3.0 and inside its compatibility contract — no breaking change,
 | 3.8.0 | `v2026.9.24-0` | `/agents` panes with six layouts, `/settings` that applies live, a BWOC-grounded session preamble, CommonMark rendering |
 | 3.9.0 / 3.9.1 | `v2026.9.24-1` / `-2` | `claude`-backend agents in panes via the chat-only `cli` provider; each pane runs in its agent's own directory |
 | 3.10.0 | `v2026.9.25-0` | A silent LiteLLM fallback is flagged in the chat instead of passing a smaller model off as the chosen one |
+| 3.11.0 | `v2026.9.25-1` | A click on a pane's input box focuses it; `/undo` no longer deletes a file it could not read |
 
 **No next phase is defined yet.** The items under *Deliberately not in 3.0* above are the known candidates; choosing among them is a maintainer decision this document does not pre-empt.
 
