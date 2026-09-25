@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.25-1] — 2026-09-25 — 3.11.0
+
+**Click a pane to talk to it.** A click on an agent pane's input box focuses it, and two review fixes that never reached `main` land: `/undo` no longer deletes a file it could not read, and the context pane follows re-edits and linked worktrees. Nothing that worked in 3.10 breaks; with panes open, select text with Shift-drag (Option-drag on macOS).
+
 ### Fixed
 
 - **`/undo` no longer deletes a file it could not read.** The undo journal recorded any read failure — permissions, an I/O error, a directory — as "the file did not exist", so undoing that turn deleted whatever was there. Only a genuinely missing file counts as absent now; anything else is left out of the journal. A corrupt or hand-edited journal cursor is clamped instead of indexed, so it cannot panic the session. (Review fix from #542 that was pushed after the PR merged and never reached `main`.)
