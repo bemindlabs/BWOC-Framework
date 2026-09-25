@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Added
+
+- **Click a pane's input box to focus it.** With agent panes open, a left click on a pane's input box moves focus there, as `Tab` does; clicks elsewhere change nothing. The TUI asks the terminal for mouse presses only while panes are open (press/release, no motion), so a single session keeps the terminal's own drag-to-select. With panes open, select text with Shift-drag (Option-drag in macOS Terminal/iTerm); the wheel still scrolls the focused pane.
+
 ## [v2026.9.25-0] — 2026-09-25 — 3.10.0
 
 **The model you see is the model that answered.** A LiteLLM router that answers from a fallback model now says so in the chat instead of passing a smaller model's reply off as the one you chose. Nothing that worked in 3.9 breaks; frontends that do not know the new `model_fallback` event skip it.

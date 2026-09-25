@@ -53,7 +53,7 @@ use bwoc_core::chat_proto::{ChatEvent, ChatInput};
 use bwoc_core::design;
 use bwoc_core::manifest::Manifest;
 use bwoc_core::trust::Principal;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -1095,7 +1095,23 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     Terminal::new(backend)
 }
 
+/// Report mouse presses (and the wheel) while agent panes are open, so a click
+/// on a pane's input box focuses it. Press/release only (1000) in SGR form
+/// (1006): no motion tracking, so an idle pointer sends nothing. Off with no
+/// panes, where the terminal's own drag-to-select keeps working.
+fn set_mouse(on: bool) -> io::Result<()> {
+    let seq: &[u8] = if on {
+        b"\x1b[?1000h\x1b[?1006h"
+    } else {
+        b"\x1b[?1006l\x1b[?1000l"
+    };
+    let mut out = io::stdout();
+    out.write_all(seq)?;
+    out.flush()
+}
+
 fn restore_terminal() -> io::Result<()> {
+    let _ = set_mouse(false);
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
     Ok(())
@@ -1156,6 +1172,7 @@ fn event_loop(
     // leaves an idle frame untouched so native terminal text selection remains
     // stable long enough to copy it.
     let mut dirty = true;
+    let mut mouse = false;
     loop {
         // Drain any harness events that arrived since the last poll.
         loop {
@@ -1186,6 +1203,11 @@ fn event_loop(
                 term.draw(|f| draw_panes(f, app, panes))?;
             }
             dirty = false;
+        }
+        let want_mouse = !panes.side.is_empty();
+        if mouse != want_mouse {
+            mouse = want_mouse;
+            set_mouse(mouse)?;
         }
 
         if app.done {
@@ -1240,6 +1262,38 @@ fn event_loop(
                         }
                     }
                 }
+                Event::Mouse(m) if !panes.side.is_empty() => match m.kind {
+                    // A click on a pane's input box focuses that pane.
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let (cols, rows) = crossterm::terminal::size()?;
+                        if let Some(i) = pane_input_at(
+                            Rect::new(0, 0, cols, rows),
+                            complete::LAYOUTS[panes.layout].0,
+                            panes.side.len() + 1,
+                            panes.focus,
+                            m.column,
+                            m.row,
+                        ) {
+                            panes.focus = i;
+                            dirty = true;
+                        }
+                    }
+                    // Capturing the mouse takes the wheel from the terminal,
+                    // which sent it as ↑/↓: keep it scrolling the focused pane.
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                        let code = if m.kind == MouseEventKind::ScrollUp {
+                            KeyCode::Up
+                        } else {
+                            KeyCode::Down
+                        };
+                        let target = match panes.focus {
+                            0 => &mut *app,
+                            i => &mut panes.side[i - 1].app,
+                        };
+                        dirty |= target.scroll_key(code);
+                    }
+                    _ => {}
+                },
                 Event::Resize(_, _) => dirty = true,
                 _ => {}
             }
@@ -2223,6 +2277,35 @@ fn pane_rects(area: Rect, layout: &str, count: usize, focus: usize) -> Vec<(usiz
             out
         }
     }
+}
+
+/// The pane whose input box contains the cell (`col`, `row`) of a `screen`
+/// drawn by [`draw_panes`] — the same geometry: panes above a one-row footer,
+/// each a bordered block whose last three inner rows are the input.
+fn pane_input_at(
+    screen: Rect,
+    layout: &str,
+    count: usize,
+    focus: usize,
+    col: u16,
+    row: u16,
+) -> Option<usize> {
+    let area = Rect {
+        height: screen.height.saturating_sub(1),
+        ..screen
+    };
+    pane_rects(area, layout, count, focus)
+        .into_iter()
+        .find(|(_, rect)| {
+            let inner = Block::default().borders(Borders::ALL).inner(*rect);
+            let input = Rect {
+                y: inner.y + inner.height.saturating_sub(3),
+                height: inner.height.min(3),
+                ..inner
+            };
+            input.contains(ratatui::layout::Position::new(col, row))
+        })
+        .map(|(i, _)| i)
 }
 
 /// One session in a bordered pane: status line, transcript, input.
@@ -3461,6 +3544,22 @@ mod tests {
         let g = pane_rects(area, "grid", 4, 0);
         assert_eq!(g[0].1.y, g[1].1.y);
         assert!(g[2].1.y > g[0].1.y);
+    }
+
+    #[test]
+    fn a_click_lands_only_on_a_pane_input_box() {
+        // 100 × 41: panes fill rows 0..40, the footer is row 40.
+        let screen = Rect::new(0, 0, 100, 41);
+        let at = |col, row| pane_input_at(screen, "main-vertical", 2, 0, col, row);
+        let main = pane_rects(Rect::new(0, 0, 100, 40), "main-vertical", 2, 0)[0].1;
+        // The input is the last three rows inside the border: 36, 37, 38.
+        assert_eq!(at(10, 36), Some(0));
+        assert_eq!(at(10, 38), Some(0));
+        assert_eq!(at(main.right() + 5, 37), Some(1));
+        assert_eq!(at(10, 35), None, "the transcript is not the input");
+        assert_eq!(at(10, 39), None, "the bottom border is not the input");
+        assert_eq!(at(10, 40), None, "the footer is not a pane");
+        assert_eq!(at(main.x, 37), None, "the side border is not the input");
     }
 
     #[test]
