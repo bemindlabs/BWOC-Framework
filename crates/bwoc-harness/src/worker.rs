@@ -384,12 +384,23 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn subprocess_runner_kills_on_timeout() {
-        use std::os::unix::fs::PermissionsExt;
         // A child that ignores its args and sleeps far past the timeout.
         let tmp = TempDir::new().unwrap();
         let script = tmp.path().join("sleeper.sh");
-        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Written by a child process, never by this one: a writable fd held
+        // here leaks into any child another test thread forks meanwhile, and
+        // our exec then fails with ETXTBSY ("Text file busy") — the same race
+        // `provider::cli`'s `fake_cli` avoids.
+        let wrote = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"printf '#!/bin/sh\nsleep 30\n' > "$1" && chmod 755 "$1""#,
+                "sh",
+            ])
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(wrote.success(), "failed to write {}", script.display());
 
         let runner =
             SubprocessRunner::with_exe(&script).with_timeout(Some(Duration::from_millis(150)));
