@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ล่าสุด:** Phase 7 — *อนิจจา (anicca)* (การเปลี่ยนแปลงที่มีเวอร์ชัน และ contract ความเข้ากันได้) — **ถึง DoD แล้ว; 3.0 ปล่อยแล้ว** เป็น `v2026.9.13-0` ตามด้วย 3.1–3.10 ภายใต้ contract เดียวกัน (ดู *ส่งมอบนอก Phase 7*) ยังไม่ได้กำหนด phase ถัดไป สิ่งที่ Phase 7 ส่งมอบ: ทุก artifact ที่เฟรมเวิร์กเป็นเจ้าของประกาศ schema ของตัวเอง, `bwoc migrate` พา installation เดินหน้าโดยไม่ทำคอมเมนต์หรือ key ที่ไม่ได้ model ไว้หาย, specification 3.0 ถูก validate จริงไม่ใช่แค่เขียนไว้ และ `[plugin].compat` ถูกบังคับใช้ด้วย range ที่มีขอบบน ตัว contract อยู่ที่ [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md) ก่อนหน้า **Phase 6 — *ปัญญา (paññā)*** (eval ของ harness + เสริมความแข็งแรงข้ามแพลตฟอร์ม) **ถึง DoD แล้ว** (t29–t31 ส่งมอบ; t32 deep-memory sqlite-vec พักไว้เพราะยังเร็วเกินไป ลำดับการรื้อฟื้นบันทึกไว้ใน `reports/retro/t32-deep-memory-design.md`) **Phase 5 — *สังวร (saṃvara)*** (trust-boundary + sandbox hardening) sign off ครบ; Phase 3 *วยะ (vaya)* + Phase 4 fleet-governance ถึง DoD; Phase 1 v2.0 และ Phase 2 ถึง DoD **BWOC 2.0** ปล่อยเป็น `v2026.5.23-2`
+**Phase ล่าสุด:** Phase 7 — *อนิจจา (anicca)* (การเปลี่ยนแปลงที่มีเวอร์ชัน และ contract ความเข้ากันได้) — **ถึง DoD แล้ว; 3.0 ปล่อยแล้ว** เป็น `v2026.9.13-0` ตามด้วย 3.1 เป็นต้นมา ภายใต้ contract เดียวกัน (ดู *ส่งมอบนอก Phase 7*) ยังไม่ได้กำหนด phase ถัดไป สิ่งที่ Phase 7 ส่งมอบ: ทุก artifact ที่เฟรมเวิร์กเป็นเจ้าของประกาศ schema ของตัวเอง, `bwoc migrate` พา installation เดินหน้าโดยไม่ทำคอมเมนต์หรือ key ที่ไม่ได้ model ไว้หาย, specification 3.0 ถูก validate จริงไม่ใช่แค่เขียนไว้ และ `[plugin].compat` ถูกบังคับใช้ด้วย range ที่มีขอบบน ตัว contract อยู่ที่ [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md) ก่อนหน้า **Phase 6 — *ปัญญา (paññā)*** (eval ของ harness + เสริมความแข็งแรงข้ามแพลตฟอร์ม) **ถึง DoD แล้ว** (t29–t31 ส่งมอบ; t32 deep-memory sqlite-vec พักไว้เพราะยังเร็วเกินไป ลำดับการรื้อฟื้นบันทึกไว้ใน `reports/retro/t32-deep-memory-design.md`) **Phase 5 — *สังวร (saṃvara)*** (trust-boundary + sandbox hardening) sign off ครบ; Phase 3 *วยะ (vaya)* + Phase 4 fleet-governance ถึง DoD; Phase 1 v2.0 และ Phase 2 ถึง DoD **BWOC 2.0** ปล่อยเป็น `v2026.5.23-2`
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -253,7 +253,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 - **Code signing** (Apple notarization / Windows Authenticode) — ติดที่ผู้ดูแลต้องจัดหา certificate ไม่ใช่ติดที่โค้ด ยังอยู่ใน [`RELEASING.th.md`](RELEASING.th.md)
 - **publish ขึ้น crates.io** — Rust API ตั้งใจไม่ให้เป็น public surface ดู [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md#อะไรคือ-public-surface)
 
-## ส่งมอบนอก Phase 7 — 3.1 ถึง 3.10
+## ส่งมอบนอก Phase 7 — 3.1 เป็นต้นมา
 
 ปล่อยหลัง 3.0 และอยู่ภายใต้ contract ความเข้ากันได้ของมัน — ไม่มี breaking change และไม่ได้เปิด phase ใหม่ ส่วนใหญ่ทำให้ `bwoc` เปล่า ๆ เป็น coding agent ที่คุยได้ใน terminal รายละเอียดเต็มอยู่ใน [`CHANGELOG.md`](../../CHANGELOG.md)
 
@@ -269,6 +269,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 | 3.8.0 | `v2026.9.24-0` | pane ของ `/agents` หกแบบ, `/settings` ที่มีผลทันที, preamble ของ session ที่ยึดหลัก BWOC, render แบบ CommonMark |
 | 3.9.0 / 3.9.1 | `v2026.9.24-1` / `-2` | agent backend `claude` ใน pane ผ่าน provider `cli` (แชตอย่างเดียว); แต่ละ pane รันในไดเรกทอรีของ agent เอง |
 | 3.10.0 | `v2026.9.25-0` | บอกในแชตเมื่อ LiteLLM ตอบจาก fallback model แบบเงียบ ๆ แทนที่จะให้โมเดลเล็กกว่าตอบในนามโมเดลที่เลือก |
+| 3.11.0 | `v2026.9.25-1` | คลิกที่กล่องพิมพ์ของ pane เพื่อเลือก pane; `/undo` ไม่ลบไฟล์ที่อ่านไม่ได้อีกต่อไป |
 
 **ยังไม่ได้กำหนด phase ถัดไป** รายการใน *สิ่งที่ตั้งใจไม่เอาเข้า 3.0* ข้างบนคือผู้สมัครที่รู้อยู่แล้ว การเลือกเป็นการตัดสินใจของผู้ดูแล เอกสารนี้ไม่ตัดสินแทน
 
