@@ -117,11 +117,17 @@ fn git_branch(dir: &Path) -> Option<String> {
         .ancestors()
         .map(|d| d.join(".git"))
         .find(|p| p.exists())?;
-    // A worktree's `.git` is a file pointing at the real directory.
+    // A worktree's `.git` is a file pointing at the real directory — and the
+    // pointer may be relative to the worktree, not to this process's cwd.
     let head = if git.is_file() {
         let text = std::fs::read_to_string(&git).ok()?;
-        let path = text.strip_prefix("gitdir:")?.trim();
-        PathBuf::from(path).join("HEAD")
+        let target = PathBuf::from(text.strip_prefix("gitdir:")?.trim());
+        let target = if target.is_absolute() {
+            target
+        } else {
+            git.parent()?.join(target)
+        };
+        target.join("HEAD")
     } else {
         git.join("HEAD")
     };
@@ -225,6 +231,20 @@ mod tests {
         // Detached HEAD: the short commit, not a fake branch.
         std::fs::write(git.join("HEAD"), "9bbd9d7c0ffee0000\n").unwrap();
         assert_eq!(git_branch(tmp.path()).as_deref(), Some("9bbd9d7c"));
+    }
+
+    #[test]
+    fn a_worktrees_relative_gitdir_pointer_is_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The real git dir, and a worktree beside it whose `.git` file points
+        // at it with a relative path (what `git worktree add` writes).
+        let real = tmp.path().join("repo/.git/worktrees/wt");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("HEAD"), "ref: refs/heads/wt-branch\n").unwrap();
+        let worktree = tmp.path().join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: ../repo/.git/worktrees/wt\n").unwrap();
+        assert_eq!(git_branch(&worktree).as_deref(), Some("wt-branch"));
     }
 
     #[test]

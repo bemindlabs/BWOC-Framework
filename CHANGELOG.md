@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The context pane's `changed` list follows re-edits and stays bounded, and a linked worktree shows its branch.** A file edited twice kept its first position, and the list grew for as long as the session ran; it is now most-recent-first and capped at 50. A worktree whose `.git` file holds a relative `gitdir:` (what `git worktree add` writes) was resolved against the process's cwd, so the pane showed no branch; the pointer now resolves against the worktree. (Review fix from #546 that was pushed after the PR merged and never reached `main`.)
+
 ### Added
 
 - **Click a pane's input box to focus it.** With agent panes open, a left click on a pane's input box moves focus there, as `Tab` does; clicks elsewhere change nothing. The TUI asks the terminal for mouse presses only while panes are open (press/release, no motion), so a single session keeps the terminal's own drag-to-select. With panes open, select text with Shift-drag (Option-drag in macOS Terminal/iTerm); the wheel still scrolls the focused pane.
