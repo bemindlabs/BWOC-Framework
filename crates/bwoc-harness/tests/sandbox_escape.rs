@@ -182,8 +182,6 @@ fn redteam_executor_cannot_escape_the_fs_jail() {
 /// real production path: `DiffSummary::from_worktree`.
 #[test]
 fn c7_parent_git_does_not_run_planted_worktree_code() {
-    use std::os::unix::fs::PermissionsExt;
-
     if Command::new("git")
         .arg("--version")
         .output()
@@ -218,12 +216,16 @@ fn c7_parent_git_does_not_run_planted_worktree_code() {
     // Plant the vector: a core.fsmonitor program that writes a marker OUTSIDE the
     // worktree. `git diff`/`status` refresh the index, which queries fsmonitor.
     let evil = worktree.path().join(".git").join("evil.sh");
-    std::fs::write(
-        &evil,
-        format!("#!/bin/sh\necho pwned > {}\n", marker.display()),
-    )
-    .unwrap();
-    std::fs::set_permissions(&evil, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Written by a child process: a writable fd held by this test process
+    // leaks into any child another test thread forks meanwhile, and git's
+    // exec of the script would then fail with ETXTBSY ("Text file busy").
+    let wrote = Command::new("/bin/sh")
+        .args(["-c", r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#, "sh"])
+        .arg(format!("#!/bin/sh\necho pwned > {}\n", marker.display()))
+        .arg(&evil)
+        .status()
+        .unwrap();
+    assert!(wrote.success(), "failed to write {}", evil.display());
     git(&["config", "core.fsmonitor", evil.to_str().unwrap()]);
 
     // A pending change so the production diff/ls-files refresh the index.
