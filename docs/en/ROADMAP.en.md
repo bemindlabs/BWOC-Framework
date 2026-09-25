@@ -12,7 +12,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ## Current Status
 
-**Active phase:** Phase 7 — *anicca* (versioned change & the compatibility contract) — **in progress**, producing **3.0**: every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward without losing comments or unmodeled keys, specification 3.0 is validated rather than merely written, and `[plugin].compat` is enforced with bounded ranges. The contract itself is in [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md). Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** (t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature, resume order recorded in `reports/retro/t32-deep-memory-design.md`). **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off; Phase 3 *vaya* + Phase 4 fleet-governance DoDs met; Phase 1 v2.0 and Phase 2 met. **BWOC 2.0** released as `v2026.5.23-2`.
+**Latest phase:** Phase 7 — *anicca* (versioned change & the compatibility contract) — **DoD met; 3.0 shipped** as `v2026.9.13-0`, followed by 3.1–3.10 inside its contract (see *Shipped beyond Phase 7*). No next phase is defined yet. Phase 7 delivered: every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward without losing comments or unmodeled keys, specification 3.0 is validated rather than merely written, and `[plugin].compat` is enforced with bounded ranges. The contract itself is in [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md). Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** (t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature, resume order recorded in `reports/retro/t32-deep-memory-design.md`). **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off; Phase 3 *vaya* + Phase 4 fleet-governance DoDs met; Phase 1 v2.0 and Phase 2 met. **BWOC 2.0** released as `v2026.5.23-2`.
 **Software-Version:** see [`VERSION.md`](../../VERSION.md).
 **Document-Version:** see [`VERSION.md`](../../VERSION.md).
 
@@ -230,8 +230,10 @@ breaking an installation silently — every format says which revision wrote it,
 one command moves an installation forward, and what the project will and will not
 break is written down.
 
-The phase that produces **3.0**, the first major release driven by actual
+The phase that produced **3.0**, the first major release driven by actual
 breakage rather than by a version-number decision.
+
+**DoD met** — every item below shipped in 3.0 (`v2026.9.13-0`).
 
 | Item | Status |
 |---|---|
@@ -248,12 +250,31 @@ breakage rather than by a version-number decision.
 
 Each of these is deferred with a reason, not forgotten:
 
-- **ACP adapter** ([#485](https://github.com/bemindlabs/BWOC-Framework/issues/485)) — demand-gated; the gate is an actual editor user asking.
-- **A shared `Dispatch` seam** ([#452](https://github.com/bemindlabs/BWOC-Framework/issues/452)) — earns its place at the first real third consumer, not before.
+- **ACP adapter** (formerly #485, issue since deleted) — demand-gated; the gate is an actual editor user asking.
+- **A shared `Dispatch` seam** (formerly #452, issue since deleted) — earns its place at the first real third consumer, not before.
 - **HV3-4 / HV3-5 / HV3-6 (`agy`, `kimi`)** — features. A feature does not make a release major, and holding 3.0 for them would delay the contract that is ready.
 - **CLI surface reduction** — the 60 top-level subcommands and the 8.4k-line `check.rs` are real debt, but a different kind of breaking change with a different blast radius. Reserved for 4.0.
 - **Code signing** (Apple notarization / Windows Authenticode) — blocked on the maintainer provisioning certificates, not on code. Still listed in [`RELEASING.en.md`](RELEASING.en.md).
 - **crates.io publish** — the Rust API is deliberately not a public surface; see [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md#what-is-a-public-surface).
+
+## Shipped beyond Phase 7 — 3.1 to 3.10
+
+Released after 3.0 and inside its compatibility contract — no breaking change, no new phase. Most of it makes a bare `bwoc` a coding agent you can talk to in the terminal. Full detail is in [`CHANGELOG.md`](../../CHANGELOG.md).
+
+| Release | Tag | What shipped |
+|---|---|---|
+| 3.1.0 | `v2026.9.13-2` | bwoc-bot phase 1: `[bot]` block for chat connectors — fixed slash-command replies, per-sender rate limits |
+| 3.2.0 | `v2026.9.15-0` | A bare `bwoc` opens a coding session over the current directory — no workspace or agent needed |
+| 3.3.0 | `v2026.9.19-0` | Several conversations per directory: `bwoc --new`, `--session <id>` |
+| 3.4.0 | `v2026.9.20-0` | `/` command menu and `@` file mentions in the chat TUI |
+| 3.5.0 | `v2026.9.21-0` | `Esc` cancels a turn, `/model` switches mid-session, file diffs, `/undo` / `/redo`, Markdown answers |
+| 3.6.0 | `v2026.9.21-1` | `/status`, `/tools`, `/cost`, `/context`, `/doctor` and the other self-report commands; the context pane |
+| 3.7.0 | `v2026.9.23-0` | `/mode` and `/model` pickers, `/mode plan`, LiteLLM model listing, the real context window on vLLM / LiteLLM |
+| 3.8.0 | `v2026.9.24-0` | `/agents` panes with six layouts, `/settings` that applies live, a BWOC-grounded session preamble, CommonMark rendering |
+| 3.9.0 / 3.9.1 | `v2026.9.24-1` / `-2` | `claude`-backend agents in panes via the chat-only `cli` provider; each pane runs in its agent's own directory |
+| 3.10.0 | `v2026.9.25-0` | A silent LiteLLM fallback is flagged in the chat instead of passing a smaller model off as the chosen one |
+
+**No next phase is defined yet.** The items under *Deliberately not in 3.0* above are the known candidates; choosing among them is a maintainer decision this document does not pre-empt.
 
 ---
 
