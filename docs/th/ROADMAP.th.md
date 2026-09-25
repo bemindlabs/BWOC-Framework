@@ -12,7 +12,7 @@ nav_order: 6
 
 ## สถานะปัจจุบัน
 
-**Phase ที่ active:** Phase 7 — *อนิจจา (anicca)* (การเปลี่ยนแปลงที่มีเวอร์ชัน และ contract ความเข้ากันได้) — **กำลังทำ** เพื่อผลิต **3.0**: ทุก artifact ที่เฟรมเวิร์กเป็นเจ้าของประกาศ schema ของตัวเอง, `bwoc migrate` พา installation เดินหน้าโดยไม่ทำคอมเมนต์หรือ key ที่ไม่ได้ model ไว้หาย, specification 3.0 ถูก validate จริงไม่ใช่แค่เขียนไว้ และ `[plugin].compat` ถูกบังคับใช้ด้วย range ที่มีขอบบน ตัว contract อยู่ที่ [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md) ก่อนหน้า **Phase 6 — *ปัญญา (paññā)*** (eval ของ harness + เสริมความแข็งแรงข้ามแพลตฟอร์ม) **ถึง DoD แล้ว** (t29–t31 ส่งมอบ; t32 deep-memory sqlite-vec พักไว้เพราะยังเร็วเกินไป ลำดับการรื้อฟื้นบันทึกไว้ใน `reports/retro/t32-deep-memory-design.md`) **Phase 5 — *สังวร (saṃvara)*** (trust-boundary + sandbox hardening) sign off ครบ; Phase 3 *วยะ (vaya)* + Phase 4 fleet-governance ถึง DoD; Phase 1 v2.0 และ Phase 2 ถึง DoD **BWOC 2.0** ปล่อยเป็น `v2026.5.23-2`
+**Phase ล่าสุด:** Phase 7 — *อนิจจา (anicca)* (การเปลี่ยนแปลงที่มีเวอร์ชัน และ contract ความเข้ากันได้) — **ถึง DoD แล้ว; 3.0 ปล่อยแล้ว** เป็น `v2026.9.13-0` ตามด้วย 3.1–3.10 ภายใต้ contract เดียวกัน (ดู *ส่งมอบนอก Phase 7*) ยังไม่ได้กำหนด phase ถัดไป สิ่งที่ Phase 7 ส่งมอบ: ทุก artifact ที่เฟรมเวิร์กเป็นเจ้าของประกาศ schema ของตัวเอง, `bwoc migrate` พา installation เดินหน้าโดยไม่ทำคอมเมนต์หรือ key ที่ไม่ได้ model ไว้หาย, specification 3.0 ถูก validate จริงไม่ใช่แค่เขียนไว้ และ `[plugin].compat` ถูกบังคับใช้ด้วย range ที่มีขอบบน ตัว contract อยู่ที่ [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md) ก่อนหน้า **Phase 6 — *ปัญญา (paññā)*** (eval ของ harness + เสริมความแข็งแรงข้ามแพลตฟอร์ม) **ถึง DoD แล้ว** (t29–t31 ส่งมอบ; t32 deep-memory sqlite-vec พักไว้เพราะยังเร็วเกินไป ลำดับการรื้อฟื้นบันทึกไว้ใน `reports/retro/t32-deep-memory-design.md`) **Phase 5 — *สังวร (saṃvara)*** (trust-boundary + sandbox hardening) sign off ครบ; Phase 3 *วยะ (vaya)* + Phase 4 fleet-governance ถึง DoD; Phase 1 v2.0 และ Phase 2 ถึง DoD **BWOC 2.0** ปล่อยเป็น `v2026.5.23-2`
 **Software-Version:** ดู [`VERSION.md`](../../VERSION.md)
 **Document-Version:** ดู [`VERSION.md`](../../VERSION.md)
 
@@ -229,6 +229,8 @@ installation พังแบบเงียบ ๆ — ทุก format บอ�
 
 Phase ที่ผลิต **3.0** — major release แรกที่เกิดจาก breakage จริง ไม่ใช่จากการตัดสินใจเรื่องเลขเวอร์ชัน
 
+**ถึง DoD แล้ว** — ทุกรายการข้างล่างส่งมอบใน 3.0 (`v2026.9.13-0`)
+
 | รายการ | สถานะ |
 |---|---|
 | `schema_version` บนทุก artifact ที่เฟรมเวิร์กเป็นเจ้าของ; ไม่มี = schema 2 | ✓ |
@@ -244,12 +246,31 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 
 แต่ละข้อถูกเลื่อนพร้อมเหตุผล ไม่ได้ถูกลืม:
 
-- **ACP adapter** ([#485](https://github.com/bemindlabs/BWOC-Framework/issues/485)) — รอ demand; ประตูคือมีผู้ใช้ editor จริงมาขอ
-- **`Dispatch` seam ร่วม** ([#452](https://github.com/bemindlabs/BWOC-Framework/issues/452)) — จะคุ้มค่าเมื่อมี consumer ที่สามจริง ๆ ไม่ใช่ก่อนหน้านั้น
+- **ACP adapter** (เดิมคือ #485 ซึ่ง issue ถูกลบไปแล้ว) — รอ demand; ประตูคือมีผู้ใช้ editor จริงมาขอ
+- **`Dispatch` seam ร่วม** (เดิมคือ #452 ซึ่ง issue ถูกลบไปแล้ว) — จะคุ้มค่าเมื่อมี consumer ที่สามจริง ๆ ไม่ใช่ก่อนหน้านั้น
 - **HV3-4 / HV3-5 / HV3-6 (`agy`, `kimi`)** — เป็น feature ซึ่ง feature ไม่ทำให้ release เป็น major และการดึง 3.0 ไว้รอมันจะทำให้ contract ที่พร้อมแล้วต้องรอ
 - **การลด CLI surface** — 60 subcommand ระดับบนและ `check.rs` 8.4k บรรทัดเป็นหนี้จริง แต่เป็น breaking change คนละชนิดที่มีรัศมีผลกระทบคนละแบบ จองไว้ให้ 4.0
 - **Code signing** (Apple notarization / Windows Authenticode) — ติดที่ผู้ดูแลต้องจัดหา certificate ไม่ใช่ติดที่โค้ด ยังอยู่ใน [`RELEASING.th.md`](RELEASING.th.md)
 - **publish ขึ้น crates.io** — Rust API ตั้งใจไม่ให้เป็น public surface ดู [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md#อะไรคือ-public-surface)
+
+## ส่งมอบนอก Phase 7 — 3.1 ถึง 3.10
+
+ปล่อยหลัง 3.0 และอยู่ภายใต้ contract ความเข้ากันได้ของมัน — ไม่มี breaking change และไม่ได้เปิด phase ใหม่ ส่วนใหญ่ทำให้ `bwoc` เปล่า ๆ เป็น coding agent ที่คุยได้ใน terminal รายละเอียดเต็มอยู่ใน [`CHANGELOG.md`](../../CHANGELOG.md)
+
+| Release | Tag | สิ่งที่ส่งมอบ |
+|---|---|---|
+| 3.1.0 | `v2026.9.13-2` | bwoc-bot phase 1: block `[bot]` ของ chat connector — คำตอบ slash-command ตายตัว และ rate limit ต่อผู้ส่ง |
+| 3.2.0 | `v2026.9.15-0` | `bwoc` เปล่า ๆ เปิด coding session บนไดเรกทอรีปัจจุบัน — ไม่ต้องมี workspace หรือ agent |
+| 3.3.0 | `v2026.9.19-0` | หลายบทสนทนาต่อไดเรกทอรี: `bwoc --new`, `--session <id>` |
+| 3.4.0 | `v2026.9.20-0` | เมนูคำสั่ง `/` และการแนบไฟล์ด้วย `@` ใน chat TUI |
+| 3.5.0 | `v2026.9.21-0` | `Esc` ยกเลิก turn, `/model` สลับโมเดลกลาง session, diff ของไฟล์, `/undo` / `/redo`, คำตอบเป็น Markdown |
+| 3.6.0 | `v2026.9.21-1` | `/status`, `/tools`, `/cost`, `/context`, `/doctor` และคำสั่งรายงานตัวเองอื่น ๆ; context pane |
+| 3.7.0 | `v2026.9.23-0` | ตัวเลือก `/mode` และ `/model`, `/mode plan`, รายชื่อโมเดลจาก LiteLLM, context window จริงบน vLLM / LiteLLM |
+| 3.8.0 | `v2026.9.24-0` | pane ของ `/agents` หกแบบ, `/settings` ที่มีผลทันที, preamble ของ session ที่ยึดหลัก BWOC, render แบบ CommonMark |
+| 3.9.0 / 3.9.1 | `v2026.9.24-1` / `-2` | agent backend `claude` ใน pane ผ่าน provider `cli` (แชตอย่างเดียว); แต่ละ pane รันในไดเรกทอรีของ agent เอง |
+| 3.10.0 | `v2026.9.25-0` | บอกในแชตเมื่อ LiteLLM ตอบจาก fallback model แบบเงียบ ๆ แทนที่จะให้โมเดลเล็กกว่าตอบในนามโมเดลที่เลือก |
+
+**ยังไม่ได้กำหนด phase ถัดไป** รายการใน *สิ่งที่ตั้งใจไม่เอาเข้า 3.0* ข้างบนคือผู้สมัครที่รู้อยู่แล้ว การเลือกเป็นการตัดสินใจของผู้ดูแล เอกสารนี้ไม่ตัดสินแทน
 
 ---
 
