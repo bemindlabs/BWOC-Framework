@@ -931,10 +931,31 @@ pub fn run_task_review(
 mod tests {
     use super::*;
 
+    /// Write a hook script from a child process, never from this one: a
+    /// writable fd held here leaks into any child another test thread forks
+    /// meanwhile, and running the hook then fails with ETXTBSY ("Text file
+    /// busy"). `mode` is octal, e.g. `"755"`.
+    #[cfg(unix)]
+    fn write_script(path: &std::path::Path, body: &str, mode: &str) {
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", r#"printf '%s' "$1" > "$2" && chmod "$3" "$2""#, "sh"])
+            .arg(body)
+            .arg(path)
+            .arg(mode)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "failed to write {}: {} — {}",
+            path.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn task_hook_missing_is_noop_blocking_is_err() {
-        use std::os::unix::fs::PermissionsExt;
         // Unique, auto-cleaned dir per test — never a PID-keyed shared /tmp path
         // (a leftover dir from a recycled PID could carry a stale hook and flake).
         let tmp = tempfile::tempdir().unwrap();
@@ -947,18 +968,15 @@ mod tests {
 
         // Non-executable hook → treated as disabled → Ok.
         let hook = hooks.join("task-created");
-        std::fs::write(&hook, "#!/bin/sh\nexit 2\n").unwrap();
+        write_script(&hook, "#!/bin/sh\nexit 2\n", "644");
         assert!(run_task_hook(&ws, "task-created", &[]).is_ok());
 
         // Executable + exit 0 → Ok.
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&hook, "#!/bin/sh\nexit 0\n", "755");
         assert!(run_task_hook(&ws, "task-created", &[]).is_ok());
 
         // Executable + exit 2 → Err (blocks), surfaces stderr.
-        std::fs::write(&hook, "#!/bin/sh\necho nope >&2\nexit 2\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&hook, "#!/bin/sh\necho nope >&2\nexit 2\n", "755");
         let err = run_task_hook(&ws, "task-created", &[]).unwrap_err();
         assert!(err.contains("blocked by task-created hook"), "got: {err}");
         assert!(err.contains("nope"), "stderr surfaced: {err}");
@@ -994,7 +1012,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn hook_env_is_scrubbed_of_ambient_secrets() {
-        use std::os::unix::fs::PermissionsExt;
         // A secret in the operator env must NOT reach the hook; the BWOC_* context
         // and a safe base (PATH) must. Hold the env lock across the set/read/remove
         // (env mutation is process-global and racy — Copilot).
@@ -1009,14 +1026,13 @@ mod tests {
         let log = ws.join("env.log");
         let log_str = log.to_string_lossy().to_string();
         let hook = hooks.join("task-created");
-        std::fs::write(
+        write_script(
             &hook,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"secret=[${{BWOC_TEST_SECRET:-}}] ctx=[${{BWOC_TASK_ID:-}}] path=[${{PATH:+set}}]\" > {log_str}\nexit 0\n"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            "755",
+        );
 
         run_task_hook(&ws, "task-created", &[("BWOC_TASK_ID", "t-1")]).unwrap();
         let out = std::fs::read_to_string(&log).unwrap();
@@ -1033,7 +1049,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn task_claimed_hook_receives_env_and_blocks() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_path_buf();
         let hooks = ws.join(".bwoc/hooks");
@@ -1047,14 +1062,13 @@ mod tests {
         let log = ws.join("claimed.log");
         let log_str = log.to_string_lossy().to_string();
         let hook = hooks.join("task-claimed");
-        std::fs::write(
+        write_script(
             &hook,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$BWOC_TASK_EVENT $BWOC_TEAM $BWOC_TASK_ID $BWOC_AGENT $BWOC_WORKTREE_BASE\" > {log_str}\nexit 0\n"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            "755",
+        );
 
         let result = run_task_hook(
             &ws,
@@ -1082,8 +1096,11 @@ mod tests {
         );
 
         // Non-zero exit → blocks the claim.
-        std::fs::write(&hook, "#!/bin/sh\necho 'no new claims' >&2\nexit 1\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(
+            &hook,
+            "#!/bin/sh\necho 'no new claims' >&2\nexit 1\n",
+            "755",
+        );
         let err =
             run_task_hook(&ws, "task-claimed", &[("BWOC_TASK_EVENT", "task-claimed")]).unwrap_err();
         assert!(err.contains("blocked by task-claimed hook"), "got: {err}");
