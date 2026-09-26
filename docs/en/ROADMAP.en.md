@@ -274,6 +274,7 @@ Released after 3.0 and inside its compatibility contract — no breaking change,
 | 3.9.0 / 3.9.1 | `v2026.9.24-1` / `-2` | `claude`-backend agents in panes via the chat-only `cli` provider; each pane runs in its agent's own directory |
 | 3.10.0 | `v2026.9.25-0` | A silent LiteLLM fallback is flagged in the chat instead of passing a smaller model off as the chosen one |
 | 3.11.0 | `v2026.9.25-1` | A click on a pane's input box focuses it; `/undo` no longer deletes a file it could not read |
+| 3.12.0 | `v2026.9.26-0` | Release binaries carry the OpenTelemetry exporter (inert until configured); GenAI-convention span names; the real `gen_ai.provider.name` |
 
 **No next phase is defined yet.** The items under *Deliberately not in 3.0* above are the known candidates; choosing among them is a maintainer decision this document does not pre-empt.
 

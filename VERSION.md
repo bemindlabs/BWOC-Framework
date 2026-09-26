@@ -2,12 +2,12 @@
 
 > **Auto-maintained header.** The hook `.claude/hooks/auto-version.sh` bumps the patch number and stamps `Last-Updated` on Claude Code edits **made on the `main` branch only** — ordinary feature branches leave these shared lines alone (so concurrent PRs never collide on the version); release and version-bump PRs are the ones that edit them. The dev-checkpoint version advances on integration to `main` or via `scripts/bump-version.sh`. Software-Version is canonical in `Cargo.toml`; Document-Version is canonical here.
 
-**Software-Version:** `3.11.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
-**Document-Version:** `1.18.0`   *(canonical here — bumped on `.md` edits)*
+**Software-Version:** `3.12.0`   *(canonical in `Cargo.toml` — bumped on `.rs` / `.toml` edits)*
+**Document-Version:** `1.19.0`   *(canonical here — bumped on `.md` edits)*
 **Phase:** Phase 7 — *anicca* (versioned change & the compatibility contract) **DoD met** — 3.0 shipped as `v2026.9.13-0`, followed by 3.1 onward inside its contract; no next phase defined yet. Prior **Phase 6 — *paññā*** (harness eval & cross-platform hardening) **DoD met** *(t29–t31 shipped; t32 deep-memory sqlite-vec parked as premature — see `reports/retro/t32-deep-memory-design.md`)*. **Phase 5 — *saṃvara*** (trust-boundary & sandbox hardening) fully signed off *(t1–t9 + t11: re-exec turn-executor isolation, setrlimit, Landlock FS jail + anti-ptrace, capability gate + taint propagation, deferred-control fence, seccomp network-egress containment + the no-fd invariant)*; Phase 3 vaya + Phase 4 fleet-governance also met
-**Latest release:** [`v2026.9.25-1`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.25-1) *(2026-09-25 — **3.11.0** — click a pane to talk to it; `/undo` no longer deletes an unreadable file)*
+**Latest release:** [`v2026.9.26-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.9.26-0) *(2026-09-26 — **3.12.0** — traces you can turn on: OpenTelemetry in release binaries, GenAI-convention spans)*
 **Specification:** [`AGENTS.md`](modules/agent-template/AGENTS.md) v3.0
-**Last-Updated:** `2026-09-25T12:55:21Z`   *(UTC, ISO 8601 — stamped on every edit)*
+**Last-Updated:** `2026-09-26T11:12:33Z`   *(UTC, ISO 8601 — stamped on every edit)*
 
 ---
 
