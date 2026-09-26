@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.9.26-0] — 2026-09-26 — 3.12.0
+
+**Traces you can turn on from a released binary.** The harness has exported an OTLP trace since BWOC-2, but only builds made with `--features otel` could emit it, and no release was built that way. Release binaries now carry the exporter, span names follow the OpenTelemetry GenAI conventions, and `gen_ai.provider.name` reports the provider actually in use. Nothing is sent unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+
+### Added
+
+- **Release binaries can emit OpenTelemetry.** `release.yml` builds with `--features bwoc-harness/otel`. The exporter stays inert until `OTEL_EXPORTER_OTLP_ENDPOINT` is set: `export_otel_span` returns before building one, so an unconfigured binary opens no socket. See [`HARNESS.en.md` §OpenTelemetry](docs/en/HARNESS.en.md). (#584; council decision D1, team tianting)
+
+### Changed
+
+- **Span names follow the GenAI semantic conventions** (`{operation} {target}`): `bwoc.session` → `invoke_agent <agent>`, `bwoc.turn` → `chat <model>`, and tool spans → `execute_tool <tool>`. Traces now line up with those from other GenAI clients. **A dashboard or alert keyed on the old `bwoc.*` span names needs updating.** Span names are not one of the public surfaces in [`COMPATIBILITY.en.md`](docs/en/COMPATIBILITY.en.md).
+- **`gen_ai.provider.name` reports the real provider.** It was hardcoded to `"openai"` on every path, native Anthropic and the vendor CLIs included. It now comes from the live client (`ProviderClient::provider_name()`).
+
+### Fixed
+
+- **A flaky test run.** Tests that wrote a script and exec'd it straight away could fail with `Text file busy` (ETXTBSY) when another test thread forked in between. All eight such tests now write their scripts from a child process (#583). This affected tests only.
+
 ## [v2026.9.25-1] — 2026-09-25 — 3.11.0
 
 **Click a pane to talk to it.** A click on an agent pane's input box focuses it, and two review fixes that never reached `main` land: `/undo` no longer deletes a file it could not read, and the context pane follows re-edits and linked worktrees. Nothing that worked in 3.10 breaks; with panes open, select text with Shift-drag (Option-drag on macOS).
