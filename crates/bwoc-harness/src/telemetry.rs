@@ -44,25 +44,25 @@
 //!
 //! ## OpenTelemetry export (optional)
 //!
-//! Compile with `--features otel` (opentelemetry 0.32) to export one OTLP span
-//! per session. It is additionally **env-gated**: nothing is exported unless
-//! `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so even an `otel` build is a silent
-//! no-op until a collector is configured. The default build has **no OTEL
-//! dependency** — the export call compiles to nothing without the feature
-//! (dep-quarantine). The session span carries GenAI-semconv token usage
-//! (`gen_ai.usage.*`) plus the session's bwoc metrics, and each recorded turn
-//! is replayed as a `bwoc.turn` child span with its own per-turn token usage
-//! (durations reconstructed from `latency_ms`), and each requested tool emits
-//! an `execute_tool` child span (`gen_ai.tool.name`) nested under its turn.
-//! See `notes/2026-05-31_otel-exporter-research.md`.
+//! Compile with `--features otel` (opentelemetry 0.32) to export one OTLP trace
+//! per finished session. **Released binaries ship with this feature on** — it
+//! costs nothing until `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and compiling it
+//! out meant an operator who installed from a release or from Homebrew could
+//! not turn tracing on at all without rebuilding from source.
 //!
-//! ## Secrets
+//! Span names follow the OTel GenAI semantic conventions' `{operation} {target}`
+//! recommendation, so a BWOC trace lines up with the ones VS Code Copilot and
+//! Claude Code already emit rather than sitting in a private `bwoc.*`
+//! namespace:
 //!
-//! Telemetry MUST NOT include secret values.  The `TurnMetrics` struct carries
-//! counts, durations, the model identifier, and requested tool names — never
-//! env-var values, command arguments that may contain tokens, tool argument
-//! payloads, or any string from the credential broker. The model id and tool
-//! names are non-secret labels (e.g. `gemma4`, `run_command`).
+//! | Span | Carries |
+//! |---|---|
+//! | `invoke_agent <agent-id>` | session-level token usage, `gen_ai.agent.name`, the record's bwoc metrics |
+//! | `chat <model>` | one per turn: per-turn token usage, `gen_ai.request.model` |
+//! | `execute_tool <tool>` | one per tool call, `gen_ai.tool.name` |
+//!
+//! `gen_ai.provider.name` is taken from the live [`crate::provider::ProviderClient`]
+//! (see `ProviderClient::provider_name`), not assumed to be `openai`.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -170,6 +170,12 @@ pub struct HarnessBlock {
     pub turns: Vec<TurnMetrics>,
     /// Aggregated totals.
     pub totals: SessionTotals,
+    /// The provider that served this session, as `gen_ai.provider.name`
+    /// (OTel GenAI semconv). Absent when the session ran without a provider
+    /// client that declared one. Additive on the wire — older readers and
+    /// pre-existing records are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +228,9 @@ pub struct SessionRecord {
 pub struct Telemetry {
     pub session_id: String,
     pub agent_id: String,
+    /// `gen_ai.provider.name` for this session; set via
+    /// [`Telemetry::with_provider`] from the live `ProviderClient`.
+    provider: Option<String>,
     started_at: String,
     /// Monotonic start for latency measurements.
     started_instant: Instant,
@@ -237,12 +246,23 @@ impl Telemetry {
         Self {
             session_id: session_id.into(),
             agent_id: agent_id.into(),
+            provider: None,
             started_at: utc_now(),
             started_instant: Instant::now(),
             turns: Vec::new(),
             totals: SessionTotals::default(),
             agent: AgentMetrics::default(),
         }
+    }
+
+    /// Declare which provider served this session, for
+    /// `gen_ai.provider.name`. Take it from the live client
+    /// (`ProviderClient::provider_name`) rather than from config, so the
+    /// attribute names the endpoint the tokens actually came from.
+    #[must_use]
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
+        self
     }
 
     /// Record a completed turn's metrics.
@@ -261,6 +281,7 @@ impl Telemetry {
         let harness = HarnessBlock {
             turns: self.turns.clone(),
             totals: self.totals.clone(),
+            provider: self.provider.clone(),
         };
         SessionRecord {
             session_id: self.session_id.clone(),
@@ -461,14 +482,25 @@ fn export_otel_span(record: &SessionRecord) {
         .unwrap_or_default();
     let session_start = windows.first().map(|(s, _)| *s).unwrap_or(now);
 
+    // Span NAME follows the semconv recommendation `{operation} {target}`, so a
+    // BWOC trace lines up with the ones VS Code Copilot and Claude Code already
+    // emit instead of sitting in a `bwoc.*` namespace of its own. The bwoc
+    // metrics stay as attributes, where they never collided with anything.
+    let provider_name = record
+        .harness
+        .as_ref()
+        .and_then(|h| h.provider.clone())
+        .unwrap_or_else(|| "openai_compatible".to_string());
+
     let mut span = tracer
-        .span_builder("bwoc.session")
+        .span_builder(format!("invoke_agent {}", record.agent_id))
         .with_start_time(session_start)
         .start(&tracer);
     // GenAI semantic conventions (status: Development). `operation.name` and
-    // `provider.name` are Required; the harness drives an OpenAI-compatible API.
+    // `provider.name` are Required.
     span.set_attribute(KeyValue::new("gen_ai.operation.name", "invoke_agent"));
-    span.set_attribute(KeyValue::new("gen_ai.provider.name", "openai"));
+    span.set_attribute(KeyValue::new("gen_ai.provider.name", provider_name.clone()));
+    span.set_attribute(KeyValue::new("gen_ai.agent.name", record.agent_id.clone()));
     if let Some(h) = &record.harness {
         span.set_attribute(KeyValue::new(
             "gen_ai.usage.input_tokens",
@@ -506,7 +538,7 @@ fn export_otel_span(record: &SessionRecord) {
         for (t, (start, end)) in h.turns.iter().zip(&windows) {
             let mut attrs = vec![
                 KeyValue::new("gen_ai.operation.name", "chat"),
-                KeyValue::new("gen_ai.provider.name", "openai"),
+                KeyValue::new("gen_ai.provider.name", provider_name.clone()),
                 KeyValue::new("gen_ai.usage.input_tokens", clamp(u64::from(t.tokens_in))),
                 KeyValue::new("gen_ai.usage.output_tokens", clamp(u64::from(t.tokens_out))),
                 KeyValue::new("bwoc.turn", i64::from(t.turn)),
@@ -519,8 +551,15 @@ fn export_otel_span(record: &SessionRecord) {
             if !t.model.is_empty() {
                 attrs.push(KeyValue::new("gen_ai.request.model", t.model.clone()));
             }
+            // `chat {model}` per semconv; the model can change mid-session
+            // under token pressure, so the name is built per turn.
+            let turn_name = if t.model.is_empty() {
+                "chat".to_string()
+            } else {
+                format!("chat {}", t.model)
+            };
             let turn_span = tracer
-                .span_builder("bwoc.turn")
+                .span_builder(turn_name)
                 .with_start_time(*start)
                 .with_attributes(attrs)
                 .start_with_context(&tracer, &cx);
@@ -531,7 +570,7 @@ fn export_otel_span(record: &SessionRecord) {
             let cx_turn = Context::current().with_span(turn_span);
             for name in &t.tool_names {
                 let mut tool_span = tracer
-                    .span_builder("execute_tool")
+                    .span_builder(format!("execute_tool {name}"))
                     .with_start_time(*start)
                     .with_attributes(vec![
                         KeyValue::new("gen_ai.operation.name", "execute_tool"),
@@ -955,5 +994,45 @@ mod tests {
         assert_eq!(&ts[10..11], "T");
         assert_eq!(&ts[13..14], ":");
         assert_eq!(&ts[16..17], ":");
+    }
+
+    #[test]
+    fn provider_is_absent_until_declared() {
+        // Older records, and any session whose client did not declare one,
+        // must serialize without the key rather than with a guessed value.
+        let telem = Telemetry::new("sess-prov-000", "agent-oracle");
+        let record = telem.build_record();
+        assert_eq!(record.harness.as_ref().unwrap().provider, None);
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(!json.contains("provider"), "{json}");
+    }
+
+    #[test]
+    fn declared_provider_reaches_the_record() {
+        let telem = Telemetry::new("sess-prov-001", "agent-oracle").with_provider("anthropic");
+        let record = telem.build_record();
+        assert_eq!(
+            record.harness.as_ref().unwrap().provider.as_deref(),
+            Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn a_legacy_record_without_provider_still_deserializes() {
+        // The field is additive: a `session-metrics.jsonl` line written before
+        // it existed must still read back.
+        let legacy = r#"{
+            "sessionId": "s", "agentId": "a",
+            "startedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:01:00Z",
+            "metrics": {"tasksAttempted":0,"tasksCompleted":0,"tasksFailed":0,
+                        "gatesPassed":0,"gatesFailed":0,"revisionCycles":0,
+                        "memoriesCreated":0,"memoriesUpdated":0,"memoriesRemoved":0},
+            "discoveries": [],
+            "harness": {"turns": [], "totals": {
+                "turns":0,"tokens_in":0,"tokens_out":0,"tool_calls":0,"denials":0,
+                "gates_passed":0,"gates_failed":0,"token_pressure_switches":0}}
+        }"#;
+        let record: SessionRecord = serde_json::from_str(legacy).unwrap();
+        assert_eq!(record.harness.unwrap().provider, None);
     }
 }

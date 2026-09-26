@@ -164,7 +164,7 @@ crates/bwoc-harness/src/
 | **Peer-review gate** | With `--lead --reviewer <agent>` (or a team's `reviewer` field), each successful worker's diff is routed to the reviewer agent (a `bwoc-harness` run in the worktree) before completion: APPROVE → complete; REJECT → re-queue, keeping the worktree + feedback. Fail-safe — a spawn/timeout/unparseable-verdict rejects; self-review is skipped. | Saṅgha + Kalyāṇamitta | P3 |
 | **Team chat broadcast** | A `--chat --team-chat <path>` session shares a team's append-only `chat.jsonl`: teammate messages posted since the last turn are injected as a "Team conversation" system note before each turn, and the agent's reply is appended after. Reachable as `bwoc chat <agent> --tui --team <id>` (membership-checked); peer messages also surface to the TUI as `📢` lines via a `TeamMessage` event. Opt-in — no flag = solo session; an agent never sees its own messages echoed. | Saṅgha + Kalyāṇamitta | P3 |
 | **Streaming** | SSE token stream from the model. Delta-accumulates `content` and `tool_calls` fragments into a single `ChatMessage`. Wired in `agent_loop.rs` via `stream=true`. | Sammā-vācā (transparent speech) | P1 |
-| **Telemetry** | Per-turn `TurnMetrics` (tokens in/out, latency, tool-call count, denial count, gate pass/fail, context tokens). Appended to `session-metrics.jsonl` per session. Additive to the `AGENTS.md §8b` schema — existing readers ignore the `"harness"` key. Optional OpenTelemetry export behind `--features otel`. | Satipaṭṭhāna 4 | P3 |
+| **Telemetry** | Per-turn `TurnMetrics` (tokens in/out, latency, tool-call count, denial count, gate pass/fail, context tokens). Appended to `session-metrics.jsonl` per session. Additive to the `AGENTS.md §8b` schema — existing readers ignore the `"harness"` key. OpenTelemetry export ships **on** in released binaries and stays silent until `OTEL_EXPORTER_OTLP_ENDPOINT` is set; span names follow the GenAI semantic conventions (`invoke_agent <agent>` → `chat <model>` → `execute_tool <tool>`), and `gen_ai.provider.name` is taken from the live provider client rather than assumed. See [§OpenTelemetry](#opentelemetry). | Satipaṭṭhāna 4 | P3 |
 | **Eval framework** | Offline fixture runner. `task.toml` (prompt + rubric) + `seed/` (initial repo state) + `expected/` (expected outputs). Rubric scores: `file_contains`, `file_matches` (exact bytes), `gates_must_pass`. All tests use a mock provider — no live model or network required in CI. Feeds the Paññā 3 retrospective triggers in `session-metrics`. | Paññā 3 + Bhāvanā 4 | P4 |
 
 ---
@@ -392,6 +392,57 @@ GPT-5.5 reasoning controls; until then, keep `AGENTS.md` outcome-first, avoid
 process-heavy prompt scaffolding, and make completion criteria explicit.
 
 ---
+
+## OpenTelemetry
+
+The harness exports one OTLP trace per finished session. It is compiled into the
+released binaries and **silent until you point it at a collector**:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317   # OTLP/gRPC
+bwoc run <agent> --task "..."
+```
+
+With the variable unset, `export_otel_span` returns before building an exporter —
+no connection is attempted and the feature costs nothing. This is the same
+opt-in shape VS Code Copilot and Claude Code use.
+
+### Span shape
+
+Names follow the GenAI semantic conventions' `{operation} {target}`
+recommendation, so a BWOC trace lines up with the traces its own backends emit
+instead of sitting in a private namespace:
+
+```
+invoke_agent agent-oracle          gen_ai.operation.name=invoke_agent
+│                                  gen_ai.provider.name=<live provider>
+│                                  gen_ai.agent.name, gen_ai.usage.*
+├── chat claude-opus-4-7           gen_ai.operation.name=chat
+│   │                              gen_ai.request.model, gen_ai.usage.*
+│   └── execute_tool read_file     gen_ai.operation.name=execute_tool
+│                                  gen_ai.tool.name
+└── chat claude-opus-4-7
+```
+
+`gen_ai.provider.name` comes from the live `ProviderClient::provider_name()`,
+not from configuration — the attribute names the endpoint the tokens actually
+came from. `claude` maps to `anthropic`, `codex` to `openai`, an OpenAI-shaped
+endpoint that is neither api.openai.com nor a local Ollama reports
+`openai_compatible` rather than borrowing a vendor's name from a URL.
+
+### Honest caveats
+
+- **Spans are replayed at session finish**, not streamed live. Per-turn windows
+  are reconstructed from `latency_ms` walking backward from the end of the run,
+  so relative ordering and durations are right while absolute timestamps are
+  approximate.
+- **Tool spans cover their whole turn.** The harness records which tools ran,
+  not per-tool timing, so a tool span answers "what ran in this turn", not "how
+  long did this tool take".
+- **The conventions are not stable.** GenAI semconv split into its own repository
+  at semconv v1.42.0 and is still marked Development; attribute names may shift.
+  Span names are cheap to change, which is part of why this was the low-risk
+  option.
 
 ## Dep-Quarantine Design
 

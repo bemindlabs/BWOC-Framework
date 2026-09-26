@@ -701,7 +701,10 @@ async fn run() -> HarnessResult<()> {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     );
-    let mut telemetry = bwoc_harness::telemetry::Telemetry::new(session_id, "bwoc-harness");
+    // The provider name comes from the live client, not from config: the
+    // attribute must name the endpoint the tokens actually came from.
+    let mut telemetry = bwoc_harness::telemetry::Telemetry::new(session_id, "bwoc-harness")
+        .with_provider(provider.provider_name());
 
     // ── Run ───────────────────────────────────────────────────────────────
     println!(

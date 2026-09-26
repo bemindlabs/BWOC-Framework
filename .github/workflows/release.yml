@@ -110,10 +110,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # `--features bwoc-harness/otel` ships the OpenTelemetry exporter in the
+      # released binaries. It stays OFF at runtime unless the operator sets
+      # OTEL_EXPORTER_OTLP_ENDPOINT — `export_otel_span` returns immediately
+      # when that variable is unset, so no exporter is built and no connection
+      # is attempted. Compiling it out (the previous default) meant an operator
+      # who installed from a release or from Homebrew could not enable tracing
+      # at all without rebuilding from source, which is the opposite of how
+      # every peer ships it.
       - name: cargo build (release)
         env:
           BWOC_RELEASE_CALVER: ${{ github.ref_name }}
-        run: cargo build --release --workspace --target ${{ matrix.target }}
+        run: cargo build --release --workspace --features bwoc-harness/otel --target ${{ matrix.target }}
 
       - name: Package (tar.gz)
         if: matrix.archive_ext == 'tar.gz'
