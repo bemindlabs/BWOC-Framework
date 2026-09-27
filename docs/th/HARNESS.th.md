@@ -427,6 +427,19 @@ map เป็น `anthropic`, `codex` เป็น `openai` ส่วน endpoin
 api.openai.com และ Ollama ในเครื่อง จะรายงาน `openai_compatible` แทนที่จะยืมชื่อ
 vendor มาจาก URL
 
+### run ที่ตายกลางทาง
+
+run ที่ถูก kill ก่อนจบ (SIGKILL, OOM, panic) เขียนอะไรไม่ได้เลยในวินาทีที่ตาย harness
+จึงเก็บสำเนาของ session ที่ทนการ crash ไว้ระหว่างทาง: `.bwoc/telemetry-inflight/<session>.json`
+ใน workdir เขียนตอนเริ่มและเขียนใหม่ทุก turn (ไฟล์ชั่วคราว + rename) แล้วลบทิ้งเมื่อ `finish`
+append record จริงเรียบร้อย
+
+run **ถัดไป** ใน workdir นั้นจะรายงานทุก journal ที่ process ของมันไม่อยู่แล้ว (pid ไม่ได้รัน
+หรือไม่ได้ checkpoint มา 24 ชั่วโมง): append record ลง `session-metrics.jsonl` พร้อม
+`harness.end_reason = "abandoned"` และนับเป็น task ที่ลองแต่ไม่สำเร็จ 1 งาน แล้วส่ง span
+ด้วยสถานะ **Error** และ `bwoc.end_reason` โดยจบที่ checkpoint สุดท้าย ไม่ใช่เวลาที่กู้
+turn ที่ทำเสร็จก่อนโดน kill ยังอยู่ครบ
+
 ### ข้อจำกัดที่ต้องบอกตรง ๆ
 
 - **span ถูก replay ตอนจบ session** ไม่ได้ stream สด ช่วงเวลาของแต่ละ turn ถูกสร้าง
@@ -434,6 +447,9 @@ vendor มาจาก URL
   แต่ timestamp สัมบูรณ์เป็นค่าประมาณ
 - **tool span กินยาวทั้ง turn** — harness บันทึกว่า tool ไหนถูกเรียก ไม่ได้บันทึกเวลา
   รายตัว ฉะนั้น tool span ตอบว่า "turn นี้รันอะไรบ้าง" ไม่ได้ตอบว่า "tool นี้ใช้เวลาเท่าไร"
+- **run ที่โดน kill ถูกรายงานช้า** — บรรทัดและ span ของมันปรากฏตอนที่ run ถัดไปเริ่มใน
+  workdir เดียวกัน ไม่ใช่ตอนที่ตาย และรู้เฉพาะ turn จนถึง checkpoint สุดท้าย workdir ที่ไม่มี
+  run ใหม่อีกเลยจะไม่ถูกรายงาน
 - **conventions ยังไม่นิ่ง** — GenAI semconv แยกออกเป็น repo ของตัวเองที่ semconv
   v1.42.0 และยังอยู่สถานะ Development ชื่อ attribute อาจเปลี่ยน ชื่อ span แก้ได้ถูก
   ซึ่งเป็นส่วนหนึ่งของเหตุผลที่งานนี้เป็นตัวเลือกที่ความเสี่ยงต่ำ

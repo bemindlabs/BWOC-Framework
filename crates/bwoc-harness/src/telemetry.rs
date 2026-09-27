@@ -65,7 +65,7 @@
 //! (see `ProviderClient::provider_name`), not assumed to be `openai`.
 
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -176,6 +176,12 @@ pub struct HarnessBlock {
     /// pre-existing records are unaffected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Why the session ended when it did not end normally. `"abandoned"`: the
+    /// process died before [`Telemetry::finish`] (SIGKILL, OOM, a panic), and
+    /// this record was recovered from its in-flight journal by the next run.
+    /// Absent on a normal finish. Additive on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +244,9 @@ pub struct Telemetry {
     totals: SessionTotals,
     /// High-level agent metrics (tasks/gates/memories).
     pub agent: AgentMetrics,
+    /// Directory of the crash-safe in-flight journal, when enabled (see
+    /// [`Telemetry::with_journal`]).
+    journal: Option<PathBuf>,
 }
 
 impl Telemetry {
@@ -252,6 +261,48 @@ impl Telemetry {
             turns: Vec::new(),
             totals: SessionTotals::default(),
             agent: AgentMetrics::default(),
+            journal: None,
+        }
+    }
+
+    /// Keep a crash-safe copy of this session's record in `dir` while it runs:
+    /// written now and after every recorded turn, removed by
+    /// [`Telemetry::finish`]. A process killed before `finish` (SIGKILL, OOM,
+    /// panic) leaves it behind for [`recover_abandoned`] to report. Best-effort:
+    /// a journal that cannot be written never affects the run.
+    #[must_use]
+    pub fn with_journal(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.journal = Some(dir.into());
+        self.checkpoint();
+        self
+    }
+
+    fn journal_file(&self) -> Option<PathBuf> {
+        self.journal
+            .as_ref()
+            .map(|d| d.join(format!("{}.json", self.session_id)))
+    }
+
+    /// Rewrite the in-flight journal atomically (temp file + rename).
+    fn checkpoint(&self) {
+        let Some(path) = self.journal_file() else {
+            return;
+        };
+        let entry = Inflight {
+            pid: std::process::id(),
+            ended_epoch_secs: epoch_secs(std::time::SystemTime::now()),
+            record: self.build_record(),
+        };
+        let write = || -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_vec(&entry)?)?;
+            std::fs::rename(&tmp, &path)
+        };
+        if let Err(e) = write() {
+            eprintln!("[bwoc-harness] warning: telemetry journal not written: {e}");
         }
     }
 
@@ -273,6 +324,7 @@ impl Telemetry {
         self.agent.gates_passed += turn.gates_passed as u64;
         self.agent.gates_failed += turn.gates_failed as u64;
         self.turns.push(turn);
+        self.checkpoint();
     }
 
     /// Build the final [`SessionRecord`] without writing it anywhere.
@@ -282,6 +334,7 @@ impl Telemetry {
             turns: self.turns.clone(),
             totals: self.totals.clone(),
             provider: self.provider.clone(),
+            end_reason: None,
         };
         SessionRecord {
             session_id: self.session_id.clone(),
@@ -310,9 +363,14 @@ impl Telemetry {
 
         writeln!(file, "{line}")?;
 
+        // The record is on disk; the in-flight copy is no longer needed.
+        if let Some(journal) = self.journal_file() {
+            let _ = std::fs::remove_file(journal);
+        }
+
         // OTEL export — only active under the `otel` feature flag.
         #[cfg(feature = "otel")]
-        export_otel_span(&record);
+        export_otel_span(&record, std::time::SystemTime::now());
 
         Ok(())
     }
@@ -321,6 +379,105 @@ impl Telemetry {
     pub fn elapsed_ms(&self) -> u64 {
         self.started_instant.elapsed().as_millis() as u64
     }
+}
+
+// ---------------------------------------------------------------------------
+// In-flight journal — telemetry that survives a killed run
+// ---------------------------------------------------------------------------
+
+/// One in-flight journal file: the session's record as of its last
+/// checkpoint, the process that owns it, and when that checkpoint was taken.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Inflight {
+    pid: u32,
+    ended_epoch_secs: u64,
+    record: SessionRecord,
+}
+
+/// A journal this old is abandoned even if its pid is alive again: a live
+/// session checkpoints every turn, and a pid can be reused.
+const JOURNAL_STALE_SECS: u64 = 24 * 60 * 60;
+
+/// Report every session in `dir` whose process died before
+/// [`Telemetry::finish`]: append its record to `sink` with
+/// `harness.end_reason = "abandoned"` and one attempted-but-not-completed task,
+/// export its span (status Error, ending at its last checkpoint) under the
+/// `otel` feature, and remove the journal. A journal whose process is still
+/// alive is left alone. Returns how many were recovered. Best-effort per file:
+/// one unreadable journal is set aside (`.corrupt`) and does not stop the rest.
+pub fn recover_abandoned(dir: &Path, sink: &Path) -> std::io::Result<usize> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let now = epoch_secs(std::time::SystemTime::now());
+    let mut recovered = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let parsed = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Inflight>(&b).ok());
+        let Some(mut inflight) = parsed else {
+            let _ = std::fs::rename(&path, path.with_extension("json.corrupt"));
+            continue;
+        };
+        let stale = now.saturating_sub(inflight.ended_epoch_secs) > JOURNAL_STALE_SECS;
+        if !stale && process_alive(inflight.pid) {
+            continue;
+        }
+        let record = &mut inflight.record;
+        record.metrics.tasks_attempted = record.metrics.tasks_attempted.max(1);
+        if let Some(h) = record.harness.as_mut() {
+            h.end_reason = Some("abandoned".to_string());
+        }
+        let line = serde_json::to_string(record).map_err(std::io::Error::other)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(sink)?;
+        writeln!(file, "{line}")?;
+        let _ = std::fs::remove_file(&path);
+        #[cfg(feature = "otel")]
+        export_otel_span(
+            record,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(inflight.ended_epoch_secs),
+        );
+        recovered += 1;
+    }
+    Ok(recovered)
+}
+
+/// Whether `pid` names a running process. Unix asks the kernel (`kill(pid, 0)`;
+/// EPERM still means it exists). Elsewhere there is no cheap check, so only
+/// staleness ([`JOURNAL_STALE_SECS`]) marks a journal abandoned.
+fn process_alive(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        // SAFETY: signal 0 performs only the existence/permission check.
+        let rc = unsafe { libc::kill(pid, 0) };
+        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn epoch_secs(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -435,9 +592,7 @@ fn reconstruct_turn_windows(
 /// parented to the session span (BWOC-10); per-turn timings are reconstructed
 /// from `latency_ms` walking backward from now (no wall-clock parsing needed).
 #[cfg(feature = "otel")]
-fn export_otel_span(record: &SessionRecord) {
-    use std::time::SystemTime;
-
+fn export_otel_span(record: &SessionRecord, end: std::time::SystemTime) {
     use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider as _};
     use opentelemetry::{Context, KeyValue};
 
@@ -474,7 +629,9 @@ fn export_otel_span(record: &SessionRecord) {
     // runs at session finish, so the last turn ended ~now). The session span
     // must START at the earliest turn's start, or every non-zero-latency child
     // would predate its parent and break trace nesting.
-    let now = SystemTime::now();
+    // `end` is now on a normal finish, or the last checkpoint of a session
+    // recovered after its process died.
+    let now = end;
     let windows = record
         .harness
         .as_ref()
@@ -582,7 +739,14 @@ fn export_otel_span(record: &SessionRecord) {
             cx_turn.span().end_with_timestamp(*end); // end the turn span
         }
     }
-    cx.span().end_with_timestamp(now); // session ends at now, after all children
+    // A recovered session did not end cleanly: mark the session span failed.
+    if let Some(reason) = record.harness.as_ref().and_then(|h| h.end_reason.clone()) {
+        cx.span()
+            .set_status(opentelemetry::trace::Status::error(reason.clone()));
+        cx.span()
+            .set_attribute(KeyValue::new("bwoc.end_reason", reason));
+    }
+    cx.span().end_with_timestamp(now); // session ends at `end`, after all children
 
     // Explicit shutdown flushes the batch before the provider drops — the
     // global/layer shutdown path does NOT flush (opentelemetry-rust PR 1625),
@@ -661,6 +825,132 @@ fn is_leap(year: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── In-flight journal (tianting t3) ─────────────────────────────────────
+
+    fn journal_entry(dir: &Path, session: &str, pid: u32, ended: u64) -> PathBuf {
+        let mut t = Telemetry::new(session, "agent-x");
+        t.record_turn(TurnMetrics {
+            turn: 1,
+            tokens_in: 10,
+            ..Default::default()
+        });
+        let entry = Inflight {
+            pid,
+            ended_epoch_secs: ended,
+            record: t.build_record(),
+        };
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("{session}.json"));
+        std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+        path
+    }
+
+    /// A pid that just exited (reaped), so nothing owns it.
+    fn dead_pid() -> u32 {
+        let mut c = std::process::Command::new("true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        pid
+    }
+
+    fn records(sink: &Path) -> Vec<SessionRecord> {
+        std::fs::read_to_string(sink)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn the_journal_follows_the_session_and_finish_removes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("inflight");
+        let mut t = Telemetry::new("sess-j", "agent-x").with_journal(&dir);
+        let file = dir.join("sess-j.json");
+        assert!(file.is_file(), "written at start");
+        t.record_turn(TurnMetrics {
+            turn: 1,
+            tokens_in: 7,
+            ..Default::default()
+        });
+        let entry: Inflight = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(entry.pid, std::process::id());
+        assert_eq!(
+            entry.record.harness.unwrap().turns.len(),
+            1,
+            "rewritten per turn"
+        );
+        t.finish(&tmp.path().join("session-metrics.jsonl")).unwrap();
+        assert!(!file.exists(), "finish removes the journal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_whose_process_died_is_recorded_as_abandoned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, sink) = (tmp.path().join("inflight"), tmp.path().join("m.jsonl"));
+        let now = epoch_secs(std::time::SystemTime::now());
+        let file = journal_entry(&dir, "sess-dead", dead_pid(), now);
+        assert_eq!(recover_abandoned(&dir, &sink).unwrap(), 1);
+        let recs = records(&sink);
+        assert_eq!(recs.len(), 1);
+        let h = recs[0].harness.as_ref().unwrap();
+        assert_eq!(h.end_reason.as_deref(), Some("abandoned"));
+        assert_eq!(
+            h.turns.len(),
+            1,
+            "the turns recorded before the kill survive"
+        );
+        assert_eq!(recs[0].metrics.tasks_attempted, 1);
+        assert_eq!(recs[0].metrics.tasks_completed, 0);
+        assert!(!file.exists(), "recovered once, not on every run");
+        assert_eq!(recover_abandoned(&dir, &sink).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_live_session_is_left_alone_unless_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, sink) = (tmp.path().join("inflight"), tmp.path().join("m.jsonl"));
+        let now = epoch_secs(std::time::SystemTime::now());
+        // This test process is alive.
+        let live = journal_entry(&dir, "sess-live", std::process::id(), now);
+        assert_eq!(recover_abandoned(&dir, &sink).unwrap(), 0);
+        assert!(live.exists());
+        // Same live pid, but no checkpoint for over a day: the pid was reused.
+        journal_entry(
+            &dir,
+            "sess-live",
+            std::process::id(),
+            now - JOURNAL_STALE_SECS - 60,
+        );
+        assert_eq!(recover_abandoned(&dir, &sink).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_corrupt_journal_is_set_aside_and_a_missing_dir_is_fine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, sink) = (tmp.path().join("inflight"), tmp.path().join("m.jsonl"));
+        assert_eq!(
+            recover_abandoned(&dir, &sink).unwrap(),
+            0,
+            "no journal dir yet"
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("broken.json"), b"{not json").unwrap();
+        assert_eq!(recover_abandoned(&dir, &sink).unwrap(), 0);
+        assert!(dir.join("broken.json.corrupt").exists());
+        assert!(!sink.exists(), "nothing appended for it");
+    }
+
+    #[test]
+    fn a_record_without_end_reason_reads_as_before() {
+        // Additive field: an old line (no end_reason) still parses, and a normal
+        // finish does not write one.
+        let t = Telemetry::new("s", "a");
+        let line = serde_json::to_string(&t.build_record()).unwrap();
+        assert!(!line.contains("end_reason"));
+    }
 
     #[test]
     fn turn_windows_nest_within_parent_and_match_latency() {
