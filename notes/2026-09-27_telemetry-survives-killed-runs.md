@@ -5,7 +5,7 @@ Team tianting task **t3**: *"Telemetry must survive a killed run: SIGKILL/panic/
 ## What changed
 
 - `Telemetry::with_journal(dir)` keeps `<workdir>/.bwoc/telemetry-inflight/<session>.json` holding `{pid, endedEpochSecs, record}`. It is written at start and rewritten after every `record_turn`, atomically (tmp + rename). `finish()` removes it once the real line is appended.
-- `telemetry::recover_abandoned(dir, sink)` treats a journal as abandoned when its pid is gone (`kill(pid, 0)`, where EPERM still counts as alive) or when it hasn't checkpointed for 24 h, since a pid can be reused. For each one it appends the record with `harness.end_reason = "abandoned"` and `tasksAttempted ≥ 1`, exports the span, and removes the file. An unreadable journal is renamed `.corrupt` so it can't block later runs.
+- `telemetry::recover_abandoned(dir, sink)` treats a journal as abandoned when its pid is gone (`kill(pid, 0)`, where EPERM still counts as alive) or when it hasn't checkpointed for 24 h, since a pid can be reused. For each one it appends the record with `harness.end_reason = "abandoned"` and `tasksAttempted ≥ 1`, exports the span, and removes the file. An unreadable journal is renamed from `<session>.json` to `<session>.json.corrupt` so it can't block later runs.
 - `export_otel_span(record, end)` takes an **end anchor** instead of always using `now`. Otherwise a recovered session's turn windows would be dated at recovery time. A recovered span gets status Error plus `bwoc.end_reason`.
 - `run()` in `main.rs` recovers before journaling the new session, using the same `session-metrics.jsonl` path `finish()` uses.
 - HARNESS EN and TH gain §"A run that dies" and a caveat that the report arrives late.

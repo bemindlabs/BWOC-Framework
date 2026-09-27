@@ -436,7 +436,7 @@ A run killed before it finishes (SIGKILL, OOM, a panic) cannot write anything
 at the moment it dies. So the harness keeps a crash-safe copy of the session as
 it goes: `.bwoc/telemetry-inflight/<session>.json` in the workdir, written at
 start and rewritten after every turn (temp file + rename), and removed once
-`finish` has appended the real record.
+`finish()` has appended the real record.
 
 The **next** run in that workdir reports every journal whose process is gone
 (its pid no longer runs, or it has not checkpointed for 24 hours). It appends the

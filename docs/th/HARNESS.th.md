@@ -431,7 +431,7 @@ vendor มาจาก URL
 
 run ที่ถูก kill ก่อนจบ (SIGKILL, OOM, panic) เขียนอะไรไม่ได้เลยในวินาทีที่ตาย harness
 จึงเก็บสำเนาของ session ที่ทนการ crash ไว้ระหว่างทาง: `.bwoc/telemetry-inflight/<session>.json`
-ใน workdir เขียนตอนเริ่มและเขียนใหม่ทุก turn (ไฟล์ชั่วคราว + rename) แล้วลบทิ้งเมื่อ `finish`
+ใน workdir เขียนตอนเริ่มและเขียนใหม่ทุก turn (ไฟล์ชั่วคราว + rename) แล้วลบทิ้งเมื่อ `finish()`
 append record จริงเรียบร้อย
 
 run **ถัดไป** ใน workdir นั้นจะรายงานทุก journal ที่ process ของมันไม่อยู่แล้ว (pid ไม่ได้รัน
