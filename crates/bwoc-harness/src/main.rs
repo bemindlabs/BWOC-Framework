@@ -703,8 +703,21 @@ async fn run() -> HarnessResult<()> {
     );
     // The provider name comes from the live client, not from config: the
     // attribute must name the endpoint the tokens actually came from.
+    // A previous run killed before it could write its metrics (SIGKILL, OOM,
+    // panic) left an in-flight journal: report it now, then journal this one.
+    let metrics_path = args.workdir.join("session-metrics.jsonl");
+    let journal_dir = args.workdir.join(".bwoc").join("telemetry-inflight");
+    match bwoc_harness::telemetry::recover_abandoned(&journal_dir, &metrics_path) {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "[bwoc-harness] recorded {n} abandoned session(s) in {}",
+            metrics_path.display()
+        ),
+        Err(e) => eprintln!("[bwoc-harness] warning: could not recover abandoned sessions: {e}"),
+    }
     let mut telemetry = bwoc_harness::telemetry::Telemetry::new(session_id, "bwoc-harness")
-        .with_provider(provider.provider_name());
+        .with_provider(provider.provider_name())
+        .with_journal(journal_dir);
 
     // ── Run ───────────────────────────────────────────────────────────────
     println!(
@@ -735,7 +748,6 @@ async fn run() -> HarnessResult<()> {
     }
 
     // Persist session metrics (best-effort; non-fatal if it fails).
-    let metrics_path = args.workdir.join("session-metrics.jsonl");
     if let Err(e) = telemetry.finish(&metrics_path) {
         eprintln!("[bwoc-harness] warning: could not write session metrics: {e}");
     }

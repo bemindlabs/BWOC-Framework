@@ -430,6 +430,21 @@ came from. `claude` maps to `anthropic`, `codex` to `openai`, an OpenAI-shaped
 endpoint that is neither api.openai.com nor a local Ollama reports
 `openai_compatible` rather than borrowing a vendor's name from a URL.
 
+### A run that dies
+
+A run killed before it finishes (SIGKILL, OOM, a panic) cannot write anything
+at the moment it dies. So the harness keeps a crash-safe copy of the session as
+it goes: `.bwoc/telemetry-inflight/<session>.json` in the workdir, written at
+start and rewritten after every turn (temp file + rename), and removed once
+`finish()` has appended the real record.
+
+The **next** run in that workdir reports every journal whose process is gone
+(its pid no longer runs, or it has not checkpointed for 24 hours). It appends the
+record to `session-metrics.jsonl` with `harness.end_reason = "abandoned"` and
+one task attempted but not completed, and exports its span with status **Error**
+and `bwoc.end_reason`, ending at the last checkpoint rather than at the time of
+recovery. The turns completed before the kill are kept.
+
 ### Honest caveats
 
 - **Spans are replayed at session finish**, not streamed live. Per-turn windows
@@ -439,6 +454,9 @@ endpoint that is neither api.openai.com nor a local Ollama reports
 - **Tool spans cover their whole turn.** The harness records which tools ran,
   not per-tool timing, so a tool span answers "what ran in this turn", not "how
   long did this tool take".
+- **A killed run is reported late.** Its line and span appear when the next run
+  starts in the same workdir, not when it died, and only the turns up to its last
+  checkpoint are known. A workdir that never runs again never reports it.
 - **The conventions are not stable.** GenAI semconv split into its own repository
   at semconv v1.42.0 and is still marked Development; attribute names may shift.
   Span names are cheap to change, which is part of why this was the low-risk
