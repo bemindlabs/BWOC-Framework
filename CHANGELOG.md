@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **`PgUp` / `PgDn` in the chat TUI recall lines you already sent.** They used to scroll the conversation 10 rows, which duplicated the arrow keys. They now step back and forward through the lines sent from that input, shell-style, in the single-agent view and in every fleet or side pane. The first `PgUp` sets the half-typed line aside, and `PgDn` past the newest entry brings it back. A repeated line is kept once, blank lines are not kept, and each input remembers the last 100. Scrolling stays on `↑`/`↓`, the mouse wheel and `End`.
+
 ### Fixed
 
 - **A run that dies still leaves its telemetry.** A harness run killed before it finished (SIGKILL, OOM, a panic) wrote no `session-metrics.jsonl` line and exported no span, because both happened only in `finish()`. The harness now keeps a crash-safe copy of the session in `.bwoc/telemetry-inflight/`, rewritten each turn. The next run in that workdir records any session whose process is gone, with `harness.end_reason = "abandoned"` and one task attempted but not completed, and exports its span with status Error, ending at its last checkpoint. See [`HARNESS.en.md` §OpenTelemetry](docs/en/HARNESS.en.md). (team tianting t3)
