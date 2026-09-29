@@ -10,7 +10,7 @@ A library crate consumed only by [`bwoc-cli`](../bwoc-cli/). It spawns a [`bwoc-
 - **crate root — fleet mode** — `FleetArgs` + `run_fleet()` discover the workspace via `bwoc list --json`, lazily open an `App` pane per agent (plus a live `Session` when that agent's backend is harness-drivable), and drain **every** open session each tick so background agents keep streaming. Includes a `Ctrl-P` command palette (switch pane / forget conversation / quit) and `@agent` message routing between panes.
 - **`session`** — `Session` (spawn + reader thread + `send`/`is_alive`, with `Drop` sending `Quit` and reaping the child), `SessionConfig::for_agent` (per-agent model/endpoint from each agent's `config.manifest.json`, path-traversal guarded), `AgentInfo`, `fetch_fleet`, and `is_harness_drivable` (`ollama` / `openai-compatible` / `openrouter` / `litellm`).
 
-Keys: `Enter` sends · `a`/`d` allow/deny a pending permission request · `F2` cycles permission mode (default → accept_edits → bypass) · `PgUp`/`PgDn`/`End` scroll · `Tab`/`Shift-Tab` switch fleet panes · `Ctrl-C`, `Esc`, or `q` on an empty input quits.
+Keys: `Enter` sends · `a`/`d` allow/deny a pending permission request · `F2` cycles permission mode (default → accept_edits → bypass) · `↑`/`↓`/`End` scroll · `PgUp`/`PgDn` recall lines you already sent · `Tab`/`Shift-Tab` switch fleet panes · `Ctrl-C`, `Esc`, or `q` on an empty input quits.
 
 ## Usage
 

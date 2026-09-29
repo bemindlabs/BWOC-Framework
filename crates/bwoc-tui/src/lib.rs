@@ -493,6 +493,15 @@ struct App {
     /// UTF-8 byte offset of the editing cursor in `input`. Kept on a character
     /// boundary by the input helpers below.
     input_cursor: usize,
+    /// Lines already sent from this input, oldest first, for `PgUp`/`PgDn`
+    /// recall. Capped at `INPUT_HISTORY_MAX`; a repeat of the last is kept once.
+    sent_inputs: Vec<String>,
+    /// Position while recalling: `Some(i)` shows `sent_inputs[i]`; `None` is
+    /// the live line being typed.
+    recall: Option<usize>,
+    /// The half-typed line set aside when recall starts, restored by `PgDn`
+    /// past the newest entry.
+    recall_draft: String,
     /// A permission request awaiting `a`/`d`. Only one at a time.
     pending: Option<Pending>,
     /// The last `TurnEnd`'s `(prompt_tokens, completion_tokens)`. Because
@@ -579,6 +588,8 @@ struct Popup {
 /// Files remembered for the context pane's `changed` section. Bounded because
 /// a long session can touch many files, and the pane shows only the newest few.
 const MAX_CHANGED_TRACKED: usize = 50;
+/// Sent lines kept per input for `PgUp`/`PgDn` recall.
+const INPUT_HISTORY_MAX: usize = 100;
 
 /// Rows shown in the popup at once.
 const POPUP_ROWS: usize = 8;
@@ -600,6 +611,9 @@ impl App {
             thinking: String::new(),
             input: String::new(),
             input_cursor: 0,
+            sent_inputs: Vec::new(),
+            recall: None,
+            recall_draft: String::new(),
             pending: None,
             usage: None,
             total_out: 0,
@@ -866,23 +880,56 @@ impl App {
 
     fn take_input(&mut self) -> String {
         self.input_cursor = 0;
-        std::mem::take(&mut self.input)
+        self.recall = None;
+        self.recall_draft.clear();
+        let text = std::mem::take(&mut self.input);
+        if !text.trim().is_empty() && self.sent_inputs.last() != Some(&text) {
+            self.sent_inputs.push(text.clone());
+            if self.sent_inputs.len() > INPUT_HISTORY_MAX {
+                self.sent_inputs.remove(0);
+            }
+        }
+        text
     }
 
-    /// Apply a scroll key. Arrows move one row, `PageUp`/`PageDown` move by a
-    /// fixed 10 rows (the offset is clamped in `draw_conversation`), and `End`
-    /// returns to live. Returns true when the caller should stop processing.
+    /// `PgUp` / `PgDn`: step back / forward through lines already sent, like a
+    /// shell. The first `PgUp` sets the half-typed line aside; `PgDn` past the
+    /// newest entry brings it back. Returns true when the key was consumed.
+    fn recall_key(&mut self, code: KeyCode) -> bool {
+        let next = match (code, self.recall) {
+            (KeyCode::PageUp, _) if self.sent_inputs.is_empty() => return true,
+            (KeyCode::PageUp, None) => {
+                self.recall_draft = std::mem::take(&mut self.input);
+                Some(self.sent_inputs.len() - 1)
+            }
+            (KeyCode::PageUp, Some(i)) => Some(i.saturating_sub(1)),
+            (KeyCode::PageDown, None) => return true,
+            (KeyCode::PageDown, Some(i)) if i + 1 < self.sent_inputs.len() => Some(i + 1),
+            (KeyCode::PageDown, Some(_)) => None,
+            _ => return false,
+        };
+        self.input = match next {
+            Some(i) => self.sent_inputs[i].clone(),
+            None => std::mem::take(&mut self.recall_draft),
+        };
+        self.recall = next;
+        self.input_cursor = self.input.len();
+        self.input_changed();
+        true
+    }
+
+    /// Apply a scroll key. Arrows move one row (the offset is clamped in
+    /// `draw_conversation`) and `End` returns to live. `PageUp`/`PageDown`
+    /// recall sent lines instead — see `recall_key`. Returns true when the
+    /// caller should stop processing.
     fn scroll_key(&mut self, code: KeyCode) -> bool {
-        const PAGE: usize = 10;
         match code {
-            KeyCode::Up | KeyCode::PageUp => {
-                let amount = if code == KeyCode::Up { 1 } else { PAGE };
-                self.scroll = self.scroll.saturating_add(amount);
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_add(1);
                 true
             }
-            KeyCode::Down | KeyCode::PageDown => {
-                let amount = if code == KeyCode::Down { 1 } else { PAGE };
-                self.scroll = self.scroll.saturating_sub(amount);
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_sub(1);
                 true
             }
             KeyCode::End => {
@@ -1369,8 +1416,9 @@ fn handle_key(app: &mut App, stdin: &mut ChildStdin, key: KeyEvent) -> io::Resul
         }
     }
 
-    // Scrollback navigation (arrows/PageUp/PageDown/End) — before input editing.
-    if app.scroll_key(code) {
+    // Input recall (PageUp/PageDown), then scrollback (arrows/End) — before
+    // input editing.
+    if app.recall_key(code) || app.scroll_key(code) {
         return Ok(Flow::Continue);
     }
 
@@ -1474,6 +1522,10 @@ fn run_slash(app: &mut App, stdin: &mut ChildStdin, cmd: complete::Slash) -> io:
             );
             app.conversation.push(
                 "●   @path   attach a project file to your message (Tab completes)".to_string(),
+            );
+            app.conversation.push(
+                "●   PgUp/PgDn  bring back a line you already sent (PgDn past the newest restores your draft)"
+                    .to_string(),
             );
         }
         Slash::Clear => {
@@ -2764,7 +2816,7 @@ fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &App, cursor_visible: boo
 fn draw_footer(f: &mut ratatui::Frame, area: Rect, completions: bool, pane: bool) {
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" ↑/↓ ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("scroll · ←/→ cursor · PgUp/PgDn · End live · "),
+        Span::raw("scroll · ←/→ cursor · PgUp/PgDn recall · End · "),
         // Only where the pane could actually be drawn — a narrow terminal has
         // no room for it, and the footer must keep the exit key visible.
         Span::raw(if pane { "F3 pane · " } else { "" }),
@@ -3241,9 +3293,9 @@ fn fleet_handle_key(fleet: &mut Fleet, key: KeyEvent) -> io::Result<bool> {
         return Ok(false);
     }
 
-    // Scrollback on the active pane (arrows/PageUp/PageDown/End).
+    // Input recall (PageUp/PageDown) and scrollback (arrows/End) on the active pane.
     if let Some(p) = fleet.panes.get_mut(&id) {
-        if p.scroll_key(code) {
+        if p.recall_key(code) || p.scroll_key(code) {
             return Ok(false);
         }
     }
@@ -4238,26 +4290,73 @@ mod tests {
     }
 
     #[test]
-    fn scroll_key_moves_rows_pages_and_end_returns_to_live() {
+    fn scroll_key_moves_rows_and_end_returns_to_live() {
         let mut app = App::new("a".into(), "ollama");
         assert_eq!(app.scroll, 0);
         assert!(app.scroll_key(KeyCode::Up));
-        assert_eq!(app.scroll, 1);
-        assert!(app.scroll_key(KeyCode::PageUp));
-        assert_eq!(app.scroll, 11);
-        assert!(app.scroll_key(KeyCode::PageUp));
-        assert_eq!(app.scroll, 21);
+        assert!(app.scroll_key(KeyCode::Up));
+        assert_eq!(app.scroll, 2);
         assert!(app.scroll_key(KeyCode::Down));
-        assert_eq!(app.scroll, 20);
-        assert!(app.scroll_key(KeyCode::PageDown));
-        assert_eq!(app.scroll, 10);
+        assert_eq!(app.scroll, 1);
         assert!(app.scroll_key(KeyCode::End));
         assert_eq!(app.scroll, 0);
-        // PageDown at the bottom saturates at 0 (never negative).
-        assert!(app.scroll_key(KeyCode::PageDown));
+        // Down at the bottom saturates at 0 (never negative).
+        assert!(app.scroll_key(KeyCode::Down));
         assert_eq!(app.scroll, 0);
-        // A non-scroll key is not consumed.
+        // PageUp/PageDown belong to input recall now, not scrollback.
+        assert!(!app.scroll_key(KeyCode::PageUp));
+        assert!(!app.scroll_key(KeyCode::PageDown));
         assert!(!app.scroll_key(KeyCode::Enter));
+    }
+
+    #[test]
+    fn page_keys_recall_sent_lines_and_restore_the_draft() {
+        let mut app = App::new("a".into(), "ollama");
+        // Nothing sent yet: consumed, input untouched.
+        app.input = "draft".into();
+        assert!(app.recall_key(KeyCode::PageUp));
+        assert_eq!(app.input, "draft");
+        app.input.clear();
+
+        for line in ["first", "second", "second", "   "] {
+            app.input = line.into();
+            app.take_input();
+        }
+        // A repeat is stored once; a blank line is not stored.
+        assert_eq!(app.sent_inputs, ["first", "second"]);
+
+        app.input = "half typed".into();
+        app.input_cursor = 4;
+        assert!(app.recall_key(KeyCode::PageUp));
+        assert_eq!(app.input, "second");
+        assert_eq!(app.input_cursor, "second".len(), "cursor goes to the end");
+        assert!(app.recall_key(KeyCode::PageUp));
+        assert_eq!(app.input, "first");
+        // Oldest entry: PageUp stays put.
+        assert!(app.recall_key(KeyCode::PageUp));
+        assert_eq!(app.input, "first");
+        assert!(app.recall_key(KeyCode::PageDown));
+        assert_eq!(app.input, "second");
+        // Past the newest: the half-typed line comes back.
+        assert!(app.recall_key(KeyCode::PageDown));
+        assert_eq!(app.input, "half typed");
+        // Not recalling: PageDown is consumed and changes nothing.
+        assert!(app.recall_key(KeyCode::PageDown));
+        assert_eq!(app.input, "half typed");
+        // Other keys are not recall keys.
+        assert!(!app.recall_key(KeyCode::Up));
+        assert!(!app.scroll_key(KeyCode::PageUp));
+    }
+
+    #[test]
+    fn sent_lines_are_capped() {
+        let mut app = App::new("a".into(), "ollama");
+        for n in 0..INPUT_HISTORY_MAX + 5 {
+            app.input = format!("line {n}");
+            app.take_input();
+        }
+        assert_eq!(app.sent_inputs.len(), INPUT_HISTORY_MAX);
+        assert_eq!(app.sent_inputs[0], "line 5", "oldest dropped first");
     }
 
     #[test]
@@ -4375,6 +4474,10 @@ mod tests {
         // Footer exposes the complete navigation, copy and exit contract.
         assert!(screen.contains("↑/↓"), "scroll footer:\n{screen}");
         assert!(screen.contains("←/→ cursor"), "cursor footer:\n{screen}");
+        assert!(
+            screen.contains("PgUp/PgDn recall"),
+            "recall footer:\n{screen}"
+        );
         assert!(screen.contains("select/copy"), "copy footer:\n{screen}");
         assert!(screen.contains("Ctrl-C exit"), "exit footer:\n{screen}");
         assert!(!screen.contains("q/Esc"), "stale exit keys:\n{screen}");
