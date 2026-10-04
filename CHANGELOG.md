@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Changed
+
+- **`bwoc doctor` checks the LiteLLM endpoint too.** Its local-model check probed only Ollama's `localhost:11434`, so a host that runs its local model behind LiteLLM got a misleading "Ollama not reachable" warning. It now probes every endpoint the `ollama` and `litellm` backends would call, resolved the way the harness resolves them: Ollama's default, and `LITELLM_API_BASE` (or LiteLLM's default `localhost:4000`). It passes if any one of them answers and warns only if none do, naming each one it tried. The check is named `local model endpoint` (it was `ollama endpoint (localhost:11434)`).
+
 ## [v2026.10.4-0] — 2026-10-04 — 3.13.0
 
 **Bring back what you sent.** In the chat TUI, `PgUp` / `PgDn` now step through the lines you already sent from that input, as in a shell, and a harness run that is killed still leaves its telemetry. Nothing in the compatibility contract changes. One habit does: `PgUp` / `PgDn` no longer scroll, so use `↑` / `↓`, the mouse wheel or `End`.
