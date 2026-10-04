@@ -56,13 +56,14 @@ pub fn run(args: DoctorArgs) -> i32 {
 
     // 2a. Rust toolchain (rustup + cargo) — informational. Needed for the
     // four mandatory gates (`cargo build/test/clippy/fmt`) and for
-    // `cargo install --path crates/bwoc-harness` (the ollama harness).
+    // `cargo install --path crates/bwoc-harness` (the local-model harness).
     for r in check_rust_toolchain() {
         results.push(r);
     }
 
-    // 2b. Ollama-specific: bwoc-harness binary + endpoint reachability.
-    for r in check_ollama() {
+    // 2b. Local model (ollama / litellm backends): bwoc-harness binary +
+    // endpoint reachability.
+    for r in check_local_model() {
         results.push(r);
     }
 
@@ -256,10 +257,60 @@ fn check_backends() -> CheckResult {
     }
 }
 
-/// Check the Ollama backend: verify `bwoc-harness` is reachable and that
-/// the Ollama endpoint responds.  Both are informational (WARN not FAIL) —
-/// the user may not intend to use Ollama at all.
-fn check_ollama() -> Vec<CheckResult> {
+/// Ollama's default endpoint — what the `ollama` backend calls when no
+/// `--endpoint` is given (`bwoc_harness::provider::client::DEFAULT_ENDPOINT`).
+const OLLAMA_DEFAULT_ENDPOINT: &str = "http://localhost:11434/v1";
+/// Env var and default the `litellm` backend resolves its proxy from
+/// (`LITELLM_API_BASE_ENV` / `LITELLM_DEFAULT_ENDPOINT` in bwoc-harness).
+/// Duplicated rather than imported to keep bwoc-cli free of the harness crate;
+/// keep the two in step.
+const LITELLM_API_BASE_ENV: &str = "LITELLM_API_BASE";
+const LITELLM_DEFAULT_ENDPOINT: &str = "http://localhost:4000/v1";
+
+/// The endpoints the local-model backends would call, as `(backend, url)`:
+/// Ollama's default, and the LiteLLM proxy from `LITELLM_API_BASE` (or its
+/// documented default). Resolved the way the harness resolves them, so no
+/// deployment's host or port is ever written into the source.
+fn local_model_endpoints(litellm_env: Option<String>) -> Vec<(&'static str, String)> {
+    let litellm = litellm_env
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| LITELLM_DEFAULT_ENDPOINT.to_string());
+    vec![
+        ("ollama", OLLAMA_DEFAULT_ENDPOINT.to_string()),
+        ("litellm", litellm),
+    ]
+}
+
+/// `host:port` of an `http(s)://host[:port]/…` URL, defaulting the port by
+/// scheme. `None` when there is no host.
+fn host_port(url: &str) -> Option<String> {
+    let (rest, default_port) = match url.split_once("://") {
+        Some(("https", r)) => (r, 443),
+        Some((_, r)) => (r, 80),
+        None => (url, 80),
+    };
+    let authority = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    // A bracketed IPv6 literal carries its own colons.
+    let has_port = match authority.rfind(']') {
+        Some(close) => authority[close..].contains(':'),
+        None => authority.contains(':'),
+    };
+    Some(if has_port {
+        authority.to_string()
+    } else {
+        format!("{authority}:{default_port}")
+    })
+}
+
+/// Check the local-model backends (`ollama`, `litellm`): that `bwoc-harness`
+/// is reachable, and that at least one endpoint those backends would call
+/// accepts a connection. Both are informational (WARN, never FAIL) — the user
+/// may run only vendor backends.
+fn check_local_model() -> Vec<CheckResult> {
     let mut out = Vec::new();
 
     // 1. bwoc-harness binary availability.
@@ -273,49 +324,68 @@ fn check_ollama() -> Vec<CheckResult> {
             status: Status::Warn(
                 "bwoc-harness not found (sibling dir / PATH). \
                  Install with `cargo install --path crates/bwoc-harness` \
-                 to use the ollama backend."
+                 to use the ollama or litellm backend."
                     .into(),
             ),
         },
     };
     out.push(harness_result);
 
-    // 2. Ollama endpoint reachability (TCP connect to localhost:11434).
-    //    We use only std::net — no HTTP dep — to keep bwoc-cli lean.
-    let endpoint_result = {
-        use std::net::TcpStream;
-        use std::time::Duration;
-        let addr = "127.0.0.1:11434";
-        let reachable =
-            TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(500)).is_ok();
-        if reachable {
-            CheckResult {
-                name: "ollama endpoint (localhost:11434)".into(),
-                status: Status::Pass,
-            }
-        } else {
-            CheckResult {
-                name: "ollama endpoint (localhost:11434)".into(),
-                status: Status::Warn(
-                    "Ollama not reachable at localhost:11434. \
-                     Start with `ollama serve` to use the ollama backend."
-                        .into(),
-                ),
-            }
+    // 2. Endpoint reachability: a TCP connect only (std::net, no HTTP dep, to
+    //    keep bwoc-cli lean). One reachable endpoint is enough.
+    let endpoints = local_model_endpoints(std::env::var(LITELLM_API_BASE_ENV).ok());
+    let reachable: Vec<String> = endpoints
+        .iter()
+        .filter_map(|(backend, url)| {
+            let hp = host_port(url)?;
+            tcp_reachable(&hp).then(|| format!("{backend} {hp}"))
+        })
+        .collect();
+    let tried = endpoints
+        .iter()
+        .map(|(backend, url)| {
+            format!(
+                "{backend} {}",
+                host_port(url).unwrap_or_else(|| url.clone())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push(if reachable.is_empty() {
+        CheckResult {
+            name: "local model endpoint".into(),
+            status: Status::Warn(format!(
+                "nothing listening at {tried}. Start Ollama (`ollama serve`) or a LiteLLM \
+                 proxy — set {LITELLM_API_BASE_ENV} if yours is not on the default port — \
+                 to use the ollama or litellm backend."
+            )),
         }
-    };
-    out.push(endpoint_result);
+    } else {
+        CheckResult {
+            name: format!("local model endpoint ({})", reachable.join(", ")),
+            status: Status::Pass,
+        }
+    });
 
     out
 }
 
+/// TCP connect to `host:port` within 500 ms, trying every resolved address.
+fn tcp_reachable(host_port: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    host_port.to_socket_addrs().is_ok_and(|mut addrs| {
+        addrs.any(|a| TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
+    })
+}
+
 /// Probe the Rust toolchain: `rustup` and `cargo`. Contributors need both
 /// for the four mandatory gates (`cargo build/test/clippy/fmt`) and for
-/// `cargo install --path crates/bwoc-harness` (the ollama harness path
-/// already hinted by `check_ollama`). Both checks are informational
+/// `cargo install --path crates/bwoc-harness` (the local-model harness path
+/// already hinted by `check_local_model`). Both checks are informational
 /// (WARN, never FAIL) — users who only `bwoc spawn` against a vendor
 /// backend (claude/agy/codex/kimi/copilot) don't need the Rust toolchain. Mirrors
-/// the WARN policy of `check_backends` and the ollama probes.
+/// the WARN policy of `check_backends` and the local-model probes.
 ///
 /// Read-only invariant: the only commands issued are `rustup --version`
 /// and `cargo --version`. The probe never installs, updates, sets a
@@ -1289,6 +1359,41 @@ fn print_report(results: &[CheckResult], auto: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_model_endpoints_follow_the_harness_resolution() {
+        let eps = local_model_endpoints(None);
+        assert_eq!(eps[0], ("ollama", "http://localhost:11434/v1".to_string()));
+        assert_eq!(eps[1], ("litellm", "http://localhost:4000/v1".to_string()));
+        // LITELLM_API_BASE wins; blank counts as unset.
+        let eps = local_model_endpoints(Some(" http://proxy.internal:9000/v1 ".into()));
+        assert_eq!(eps[1].1, "http://proxy.internal:9000/v1");
+        let eps = local_model_endpoints(Some("  ".into()));
+        assert_eq!(eps[1].1, "http://localhost:4000/v1");
+    }
+
+    #[test]
+    fn host_port_defaults_the_port_by_scheme() {
+        assert_eq!(
+            host_port("http://localhost:11434/v1").as_deref(),
+            Some("localhost:11434")
+        );
+        assert_eq!(
+            host_port("https://llm.example.com/v1").as_deref(),
+            Some("llm.example.com:443")
+        );
+        assert_eq!(host_port("http://proxy").as_deref(), Some("proxy:80"));
+        assert_eq!(
+            host_port("http://user:pw@h:8080/x").as_deref(),
+            Some("h:8080")
+        );
+        assert_eq!(
+            host_port("http://[::1]:4000/v1").as_deref(),
+            Some("[::1]:4000")
+        );
+        assert_eq!(host_port("http://[::1]/v1").as_deref(), Some("[::1]:80"));
+        assert_eq!(host_port("http:///v1"), None);
+    }
 
     #[test]
     fn missing_scaffold_dirs_reported_when_no_auto() {
