@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.10.4-0] — 2026-10-04 — 3.13.0
+
+**Bring back what you sent.** In the chat TUI, `PgUp` / `PgDn` now step through the lines you already sent from that input, as in a shell, and a harness run that is killed still leaves its telemetry. Nothing in the compatibility contract changes. One habit does: `PgUp` / `PgDn` no longer scroll, so use `↑` / `↓`, the mouse wheel or `End`.
+
 ### Changed
 
 - **`PgUp` / `PgDn` in the chat TUI recall lines you already sent.** They used to scroll the conversation 10 rows, which duplicated the arrow keys. They now step back and forward through the lines sent from that input, shell-style, in the single-agent view and in every fleet or side pane. The first `PgUp` sets the half-typed line aside, and `PgDn` past the newest entry brings it back. A repeated line is kept once, blank lines are not kept, and each input remembers the last 100. Scrolling stays on `↑`/`↓`, the mouse wheel and `End`.
