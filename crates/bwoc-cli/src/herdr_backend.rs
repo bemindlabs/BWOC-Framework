@@ -18,7 +18,7 @@
 //!   the shell tab `workspace.create` made does not linger).
 //! - `workspace.focus {workspace_id}` — before attaching.
 //! - `pane.list {}` → `{"type":"pane_list","panes":[PaneInfo]}`; read
-//!   `pane_id`, `label`, `cwd`, `foreground_cwd`.
+//!   `pane_id`, `label`, `agent`, `foreground_cwd`.
 //! - `pane.send_text {pane_id,text}`, then `pane.send_keys {pane_id,keys:["enter"]}`.
 //!
 //! Panes run the same argv as the tmux backend
@@ -123,14 +123,23 @@ impl HerdrBackend {
             .map(str::to_string)
     }
 
-    /// `HERDR_SOCKET_PATH=<socket> ` when the socket came from workspace
+    /// `HERDR_SOCKET_PATH='<socket>' ` when the socket came from workspace
     /// config (a bare `herdr` would reach a different server), else empty.
+    /// The path is shell-quoted: it is operator-supplied and the hint is meant
+    /// to be pasted into a shell.
     fn env_prefix(&self) -> String {
         match (&self.socket, self.socket_from_config) {
-            (Some(s), true) => format!("HERDR_SOCKET_PATH={} ", s.display()),
+            (Some(s), true) => format!("HERDR_SOCKET_PATH={} ", shell_quote(&s.to_string_lossy())),
             _ => String::new(),
         }
     }
+}
+
+/// `s` as one POSIX-shell word: wrapped in single quotes, each embedded `'`
+/// written as `'\''` (close, escaped quote, reopen). Nothing is special inside
+/// single quotes, so `$`, backticks, spaces and `;` stay literal.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 impl PaneBackend for HerdrBackend {
@@ -264,8 +273,9 @@ impl PaneBackend for HerdrBackend {
     }
 
     /// The pane labelled `agent_id` (what [`open_fleet`](Self::open_fleet)
-    /// sets), else a pane whose `foreground_cwd` — or, failing that, `cwd` —
-    /// is inside the agent's directory. Handle = herdr pane id (`w1:p2`).
+    /// sets), else a pane where herdr detected an agent whose `foreground_cwd`
+    /// is inside the agent's directory — never a bare shell (see
+    /// [`match_pane`]). Handle = herdr pane id (`w1:p2`).
     fn locate_agent(&self, agent_id: &str) -> Option<PaneHandle> {
         let result = self.call("pane.list", json!({}))?;
         let panes = result.get("panes")?.as_array()?;
@@ -307,10 +317,21 @@ fn layout_label(layout: PaneLayout) -> String {
         .unwrap_or_else(|| format!("{layout:?}"))
 }
 
-/// First pane labelled `agent_id`; else the first whose `foreground_cwd`, then
-/// `cwd`, falls inside `agent_id`'s directory (`dirs` is only built when the
-/// label pass misses). Matching by directory reuses the Phase 1 state
-/// provider's helpers, so both agree on which pane is whose.
+/// The pane a wakeup may type into: the first pane labelled `agent_id` (what
+/// [`PaneBackend::open_fleet`] sets); else the first pane where herdr reports a
+/// detected agent **and** whose `foreground_cwd` falls inside `agent_id`'s
+/// directory (`dirs` is only built when the label pass misses). The pane `cwd`
+/// is never used: it is the pane/workspace cwd (socket-api.mdx), so a shell or
+/// editor `cd`'d into an agent dir would otherwise receive the text + Enter.
+/// No eligible pane → `None` (no wakeup). Directory matching reuses the
+/// Phase 1 state provider's helpers, so both agree on which pane is whose.
+///
+/// "Detected agent" = a non-empty `PaneInfo.agent` (herdr v0.9.3
+/// `src/api/schema/panes.rs` L463-464, `agent: Option<String>`; filled from
+/// `terminal.effective_agent_label()` in `src/app/creation.rs` L345, which
+/// `src/terminal/state.rs` L2039-2050 derives from a `pane.report_agent`
+/// authority or herdr's own process detection, and drops once the detected
+/// agent process exits — so a plain shell or editor pane has none).
 fn match_pane(
     panes: &[Value],
     agent_id: &str,
@@ -329,17 +350,23 @@ fn match_pane(
     {
         return Some(id);
     }
+    let has_agent = |p: &Value| {
+        p.get("agent")
+            .and_then(Value::as_str)
+            .is_some_and(|a| !a.trim().is_empty())
+    };
     let dirs = dirs();
-    let owns = |field: &str, p: &Value| {
-        p.get(field)
+    let fg_owned = |p: &Value| {
+        p.get("foreground_cwd")
             .and_then(Value::as_str)
             .and_then(|c| crate::sessions::agent_for_cwd(Path::new(c), &dirs))
             .as_deref()
             == Some(agent_id)
     };
-    ["foreground_cwd", "cwd"]
-        .into_iter()
-        .find_map(|field| panes.iter().filter(|p| owns(field, p)).find_map(pane_id))
+    panes
+        .iter()
+        .filter(|p| has_agent(p) && fg_owned(p))
+        .find_map(pane_id)
 }
 
 // ── Layout tree ───────────────────────────────────────────────────────────────
@@ -514,30 +541,63 @@ mod tests {
         assert_eq!(got["second"]["second"]["label"], "agent-4");
     }
 
+    fn ji_dirs() -> Vec<(String, PathBuf)> {
+        vec![("agent-ji".to_string(), PathBuf::from("/ws/agents/agent-ji"))]
+    }
+
     #[test]
-    fn match_pane_prefers_label_then_foreground_cwd_then_cwd() {
-        let dirs = || vec![("agent-ji".to_string(), PathBuf::from("/ws/agents/agent-ji"))];
+    fn match_pane_prefers_label_then_detected_agent_by_foreground_cwd() {
         let panes = vec![
             json!({"pane_id":"w1:p1","label":"other","cwd":"/ws/agents/agent-ji"}),
-            json!({"pane_id":"w1:p2","foreground_cwd":"/ws/agents/agent-ji/src"}),
+            json!({"pane_id":"w1:p2","agent":"claude",
+                   "foreground_cwd":"/ws/agents/agent-ji/src"}),
             json!({"pane_id":"w1:p3","label":"agent-ji"}),
         ];
         assert_eq!(
-            match_pane(&panes, "agent-ji", dirs).as_deref(),
-            Some("w1:p3")
+            match_pane(&panes, "agent-ji", ji_dirs).as_deref(),
+            Some("w1:p3"),
+            "label wins"
         );
         assert_eq!(
-            match_pane(&panes[..2], "agent-ji", dirs).as_deref(),
+            match_pane(&panes[..2], "agent-ji", ji_dirs).as_deref(),
             Some("w1:p2"),
-            "foreground_cwd beats cwd"
-        );
-        assert_eq!(
-            match_pane(&panes[..1], "agent-ji", dirs).as_deref(),
-            Some("w1:p1")
+            "detected agent with foreground_cwd in the dir"
         );
         // `agents/agent-ji` never claims `agents/agent-jix`.
-        let near = vec![json!({"pane_id":"w1:p9","cwd":"/ws/agents/agent-jix"})];
-        assert!(match_pane(&near, "agent-ji", dirs).is_none());
+        let near = vec![json!({"pane_id":"w1:p9","agent":"claude",
+                               "foreground_cwd":"/ws/agents/agent-jix"})];
+        assert!(match_pane(&near, "agent-ji", ji_dirs).is_none());
+    }
+
+    #[test]
+    fn match_pane_never_picks_a_shell_in_the_agent_dir() {
+        // An operator's zsh (or vim) `cd`'d into the agent dir: no `agent`.
+        let shell = vec![json!({"pane_id":"w1:p4","cwd":"/ws/agents/agent-ji",
+                                "foreground_cwd":"/ws/agents/agent-ji"})];
+        assert!(match_pane(&shell, "agent-ji", ji_dirs).is_none());
+        let blank = vec![json!({"pane_id":"w1:p4","agent":" ",
+                                "foreground_cwd":"/ws/agents/agent-ji"})];
+        assert!(match_pane(&blank, "agent-ji", ji_dirs).is_none());
+    }
+
+    #[test]
+    fn shell_quote_wraps_and_escapes_single_quotes() {
+        assert_eq!(shell_quote("/a b/c.sock"), "'/a b/c.sock'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn match_pane_ignores_pane_cwd() {
+        // Only the pane cwd is in the agent dir — even with an agent detected,
+        // the process in the foreground is elsewhere.
+        let cwd_only = vec![
+            json!({"pane_id":"w1:p5","cwd":"/ws/agents/agent-ji"}),
+            json!({"pane_id":"w1:p6","agent":"claude","cwd":"/ws/agents/agent-ji",
+                   "foreground_cwd":"/tmp"}),
+            json!({"pane_id":"w1:p7","agent":"claude","cwd":"/ws/agents/agent-ji"}),
+        ];
+        assert!(match_pane(&cwd_only, "agent-ji", ji_dirs).is_none());
     }
 
     // ── against a fake herdr socket ──────────────────────────────────────────
@@ -689,14 +749,16 @@ mod tests {
         }
 
         #[test]
-        fn locate_by_label_then_by_cwd() {
+        fn locate_by_label_then_by_detected_agent_cwd() {
             let (_d, sock, _log) = recording(|method, _| match method {
                 "pane.list" => Some(json!({
                     "type": "pane_list",
                     "panes": [
                         {"pane_id": "w1:p1", "label": "agent-pi", "cwd": "/ws/agents/agent-pi"},
-                        {"pane_id": "w1:p2", "cwd": "/elsewhere",
+                        {"pane_id": "w1:p2", "cwd": "/elsewhere", "agent": "codex",
                          "foreground_cwd": "/ws/agents/agent-ji/sub"},
+                        {"pane_id": "w1:p3", "cwd": "/ws/agents/agent-mu",
+                         "foreground_cwd": "/ws/agents/agent-mu"},
                     ],
                 })),
                 _ => None,
@@ -704,6 +766,7 @@ mod tests {
             let b = backend(sock);
             assert_eq!(b.locate_agent("agent-pi").unwrap().as_str(), "w1:p1");
             assert_eq!(b.locate_agent("agent-ji").unwrap().as_str(), "w1:p2");
+            // w1:p3 is a plain shell in agent-mu's dir: never a wakeup target.
             assert!(b.locate_agent("agent-mu").is_none());
         }
 
@@ -760,8 +823,22 @@ mod tests {
             );
             assert_eq!(
                 b.kill_hint("s"),
-                "HERDR_SOCKET_PATH=/nonexistent/h.sock herdr workspace list  \
-                 (then `HERDR_SOCKET_PATH=/nonexistent/h.sock herdr workspace close <id>` for 's')"
+                "HERDR_SOCKET_PATH='/nonexistent/h.sock' herdr workspace list  \
+                 (then `HERDR_SOCKET_PATH='/nonexistent/h.sock' herdr workspace close <id>` for 's')"
+            );
+        }
+
+        #[test]
+        fn configured_socket_with_space_and_quote_is_shell_quoted() {
+            let b = HerdrBackend::new(
+                Some(PathBuf::from("/nonexistent/my dir/it's; $(x).sock")),
+                true,
+                None,
+                Duration::from_millis(50),
+            );
+            assert_eq!(
+                b.env_prefix(),
+                r"HERDR_SOCKET_PATH='/nonexistent/my dir/it'\''s; $(x).sock' "
             );
         }
     }

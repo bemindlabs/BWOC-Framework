@@ -20,7 +20,7 @@
 //!
 //! herdr is pre-1.0 and its protocol moves, so every read is lenient (unknown
 //! fields ignored, missing fields defaulted, a malformed list element skipped)
-//! and **every** failure — no socket, refused connect, timeout, an `error`
+//! and **every** failure — no socket, refused or timed-out connect, timeout, an `error`
 //! reply (incl. `protocol_mismatch`), bad JSON, a mismatched `id` — collapses
 //! to `None`, i.e. "herdr unavailable". All calls made through one [`Client`]
 //! share a single time budget, so herdr can never slow a `bwoc` command by
@@ -184,7 +184,6 @@ impl Client {
     #[cfg(unix)]
     fn round_trip(&self, id: &str, method: &str, params: Value) -> Option<Value> {
         use std::io::{Read, Write};
-        use std::os::unix::net::UnixStream;
 
         let remaining = |deadline: Instant| {
             deadline
@@ -192,8 +191,7 @@ impl Client {
                 .filter(|d| !d.is_zero())
         };
 
-        remaining(self.deadline)?;
-        let mut stream = UnixStream::connect(&self.socket).ok()?;
+        let mut stream = connect_within(&self.socket, remaining(self.deadline)?)?;
         let mut line = serde_json::to_vec(&serde_json::json!({
             "id": id,
             "method": method,
@@ -277,6 +275,77 @@ impl Client {
             .collect();
         pids.extend(info.foreground_process_group_id);
         Some(pids)
+    }
+}
+
+/// Connect attempts given up on whose helper thread has not returned yet.
+#[cfg(unix)]
+static ABANDONED_CONNECTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Stop starting connect threads while this many abandoned ones are still
+/// blocked: herdr is wedged, so say "unavailable" at once instead of piling up
+/// threads (the dashboard calls herdr on every refresh).
+#[cfg(unix)]
+const MAX_ABANDONED_CONNECTS: usize = 4;
+
+/// `UnixStream::connect`, given up after `budget`.
+///
+/// std's connect has no timeout, and on Linux a connect to a listener whose
+/// accept backlog is full blocks until the server accepts — a stalled herdr
+/// would hang `bwoc sessions`, the dashboard refresh and the `bwoc send`
+/// wakeup past [`DEFAULT_BUDGET`]. So the connect runs on a helper thread and
+/// we wait for it with `recv_timeout`. On timeout the thread is **abandoned**,
+/// deliberately: it holds only the path and a not-yet-connected fd, and ends
+/// by itself when the connect resolves (herdr accepts, herdr exits, or this
+/// process does); a stream it obtains after we left is dropped (closed) at
+/// once. [`MAX_ABANDONED_CONNECTS`] bounds how many can be outstanding.
+/// Chosen over a non-blocking `libc` connect + `poll` to avoid hand-building a
+/// `sockaddr_un` in `unsafe` code; no extra crates either way.
+#[cfg(unix)]
+fn connect_within(socket: &Path, budget: Duration) -> Option<std::os::unix::net::UnixStream> {
+    use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    const PENDING: u8 = 0;
+    const DONE: u8 = 1;
+    const ABANDONED: u8 = 2;
+
+    if ABANDONED_CONNECTS.load(Ordering::SeqCst) >= MAX_ABANDONED_CONNECTS {
+        return None;
+    }
+    let state = Arc::new(AtomicU8::new(PENDING));
+    let thread_state = state.clone();
+    let path = socket.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("bwoc-herdr-connect".into())
+        .spawn(move || {
+            let res = UnixStream::connect(&path);
+            if thread_state
+                .compare_exchange(PENDING, DONE, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                // The caller gave up; it counted us as abandoned.
+                ABANDONED_CONNECTS.fetch_sub(1, Ordering::SeqCst);
+            }
+            let _ = tx.send(res); // receiver gone → the stream is dropped
+        })
+        .ok()?;
+    match rx.recv_timeout(budget) {
+        Ok(res) => res.ok(),
+        Err(_) => {
+            // Count first, then claim: if the thread finished in between, the
+            // claim fails and we undo the count (the thread did not see us).
+            ABANDONED_CONNECTS.fetch_add(1, Ordering::SeqCst);
+            if state
+                .compare_exchange(PENDING, ABANDONED, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                ABANDONED_CONNECTS.fetch_sub(1, Ordering::SeqCst);
+            }
+            None
+        }
     }
 }
 
@@ -475,6 +544,53 @@ pub(crate) mod tests {
         let t = Instant::now();
         assert!(c.pane_foreground_pids("w1:p1").is_none());
         assert!(t.elapsed() < Duration::from_millis(50));
+    }
+
+    /// A listener that never accepts, with its backlog shrunk to 1 (macOS
+    /// reads 0 as "default", i.e. 128) and then filled: on Linux a further
+    /// blocking connect hangs (the case the bound exists for); on macOS it is
+    /// refused at once. Either way `connect_within` must answer `None` inside
+    /// the budget.
+    #[cfg(unix)]
+    #[test]
+    fn connect_is_bounded_when_the_backlog_is_full() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::{UnixListener, UnixStream};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock = dir.path().join("herdr.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        // SAFETY: re-`listen` on a socket we own, only to shrink its backlog.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        // Fill the queue. Fillers past its capacity block (Linux) until the
+        // listener closes at the end of the test, or fail at once (macOS).
+        for _ in 0..8 {
+            let s = sock.clone();
+            std::thread::spawn(move || {
+                let held = UnixStream::connect(s);
+                std::thread::sleep(Duration::from_secs(5));
+                drop(held);
+            });
+        }
+        std::thread::sleep(Duration::from_millis(300));
+
+        let t = Instant::now();
+        let got = connect_within(&sock, Duration::from_millis(200));
+        assert!(
+            t.elapsed() < Duration::from_millis(1000),
+            "connect must give up at the budget, took {:?}",
+            t.elapsed()
+        );
+        assert!(got.is_none(), "a full backlog is \"herdr unavailable\"");
+        drop(listener);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_within_reaches_a_live_listener() {
+        let (_dir, sock) =
+            fake_server(|_, _, id| Some(format!(r#"{{"id":"{id}","result":{{}}}}"#)));
+        assert!(connect_within(&sock, Duration::from_secs(2)).is_some());
     }
 
     #[cfg(unix)]

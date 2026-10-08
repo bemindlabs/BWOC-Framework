@@ -44,10 +44,10 @@
 //! refines the state of **alive marker sessions** after the heuristic above:
 //!
 //! 1. dead pid → `stale`, untouched (BWOC's own liveness check wins);
-//! 2. a herdr agent whose `foreground_cwd` is (inside) the agent's directory
-//!    is that agent's;
-//! 3. else, for marker agents still unmatched, a herdr pane whose
-//!    `pane.process_info` foreground pids include the marker pid;
+//! 2. a herdr pane whose `pane.process_info` foreground pids include the
+//!    marker pid is that agent's (an exact match, so it wins over 3);
+//! 3. else, for marker agents still unmatched, a herdr agent whose
+//!    `foreground_cwd` is (inside) the agent's directory;
 //! 4. else the herdr agent is not BWOC's and is ignored.
 //!
 //! A matched herdr status overrides the heuristic: `working|blocked|done|idle`
@@ -572,10 +572,15 @@ fn collect_sessions_with_herdr(
 // ── herdr matching ────────────────────────────────────────────────────────────
 
 /// Override the state of alive marker sessions with herdr's view, when herdr
-/// answers. Stale and scan sessions are never touched. One `agent.list`, plus
-/// at most one `pane.process_info` per herdr pane not matched by cwd — and
-/// only while some alive marker agent is still unmatched. Every call shares
-/// [`crate::herdr::DEFAULT_BUDGET`]; the first failure ends the lookup.
+/// answers. Stale and scan sessions are never touched. One `agent.list`, then
+/// at most one `pane.process_info` per herdr agent — only while some alive
+/// marker agent has no exact pid match yet. Every call shares
+/// [`crate::herdr::DEFAULT_BUDGET`]; the first failure ends the pid lookup,
+/// and whatever is still unmatched falls back to the cwd match (which needs
+/// no further call).
+///
+/// Precedence: an exact marker-pid match beats a cwd match, so a second CLI
+/// started in the same agent dir cannot override the real session's state.
 fn apply_herdr_states(workspace: &Path, socket: &Path, sessions: &mut [Session]) {
     let alive: Vec<(String, u32)> = sessions
         .iter()
@@ -590,26 +595,12 @@ fn apply_herdr_states(workspace: &Path, socket: &Path, sessions: &mut [Session])
         return;
     };
 
-    let dirs = agent_dirs(workspace, alive.iter().map(|(id, _)| id.as_str()));
     let mut matched: std::collections::HashMap<String, SessionState> =
         std::collections::HashMap::new();
-    let mut by_pid = Vec::new();
+    // 1. Exact pid: the marker pid is in the pane's foreground. herdr panes
+    //    already claimed this way are not reused by the cwd pass.
+    let mut claimed: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for a in &agents {
-        match a
-            .foreground_cwd
-            .as_deref()
-            .and_then(|c| agent_for_cwd(Path::new(c), &dirs))
-        {
-            // First herdr agent (in herdr's order) wins for a given BWOC agent.
-            Some(id) => {
-                matched
-                    .entry(id)
-                    .or_insert_with(|| SessionState::from_herdr(a.status));
-            }
-            None => by_pid.push(a),
-        }
-    }
-    for a in by_pid {
         if alive.iter().all(|(id, _)| matched.contains_key(id)) {
             break;
         }
@@ -621,6 +612,25 @@ fn apply_herdr_states(workspace: &Path, socket: &Path, sessions: &mut [Session])
             .find(|(id, pid)| !matched.contains_key(id) && pids.contains(pid))
         {
             matched.insert(id.clone(), SessionState::from_herdr(a.status));
+            claimed.insert(a.pane_id.as_str());
+        }
+    }
+    // 2. cwd: a herdr agent whose `foreground_cwd` is (inside) the agent's
+    //    directory, for agents the pid pass left unmatched. First herdr agent
+    //    (in herdr's order) wins for a given BWOC agent.
+    let dirs = agent_dirs(workspace, alive.iter().map(|(id, _)| id.as_str()));
+    for a in agents
+        .iter()
+        .filter(|a| !claimed.contains(a.pane_id.as_str()))
+    {
+        if let Some(id) = a
+            .foreground_cwd
+            .as_deref()
+            .and_then(|c| agent_for_cwd(Path::new(c), &dirs))
+        {
+            matched
+                .entry(id)
+                .or_insert_with(|| SessionState::from_herdr(a.status));
         }
     }
 
@@ -1299,14 +1309,18 @@ mod tests {
         let root = dir.path();
         let agent_dir = live_agent(root, "agent-a");
         let cwd = agent_dir.join("src").display().to_string();
-        let (_h, sock) = crate::herdr::tests::fake_server(move |method, _, id| {
-            assert_eq!(method, "agent.list", "cwd match needs no process_info");
-            Some(agent_list_reply(
+        let (_h, sock) = crate::herdr::tests::fake_server(move |method, _, id| match method {
+            "agent.list" => Some(agent_list_reply(
                 id,
                 &format!(
                     r#"{{"pane_id":"w1:p1","agent_status":"blocked","foreground_cwd":"{cwd}","extra":true}}"#
                 ),
-            ))
+            )),
+            // The pid pass runs first and finds no marker pid here.
+            "pane.process_info" => Some(format!(
+                r#"{{"id":"{id}","result":{{"type":"pane_process_info","process_info":{{"pane_id":"w1:p1","foreground_processes":[{{"pid":1,"name":"init"}}]}}}}}}"#
+            )),
+            _ => None,
         });
         set_herdr(root, true, &sock);
 
@@ -1342,6 +1356,41 @@ mod tests {
 
         let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
         assert_eq!(sessions[0].state, SessionState::Done);
+        assert_eq!(sessions[0].state_source, Some(StateSource::Herdr));
+    }
+
+    /// A second CLI started in the agent's dir comes first in herdr's order
+    /// and matches by cwd; the pane holding the marker pid must still decide.
+    #[cfg(unix)]
+    #[test]
+    fn herdr_pid_match_beats_cwd_match() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let agent_dir = live_agent(root, "agent-p").display().to_string();
+        let pid = current_pid();
+        let (_h, sock) = crate::herdr::tests::fake_server(move |method, params, id| {
+            match method {
+            "agent.list" => Some(agent_list_reply(
+                id,
+                &format!(
+                    r#"{{"pane_id":"w1:p1","agent_status":"working","foreground_cwd":"{agent_dir}"}},
+                       {{"pane_id":"w1:p2","agent_status":"blocked","foreground_cwd":"{agent_dir}"}}"#
+                )
+                .replace('\n', ""),
+            )),
+            "pane.process_info" => {
+                let fg = if params["pane_id"] == "w1:p2" { pid } else { 1 };
+                Some(format!(
+                    r#"{{"id":"{id}","result":{{"type":"pane_process_info","process_info":{{"pane_id":"x","foreground_processes":[{{"pid":{fg},"name":"claude"}}]}}}}}}"#
+                ))
+            }
+            _ => None,
+        }
+        });
+        set_herdr(root, true, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_eq!(sessions[0].state, SessionState::Blocked, "pid match wins");
         assert_eq!(sessions[0].state_source, Some(StateSource::Herdr));
     }
 
