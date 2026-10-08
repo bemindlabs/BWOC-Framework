@@ -62,7 +62,7 @@ Today tmux is hard-coded across `fleet_term.rs`, `chat.rs`, `spawn.rs`, `send.rs
 | Operation | tmux (existing) | herdr |
 |---|---|---|
 | open fleet layout | `tmux_fleet_commands` + `select-layout` | `workspace.create` (label = fleet session name) + `layout.apply` replacing its first tab; split tree from `PaneLayout` (renamed from `TmuxLayout`), each pane `label` = agent id, `cwd` = agent dir, argv = the same `bwoc spawn --path <dir> --backend <b>` tmux runs. **Not** `agent.start` — it only accepts herdr's built-in kinds, so ollama agents would fail. |
-| locate an agent's pane | session-name candidates / pane title | `pane.list` → pane whose `label` is the agent id, else whose `foreground_cwd`/`cwd` is inside the agent dir (Phase 1 matcher) |
+| locate an agent's pane | session-name candidates / pane title | `pane.list` → pane whose `label` is the agent id, else a pane where herdr reports a detected agent (`PaneInfo.agent`) **and** whose `foreground_cwd` is inside the agent dir. The pane `cwd` is never used — a shell or editor sitting in the agent dir must not receive `bwoc send` text + Enter (pre-merge review of upstream #593). |
 | wake / deliver | `tmux send-keys -l` | `pane.send_text`, ~200 ms, `pane.send_keys ["enter"]` — best-effort |
 | last activity | `#{window_activity}` | `agent_status` (Phase 1 provider) |
 
