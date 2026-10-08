@@ -1248,6 +1248,19 @@ fn activity_display(state: Option<&SessionState>) -> (&'static str, Color, &'sta
             tone(design::color::STALE),
             "stale",
         ),
+        // herdr-only states. Blocked needs the operator now → the attention
+        // colour; done is finished work → success. The glyphs stay distinct
+        // from working/idle so neither relies on colour alone.
+        Some(SessionState::Blocked) => (
+            design::glyph::ACTIVITY_BLOCKED,
+            tone(design::color::DANGER),
+            "blocked",
+        ),
+        Some(SessionState::Done) => (
+            design::glyph::ACTIVITY_DONE,
+            tone(design::color::SUCCESS),
+            "done",
+        ),
         None => (design::glyph::ACTIVITY_NONE, tone(design::color::MUTED), ""),
     }
 }
@@ -1603,6 +1616,26 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_display_covers_herdr_states() {
+        assert_eq!(
+            activity_display(Some(&SessionState::Blocked)),
+            (
+                design::glyph::ACTIVITY_BLOCKED,
+                tone(design::color::DANGER),
+                "blocked"
+            )
+        );
+        assert_eq!(
+            activity_display(Some(&SessionState::Done)),
+            (
+                design::glyph::ACTIVITY_DONE,
+                tone(design::color::SUCCESS),
+                "done"
+            )
+        );
+    }
 
     #[test]
     fn activity_display_covers_every_state_and_absence() {

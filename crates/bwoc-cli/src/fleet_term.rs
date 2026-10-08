@@ -7,22 +7,28 @@
 //! agent gets its own pane running `bwoc spawn` in the agent's directory, with
 //! the pane border titled by the agent id so the grid stays legible.
 //!
+//! The multiplexer calls live behind [`crate::pane_backend::PaneBackend`] —
+//! tmux by default, herdr with `--backend herdr` or `[fleet] pane_backend =
+//! "herdr"`; this module owns workspace/registry resolution, backend choice,
+//! and the open-or-attach policy.
+//!
 //! OS-native window tiling (separate Ghostty / Terminal.app windows positioned
 //! on the desktop) is a mac-only follow-up — deliberately not this command.
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 use bwoc_core::workspace::AgentsRegistry;
 
 use crate::chat::resolve_workspace;
+use crate::pane_backend::{FleetAgent, PaneBackend, PaneBackendKind};
 use crate::spawn;
 
-/// The pane arrangement. Each maps to a built-in tmux layout so the choice is
-/// applied with a single `select-layout`.
+/// The pane arrangement, backend-neutral. Each maps to a built-in tmux layout
+/// (one `select-layout`) and to a herdr split tree
+/// (`crate::herdr_backend::layout_tree`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum TmuxLayout {
+pub enum PaneLayout {
     /// Equal tiles in a grid — tmux `tiled`. The default; scales best past ~4 agents.
     Grid,
     /// One column per agent, side by side — tmux `even-horizontal`.
@@ -35,146 +41,29 @@ pub enum TmuxLayout {
     MainHorizontal,
 }
 
-impl TmuxLayout {
-    fn tmux_name(self) -> &'static str {
+impl PaneLayout {
+    pub(crate) fn tmux_name(self) -> &'static str {
         match self {
-            TmuxLayout::Grid => "tiled",
-            TmuxLayout::Columns => "even-horizontal",
-            TmuxLayout::Rows => "even-vertical",
-            TmuxLayout::MainVertical => "main-vertical",
-            TmuxLayout::MainHorizontal => "main-horizontal",
+            PaneLayout::Grid => "tiled",
+            PaneLayout::Columns => "even-horizontal",
+            PaneLayout::Rows => "even-vertical",
+            PaneLayout::MainVertical => "main-vertical",
+            PaneLayout::MainHorizontal => "main-horizontal",
         }
     }
 }
 
 pub struct FleetTermArgs {
     pub workspace: Option<PathBuf>,
-    pub layout: TmuxLayout,
+    pub layout: PaneLayout,
+    /// `--backend`; `None` → the workspace's `[fleet] pane_backend`, else tmux.
+    pub backend: Option<PaneBackendKind>,
     /// tmux session name. `None` → a per-workspace default
     /// (`default_session_name`) so concurrent fleets don't collide.
     pub session: Option<String>,
     /// Build the session but do not attach — just print the attach command.
     /// Implied when stdout is not a TTY (e.g. a script / the control center).
     pub print: bool,
-}
-
-/// Build the ordered tmux command sequence (each inner `Vec` is one `tmux`
-/// invocation's argv, program name excluded) that opens one pane per agent in
-/// `session` and arranges them by `layout`. Pure + tested.
-///
-/// `agents` is `(agent_id, abs_path, backend)`. The first agent seeds the
-/// session window; each subsequent agent adds a `split-window`. The grid is
-/// rebalanced with `tiled` *after every split* so tmux never runs out of room
-/// ("no space for new pane") on a fleet of many agents; a final `select-layout`
-/// applies the requested arrangement. Each pane's border is titled with the
-/// agent id (`pane-border-status top` makes those visible).
-pub(crate) fn tmux_fleet_commands(
-    session: &str,
-    agents: &[(String, String, String)],
-    layout: TmuxLayout,
-    bwoc_exe: &str,
-) -> Vec<Vec<String>> {
-    let spawn_argv = |path: &str, backend: &str| -> Vec<String> {
-        vec![
-            "--".into(),
-            bwoc_exe.into(),
-            "spawn".into(),
-            "--path".into(),
-            path.into(),
-            "--backend".into(),
-            backend.into(),
-        ]
-    };
-    let mut cmds: Vec<Vec<String>> = Vec::new();
-    let Some(((id0, p0, b0), rest)) = agents.split_first() else {
-        return cmds; // no agents — the caller refuses before running
-    };
-
-    // Detached session with the first agent in window 0.
-    let mut first = vec![
-        "new-session".into(),
-        "-d".into(),
-        "-s".into(),
-        session.into(),
-        "-n".into(),
-        "fleet".into(),
-    ];
-    first.extend(spawn_argv(p0, b0));
-    cmds.push(first);
-    // Keep a pane visible after its agent exits (dead panes read "[exited]")
-    // instead of closing — so one finished/crashed agent can't collapse the
-    // layout (or the whole session, if it were the last pane). Set immediately
-    // after the session exists, before any split.
-    cmds.push(vec![
-        "set-option".into(),
-        "-t".into(),
-        session.into(),
-        "remain-on-exit".into(),
-        "on".into(),
-    ]);
-    cmds.push(title_cmd(session, id0));
-
-    // One pane per remaining agent; rebalance to `tiled` between splits so the
-    // next split always has room, then title the freshly-created (active) pane.
-    for (id, path, backend) in rest {
-        let mut split = vec!["split-window".into(), "-t".into(), session.into()];
-        split.extend(spawn_argv(path, backend));
-        cmds.push(split);
-        cmds.push(vec![
-            "select-layout".into(),
-            "-t".into(),
-            session.into(),
-            "tiled".into(),
-        ]);
-        cmds.push(title_cmd(session, id));
-    }
-
-    // Show the pane-border titles, then apply the requested layout last.
-    cmds.push(vec![
-        "set-option".into(),
-        "-t".into(),
-        session.into(),
-        "pane-border-status".into(),
-        "top".into(),
-    ]);
-    cmds.push(vec![
-        "select-layout".into(),
-        "-t".into(),
-        session.into(),
-        layout.tmux_name().into(),
-    ]);
-    cmds
-}
-
-/// Title the *active* pane of `session` with `id`.
-fn title_cmd(session: &str, id: &str) -> Vec<String> {
-    vec![
-        "select-pane".into(),
-        "-t".into(),
-        session.into(),
-        "-T".into(),
-        id.into(),
-    ]
-}
-
-fn tmux_missing() -> bool {
-    Command::new("tmux")
-        .arg("-V")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| !s.success())
-        .unwrap_or(true)
-}
-
-fn session_exists(session: &str) -> bool {
-    Command::new("tmux")
-        .args(["has-session", "-t", session])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 /// Deterministic, tmux-safe default session name for a fleet, unique per
@@ -226,19 +115,17 @@ fn fnv1a_24(bytes: &[u8]) -> String {
 }
 
 /// Attach to `session` (or, with `print` / no TTY, just print the attach line).
-fn attach_session(session: &str, print: bool) -> i32 {
+fn attach_session(backend: &dyn PaneBackend, session: &str, print: bool) -> i32 {
     if print || !std::io::stdout().is_terminal() {
-        println!("Attach with:  tmux attach -t {session}");
+        println!("Attach with:  {}", backend.attach_hint(session));
         return 0;
     }
-    match Command::new("tmux")
-        .args(["attach", "-t", session])
-        .status()
-    {
-        Ok(_) => 0,
+    match backend.attach_fleet(session) {
+        Ok(()) => 0,
         Err(e) => {
             eprintln!(
-                "bwoc fleet term: attach failed: {e} — run `tmux attach -t {session}` manually."
+                "bwoc fleet term: attach failed: {e} — run `{}` manually.",
+                backend.attach_hint(session)
             );
             1
         }
@@ -273,172 +160,93 @@ pub fn run(args: FleetTermArgs) -> i32 {
         );
         return 2;
     }
-    if tmux_missing() {
-        eprintln!(
-            "bwoc fleet term: tmux not found on PATH. Install it (macOS: `brew install tmux`, \
-             Linux: `apt install tmux`) — this command lays the fleet out in tmux panes."
-        );
+
+    let agents: Vec<FleetAgent> = registry
+        .agents
+        .iter()
+        .map(|a| FleetAgent {
+            id: a.id.clone(),
+            path: workspace.join(&a.path).to_string_lossy().into_owned(),
+            backend: a.backend.clone(),
+        })
+        .collect();
+
+    let kind = resolve_kind(args.backend, &workspace);
+    let backend =
+        crate::pane_backend::backend_for(kind, &workspace, crate::herdr_backend::FLEET_BUDGET);
+    open_with(
+        backend.as_ref(),
+        &session,
+        args.session.is_some(),
+        &agents,
+        args.layout,
+        &spawn::bwoc_exe(),
+        args.print,
+    )
+}
+
+/// The `--backend` flag when given, else the workspace's `[fleet] pane_backend`
+/// (tmux when absent or unrecognised).
+fn resolve_kind(flag: Option<PaneBackendKind>, workspace: &std::path::Path) -> PaneBackendKind {
+    flag.unwrap_or_else(|| crate::pane_backend::configured_kind(workspace, "fleet term"))
+}
+
+/// Open (or re-attach) the fleet through `backend`. Split from [`run`] so the
+/// call sequence is testable against a recording backend.
+fn open_with(
+    backend: &dyn PaneBackend,
+    session: &str,
+    explicit_session: bool,
+    agents: &[FleetAgent],
+    layout: PaneLayout,
+    bwoc_exe: &str,
+    print: bool,
+) -> i32 {
+    if let Err(hint) = backend.check_available() {
+        eprintln!("bwoc fleet term: {hint}");
         return 2;
     }
-    if session_exists(&session) {
+    if backend.fleet_exists(session) {
         // An explicit --session that's taken is a user/input error (they named
         // it). But the auto-derived per-workspace default already running means
         // "this fleet is already open" — attach it (idempotent re-run) rather
         // than refuse.
-        if args.session.is_some() {
+        if explicit_session {
             eprintln!(
-                "bwoc fleet term: tmux session '{0}' already exists — attach with `tmux attach -t {0}`, \
-                 kill it with `tmux kill-session -t {0}`, or pass a different --session.",
-                session
+                "bwoc fleet term: {} session '{session}' already exists — attach with `{}`, \
+                 kill it with `{}`, or pass a different --session.",
+                backend.name(),
+                backend.attach_hint(session),
+                backend.kill_hint(session)
             );
             return 2;
         }
         println!("Fleet already open for this workspace (session '{session}') — attaching.");
-        return attach_session(&session, args.print);
+        return attach_session(backend, session, print);
     }
 
-    let bwoc = spawn::bwoc_exe();
-    let agents: Vec<(String, String, String)> = registry
-        .agents
-        .iter()
-        .map(|a| {
-            (
-                a.id.clone(),
-                workspace.join(&a.path).to_string_lossy().into_owned(),
-                a.backend.clone(),
-            )
-        })
-        .collect();
-
-    for cmd in tmux_fleet_commands(&session, &agents, args.layout, &bwoc) {
-        match Command::new("tmux")
-            .args(&cmd)
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .status()
-        {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                eprintln!(
-                    "bwoc fleet term: `tmux {}` exited {s} — the session may be partially built; \
-                     `tmux kill-session -t {}` to clear it.",
-                    cmd.first().map(String::as_str).unwrap_or("?"),
-                    session
-                );
-                return 1;
-            }
-            Err(e) => {
-                eprintln!("bwoc fleet term: failed to run tmux: {e}");
-                return 1;
-            }
+    match backend.open_fleet(session, agents, layout, bwoc_exe) {
+        Ok(confirmation) => println!("{confirmation}"),
+        Err(detail) => {
+            eprintln!("bwoc fleet term: {detail}");
+            return 1;
         }
     }
 
-    println!(
-        "Opened {} agent panes in tmux session '{}' (layout: {}). \
-         Cycle layouts live with `<prefix> Space`.",
-        agents.len(),
-        session,
-        args.layout.tmux_name()
-    );
-
     // Attach unless asked not to (or no TTY to attach to).
-    attach_session(&session, args.print)
+    attach_session(backend, session, print)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn agents() -> Vec<(String, String, String)> {
-        vec![
-            (
-                "agent-pi".into(),
-                "/ws/agents/agent-pi".into(),
-                "claude".into(),
-            ),
-            (
-                "agent-ji".into(),
-                "/ws/agents/agent-ji".into(),
-                "ollama".into(),
-            ),
-            (
-                "agent-mu".into(),
-                "/ws/agents/agent-mu".into(),
-                "codex".into(),
-            ),
-        ]
-    }
-
-    #[test]
-    fn first_agent_seeds_the_session_and_spawns() {
-        let c = tmux_fleet_commands("bwoc-fleet", &agents(), TmuxLayout::Grid, "/bin/bwoc");
-        let first = &c[0];
-        assert_eq!(first[0], "new-session");
-        assert!(first.contains(&"-d".to_string()), "detached: {first:?}");
-        assert!(first.windows(2).any(|w| w == ["-s", "bwoc-fleet"]));
-        // spawns the first agent in its dir with its backend
-        assert!(
-            first
-                .windows(2)
-                .any(|w| w == ["--path", "/ws/agents/agent-pi"])
-        );
-        assert!(first.windows(2).any(|w| w == ["--backend", "claude"]));
-        // remain-on-exit is set right after the session is created so an exiting
-        // agent can't collapse the layout.
-        assert!(
-            c.iter()
-                .any(|cmd| cmd.contains(&"remain-on-exit".to_string()))
-        );
-    }
-
-    #[test]
-    fn one_split_per_additional_agent_and_final_layout() {
-        let c = tmux_fleet_commands("s", &agents(), TmuxLayout::Columns, "bwoc");
-        let splits = c
-            .iter()
-            .filter(|cmd| cmd.first().map(String::as_str) == Some("split-window"))
-            .count();
-        assert_eq!(splits, 2, "3 agents → 2 splits");
-        // rebalanced to tiled between splits so tmux never runs out of room
-        assert!(c.iter().any(
-            |cmd| cmd.first().map(String::as_str) == Some("select-layout")
-                && cmd.contains(&"tiled".to_string())
-        ));
-        // the LAST command applies the requested layout
-        let last = c.last().unwrap();
-        assert_eq!(last[0], "select-layout");
-        assert_eq!(last.last().unwrap(), "even-horizontal");
-    }
-
-    #[test]
-    fn every_agent_pane_is_titled() {
-        let c = tmux_fleet_commands("s", &agents(), TmuxLayout::Grid, "bwoc");
-        for id in ["agent-pi", "agent-ji", "agent-mu"] {
-            assert!(
-                c.iter()
-                    .any(|cmd| cmd.first().map(String::as_str) == Some("select-pane")
-                        && cmd.contains(&id.to_string())),
-                "pane titled for {id}"
-            );
-        }
-        assert!(
-            c.iter()
-                .any(|cmd| cmd.contains(&"pane-border-status".to_string()))
-        );
-    }
-
-    #[test]
-    fn no_agents_yields_no_commands() {
-        assert!(tmux_fleet_commands("s", &[], TmuxLayout::Grid, "bwoc").is_empty());
-    }
-
     #[test]
     fn layout_names_map_to_tmux() {
-        assert_eq!(TmuxLayout::Grid.tmux_name(), "tiled");
-        assert_eq!(TmuxLayout::Rows.tmux_name(), "even-vertical");
-        assert_eq!(TmuxLayout::MainVertical.tmux_name(), "main-vertical");
-        assert_eq!(TmuxLayout::MainHorizontal.tmux_name(), "main-horizontal");
+        assert_eq!(PaneLayout::Grid.tmux_name(), "tiled");
+        assert_eq!(PaneLayout::Rows.tmux_name(), "even-vertical");
+        assert_eq!(PaneLayout::MainVertical.tmux_name(), "main-vertical");
+        assert_eq!(PaneLayout::MainHorizontal.tmux_name(), "main-horizontal");
     }
 
     #[test]
@@ -479,5 +287,147 @@ mod tests {
         // Deterministic: same workspace re-run → same session (attach, not new).
         assert_eq!(na, default_session_name(&a));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn backend_flag_overrides_the_workspace_key() {
+        let ws = std::env::temp_dir().join(format!("bwoc-ftkind-{}", std::process::id()));
+        std::fs::create_dir_all(ws.join(".bwoc")).unwrap();
+        let toml = |extra: &str| {
+            std::fs::write(
+                ws.join(".bwoc/workspace.toml"),
+                format!("[workspace]\nname = 'd'\nversion = '0'\ncreated = 'x'\n{extra}"),
+            )
+            .unwrap();
+        };
+        toml("");
+        assert_eq!(resolve_kind(None, &ws), PaneBackendKind::Tmux, "default");
+        toml("[fleet]\npane_backend = 'herdr'\n");
+        assert_eq!(
+            resolve_kind(None, &ws),
+            PaneBackendKind::Herdr,
+            "from config"
+        );
+        assert_eq!(
+            resolve_kind(Some(PaneBackendKind::Tmux), &ws),
+            PaneBackendKind::Tmux,
+            "flag beats config"
+        );
+        toml("[fleet]\npane_backend = 'screen'\n");
+        assert_eq!(
+            resolve_kind(None, &ws),
+            PaneBackendKind::Tmux,
+            "unknown → tmux"
+        );
+        assert_eq!(
+            resolve_kind(Some(PaneBackendKind::Herdr), &ws),
+            PaneBackendKind::Herdr
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    // --- call sequence through the PaneBackend trait (recording fake) ---
+
+    use crate::pane_backend::fake::FakeBackend;
+
+    fn fleet() -> Vec<FleetAgent> {
+        vec![
+            FleetAgent {
+                id: "agent-pi".into(),
+                path: "/ws/agents/agent-pi".into(),
+                backend: "claude".into(),
+            },
+            FleetAgent {
+                id: "agent-ji".into(),
+                path: "/ws/agents/agent-ji".into(),
+                backend: "ollama".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn fresh_fleet_checks_opens_then_prints_attach() {
+        let b = FakeBackend::default();
+        let rc = open_with(
+            &b,
+            "s1",
+            false,
+            &fleet(),
+            PaneLayout::Rows,
+            "/bin/bwoc",
+            true,
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(
+            b.calls(),
+            vec![
+                "check_available",
+                "fleet_exists s1",
+                "open_fleet s1 [agent-pi@/ws/agents/agent-pi:claude,\
+                 agent-ji@/ws/agents/agent-ji:ollama] Rows /bin/bwoc",
+                "attach_hint s1",
+            ]
+        );
+    }
+
+    #[test]
+    fn unavailable_backend_refuses_before_touching_anything() {
+        let b = FakeBackend {
+            unavailable: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            open_with(&b, "s1", false, &fleet(), PaneLayout::Grid, "bwoc", true),
+            2
+        );
+        assert_eq!(b.calls(), vec!["check_available"]);
+    }
+
+    #[test]
+    fn explicit_session_taken_is_refused_without_opening() {
+        let b = FakeBackend {
+            exists: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            open_with(&b, "mine", true, &fleet(), PaneLayout::Grid, "bwoc", true),
+            2
+        );
+        let calls = b.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("open_fleet")),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&"kill_hint mine".to_string()), "{calls:?}");
+    }
+
+    #[test]
+    fn default_session_already_open_reattaches_without_opening() {
+        let b = FakeBackend {
+            exists: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            open_with(&b, "auto", false, &fleet(), PaneLayout::Grid, "bwoc", true),
+            0
+        );
+        assert_eq!(
+            b.calls(),
+            vec!["check_available", "fleet_exists auto", "attach_hint auto"]
+        );
+    }
+
+    #[test]
+    fn open_failure_exits_1_and_skips_attach() {
+        let b = FakeBackend {
+            open_fails: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            open_with(&b, "s1", false, &fleet(), PaneLayout::Grid, "bwoc", true),
+            1
+        );
+        let calls = b.calls();
+        assert!(calls.last().unwrap().starts_with("open_fleet"), "{calls:?}");
     }
 }

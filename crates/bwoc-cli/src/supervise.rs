@@ -52,6 +52,14 @@ fn emit_event(json: bool, kind: &str, agent: &str, detail: serde_json::Value) {
     }
 }
 
+/// Whether the workspace's `[fleet] pane_backend` is `"herdr"` (the
+/// ownership warning's trigger; an unknown value is not herdr).
+fn herdr_owns_fleet_panes(workspace: &Path) -> bool {
+    let raw = bwoc_core::workspace::FleetSettings::load(workspace).pane_backend;
+    crate::pane_backend::PaneBackendKind::from_config(raw.as_deref())
+        == Ok(crate::pane_backend::PaneBackendKind::Herdr)
+}
+
 pub fn run(args: SuperviseArgs) -> i32 {
     let Some(workspace) = resolve_workspace(args.workspace) else {
         eprintln!(
@@ -81,6 +89,15 @@ pub fn run(args: SuperviseArgs) -> i32 {
         return 2;
     };
     let agent_path = workspace.join(&entry.path);
+
+    // One owner per process: herdr is the PTY parent of the panes it opens.
+    if herdr_owns_fleet_panes(&workspace) {
+        eprintln!(
+            "bwoc supervise: warning: this workspace sets [fleet] pane_backend = \"herdr\" — \
+             agents opened by `bwoc fleet term --backend herdr` are owned by herdr; \
+             do not also supervise them."
+        );
+    }
 
     eprintln!(
         "bwoc supervise: watching {} (max {}/min restarts)",
@@ -245,5 +262,27 @@ fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
         if !cur.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ownership_warning_triggers_only_for_herdr() {
+        let ws = std::env::temp_dir().join(format!("bwoc-supv-own-{}", std::process::id()));
+        std::fs::create_dir_all(ws.join(".bwoc")).unwrap();
+        let head = "[workspace]\nname = 'd'\nversion = '0'\ncreated = 'x'\n";
+        for (extra, want) in [
+            ("", false),
+            ("[fleet]\npane_backend = 'tmux'\n", false),
+            ("[fleet]\npane_backend = 'herdr'\n", true),
+            ("[fleet]\npane_backend = 'zellij'\n", false),
+        ] {
+            std::fs::write(ws.join(".bwoc/workspace.toml"), format!("{head}{extra}")).unwrap();
+            assert_eq!(herdr_owns_fleet_panes(&ws), want, "{extra:?}");
+        }
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

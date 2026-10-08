@@ -52,7 +52,7 @@ Each row: Pali → traditional gloss → BWOC application → observable signal 
 
 **Signal:** `bwoc workspace prune --apply` reconciles drift between registry status and on-disk state. `bwoc doctor` sweeps `agent.pid` / `agent.sock` for staleness. Together they detect agents that *think* they're running but aren't, or vice versa.
 
-**Practice:** Wrap `bwoc start --all` / `bwoc stop --all` (existing surface) in operator playbooks. After a workspace pause, run `bwoc doctor --auto` to clear stale-PID / stale-socket / stale-cursor artifacts. If a `bwoc list` shows one agent running while the rest are stopped, investigate before resuming work. For *interactive* come-together, `bwoc fleet term` opens one tmux pane per agent in a single session (arrange with `--layout grid|columns|rows|main-vertical|main-horizontal`, or `--print` to emit the attach line without attaching) — the concord equivalent of `start --all` for a human-attended fleet. The session name is per-workspace by default, so concurrent fleets don't collide on one shared session.
+**Practice:** Wrap `bwoc start --all` / `bwoc stop --all` (existing surface) in operator playbooks. After a workspace pause, run `bwoc doctor --auto` to clear stale-PID / stale-socket / stale-cursor artifacts. If a `bwoc list` shows one agent running while the rest are stopped, investigate before resuming work. For *interactive* come-together, `bwoc fleet term` opens one tmux pane per agent in a single session (arrange with `--layout grid|columns|rows|main-vertical|main-horizontal`, or `--print` to emit the attach line without attaching) — the concord equivalent of `start --all` for a human-attended fleet. The session name is per-workspace by default, so concurrent fleets don't collide on one shared session. With `--backend herdr` (or `[fleet] pane_backend = "herdr"` in `.bwoc/workspace.toml`) the same panes open as one [herdr](https://herdr.dev) workspace instead of a tmux session, and `bwoc send` wakes agents through it. herdr's server is then the parent process of those agents: **one owner per agent process** — do not also run `bwoc supervise` for them (it warns when the workspace selects herdr), and note that stopping the herdr server stops every agent it opened. Separately, `[integrations.herdr] enabled = true` lets `bwoc sessions` report herdr's `blocked` and `done` states — an agent waiting on the operator is a dispersion signal the activity heuristic cannot see.
 
 ### 3. Process-bound convention change — *appaññattaṃ na paññāpenti*
 
@@ -129,6 +129,7 @@ None of these are gates today. They are *practices* an operator runs on a cadenc
 
 ## Spec Revision History
 
+- **2026-10-08:** §2 — `fleet term --backend herdr`, the one-owner rule for agent processes, and herdr-sourced `blocked`/`done` session states. Design: [`research/2026-10-08_herdr-integration.md`](../../research/2026-10-08_herdr-integration.md).
 - **v1 / 2026-05-23 (initial draft):** Seven conditions mapped to BWOC fleet operations. Observable signals named; automation deferred. Bilingual TH parity in [`FLEET-GOVERNANCE.th.md`](../th/FLEET-GOVERNANCE.th.md).
 
 ## Cross-References

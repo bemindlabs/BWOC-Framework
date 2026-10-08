@@ -52,7 +52,7 @@ Phase 1–3 ให้พื้นฐานทางเทคนิคแก่ w
 
 **Signal:** `bwoc workspace prune --apply` reconcile drift ระหว่าง registry status กับสภาพบน disk. `bwoc doctor` sweep `agent.pid` / `agent.sock` ที่ stale ทั้งคู่จับ agent ที่ *คิด* ว่ายังทำงานอยู่แต่จริงๆ ไม่ใช่ หรือกลับด้าน
 
-**ปฏิบัติ:** ห่อ `bwoc start --all` / `bwoc stop --all` (surface ที่มีอยู่แล้ว) ใน playbook ของ operator หลังหยุด workspace รัน `bwoc doctor --auto` เพื่อล้าง stale-PID / stale-socket / stale-cursor ถ้า `bwoc list` เห็น agent ตัวเดียวยังทำงานในขณะที่ตัวอื่นหยุด — สอบถามก่อนเริ่มงานต่อ สำหรับการ "มาพร้อมกัน" แบบ *โต้ตอบ* ใช้ `bwoc fleet term` เปิด tmux หนึ่ง pane ต่อหนึ่ง agent ในเซสชันเดียว (จัดเรียงด้วย `--layout grid|columns|rows|main-vertical|main-horizontal` หรือ `--print` เพื่อพิมพ์คำสั่ง attach โดยไม่ต้อง attach) — เทียบได้กับ `start --all` แต่สำหรับ fleet ที่มีมนุษย์คอยดูแล ชื่อเซสชันเป็นค่าเฉพาะต่อ workspace โดยปริยาย จึงไม่ชนกันเมื่อเปิดหลาย fleet พร้อมกัน
+**ปฏิบัติ:** ห่อ `bwoc start --all` / `bwoc stop --all` (surface ที่มีอยู่แล้ว) ใน playbook ของ operator หลังหยุด workspace รัน `bwoc doctor --auto` เพื่อล้าง stale-PID / stale-socket / stale-cursor ถ้า `bwoc list` เห็น agent ตัวเดียวยังทำงานในขณะที่ตัวอื่นหยุด — สอบถามก่อนเริ่มงานต่อ สำหรับการ "มาพร้อมกัน" แบบ *โต้ตอบ* ใช้ `bwoc fleet term` เปิด tmux หนึ่ง pane ต่อหนึ่ง agent ในเซสชันเดียว (จัดเรียงด้วย `--layout grid|columns|rows|main-vertical|main-horizontal` หรือ `--print` เพื่อพิมพ์คำสั่ง attach โดยไม่ต้อง attach) — เทียบได้กับ `start --all` แต่สำหรับ fleet ที่มีมนุษย์คอยดูแล ชื่อเซสชันเป็นค่าเฉพาะต่อ workspace โดยปริยาย จึงไม่ชนกันเมื่อเปิดหลาย fleet พร้อมกัน เมื่อใช้ `--backend herdr` (หรือตั้ง `[fleet] pane_backend = "herdr"` ใน `.bwoc/workspace.toml`) pane ชุดเดียวกันจะเปิดเป็น workspace หนึ่งของ [herdr](https://herdr.dev) แทนเซสชัน tmux และ `bwoc send` จะปลุก agent ผ่าน herdr ด้วย ในกรณีนี้ server ของ herdr เป็น process แม่ของ agent เหล่านั้น: **process ของ agent หนึ่งตัวมีเจ้าของได้ผู้เดียว** — อย่ารัน `bwoc supervise` กับ agent เหล่านั้นซ้ำ (คำสั่งจะเตือนเมื่อ workspace เลือก herdr) และพึงรู้ว่าการหยุด server ของ herdr จะหยุด agent ทุกตัวที่มันเปิดไว้ แยกจากกัน `[integrations.herdr] enabled = true` ทำให้ `bwoc sessions` รายงานสถานะ `blocked` และ `done` จาก herdr ได้ — agent ที่รอ operator อยู่คือสัญญาณ dispersion ที่การเดาจาก activity มองไม่เห็น
 
 ### 3. ไม่บัญญัติ/ไม่ยกเลิกกติกาตามอำเภอใจ — *appaññattaṃ na paññāpenti*
 
@@ -129,6 +129,7 @@ Signal เหล่านี้รวมกันให้มุมมองส�
 
 ## ประวัติการแก้ Spec
 
+- **2026-10-08:** ข้อ 2 — `fleet term --backend herdr`, กฎเจ้าของ process ของ agent ผู้เดียว และสถานะ session `blocked`/`done` จาก herdr. Design: [`research/2026-10-08_herdr-integration.md`](../../research/2026-10-08_herdr-integration.md)
 - **v1 / 2026-05-23 (ฉบับร่างแรก):** 7 ข้อ map ไปยังการทำงาน fleet ของ BWOC. ตั้งชื่อ observable signals; เลื่อน automation parity TH กับ [`FLEET-GOVERNANCE.en.md`](../en/FLEET-GOVERNANCE.en.md)
 
 ## เอกสารอ้างอิง

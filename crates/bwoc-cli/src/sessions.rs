@@ -37,16 +37,32 @@
 //!
 //! Any tmux/mtime failure is best-effort: `last_activity = None` → `running`.
 //!
+//! ## herdr state provider (opt-in)
+//!
+//! With `[integrations.herdr] enabled = true` in `.bwoc/workspace.toml`, one
+//! `agent.list` round-trip to a running herdr server (see [`crate::herdr`])
+//! refines the state of **alive marker sessions** after the heuristic above:
+//!
+//! 1. dead pid → `stale`, untouched (BWOC's own liveness check wins);
+//! 2. a herdr agent whose `foreground_cwd` is (inside) the agent's directory
+//!    is that agent's;
+//! 3. else, for marker agents still unmatched, a herdr pane whose
+//!    `pane.process_info` foreground pids include the marker pid;
+//! 4. else the herdr agent is not BWOC's and is ignored.
+//!
+//! A matched herdr status overrides the heuristic: `working|blocked|done|idle`
+//! map 1:1, `unknown` → `running`. Any herdr failure leaves the heuristic
+//! state in place; all herdr calls share one ~300 ms budget.
+//!
+//! `stateSource` (JSON) names what decided the state: `"herdr"`, `"tmux"`
+//! (`#{window_activity}`), `"marker"` (marker-file mtime), or `null` when no
+//! activity signal was used (stale and scan sessions, or an alive marker
+//! whose mtime could not be read).
+//!
 //! ## Backend → process-name mapping
 //!
 //! Kept in one place: `BACKEND_PROCESSES`.  Adding a new backend is one
 //! entry in that slice.
-//!
-//! ```text
-//! // TODO(extension): to add per-backend custom detection (e.g. port-scan
-//! // for a local model server, socket probe for bwoc-harness), implement
-//! // BackendDetector trait and register it alongside BACKEND_PROCESSES.
-//! ```
 //!
 //! ## Output
 //!
@@ -62,7 +78,8 @@
 //!       "source": "marker",
 //!       "startedAt": "2026-05-24T10:00:00Z",
 //!       "tmux": "bwoc:0.0",
-//!       "lastActivity": 1716545000
+//!       "lastActivity": 1716545000,
+//!       "stateSource": "tmux"
 //!     }
 //!   ]
 //! }
@@ -77,9 +94,8 @@ use std::path::{Path, PathBuf};
 /// `process_name` is the basename of the executable `pgrep` will match.
 /// For `ollama`/`bwoc-harness`, two names cover both.
 ///
-/// // TODO(extension): to add a per-backend custom detector (socket probe,
-/// // port scan, etc.) implement a `BackendDetector` trait and register
-/// // one instance per backend alongside this table.
+/// Richer, non-process detection (herdr's per-pane agent state) is layered on
+/// top in [`collect_sessions`] rather than per backend here.
 static BACKEND_PROCESSES: &[(&str, &str)] = &[
     ("claude", "claude"),
     ("agy", "agy"),
@@ -97,10 +113,15 @@ pub enum SessionState {
     Working,
     /// Alive + last_activity older than idle_secs threshold.
     Idle,
-    /// Alive + no activity signal available.
+    /// Alive + no activity signal available (or herdr reports `unknown`).
     Running,
     /// Pid dead.
     Stale,
+    /// Alive + herdr reports the agent waiting on the operator (only herdr
+    /// can tell; the tmux heuristic never yields it).
+    Blocked,
+    /// Alive + herdr reports finished work not yet looked at (herdr-only).
+    Done,
 }
 
 impl SessionState {
@@ -110,6 +131,40 @@ impl SessionState {
             SessionState::Idle => "idle",
             SessionState::Running => "running",
             SessionState::Stale => "stale",
+            SessionState::Blocked => "blocked",
+            SessionState::Done => "done",
+        }
+    }
+
+    fn from_herdr(status: crate::herdr::AgentStatus) -> Self {
+        use crate::herdr::AgentStatus;
+        match status {
+            AgentStatus::Working => SessionState::Working,
+            AgentStatus::Blocked => SessionState::Blocked,
+            AgentStatus::Done => SessionState::Done,
+            AgentStatus::Idle => SessionState::Idle,
+            AgentStatus::Unknown => SessionState::Running,
+        }
+    }
+}
+
+/// What decided a session's state — `stateSource` in `--json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateSource {
+    /// herdr's per-pane agent status.
+    Herdr,
+    /// tmux `#{window_activity}` age.
+    Tmux,
+    /// Marker-file mtime age.
+    Marker,
+}
+
+impl StateSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            StateSource::Herdr => "herdr",
+            StateSource::Tmux => "tmux",
+            StateSource::Marker => "marker",
         }
     }
 }
@@ -140,6 +195,8 @@ pub struct Session {
     pub tmux: Option<String>,
     /// Epoch-seconds of last observed activity.  None = unknown.
     pub last_activity: Option<u64>,
+    /// What decided `state`; `None` = no activity signal (stale / scan).
+    pub state_source: Option<StateSource>,
 }
 
 // ── Marker file schema ────────────────────────────────────────────────────────
@@ -295,20 +352,24 @@ fn file_mtime_secs(path: &Path) -> Option<u64> {
 /// 1. tmux pane  → `ScanRunner::tmux_pane_activity`
 /// 2. marker file mtime (marker_path is Some)
 /// 3. None
+///
+/// Returns the timestamp together with where it came from.
 fn derive_last_activity(
     tmux: Option<&str>,
     marker_path: Option<&Path>,
     runner: &dyn ScanRunner,
-) -> Option<u64> {
+) -> (Option<u64>, Option<StateSource>) {
     if let Some(pane) = tmux {
         if let Some(ts) = runner.tmux_pane_activity(pane) {
-            return Some(ts);
+            return (Some(ts), Some(StateSource::Tmux));
         }
     }
     if let Some(path) = marker_path {
-        return file_mtime_secs(path);
+        if let Some(ts) = file_mtime_secs(path) {
+            return (Some(ts), Some(StateSource::Marker));
+        }
     }
-    None
+    (None, None)
 }
 
 /// Derive `SessionState` for an alive session given `last_activity` and threshold.
@@ -403,7 +464,26 @@ fn read_markers(workspace: &Path) -> Vec<(SessionMarker, PathBuf)> {
 /// 2. Collect pids seen in live markers (to skip them in scan).
 /// 3. For each backend process name, scan via `runner`; skip pids already
 ///    accounted for by a marker.
+/// 4. When the workspace enables `[integrations.herdr]`, refine alive marker
+///    sessions from herdr (see the module docs).
 pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner, idle_secs: u64) -> Vec<Session> {
+    let herdr = bwoc_core::workspace::Integrations::load(workspace).herdr;
+    let socket = if herdr.enabled {
+        crate::herdr::resolve_socket(herdr.socket.as_deref())
+    } else {
+        None
+    };
+    collect_sessions_with_herdr(workspace, runner, idle_secs, socket.as_deref())
+}
+
+/// [`collect_sessions`] with the herdr socket decided by the caller
+/// (`None` = herdr off; no socket is touched).
+fn collect_sessions_with_herdr(
+    workspace: &Path,
+    runner: &dyn ScanRunner,
+    idle_secs: u64,
+    herdr_socket: Option<&Path>,
+) -> Vec<Session> {
     let mut sessions: Vec<Session> = Vec::new();
     let mut live_marker_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
@@ -411,7 +491,8 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner, idle_secs: u6
     for (marker, path) in read_markers(workspace) {
         if pid_alive(marker.pid) {
             live_marker_pids.insert(marker.pid);
-            let last_activity = derive_last_activity(marker.tmux.as_deref(), Some(&path), runner);
+            let (last_activity, state_source) =
+                derive_last_activity(marker.tmux.as_deref(), Some(&path), runner);
             let state = alive_state(last_activity, idle_secs);
             sessions.push(Session {
                 backend: marker.backend,
@@ -422,6 +503,7 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner, idle_secs: u6
                 started_at: Some(marker.started_at),
                 tmux: marker.tmux,
                 last_activity,
+                state_source,
             });
         } else {
             // Stale — best-effort cleanup.
@@ -435,8 +517,14 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner, idle_secs: u6
                 started_at: Some(marker.started_at),
                 tmux: marker.tmux,
                 last_activity: None,
+                state_source: None,
             });
         }
+    }
+
+    // ── Phase 1b: herdr refinement (opt-in) ──────────────────────────────────
+    if let Some(socket) = herdr_socket {
+        apply_herdr_states(workspace, socket, &mut sessions);
     }
 
     // ── Phase 2: scan fallback ────────────────────────────────────────────────
@@ -473,11 +561,121 @@ pub fn collect_sessions(workspace: &Path, runner: &dyn ScanRunner, idle_secs: u6
                 started_at: None,
                 tmux: None,
                 last_activity: None,
+                state_source: None,
             });
         }
     }
 
     sessions
+}
+
+// ── herdr matching ────────────────────────────────────────────────────────────
+
+/// Override the state of alive marker sessions with herdr's view, when herdr
+/// answers. Stale and scan sessions are never touched. One `agent.list`, plus
+/// at most one `pane.process_info` per herdr pane not matched by cwd — and
+/// only while some alive marker agent is still unmatched. Every call shares
+/// [`crate::herdr::DEFAULT_BUDGET`]; the first failure ends the lookup.
+fn apply_herdr_states(workspace: &Path, socket: &Path, sessions: &mut [Session]) {
+    let alive: Vec<(String, u32)> = sessions
+        .iter()
+        .filter(|s| s.source == SessionSource::Marker && s.state != SessionState::Stale)
+        .filter_map(|s| Some((s.agent_id.clone()?, s.pid)))
+        .collect();
+    if alive.is_empty() {
+        return; // nothing herdr could refine — do not touch the socket
+    }
+    let client = crate::herdr::Client::new(socket.to_path_buf(), crate::herdr::DEFAULT_BUDGET);
+    let Some(agents) = client.agent_list() else {
+        return;
+    };
+
+    let dirs = agent_dirs(workspace, alive.iter().map(|(id, _)| id.as_str()));
+    let mut matched: std::collections::HashMap<String, SessionState> =
+        std::collections::HashMap::new();
+    let mut by_pid = Vec::new();
+    for a in &agents {
+        match a
+            .foreground_cwd
+            .as_deref()
+            .and_then(|c| agent_for_cwd(Path::new(c), &dirs))
+        {
+            // First herdr agent (in herdr's order) wins for a given BWOC agent.
+            Some(id) => {
+                matched
+                    .entry(id)
+                    .or_insert_with(|| SessionState::from_herdr(a.status));
+            }
+            None => by_pid.push(a),
+        }
+    }
+    for a in by_pid {
+        if alive.iter().all(|(id, _)| matched.contains_key(id)) {
+            break;
+        }
+        let Some(pids) = client.pane_foreground_pids(&a.pane_id) else {
+            break; // herdr unavailable for the rest of this call
+        };
+        if let Some((id, _)) = alive
+            .iter()
+            .find(|(id, pid)| !matched.contains_key(id) && pids.contains(pid))
+        {
+            matched.insert(id.clone(), SessionState::from_herdr(a.status));
+        }
+    }
+
+    for s in sessions.iter_mut() {
+        if s.source != SessionSource::Marker || s.state == SessionState::Stale {
+            continue;
+        }
+        if let Some(state) = s.agent_id.as_ref().and_then(|id| matched.get(id)) {
+            s.state = state.clone();
+            s.state_source = Some(StateSource::Herdr);
+        }
+    }
+}
+
+/// Every registered agent's directory (plus `agents/<id>` for marker agents
+/// the registry does not list), each also in canonical form so a cwd herdr
+/// reports through resolved symlinks (`/private/var/…` on macOS) still
+/// matches. A herdr agent inside a registered agent's dir belongs to that
+/// agent even when it holds no marker — it is then simply not shown.
+pub(crate) fn agent_dirs<'a>(
+    workspace: &Path,
+    marker_ids: impl Iterator<Item = &'a str>,
+) -> Vec<(String, PathBuf)> {
+    let mut base: Vec<(String, PathBuf)> = bwoc_core::workspace::AgentsRegistry::load(workspace)
+        .map(|r| {
+            r.agents
+                .iter()
+                .map(|e| (e.id.clone(), e.dir(workspace)))
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in marker_ids {
+        if !base.iter().any(|(known, _)| known == id) {
+            base.push((id.to_string(), workspace.join("agents").join(id)));
+        }
+    }
+    let mut out = Vec::with_capacity(base.len() * 2);
+    for (id, dir) in base {
+        if let Ok(canon) = std::fs::canonicalize(&dir) {
+            if canon != dir {
+                out.push((id.clone(), canon));
+            }
+        }
+        out.push((id, dir));
+    }
+    out
+}
+
+/// The agent whose directory equals or contains `cwd` (component-wise, so
+/// `agents/a` never claims `agents/ab`); the deepest directory wins.
+pub(crate) fn agent_for_cwd(cwd: &Path, dirs: &[(String, PathBuf)]) -> Option<String> {
+    dirs.iter()
+        .filter(|(_, dir)| cwd.starts_with(dir))
+        .max_by_key(|(_, dir)| dir.components().count())
+        .map(|(id, _)| id.clone())
 }
 
 // ── Public args + entry points ────────────────────────────────────────────────
@@ -540,6 +738,8 @@ fn emit_table(sessions: &[Session]) -> i32 {
             SessionState::Idle => "◑",
             SessionState::Running => "●",
             SessionState::Stale => "○",
+            SessionState::Blocked => "◆",
+            SessionState::Done => "✓",
         };
         println!(
             "{:<14} {:<24} {:<8} {}{:<8} {:<8}",
@@ -568,6 +768,7 @@ fn emit_json(sessions: &[Session]) -> i32 {
                 "startedAt": s.started_at,
                 "tmux": s.tmux,
                 "lastActivity": s.last_activity,
+                "stateSource": s.state_source.map(StateSource::as_str),
             })
         })
         .collect();
@@ -1051,5 +1252,274 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         let la = &parsed["sessions"][0]["lastActivity"];
         assert!(la.is_number(), "lastActivity should be a number, got {la}");
+    }
+
+    // ── herdr provider tests (fake herdr socket, no herdr binary) ────────────
+
+    /// Append `[integrations.herdr]` to the test workspace's workspace.toml.
+    #[cfg(unix)]
+    fn set_herdr(root: &Path, enabled: bool, socket: &Path) {
+        let p = root.join(".bwoc/workspace.toml");
+        let mut body = std::fs::read_to_string(&p).unwrap();
+        body.push_str(&format!(
+            "\n[integrations.herdr]\nenabled = {enabled}\nsocket = '{}'\n",
+            socket.display()
+        ));
+        std::fs::write(p, body).unwrap();
+    }
+
+    /// Live marker for `id` on the current pid (+ its agent dir); returns the
+    /// canonical agent dir, as herdr would report a cwd.
+    #[cfg(unix)]
+    fn live_agent(root: &Path, id: &str) -> PathBuf {
+        let dir = root.join("agents").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_marker(
+            root,
+            &SessionMarker {
+                agent_id: id.to_string(),
+                backend: "claude".to_string(),
+                pid: current_pid(),
+                started_at: "2026-10-08T00:00:00Z".to_string(),
+                tmux: None,
+            },
+        );
+        std::fs::canonicalize(dir).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn agent_list_reply(id: &str, agents: &str) -> String {
+        format!(r#"{{"id":"{id}","result":{{"type":"agent_list","agents":[{agents}]}}}}"#)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_cwd_match_overrides_heuristic() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let agent_dir = live_agent(root, "agent-a");
+        let cwd = agent_dir.join("src").display().to_string();
+        let (_h, sock) = crate::herdr::tests::fake_server(move |method, _, id| {
+            assert_eq!(method, "agent.list", "cwd match needs no process_info");
+            Some(agent_list_reply(
+                id,
+                &format!(
+                    r#"{{"pane_id":"w1:p1","agent_status":"blocked","foreground_cwd":"{cwd}","extra":true}}"#
+                ),
+            ))
+        });
+        set_herdr(root, true, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].state, SessionState::Blocked);
+        assert_eq!(sessions[0].state_source, Some(StateSource::Herdr));
+        // lastActivity still comes from the heuristic signal.
+        assert!(sessions[0].last_activity.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_pid_fallback_match() {
+        let dir = make_workspace();
+        let root = dir.path();
+        live_agent(root, "agent-b");
+        let pid = current_pid();
+        let (_h, sock) = crate::herdr::tests::fake_server(move |method, params, id| match method {
+            "agent.list" => Some(agent_list_reply(
+                id,
+                r#"{"pane_id":"w1:p2","agent_status":"done","foreground_cwd":"/somewhere/else"}"#,
+            )),
+            "pane.process_info" => {
+                assert_eq!(params["pane_id"], "w1:p2");
+                Some(format!(
+                    r#"{{"id":"{id}","result":{{"type":"pane_process_info","process_info":{{"pane_id":"w1:p2","foreground_processes":[{{"pid":{pid},"name":"claude"}}]}}}}}}"#
+                ))
+            }
+            _ => None,
+        });
+        set_herdr(root, true, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_eq!(sessions[0].state, SessionState::Done);
+        assert_eq!(sessions[0].state_source, Some(StateSource::Herdr));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_unmatched_cwd_is_ignored() {
+        let dir = make_workspace();
+        let root = dir.path();
+        live_agent(root, "agent-c");
+        let (_h, sock) = crate::herdr::tests::fake_server(|method, _, id| match method {
+            "agent.list" => Some(agent_list_reply(
+                id,
+                r#"{"pane_id":"w9:p1","agent_status":"blocked","foreground_cwd":"/other/project"}"#,
+            )),
+            // Foreground holds some other process, not our marker pid.
+            "pane.process_info" => Some(format!(
+                r#"{{"id":"{id}","result":{{"type":"pane_process_info","process_info":{{"pane_id":"w9:p1","foreground_processes":[{{"pid":1,"name":"init"}}]}}}}}}"#
+            )),
+            _ => None,
+        });
+        set_herdr(root, true, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_ne!(sessions[0].state, SessionState::Blocked);
+        assert_eq!(sessions[0].state_source, Some(StateSource::Marker));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_timeout_falls_back_within_budget() {
+        let dir = make_workspace();
+        let root = dir.path();
+        live_agent(root, "agent-d");
+        let (_h, sock) = crate::herdr::tests::fake_server(|_, _, _| None); // never replies
+        set_herdr(root, true, &sock);
+
+        let t = std::time::Instant::now();
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(1500),
+            "herdr must not hold bwoc sessions past its budget, took {:?}",
+            t.elapsed()
+        );
+        assert_eq!(sessions[0].state_source, Some(StateSource::Marker));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_protocol_mismatch_falls_back() {
+        let dir = make_workspace();
+        let root = dir.path();
+        live_agent(root, "agent-e");
+        let (_h, sock) = crate::herdr::tests::fake_server(|_, _, id| {
+            Some(format!(
+                r#"{{"id":"{id}","error":{{"code":"protocol_mismatch","message":"unsupported"}}}}"#
+            ))
+        });
+        set_herdr(root, true, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_eq!(sessions[0].state_source, Some(StateSource::Marker));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_missing_and_unknown_status_maps_to_running() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let a = live_agent(root, "agent-f").display().to_string();
+        let (_h, sock) = crate::herdr::tests::fake_server(move |_, _, id| {
+            // No agent_status at all, plus fields this client has never seen.
+            Some(agent_list_reply(
+                id,
+                &format!(
+                    r#"{{"pane_id":"w1:p1","foreground_cwd":"{a}","tokens":{{"k":"v"}},"launch_pending":true}}"#
+                ),
+            ))
+        });
+        set_herdr(root, true, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_eq!(sessions[0].state, SessionState::Running);
+        assert_eq!(sessions[0].state_source, Some(StateSource::Herdr));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_never_revives_a_dead_pid() {
+        let dir = make_workspace();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("agents/agent-g")).unwrap();
+        write_marker(
+            root,
+            &SessionMarker {
+                agent_id: "agent-g".to_string(),
+                backend: "claude".to_string(),
+                pid: 999_997,
+                started_at: "2026-10-08T00:00:00Z".to_string(),
+                tmux: None,
+            },
+        );
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let (_h, sock) = crate::herdr::tests::fake_server(move |_, _, id| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(agent_list_reply(
+                id,
+                r#"{"pane_id":"w1:p1","agent_status":"working"}"#,
+            ))
+        });
+        set_herdr(root, true, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_eq!(sessions[0].state, SessionState::Stale);
+        assert_eq!(sessions[0].state_source, None);
+        // No alive marker → nothing to refine → socket untouched.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_disabled_by_config_touches_no_socket() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let a = live_agent(root, "agent-h").display().to_string();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let (_h, sock) = crate::herdr::tests::fake_server(move |_, _, id| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(agent_list_reply(
+                id,
+                &format!(
+                    r#"{{"pane_id":"w1:p1","agent_status":"blocked","foreground_cwd":"{a}"}}"#
+                ),
+            ))
+        });
+        set_herdr(root, false, &sock);
+
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_ne!(sessions[0].state, SessionState::Blocked);
+        assert_eq!(sessions[0].state_source, Some(StateSource::Marker));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn agent_for_cwd_is_component_wise_and_deepest_wins() {
+        let dirs = vec![
+            ("agent-a".to_string(), PathBuf::from("/ws/agents/agent-a")),
+            ("agent-ab".to_string(), PathBuf::from("/ws/agents/agent-ab")),
+        ];
+        assert_eq!(
+            agent_for_cwd(Path::new("/ws/agents/agent-ab/x"), &dirs).as_deref(),
+            Some("agent-ab")
+        );
+        assert_eq!(
+            agent_for_cwd(Path::new("/ws/agents/agent-a"), &dirs).as_deref(),
+            Some("agent-a")
+        );
+        assert_eq!(agent_for_cwd(Path::new("/ws/agents"), &dirs), None);
+    }
+
+    #[test]
+    fn herdr_states_map_and_render() {
+        use crate::herdr::AgentStatus;
+        assert_eq!(
+            SessionState::from_herdr(AgentStatus::Blocked).as_str(),
+            "blocked"
+        );
+        assert_eq!(SessionState::from_herdr(AgentStatus::Done).as_str(), "done");
+        assert_eq!(
+            SessionState::from_herdr(AgentStatus::Working).as_str(),
+            "working"
+        );
+        assert_eq!(SessionState::from_herdr(AgentStatus::Idle).as_str(), "idle");
+        assert_eq!(
+            SessionState::from_herdr(AgentStatus::Unknown).as_str(),
+            "running"
+        );
+        assert_eq!(StateSource::Herdr.as_str(), "herdr");
     }
 }

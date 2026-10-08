@@ -36,6 +36,8 @@ mod git_worktree;
 mod gws;
 mod handbook;
 mod help;
+mod herdr;
+mod herdr_backend;
 mod i18n;
 mod inbox;
 mod info;
@@ -50,6 +52,7 @@ mod monitor;
 mod new;
 mod okr;
 mod outbox_cmd;
+mod pane_backend;
 mod peer;
 mod ping;
 mod plugin;
@@ -894,8 +897,8 @@ enum FleetCommand {
     Status(FleetStatusArgs),
     /// Check all 7 Aparihāniya-dhamma fleet-governance signals (read-only).
     Health(FleetHealthArgs),
-    /// Open a terminal for every agent in the fleet — one tmux pane each,
-    /// arranged by `--layout`. Portable across macOS + Linux (uses tmux).
+    /// Open a terminal for every agent in the fleet — one pane each, arranged by
+    /// `--layout`, in tmux (default) or herdr (`--backend herdr`).
     Term(FleetTermArgs),
 }
 
@@ -906,9 +909,12 @@ struct FleetTermArgs {
     workspace: Option<PathBuf>,
     /// Pane arrangement: grid (default) | columns | rows | main-vertical | main-horizontal.
     /// Cycle layouts live inside tmux with `<prefix> Space`.
-    #[arg(long, value_enum, default_value_t = fleet_term::TmuxLayout::Grid)]
-    layout: fleet_term::TmuxLayout,
-    /// tmux session name to create. Omit for a per-workspace default
+    #[arg(long, value_enum, default_value_t = fleet_term::PaneLayout::Grid)]
+    layout: fleet_term::PaneLayout,
+    /// Pane backend: tmux | herdr. Default: `[fleet] pane_backend` in .bwoc/workspace.toml, else tmux.
+    #[arg(long, value_enum)]
+    backend: Option<pane_backend::PaneBackendKind>,
+    /// Fleet name (tmux session / herdr workspace label). Omit for a per-workspace default
     /// (`bwoc-fleet-<workspace>-<hash>`) so concurrent fleets don't collide.
     #[arg(long)]
     session: Option<String>,
@@ -3409,6 +3415,7 @@ fn main() -> ExitCode {
                 Some(FleetCommand::Term(args)) => fleet_term::run(fleet_term::FleetTermArgs {
                     workspace: args.workspace,
                     layout: args.layout,
+                    backend: args.backend,
                     session: args.session,
                     print: args.print,
                 }),
@@ -4126,6 +4133,34 @@ mod deprecation_tests {
         ));
         assert!(!ok(&["memory", "search", "q", "--tier", "2"]));
         assert!(!ok(&["memory", "search", "q", "--tier", "3"]));
+    }
+
+    #[test]
+    fn fleet_term_backend_flag_parses_and_defaults_to_unset() {
+        let backend = |args: &[&str]| match parse(args) {
+            Commands::Fleet(FleetArgs {
+                command: Some(FleetCommand::Term(t)),
+            }) => t.backend,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            backend(&["fleet", "term"]),
+            None,
+            "unset → workspace key decides"
+        );
+        assert_eq!(
+            backend(&["fleet", "term", "--backend", "herdr"]),
+            Some(pane_backend::PaneBackendKind::Herdr)
+        );
+        assert_eq!(
+            backend(&["fleet", "term", "--backend", "tmux"]),
+            Some(pane_backend::PaneBackendKind::Tmux)
+        );
+        let argv = ["bwoc", "fleet", "term", "--backend", "screen"];
+        assert!(
+            Cli::try_parse_from(argv).is_err(),
+            "unknown flag value rejected"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ herdr is a background server that owns terminal panes and classifies the agent i
 
 Adopt in two phases, both **opt-in, off by default, no new crate deps**:
 
-1. **Phase 1 — read-only state provider.** When enabled and a herdr socket answers, `bwoc sessions` / `bwoc fleet status` take each matched agent's state from herdr. No process-ownership change.
+1. **Phase 1 — read-only state provider.** When enabled and a herdr socket answers, `bwoc sessions` (and the `bwoc dashboard` agents pane, which reads the same sessions) take each matched agent's state from herdr. `bwoc fleet status` is unchanged — its `online` column is a pid-liveness check, not a session state. No process-ownership change.
 2. **Phase 2 — `PaneBackend` adapter.** Extract the tmux calls in `fleet_term.rs` / `send.rs` / `chat.rs` behind a trait; add a herdr impl so `bwoc fleet term --backend herdr` lays the fleet out with `layout.apply` and `bwoc send` wakes via `agent.prompt` instead of `tmux send-keys`.
 
 Explicitly **not** adopted: replacing the in-process TUI panes (`/agents`, `/layout`, 3.11) with herdr, and a herdr-side plugin (deferred; revisit after Phase 2).
@@ -40,7 +40,7 @@ Explicitly **not** adopted: replacing the in-process TUI panes (`/agents`, `/lay
 
 **Opt-in.** `[integrations.herdr] enabled = true` in `.bwoc/workspace.toml`. Optional `socket = "<path>"`; otherwise the herdr resolution order above.
 
-**Probe.** One `agent.list` round-trip per `bwoc sessions` call, hard timeout ~300 ms, over the `interprocess` dep `bwoc-cli` already carries. Any failure → provider returns nothing, no warning on the default output (one line under `--verbose`).
+**Probe.** One `agent.list` round-trip per `bwoc sessions` call, one shared ~300 ms budget for all herdr calls in a command (fail-fast after the first failure), over `std::os::unix::net::UnixStream` — no new dep. Any failure → provider returns nothing, silently (`bwoc sessions` has no `--verbose` flag).
 
 **Matching a herdr agent to a BWOC agent**, first hit wins:
 1. `foreground_cwd` is `agents/<id>/` (or inside it) of this workspace — `bwoc spawn`/`chat` run there.
@@ -49,7 +49,7 @@ Explicitly **not** adopted: replacing the in-process TUI panes (`/agents`, `/lay
 
 **State precedence.** Dead pid → `stale` (unchanged, BWOC's own liveness check wins). Otherwise a matched herdr status overrides the tmux heuristic. `SessionState` gains `Blocked` and `Done`; `unknown` maps to the existing `Running`.
 
-**Output.** `--json` gains `"state": "blocked"|"done"` values and a `"stateSource": "herdr"|"tmux"|"marker"` field; table output unchanged except the new values. Additive — no existing field changes meaning.
+**Output.** `--json` gains `"state": "blocked"|"done"` values and a `"stateSource": "herdr"|"tmux"|"marker"|null` field (`null` when no activity signal was used — stale and scan-only sessions); table output unchanged except the new values. Additive — no existing field changes meaning.
 
 **Tests.** A fake socket server in-test (no herdr binary in CI): happy path, timeout, `protocol_mismatch`, unknown fields, unmatched cwd.
 
@@ -57,18 +57,22 @@ Explicitly **not** adopted: replacing the in-process TUI panes (`/agents`, `/lay
 
 ## Phase 2 — `PaneBackend` adapter
 
-Today tmux is hard-coded across `fleet_term.rs`, `chat.rs`, `spawn.rs`, `send.rs`, `sessions.rs`. Extract the four operations BWOC actually uses:
+Today tmux is hard-coded across `fleet_term.rs`, `chat.rs`, `spawn.rs`, `send.rs`, `sessions.rs`. As built, `fleet_term.rs` and `send.rs` go through `PaneBackend` (`pane_backend.rs`, herdr impl in `herdr_backend.rs`); `chat --tmux`, `spawn.rs`'s marker pane, `dashboard.rs` and `bwoc-agent`'s `task_watch.rs` stay tmux-only.
 
 | Operation | tmux (existing) | herdr |
 |---|---|---|
-| open fleet layout | `tmux_fleet_commands` + `select-layout` (`fleet_term.rs:25,71`) | `workspace.create` + `layout.apply` (split tree from `TmuxLayout`) then `agent.start --name agent-<id>` per available shell pane |
-| locate an agent's pane | session-name candidates / pane title (`send.rs:666-691`) | `agent.get agent-<id>` (names are unique among live agents) |
-| wake / deliver | `tmux send-keys -l` | `agent.prompt` (or `pane.send_text` for non-agent panes) |
+| open fleet layout | `tmux_fleet_commands` + `select-layout` | `workspace.create` (label = fleet session name) + `layout.apply` replacing its first tab; split tree from `PaneLayout` (renamed from `TmuxLayout`), each pane `label` = agent id, `cwd` = agent dir, argv = the same `bwoc spawn --path <dir> --backend <b>` tmux runs. **Not** `agent.start` — it only accepts herdr's built-in kinds, so ollama agents would fail. |
+| locate an agent's pane | session-name candidates / pane title | `pane.list` → pane whose `label` is the agent id, else whose `foreground_cwd`/`cwd` is inside the agent dir (Phase 1 matcher) |
+| wake / deliver | `tmux send-keys -l` | `pane.send_text`, ~200 ms, `pane.send_keys ["enter"]` — best-effort |
 | last activity | `#{window_activity}` | `agent_status` (Phase 1 provider) |
 
-Selection: `bwoc fleet term --backend tmux|herdr` (default `tmux`), mirrored by a workspace key. `agent.start` only accepts herdr's 24 kinds; a BWOC backend outside that list (ollama) is launched with `pane.run` + `pane report-agent` from the agent's own wrapper.
+Selection: `bwoc fleet term --backend tmux|herdr` overrides `[fleet] pane_backend` (default `tmux`; an unknown value warns once and falls back to tmux). `bwoc send` wakes the recipient through **the recipient workspace's** `pane_backend`; `BWOC_DISABLE_TMUX_WAKEUP` disables both backends' wakeup. `[integrations.herdr] enabled` gates only the Phase 1 state reader; its `socket` is reused by the pane backend. `fleet term` socket calls share a 5 s budget because `layout.apply` starts every agent before replying — an unmeasured estimate.
 
-**Supervision.** Under `--backend herdr`, `bwoc supervise` is not used for those agents; herdr's restore + `resume_argv` is the restart story. A note in `FLEET-GOVERNANCE` must say which owner applies, so an operator never runs both.
+**Deferred:** a herdr equivalent of tmux `remain-on-exit`; `pane report-agent` self-reporting for agents herdr cannot detect (ollama). Whether such panes appear in `agent.list` at all is unverified; if they do with `unknown`, Phase 1 maps that to `running`, which overrides the activity heuristic; routing `chat --tmux` / dashboard / task-watch through the trait.
+
+**Unverified against a live herdr:** attach via the plain `herdr` client, `layout.apply` replacing the tab, and whether `send_text` + Enter submits in every agent TUI. All herdr tests use a fake socket server.
+
+**Supervision.** Under `--backend herdr`, `bwoc supervise` is not used for those agents; herdr's restore + `resume_argv` is the restart story. `bwoc supervise` prints a one-line warning when the workspace's `pane_backend` is `herdr`; FLEET-GOVERNANCE §2 states the rule.
 
 ## Decisions (2026-10-08, operator approved "implement all phases")
 
