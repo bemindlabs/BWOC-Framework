@@ -13,9 +13,13 @@
 //!   a fleet is the workspace whose `label` is the fleet session name.
 //! - `workspace.create {label,cwd,focus}` → `{"type":"workspace_created",
 //!   "workspace":{workspace_id,…},"tab":{tab_id,…},"root_pane":{…}}`.
-//! - `layout.apply {workspace_id,tab_id,tab_label,focus,root}` — builds a fresh
-//!   tab from a split tree and, given `tab_id`, closes that tab afterwards (so
-//!   the shell tab `workspace.create` made does not linger).
+//! - `layout.apply {tab_id | workspace_id, tab_label, focus, root}` — builds a
+//!   fresh tab from a split tree. Exactly one target: herdr rejects both at
+//!   once (`invalid_target`). Given `tab_id` it builds in that tab's workspace
+//!   and closes the tab afterwards (so the shell tab `workspace.create` made
+//!   does not linger); `workspace_id` is the fallback when no tab id came back.
+//! - `workspace.close {workspace_id}` — rolls back a fleet whose layout failed,
+//!   so a half-built workspace is not later taken for an open fleet.
 //! - `workspace.focus {workspace_id}` — before attaching.
 //! - `pane.list {}` → `{"type":"pane_list","panes":[PaneInfo]}`; read
 //!   `pane_id`, `label`, `agent`, `foreground_cwd`.
@@ -218,21 +222,32 @@ impl PaneBackend for HerdrBackend {
         let kill = format!("{}herdr workspace close {workspace_id}", self.env_prefix());
 
         let mut params = json!({
-            "workspace_id": workspace_id,
             "tab_label": "fleet",
             "focus": true,
             "root": root,
         });
-        // Replace the shell tab workspace.create opened instead of leaving it.
-        if let Some(tab_id) = created.pointer("/tab/tab_id").and_then(Value::as_str) {
-            params["tab_id"] = Value::String(tab_id.to_string());
+        // One target only. Prefer the shell tab workspace.create opened, so it
+        // is replaced instead of left behind.
+        match created.pointer("/tab/tab_id").and_then(Value::as_str) {
+            Some(tab_id) => params["tab_id"] = Value::String(tab_id.to_string()),
+            None => params["workspace_id"] = Value::String(workspace_id.clone()),
         }
-        client.call("layout.apply", params).ok_or_else(|| {
-            format!(
-                "herdr layout.apply failed — workspace '{session}' ({workspace_id}) may be \
-                 partially built; `{kill}` to clear it."
-            )
-        })?;
+        if client.call("layout.apply", params).is_none() {
+            // Roll back: a leftover workspace carrying the fleet label would
+            // make the next run report "already open" and attach to a shell.
+            // A fresh client: `client` stays failed after the error above.
+            let closed = self
+                .call("workspace.close", json!({ "workspace_id": workspace_id }))
+                .is_some();
+            return Err(if closed {
+                format!("herdr layout.apply failed — closed the half-built workspace '{session}'.")
+            } else {
+                format!(
+                    "herdr layout.apply failed — workspace '{session}' ({workspace_id}) may be \
+                     partially built; `{kill}` to clear it."
+                )
+            });
+        }
         Ok(format!(
             "Opened {} agent panes in herdr workspace '{session}' ({workspace_id}, layout: {}).",
             agents.len(),
@@ -671,8 +686,11 @@ mod tests {
             assert_eq!(p0["focus"], false);
             let (m1, p1) = &log[1];
             assert_eq!(m1, "layout.apply");
-            assert_eq!(p1["workspace_id"], "w7");
             assert_eq!(p1["tab_id"], "w7:t1", "replaces the initial shell tab");
+            assert!(
+                p1.get("workspace_id").is_none(),
+                "herdr rejects tab_id + workspace_id together"
+            );
             assert_eq!(
                 p1["root"],
                 layout_tree(&fleet3(), PaneLayout::Grid, "/bin/bwoc").unwrap()
@@ -711,7 +729,43 @@ mod tests {
         }
 
         #[test]
-        fn open_fleet_layout_failure_names_the_cleanup() {
+        fn open_fleet_without_a_tab_id_targets_the_workspace() {
+            let (_d, sock, log) = recording(|method, _| match method {
+                "workspace.create" => Some(json!({
+                    "type": "workspace_created",
+                    "workspace": {"workspace_id": "w5"},
+                })),
+                _ => Some(json!({"type": "layout_apply"})),
+            });
+            backend(sock)
+                .open_fleet("s", &fleet3(), PaneLayout::Rows, "bwoc")
+                .unwrap();
+            let p1 = &log.lock().unwrap()[1].1;
+            assert_eq!(p1["workspace_id"], "w5");
+            assert!(p1.get("tab_id").is_none());
+        }
+
+        #[test]
+        fn open_fleet_layout_failure_closes_the_workspace() {
+            let (_d, sock, log) = recording(|method, _| match method {
+                "workspace.create" => Some(json!({
+                    "type": "workspace_created",
+                    "workspace": {"workspace_id": "w3"},
+                })),
+                "workspace.close" => Some(json!({"type": "ok"})),
+                _ => None,
+            });
+            let err = backend(sock)
+                .open_fleet("s", &fleet3(), PaneLayout::Rows, "bwoc")
+                .unwrap_err();
+            assert!(err.contains("closed the half-built workspace"), "{err}");
+            let log = log.lock().unwrap();
+            assert_eq!(log[2].0, "workspace.close");
+            assert_eq!(log[2].1, json!({"workspace_id": "w3"}));
+        }
+
+        #[test]
+        fn open_fleet_layout_failure_names_the_cleanup_when_close_fails() {
             let (_d, sock, _log) = recording(|method, _| match method {
                 "workspace.create" => Some(json!({
                     "type": "workspace_created",
