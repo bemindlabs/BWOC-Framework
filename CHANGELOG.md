@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.10.8-1] — 2026-10-08 — 3.14.1
+
+**`fleet term --backend herdr` opens the fleet.** A patch for 3.14.0, whose herdr backend was tested only against a fake server.
+
+### Fixed
+
+- **`bwoc fleet term --backend herdr` failed on every run.** herdr 0.9.3 rejects a `layout.apply` that names both `tab_id` and `workspace_id` (`invalid_target`), and 3.14.0 sent both. It now sends `tab_id` (replacing the shell tab herdr opens with a new workspace), or `workspace_id` when herdr returns no tab. A failed layout also left a workspace with the fleet's name holding one bare shell, so the next run said "Fleet already open" and attached to it; the half-built workspace is now closed on failure. If you ran 3.14.0's herdr backend, close any leftover workspace named `bwoc-fleet-…` in herdr.
+
 ## [v2026.10.8-0] — 2026-10-08 — 3.14.0
 
 **See who is waiting on you.** Opt-in support for [herdr](https://herdr.dev), a background server that owns terminal panes and classifies the agent in each — inert unless you set the new keys. `bwoc doctor` also probes LiteLLM now.
