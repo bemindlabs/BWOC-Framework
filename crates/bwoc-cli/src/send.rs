@@ -23,6 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bwoc_core::routing::{RouteTarget, Routes};
 use bwoc_core::workspace::AgentsRegistry;
 
+use crate::pane_backend::{PaneBackend, PaneBackendKind, TmuxBackend};
+
 /// Where a resolved `bwoc send` delivers the envelope.
 enum Target {
     /// A reachable workspace on this machine — append to the agent's inbox.
@@ -505,7 +507,7 @@ fn deliver(
             // peer can't be poked from here, and a duplicate shouldn't re-poke a
             // session). Suppressed via --no-wakeup / BWOC_DISABLE_TMUX_WAKEUP.
             if !duplicate && !no_wakeup && std::env::var("BWOC_DISABLE_TMUX_WAKEUP").is_err() {
-                notify_tmux(recipient_id, from, message_id, message);
+                wake_recipient(&inbox_path, recipient_id, from, message_id, message);
             }
 
             Ok(Delivered::LocalInbox {
@@ -656,112 +658,48 @@ pub(crate) fn redeliver(
     )
 }
 
-/// Candidate tmux session names for an `agent-<x>` recipient, **most-specific
-/// first** so a coincidentally-named session can't steal the wake: the
-/// unambiguous `bwoc-agent-<x>` (what `bwoc chat --tmux` creates —
-/// `new-session -s bwoc-<agent_id>` in `chat.rs`) and `agent-<x>` are tried
-/// before the bare `<x>`, which is the most likely to collide with an unrelated
-/// session. Targeting only the bare name silently missed bwoc-launched
-/// sessions, so the wake never landed and the agent never woke.
-fn tmux_session_candidates(to: &str) -> Vec<String> {
-    let bare = to.strip_prefix("agent-").unwrap_or(to);
-    vec![
-        format!("bwoc-{to}"),   // bwoc-agent-<x> (bwoc chat --tmux) — most specific
-        to.to_string(),         // agent-<x>      (full recipient id)
-        format!("bwoc-{bare}"), // bwoc-<x>
-        bare.to_string(),       // <x>            (bare / upstream — collision-prone, last)
-    ]
-}
-
-/// First candidate session that tmux reports as live, if any.
-fn resolve_tmux_session(to: &str) -> Option<String> {
-    tmux_session_candidates(to).into_iter().find(|s| {
-        std::process::Command::new("tmux")
-            .args(["has-session", "-t", s])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|st| st.success())
-            .unwrap_or(false)
-    })
-}
-
-/// From a `tmux list-panes -a -F '#{pane_title}\t#{pane_id}'` listing, the pane
-/// id (`%N`) of the first pane whose title matches one of `candidates`. Pure so
-/// the title-matching is unit-testable without a running tmux server.
-fn match_pane_by_title(listing: &str, candidates: &[String]) -> Option<String> {
-    listing.lines().find_map(|line| {
-        let (title, pane_id) = line.split_once('\t')?;
-        candidates
-            .iter()
-            .any(|c| c == title)
-            .then(|| pane_id.to_string())
-    })
-}
-
-/// Resolve a `send-keys -t` target for `to`: a whole session named for the agent
-/// (single-agent launches), else a **pane** titled for the agent — which is how
-/// `bwoc fleet term` tiles a fleet (one titled pane per agent) so a peer message
-/// still wakes the right tile, not just whatever pane is active. Returns a
-/// session name or a pane id (`%N`); both are valid `send-keys` targets.
-fn resolve_tmux_target(to: &str) -> Option<String> {
-    if let Some(session) = resolve_tmux_session(to) {
-        return Some(session);
+/// Wake `to` through the pane backend its own workspace names in
+/// `[fleet] pane_backend` (tmux when absent/unknown, or when the workspace
+/// cannot be found from `inbox_path`). The recipient's workspace — not the
+/// sender's — because a local-FS peer may run a different multiplexer.
+fn wake_recipient(inbox_path: &std::path::Path, to: &str, from: &str, msg_id: &str, message: &str) {
+    let workspace = inbox_path
+        .ancestors()
+        .skip(1)
+        .find(|d| d.join(".bwoc/workspace.toml").is_file());
+    match workspace {
+        Some(ws) if crate::pane_backend::configured_kind(ws, "send") == PaneBackendKind::Herdr => {
+            let herdr =
+                crate::herdr_backend::HerdrBackend::for_workspace(ws, crate::herdr::DEFAULT_BUDGET);
+            notify_pane(&herdr, to, from, msg_id, message);
+        }
+        _ => notify_pane(&TmuxBackend, to, from, msg_id, message),
     }
-    let out = std::process::Command::new("tmux")
-        .args(["list-panes", "-a", "-F", "#{pane_title}\t#{pane_id}"])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    match_pane_by_title(
-        &String::from_utf8_lossy(&out.stdout),
-        &tmux_session_candidates(to),
-    )
 }
 
-/// Best-effort tmux send-keys ping that wakes a recipient TUI session.
+/// Best-effort wakeup ping that wakes a recipient TUI session.
 ///
-/// Convention: recipient `agent-<x>` → a tmux session named `bwoc-agent-<x>`,
-/// `agent-<x>`, `bwoc-<x>`, or the bare `<x>` (see [`tmux_session_candidates`]
-/// for the exact set + ordering — the first live one is woken). The
+/// `backend` locates the recipient's pane — for tmux a session named
+/// `bwoc-agent-<x>`, `agent-<x>`, `bwoc-<x>`, or the bare `<x>`, else a
+/// `bwoc fleet term` pane titled for the agent (see
+/// [`crate::pane_backend::TmuxBackend`]) — and submits the text. The
 /// marker `[bwoc inbox <msg-id> from <sender>]` prefixes the message body so the
 /// Stop hook at `modules/agent-template/.claude/hooks/inbox-auto-reply.sh` can
 /// detect a bus-triggered turn and thread its reply via `--reply-to`.
 ///
 /// Silent no-op when:
 /// - the recipient is not `agent-*` (topics, user-only flows)
-/// - `tmux` binary is missing
-/// - no candidate session is live AND no pane is titled for the agent
-///
-/// Two-step send (literal text → 200ms → Enter) — a single-call submission gets
-/// dropped by Claude Code's TUI input layer. The text goes via `send-keys -l`
-/// (literal) so a body containing a tmux key token (`Enter`, `C-c`, `;`, …) is
-/// injected verbatim, not reinterpreted as a keypress. Verified against a live
-/// Claude Code TUI: idle → submits immediately; mid-turn → queues and runs when
-/// the current turn ends. The target may be a session or a fleet-term pane (see
-/// [`resolve_tmux_target`]) — both are valid `send-keys -t` targets.
-fn notify_tmux(to: &str, from: &str, msg_id: &str, message: &str) {
+/// - the backend can't locate a pane for the agent (for tmux: binary missing,
+///   no candidate session live, and no pane titled for the agent)
+fn notify_pane(backend: &dyn PaneBackend, to: &str, from: &str, msg_id: &str, message: &str) {
     if !to.starts_with("agent-") {
         return;
     }
-    let Some(target) = resolve_tmux_target(to) else {
+    let Some(pane) = backend.locate_agent(to) else {
         return;
     };
     let notify = format!("[bwoc inbox {msg_id} from {from}] {message}");
-    let _ = std::process::Command::new("tmux")
-        .args(["send-keys", "-t", &target, "-l", "--", &notify])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let _ = std::process::Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Enter"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    backend.submit_text(&pane, &notify);
 }
 
 /// Build a per-envelope id of the form `msg-<utc-slug>-<5hex>`.
@@ -999,32 +937,87 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn match_pane_by_title_finds_the_fleet_tile() {
-        // `tmux fleet term` titles each pane with the agent id; a peer message to
-        // agent-ji must resolve to that pane (%7), not just any active pane.
-        let listing = "agent-pi\t%3\nagent-ji\t%7\nagent-mu\t%9";
-        let got = match_pane_by_title(listing, &tmux_session_candidates("agent-ji"));
-        assert_eq!(got.as_deref(), Some("%7"));
-        // bare-name pane title also matches (via the candidate set).
-        let bare = "ji\t%2\nother\t%4";
+    fn wakeup_locates_then_submits_marked_text() {
+        let b = crate::pane_backend::fake::FakeBackend {
+            pane: Some("%7".into()),
+            ..Default::default()
+        };
+        notify_pane(&b, "agent-ji", "agent-pi", "msg-1", "hello");
         assert_eq!(
-            match_pane_by_title(bare, &tmux_session_candidates("agent-ji")).as_deref(),
-            Some("%2")
+            b.calls(),
+            vec![
+                "locate_agent agent-ji",
+                "submit_text %7 [bwoc inbox msg-1 from agent-pi] hello",
+            ]
         );
-        // no matching title → None.
-        assert!(match_pane_by_title("zzz\t%1", &tmux_session_candidates("agent-ji")).is_none());
     }
 
     #[test]
-    fn tmux_candidates_cover_the_launch_conventions() {
-        let c = tmux_session_candidates("agent-pi");
-        // bare (upstream / manual), full id, and the bwoc chat --tmux name.
-        assert!(c.contains(&"pi".to_string()), "bare name");
-        assert!(c.contains(&"agent-pi".to_string()), "full recipient id");
-        assert!(
-            c.contains(&"bwoc-agent-pi".to_string()),
-            "bwoc chat --tmux session (was silently missed): {c:?}"
+    fn wakeup_without_a_pane_submits_nothing() {
+        let b = crate::pane_backend::fake::FakeBackend::default();
+        notify_pane(&b, "agent-ji", "user", "msg-1", "hello");
+        assert_eq!(b.calls(), vec!["locate_agent agent-ji"]);
+    }
+
+    /// `pane_backend = "herdr"` with no herdr answering: the wakeup gives up
+    /// within the read budget and touches nothing — `bwoc send` stays silent
+    /// (`HerdrBackend` never prints) and its delivery is unaffected.
+    #[cfg(unix)]
+    #[test]
+    fn herdr_wakeup_with_herdr_down_is_a_quick_no_op() {
+        let gone = PathBuf::from("/nonexistent/bwoc-send-herdr.sock");
+        let b = crate::herdr_backend::HerdrBackend::new(
+            Some(gone),
+            false,
+            None,
+            crate::herdr::DEFAULT_BUDGET,
         );
+        let t = std::time::Instant::now();
+        notify_pane(&b, "agent-ji", "agent-pi", "msg-1", "hello");
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// herdr up: the wakeup finds the agent's pane by label and types the
+    /// marked text, then Enter.
+    #[cfg(unix)]
+    #[test]
+    fn herdr_wakeup_locates_and_submits_over_the_socket() {
+        use std::sync::{Arc, Mutex};
+        let log: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
+        let rec = log.clone();
+        let (_d, sock) = crate::herdr::tests::fake_server(move |method, params, id| {
+            rec.lock()
+                .unwrap()
+                .push((method.to_string(), params.clone()));
+            let result = match method {
+                "pane.list" => serde_json::json!({"type":"pane_list","panes":[
+                    {"pane_id":"w2:p3","label":"agent-ji"}]}),
+                _ => serde_json::json!({"type":"ok"}),
+            };
+            Some(serde_json::json!({"id": id, "result": result}).to_string())
+        });
+        let b = crate::herdr_backend::HerdrBackend::new(
+            Some(sock),
+            false,
+            None,
+            std::time::Duration::from_secs(2),
+        );
+        notify_pane(&b, "agent-ji", "agent-pi", "msg-1", "hello");
+        let log = log.lock().unwrap();
+        let methods: Vec<&str> = log.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(methods, ["pane.list", "pane.send_text", "pane.send_keys"]);
+        assert_eq!(log[1].1["pane_id"], "w2:p3");
+        assert_eq!(log[1].1["text"], "[bwoc inbox msg-1 from agent-pi] hello");
+    }
+
+    #[test]
+    fn wakeup_skips_non_agent_recipients_entirely() {
+        let b = crate::pane_backend::fake::FakeBackend {
+            pane: Some("%7".into()),
+            ..Default::default()
+        };
+        notify_pane(&b, "topic-builds", "user", "msg-1", "hello");
+        assert!(b.calls().is_empty());
     }
 
     fn setup(label: &str) -> PathBuf {

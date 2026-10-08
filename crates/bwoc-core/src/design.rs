@@ -144,6 +144,10 @@ pub mod glyph {
     pub const ACTIVITY_RUNNING: &str = "●";
     /// Marker present, process gone.
     pub const ACTIVITY_STALE: &str = "○";
+    /// Live session waiting on the operator (herdr `blocked`).
+    pub const ACTIVITY_BLOCKED: &str = "◆";
+    /// Live session finished, not yet looked at (herdr `done`).
+    pub const ACTIVITY_DONE: &str = "✓";
     /// No session at all.
     pub const ACTIVITY_NONE: &str = "—";
 
@@ -174,6 +178,8 @@ mod tests {
             glyph::ACTIVITY_IDLE,
             glyph::ACTIVITY_RUNNING,
             glyph::ACTIVITY_STALE,
+            glyph::ACTIVITY_BLOCKED,
+            glyph::ACTIVITY_DONE,
             glyph::ACTIVITY_NONE,
         ];
         for (i, a) in set.iter().enumerate() {

@@ -59,6 +59,88 @@ fn default_agents_dir() -> String {
     "agents".to_string()
 }
 
+/// Optional `[integrations]` table of `.bwoc/workspace.toml`.
+///
+/// Parsed on its own (via [`Integrations::load`]) rather than as a field of
+/// [`Workspace`], the same way `[plugins.*]` is: `Workspace` is built by struct
+/// literal across the CLI, and a read-only integration switch does not need to
+/// ride every `Workspace::save`. Absent table ⇒ every integration off.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Integrations {
+    #[serde(default)]
+    pub herdr: HerdrIntegration,
+}
+
+/// `[integrations.herdr]` — opt-in herdr agent-state provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HerdrIntegration {
+    /// Off unless explicitly `true`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Explicit herdr socket path; when absent the client resolves herdr's own
+    /// order (`HERDR_SOCKET_PATH` > `HERDR_SESSION` > default socket).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<PathBuf>,
+}
+
+impl Integrations {
+    /// Read `[integrations]` from `<root>/.bwoc/workspace.toml`.
+    ///
+    /// Best-effort: a missing file, unreadable file, or TOML that does not
+    /// parse yields the default (everything off) — an optional integration
+    /// must never be the reason a command fails.
+    pub fn load(root: &Path) -> Self {
+        #[derive(Deserialize)]
+        struct Doc {
+            #[serde(default)]
+            integrations: Integrations,
+        }
+        fs::read_to_string(root.join(".bwoc/workspace.toml"))
+            .ok()
+            .and_then(|s| toml::from_str::<Doc>(&s).ok())
+            .map(|d| d.integrations)
+            .unwrap_or_default()
+    }
+}
+
+/// Optional `[fleet]` table of `.bwoc/workspace.toml` — read on its own like
+/// [`Integrations`], for the same reasons.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FleetSettings {
+    /// `pane_backend` as written (`"tmux"` / `"herdr"` are the known values).
+    /// `None` when the key is absent. A non-string value is kept as its TOML
+    /// rendering so the caller can name it in an "unknown value" warning.
+    /// Interpreting it (and the `"tmux"` default) is the caller's job.
+    pub pane_backend: Option<String>,
+}
+
+impl FleetSettings {
+    /// Read `[fleet]` from `<root>/.bwoc/workspace.toml`. Best-effort, like
+    /// [`Integrations::load`]: anything missing or unparseable yields the
+    /// default.
+    pub fn load(root: &Path) -> Self {
+        #[derive(Deserialize, Default)]
+        struct Fleet {
+            #[serde(default)]
+            pane_backend: Option<toml::Value>,
+        }
+        #[derive(Deserialize)]
+        struct Doc {
+            #[serde(default)]
+            fleet: Fleet,
+        }
+        let pane_backend = fs::read_to_string(root.join(".bwoc/workspace.toml"))
+            .ok()
+            .and_then(|s| toml::from_str::<Doc>(&s).ok())
+            .and_then(|d| d.fleet.pane_backend)
+            .map(|v| match v {
+                toml::Value::String(s) => s,
+                other => other.to_string(),
+            });
+        Self { pane_backend }
+    }
+}
+
 /// Top-level structure of `.bwoc/agents.toml`.
 ///
 /// Field order matters for the same reason it does on [`Workspace`]: the
@@ -344,6 +426,72 @@ mod tests {
         reg.save(&dir).unwrap();
         let back = AgentsRegistry::load(&dir).unwrap();
         assert_eq!(reg, back);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrations_absent_table_is_all_off_and_workspace_still_parses() {
+        let dir = fresh_temp_dir("integ-absent");
+        fs::create_dir_all(dir.join(".bwoc")).unwrap();
+        let body =
+            "[workspace]\nname = 'demo'\nversion = '0.1.0'\ncreated = '2026-05-22T06:00:00Z'\n";
+        fs::write(dir.join(".bwoc/workspace.toml"), body).unwrap();
+        assert_eq!(Integrations::load(&dir), Integrations::default());
+        assert!(!Integrations::load(&dir).herdr.enabled);
+        // Missing file → default, never an error.
+        assert_eq!(
+            Integrations::load(&dir.join("nope")),
+            Integrations::default()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn integrations_herdr_table_parses_and_workspace_ignores_it() {
+        let dir = fresh_temp_dir("integ-herdr");
+        fs::create_dir_all(dir.join(".bwoc")).unwrap();
+        let body = "schema_version = 3\n[workspace]\nname = 'demo'\nversion = '0.1.0'\n\
+                    created = '2026-05-22T06:00:00Z'\n\n[integrations.herdr]\nenabled = true\n\
+                    socket = '/tmp/h.sock'\nfuture_key = 1\n";
+        fs::write(dir.join(".bwoc/workspace.toml"), body).unwrap();
+        let i = Integrations::load(&dir);
+        assert!(i.herdr.enabled);
+        assert_eq!(i.herdr.socket.as_deref(), Some(Path::new("/tmp/h.sock")));
+        // The existing Workspace model still loads a file carrying the table.
+        assert_eq!(Workspace::load(&dir).unwrap().workspace.name, "demo");
+
+        // `enabled` alone; `socket` defaults to None.
+        let only = "[workspace]\nname = 'd'\nversion = '0'\ncreated = 'x'\n[integrations.herdr]\nenabled = true\n";
+        fs::write(dir.join(".bwoc/workspace.toml"), only).unwrap();
+        let i = Integrations::load(&dir);
+        assert!(i.herdr.enabled);
+        assert!(i.herdr.socket.is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fleet_pane_backend_absent_set_and_odd_values() {
+        let dir = fresh_temp_dir("fleet-pane");
+        fs::create_dir_all(dir.join(".bwoc")).unwrap();
+        let head = "[workspace]\nname = 'd'\nversion = '0'\ncreated = 'x'\n";
+        fs::write(dir.join(".bwoc/workspace.toml"), head).unwrap();
+        assert_eq!(FleetSettings::load(&dir), FleetSettings::default());
+        // Missing file → default.
+        assert_eq!(FleetSettings::load(&dir.join("nope")).pane_backend, None);
+
+        let set = format!("{head}[fleet]\npane_backend = 'herdr'\nfuture = 1\n");
+        fs::write(dir.join(".bwoc/workspace.toml"), set).unwrap();
+        assert_eq!(
+            FleetSettings::load(&dir).pane_backend.as_deref(),
+            Some("herdr")
+        );
+        // The existing Workspace model still loads a file carrying the table.
+        assert_eq!(Workspace::load(&dir).unwrap().workspace.name, "d");
+
+        // A non-string value is surfaced (for the caller's warning), not dropped.
+        let odd = format!("{head}[fleet]\npane_backend = 3\n");
+        fs::write(dir.join(".bwoc/workspace.toml"), odd).unwrap();
+        assert_eq!(FleetSettings::load(&dir).pane_backend.as_deref(), Some("3"));
         let _ = fs::remove_dir_all(&dir);
     }
 
