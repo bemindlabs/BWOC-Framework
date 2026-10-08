@@ -272,6 +272,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 | 3.11.0 | `v2026.9.25-1` | คลิกที่กล่องพิมพ์ของ pane เพื่อเลือก pane; `/undo` ไม่ลบไฟล์ที่อ่านไม่ได้อีกต่อไป |
 | 3.12.0 | `v2026.9.26-0` | binary ที่ release มี OpenTelemetry exporter ในตัว (ไม่ทำงานจนกว่าจะตั้งค่า); ชื่อ span ตาม GenAI conventions; `gen_ai.provider.name` เป็นค่าจริง |
 | 3.13.0 | `v2026.10.4-0` | `PgUp`/`PgDn` ในแชทเรียกข้อความที่เคยส่งกลับมา; harness run ที่ถูก kill ยังทิ้ง telemetry ไว้ (`end_reason = "abandoned"`) |
+| 3.14.0 | `v2026.10.8-0` | herdr แบบเลือกเปิด: `bwoc sessions` รายงาน agent ที่ `blocked`/`done`; `fleet term --backend herdr`; `bwoc doctor` ตรวจ LiteLLM ด้วย |
 
 **ยังไม่ได้กำหนด phase ถัดไป** รายการใน *สิ่งที่ตั้งใจไม่เอาเข้า 3.0* ข้างบนคือผู้สมัครที่รู้อยู่แล้ว การเลือกเป็นการตัดสินใจของผู้ดูแล เอกสารนี้ไม่ตัดสินแทน
 
