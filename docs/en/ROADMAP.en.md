@@ -276,6 +276,7 @@ Released after 3.0 and inside its compatibility contract — no breaking change,
 | 3.11.0 | `v2026.9.25-1` | A click on a pane's input box focuses it; `/undo` no longer deletes a file it could not read |
 | 3.12.0 | `v2026.9.26-0` | Release binaries carry the OpenTelemetry exporter (inert until configured); GenAI-convention span names; the real `gen_ai.provider.name` |
 | 3.13.0 | `v2026.10.4-0` | `PgUp`/`PgDn` in the chat recall lines already sent; a killed harness run still leaves its telemetry (`end_reason = "abandoned"`) |
+| 3.14.0 | `v2026.10.8-0` | Opt-in herdr: `bwoc sessions` reports `blocked`/`done` agents; `fleet term --backend herdr`; `bwoc doctor` probes LiteLLM too |
 
 **No next phase is defined yet.** The items under *Deliberately not in 3.0* above are the known candidates; choosing among them is a maintainer decision this document does not pre-empt.
 

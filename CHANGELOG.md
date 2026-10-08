@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.10.8-0] — 2026-10-08 — 3.14.0
+
+**See who is waiting on you.** Opt-in support for [herdr](https://herdr.dev), a background server that owns terminal panes and classifies the agent in each — inert unless you set the new keys. `bwoc doctor` also probes LiteLLM now.
+
+### Added
+
+- **`blocked` and `done` session states from herdr.** With `[integrations.herdr] enabled = true` in `.bwoc/workspace.toml` and a herdr server running, `bwoc sessions` (and the dashboard's agents pane) take each matched agent's state from herdr: `blocked` means the agent is waiting on you, `done` means it finished and you haven't looked. `--json` gains a `stateSource` field (`herdr`, `tmux`, `marker` or `null`). Agents are matched by marker pid first, then by a detected agent whose foreground cwd is inside `agents/<id>/`. Any herdr error or timeout (one ~300 ms budget per command, connect included) falls back silently to the activity heuristic. Unix only.
+- **`bwoc fleet term --backend tmux|herdr`.** `herdr` opens the same per-agent panes (`bwoc spawn` in each) as one herdr workspace. The default comes from `[fleet] pane_backend` (else `tmux`). `bwoc send` wakes agents through herdr only when that key is `herdr`, and only into a pane labelled with the agent's id or one where herdr detects a running agent — never a plain shell in the agent's directory. `bwoc supervise` warns when the workspace selects herdr: herdr is then the parent of those agent processes, so they must not also be supervised. See [`FLEET-GOVERNANCE.en.md` §2](docs/en/FLEET-GOVERNANCE.en.md).
+
 ### Changed
 
 - **`bwoc doctor` checks the LiteLLM endpoint too.** Its local-model check probed only Ollama's `localhost:11434`, so a host that runs its local model behind LiteLLM got a misleading "Ollama not reachable" warning. It now probes every endpoint the `ollama` and `litellm` backends would call, resolved the way the harness resolves them: Ollama's default, and `LITELLM_API_BASE` (or LiteLLM's default `localhost:4000`). It passes if any one of them answers and warns only if none do, naming each one it tried. The check is named `local model endpoint` (it was `ollama endpoint (localhost:11434)`).

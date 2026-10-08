@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — bring back what you sent: PgUp/PgDn recall your earlier lines, and a killed run still leaves its telemetry"
+    " — see who is waiting on you: opt-in herdr support for blocked/done agent states and herdr fleet panes"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "**See who is waiting on you (3.14).** With `[integrations.herdr] enabled = true`, `bwoc sessions` shows agents that are `blocked` on you or `done` and unread, from a running herdr server; `bwoc fleet term --backend herdr` opens the fleet as herdr panes, and `[fleet] pane_backend = \"herdr\"` makes `bwoc send` wake agents there. Off by default; unix only.",
     "**Bring back what you sent (3.13).** In the chat, `PgUp`/`PgDn` step through the lines you already sent from that input — the first `PgUp` sets your half-typed line aside, `PgDn` past the newest brings it back; scrolling stays on `↑`/`↓`, the wheel and `End`. A harness run that is killed (SIGKILL, OOM, panic) is still recorded on the next run, as `end_reason = \"abandoned\"` with an Error span.",
     "**Traces you can turn on (3.12).** Release binaries now carry the OpenTelemetry exporter: set `OTEL_EXPORTER_OTLP_ENDPOINT` and a session emits `invoke_agent` → `chat <model>` → `execute_tool <tool>` spans in the GenAI conventions, with `gen_ai.provider.name` taken from the live client. Unset, nothing is sent.",
     "**Click a pane to talk to it (3.11).** With agent panes open, a click on a pane's input box focuses it (Shift/Option-drag selects text while panes are open); `/undo` no longer deletes a file the harness could not read; the context pane's changed-files list puts re-edits first and a linked worktree shows its branch.",
     "**The model you see is the model that answered (3.10).** When LiteLLM quietly answers from a fallback model — a `max_tokens` over the limit sends `local-chat` to a 4B group — the chat shows `⚠ this reply is from …` before the reply and keeps asking for the model you chose; `/agents` panes run in the agent's own directory, so each answers with its own `AGENTS.md`, persona, memory and history (3.9.1).",
     "**Every agent in the workspace, one window (3.9).** `/agents` opens `claude`-backend agents in panes too — the harness's chat-only `cli` provider on the CLI's own login, no API key; the pane says the CLI runs its own tools outside the harness sandbox.",
-    "**Your agents, in the same window (3.8).** `/agents` opens a workspace agent in its own pane — `Tab` moves focus, `Ctrl-L` or `/layout` picks one of six layouts; `/settings <key> <value>` saves to the project config and restarts the session on it; a bare `bwoc` session works by the BWOC principles; Markdown renders as CommonMark (tables, links, nesting) without eating `snake_case`.",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
