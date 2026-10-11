@@ -32,7 +32,7 @@ set -euo pipefail
 PLUGIN="accounting-api"
 API_BASE="https://accounting.bemind.tech/api/v1"
 KEY_REL=".bwoc/secrets/accounting-key"
-UA="bwoc-accounting-api/0.1.0 (+https://github.com/bemindlabs/BWOC-Framework)"
+UA="bwoc-accounting-api/0.1.0 (+https://github.com/bemindlabs/bwoc-framework)"
 # Report names the API exposes under /reports/<name> (v2.3.2). A crafted name
 # can never leave this set, so it can't inject a path segment.
 REPORTS="pnl balance-sheet cashflow trial-balance vat wht ap-aging ar-aging expenses sales-by-channel mrr product-margin asset-register"

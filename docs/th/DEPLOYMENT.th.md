@@ -118,7 +118,7 @@ journalctl -u bwoc-agent@<agent> -f        # ตาม log
 ## Container (อีกทางหนึ่งของการแยกสภาพแวดล้อม)
 
 Container เป็นอีกวิธีในการได้ runtime แบบ non-root ที่แยกออกมา — repo มี
-[`deploy/standalone-agent.Dockerfile`](https://github.com/bemindlabs/BWOC-Framework/blob/main/deploy/standalone-agent.Dockerfile)
+[`deploy/standalone-agent.Dockerfile`](https://github.com/bemindlabs/bwoc-framework/blob/main/deploy/standalone-agent.Dockerfile)
 ให้เป็นจุดเริ่มต้น รัน container ด้วย `USER` ที่ไม่ใช่ root และ mount workspace เข้าไป
 กฎเรื่อง credential เหมือนเดิม (กุญแจเจ้าของอ่านคนเดียว, backend auth อยู่ใน
 environment ของ container ไม่ใช่ฝังในอิมเมจ)

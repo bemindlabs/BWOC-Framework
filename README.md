@@ -2,7 +2,7 @@
 
 A framework for building AI coding agents grounded in Buddhist philosophy as an engineering discipline.
 
-[![GitHub stars](https://img.shields.io/github/stars/bemindlabs/BWOC-Framework?style=flat&logo=github)](https://github.com/bemindlabs/BWOC-Framework/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/bemindlabs/bwoc-framework?style=flat&logo=github)](https://github.com/bemindlabs/bwoc-framework/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#tech-stack)
@@ -12,7 +12,7 @@ A framework for building AI coding agents grounded in Buddhist philosophy as an 
 
 Buddhist principles are used here as **engineering thinking aids** — not religious interpretation. Pali terms are section names; the content is technical.
 
-> GitHub: [github.com/bemindlabs/BWOC-Framework](https://github.com/bemindlabs/BWOC-Framework) · Conceptual core: [`PHILOSOPHY.en.md`](modules/agent-template/docs/en/PHILOSOPHY.en.md) · Vision: [`VISION.md`](VISION.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+> GitHub: [github.com/bemindlabs/bwoc-framework](https://github.com/bemindlabs/bwoc-framework) · Conceptual core: [`PHILOSOPHY.en.md`](modules/agent-template/docs/en/PHILOSOPHY.en.md) · Vision: [`VISION.md`](VISION.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ![BWOC Framework — Buddhist Way of Coding](assets/banner.png)
 
@@ -355,12 +355,12 @@ BWOC is designed to be extremely lightweight, localized, and resilient. To clari
 **Homebrew** (macOS + Linux — pre-built binaries, no Rust toolchain needed):
 
 ```bash
-brew tap bemindlabs/bwoc https://github.com/bemindlabs/BWOC-Framework
+brew tap bemindlabs/bwoc https://github.com/bemindlabs/bwoc-framework
 brew trust bemindlabs/bwoc   # Homebrew 6.x+ refuses formulae from untrusted third-party taps
 brew install bwoc
 ```
 
-Installs all three binaries (`bwoc`, `bwoc-agent`, `bwoc-harness`) and covers macOS Apple Silicon, macOS Intel, Linux aarch64, and Linux x86_64. Windows users: grab the `.zip` from [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases/latest) directly. Each release tag refreshes the formula's SHA256s.
+Installs all three binaries (`bwoc`, `bwoc-agent`, `bwoc-harness`) and covers macOS Apple Silicon, macOS Intel, Linux aarch64, and Linux x86_64. Windows users: grab the `.zip` from [GitHub Releases](https://github.com/bemindlabs/bwoc-framework/releases/latest) directly. Each release tag refreshes the formula's SHA256s.
 
 > [!note]
 > `brew trust` is needed from **Homebrew 6.x** onward, which refuses third-party formulae by default (`Refusing to load formula … from untrusted tap`). Older Homebrew has no such subcommand — skip that line if `brew --version` reports 5.x or earlier.

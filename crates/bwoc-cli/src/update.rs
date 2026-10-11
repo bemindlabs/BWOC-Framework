@@ -14,7 +14,7 @@
 //! ## Fetch strategy
 //!
 //! 1. Primary: `gh release view --json tagName -q .tagName`
-//! 2. Fallback: `curl -s https://api.github.com/repos/bemindlabs/BWOC-Framework/releases/latest`
+//! 2. Fallback: `curl -s https://api.github.com/repos/bemindlabs/bwoc-framework/releases/latest`
 //!    parsed with `serde_json`.
 //!
 //! Both are shells-out — no HTTP client dep added. `ShellRunner` is a small
@@ -104,9 +104,9 @@ impl ShellRunner for ProcessShellRunner {
 
 // ── Fetch latest tag ──────────────────────────────────────────────────────────
 
-pub(crate) const GITHUB_REPO: &str = "bemindlabs/BWOC-Framework";
+pub(crate) const GITHUB_REPO: &str = "bemindlabs/bwoc-framework";
 const GITHUB_API_URL: &str =
-    "https://api.github.com/repos/bemindlabs/BWOC-Framework/releases/latest";
+    "https://api.github.com/repos/bemindlabs/bwoc-framework/releases/latest";
 
 /// Fetch the latest release tag. Tries `gh` first; falls back to `curl` + JSON.
 /// Returns `None` if both fail or return empty.
@@ -834,7 +834,7 @@ mod tests {
             "release",
             "view",
             "--repo",
-            "bemindlabs/BWOC-Framework",
+            "bemindlabs/bwoc-framework",
             "--json",
             "tagName",
             "-q",

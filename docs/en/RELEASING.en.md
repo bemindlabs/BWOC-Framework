@@ -29,7 +29,7 @@ Full policy in [`VERSION.md`](../../VERSION.md) §"Versioning Policy — Dual Na
 
 Before tagging, the maintainer should verify:
 
-- [ ] **CI is green** on `main` for the most recent commit — see [Actions → CI](https://github.com/bemindlabs/BWOC-Framework/actions/workflows/ci.yml).
+- [ ] **CI is green** on `main` for the most recent commit — see [Actions → CI](https://github.com/bemindlabs/bwoc-framework/actions/workflows/ci.yml).
 - [ ] **`CHANGELOG.md`** has a section for the CalVer tag you're about to push. Rename the existing `[Unreleased]` to `[v2026.5.22-0] — 2026-05-22` and create a new empty `[Unreleased]` above it.
 - [ ] **`VERSION.md`** auto-updates on edits; nothing to manually bump for a release.
 - [ ] **No uncommitted changes** — release artifacts should reflect a clean tree.

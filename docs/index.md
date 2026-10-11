@@ -44,14 +44,14 @@ Pali terms are section names; the content is technical. No religious interpretat
 
 The cloneable agent template ships with its own doctrine layer (Philosophy, PRD, SRS, Self-Improvement, Threat Model). These live inside the template and are read by every incarnated agent:
 
-- [`modules/agent-template/docs/en/`](https://github.com/bemindlabs/BWOC-Framework/tree/main/modules/agent-template/docs/en)
-- [`modules/agent-template/docs/th/`](https://github.com/bemindlabs/BWOC-Framework/tree/main/modules/agent-template/docs/th)
+- [`modules/agent-template/docs/en/`](https://github.com/bemindlabs/bwoc-framework/tree/main/modules/agent-template/docs/en)
+- [`modules/agent-template/docs/th/`](https://github.com/bemindlabs/bwoc-framework/tree/main/modules/agent-template/docs/th)
 
 ---
 
 ## Project resources
 
-- [README](https://github.com/bemindlabs/BWOC-Framework#readme) — start here
-- [VISION](https://github.com/bemindlabs/BWOC-Framework/blob/main/VISION.md) — 1-year and 3-year success criteria
-- [CHANGELOG](https://github.com/bemindlabs/BWOC-Framework/blob/main/CHANGELOG.md) — what shipped, when
-- [GitHub Releases](https://github.com/bemindlabs/BWOC-Framework/releases) — binaries + SHA-256 checksums
+- [README](https://github.com/bemindlabs/bwoc-framework#readme) — start here
+- [VISION](https://github.com/bemindlabs/bwoc-framework/blob/main/VISION.md) — 1-year and 3-year success criteria
+- [CHANGELOG](https://github.com/bemindlabs/bwoc-framework/blob/main/CHANGELOG.md) — what shipped, when
+- [GitHub Releases](https://github.com/bemindlabs/bwoc-framework/releases) — binaries + SHA-256 checksums
