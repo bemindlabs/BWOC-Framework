@@ -31,6 +31,7 @@ mod exit;
 mod figma;
 mod fleet;
 mod fleet_term;
+mod gates;
 mod gcloud;
 mod git_worktree;
 mod gws;
@@ -234,6 +235,9 @@ enum Commands {
     Handbook(HandbookCliArgs),
     /// One-card system status: version, release, phase, workspace + agents, update.
     Info(InfoCliArgs),
+    /// Evaluate the Padhana-4 verification gates (lint/format/test/build) from an
+    /// agent's config.manifest.json. Prints the commands; --run executes them.
+    Gates(GatesCliArgs),
     /// Report a bug/feature/question to the BWOC issue tracker (preview +
     /// confirm; falls back to a prefilled browser URL when unattended).
     Report(ReportCliArgs),
@@ -2207,6 +2211,20 @@ struct HandbookCliArgs {
 }
 
 #[derive(Args, Debug)]
+struct GatesCliArgs {
+    /// Agent directory (defaults to the current directory).
+    path: Option<PathBuf>,
+    /// Execute each gate command via `sh -c` (cwd = agent dir, scrubbed env,
+    /// 600s timeout). SECURITY: commands come from the manifest (UNTRUSTED) —
+    /// off by default; without this flag the commands are only printed.
+    #[arg(long)]
+    run: bool,
+    /// Emit JSON instead of the human report.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct InfoCliArgs {
     /// Workspace root (defaults to BWOC_WORKSPACE or the ancestor walk from cwd).
     #[arg(long)]
@@ -3058,6 +3076,15 @@ fn main() -> ExitCode {
         Some(Commands::Handbook(args)) => {
             let code = handbook::run(handbook::HandbookArgs {
                 section: args.section,
+                lang: lang.clone(),
+            });
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Some(Commands::Gates(args)) => {
+            let code = gates::run(gates::GatesArgs {
+                path: args.path,
+                run: args.run,
+                json: args.json,
                 lang: lang.clone(),
             });
             ExitCode::from(u8::try_from(code).unwrap_or(1))

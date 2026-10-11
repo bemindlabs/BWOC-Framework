@@ -108,3 +108,14 @@ status-banner-model = model:    { $model }
 status-banner-fallback = fallback: { $fallback }
 status-banner-memory = memory:   { $memory_path }
 status-banner-version = version:  { $version }
+
+# bwoc gates — Padhana-4 verification gates
+gates-title = Padhana-4 verification gates — { $agent }
+gates-samvara = Samvara    (guard: static analysis / lint)
+gates-pahana = Pahana     (abandon ill: format check)
+gates-bhavana = Bhavana    (cultivate good: tests)
+gates-anurakkhana = Anurakkhana (sustain: build before push)
+gates-dry-note = Commands were NOT executed. They come from config.manifest.json (untrusted input). Review them, then re-run with --run to execute (sh -c, scrubbed env, cwd = agent dir).
+gates-summary-ok = All gates configured and passed.
+gates-summary-dry = All gates configured (not run).
+gates-summary-fail = { $count } gate(s) failed or unconfigured.

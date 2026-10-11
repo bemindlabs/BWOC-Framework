@@ -195,6 +195,25 @@ For the agent's first operator session:
 
 ---
 
+## Verification Gates — `bwoc gates`
+
+`bwoc gates [<agent-path>] [--run] [--json]` evaluates the four Padhana gates (Sammā-vayama, AGENTS.md §6) from the agent's `config.manifest.json`:
+
+| Gate | Meaning | Manifest key |
+|---|---|---|
+| Samvara | guard — static analysis | `lintCmd` |
+| Pahana | abandon ill — format check | `formatCmd` |
+| Bhavana | cultivate good — tests | `testCmd` |
+| Anurakkhana | sustain — build before push | `buildCmd` |
+
+The template's "Regression tests" row has no manifest key of its own, so regression is covered by `testCmd` (Bhavana) and Anurakkhana maps to `buildCmd`, the "before pushing" build check.
+
+- **Default is a dry run.** The commands come from the manifest (untrusted input), so they are printed, not executed.
+- **`--run`** executes each via `sh -c` with cwd = the agent directory, a scrubbed (allowlist-only) environment and a 600 s timeout per gate.
+- An empty command, an unsubstituted `{{placeholder}}` or an `echo 'gate: ...'` stub is reported `UNCONFIGURED` — never passed.
+- Exit code is non-zero (3) if any gate is `FAIL` or `UNCONFIGURED`. `--json` emits `{ agent, executed, ok, gates: [{ gate, key, command, status, exit_code, duration_ms }] }`.
+- Not yet wired into `bwoc run` (follow-up).
+
 ## See Also
 
 - [`ARCHITECTURE.en.md`](ARCHITECTURE.en.md) — how the pieces fit at runtime.
