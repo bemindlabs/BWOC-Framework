@@ -12,7 +12,7 @@ tags:
 # Neutrality in Agent Cloning
 
 > [!abstract] Design Principle (Samanatatta — Equal Treatment)
-> When an agent profile is cloned from this template, the result must function identically across all supported LLM backends — Claude, Antigravity, Codex, Kimi — without modification. This is the technical expression of *samanatatta*: no backend is preferred over another.
+> When an agent profile is cloned from this template, the result must function identically across all supported LLM backends (the symlinks beside `AGENTS.md`) without modification. This is the technical expression of *samanatatta*: no backend is preferred over another.
 
 ---
 
@@ -40,9 +40,7 @@ tags:
 **Symlink pattern:**
 
 ```bash
-ln -s AGENTS.md AGY.md
-ln -s AGENTS.md CODEX.md
-ln -s AGENTS.md KIMI.md
+ln -s AGENTS.md <BACKEND>.md
 ```
 
 `CLAUDE.md` is the exception — a real file with Claude Code-specific project guidance.
@@ -57,7 +55,7 @@ Use placeholders for all tools:
 | `{{testCmd}}` | `vitest`, `cargo test` |
 | `{{deepMemoryCmd}}` | `mempalace`, `chromadb` |
 
-**Exception:** agent-specific profiles (e.g., `agent-oracle-coding/AGENTS.md`) MAY reference specific tools in their defined tech stack. Neutrality applies to the base template, not to specializations.
+**Exception:** specialized agent profiles MAY reference specific tools in their defined tech stack. Neutrality applies to the base template, not to specializations.
 
 ### 3. Orchestration Neutrality
 
@@ -113,7 +111,7 @@ bwoc check agents/agent-{name}
 When importing an agent profile from an external repo:
 
 1. **Inspect before trusting** — read all files before enabling. See [[interconnect/trust|Trust]]
-2. **Validate neutrality** — run the check script
+2. **Validate neutrality** — run `bwoc check`
 3. **Sandbox first** — run in an isolated worktree with limited permissions
 4. **Adapt config** — map external placeholders to your local config values
 
