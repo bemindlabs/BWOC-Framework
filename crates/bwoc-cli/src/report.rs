@@ -198,7 +198,7 @@ mod tests {
                 },
                 Some("issue") => ShellOutcome {
                     exit_code: self.create_exit,
-                    stdout: "https://github.com/bemindlabs/BWOC-Framework/issues/999".into(),
+                    stdout: "https://github.com/bemindlabs/bwoc-framework/issues/999".into(),
                 },
                 _ => ShellOutcome {
                     exit_code: 127,
@@ -317,7 +317,7 @@ mod tests {
             .iter()
             .find(|c| c.contains("issue create"))
             .expect("created");
-        assert!(create.contains("--repo bemindlabs/BWOC-Framework"));
+        assert!(create.contains("--repo bemindlabs/bwoc-framework"));
         assert!(create.contains("--title crash on spawn"));
         assert!(create.contains("--label enhancement"));
         assert!(create.contains("**Environment**"));

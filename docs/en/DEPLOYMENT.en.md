@@ -120,7 +120,7 @@ the daemon (and any harness session it supervises) never holds root.
 ## Containers (an alternative isolation)
 
 A container is another way to get a non-root, isolated runtime — the repo ships
-[`deploy/standalone-agent.Dockerfile`](https://github.com/bemindlabs/BWOC-Framework/blob/main/deploy/standalone-agent.Dockerfile)
+[`deploy/standalone-agent.Dockerfile`](https://github.com/bemindlabs/bwoc-framework/blob/main/deploy/standalone-agent.Dockerfile)
 as a starting point. Run the container as a non-root `USER` and mount the
 workspace; the same credential rules apply (key owner-only, backend auth in the
 container's environment, not baked into the image).

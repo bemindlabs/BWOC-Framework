@@ -134,7 +134,7 @@ fn print_index(c: &Colors) {
     );
     println!();
     println!(
-        "{}Online docs:{} https://bemindlabs.github.io/BWOC-Framework/",
+        "{}Online docs:{} https://bemindlabs.github.io/bwoc-framework/",
         c.dim, c.reset
     );
     println!();
