@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.10.11-0] — 2026-10-11 — 3.15.0
+
+**Eleven more coding CLIs as backends.** BWOC now declares twenty-one backends.
+
+### Added
+
+- **`pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor` and `mastracode` are declared backends.** They get `bwoc spawn`, bare `bwoc --backend <name>`, entry-file symlinks, model pickers and effort forwarding, instead of the generic `cli` fallback. `bwoc run` keeps its fail-safe posture and never passes a bypass flag: headless runs work for `droid` (`--auto low`), `opencode` and `kilo` (plain `run`), `qodercli` (`-p`) and `mastracode` (`--permission-mode deny`); `pi`, `omp`, `devin`, `hermes`, `qwen` and `cursor` report headless as unsupported (no sandbox, bypass by design, or unverified approval behaviour) while interactive spawn still works.
+
+### Changed
+
+- **Agent-template docs de-duplicated.** `conventions.md` no longer repeats `neutrality.md`'s anti-pattern table and checklist, and neither hardcodes a backend list that drifts as backends are added.
+
 ## [v2026.10.8-1] — 2026-10-08 — 3.14.1
 
 **`fleet term --backend herdr` opens the fleet.** A patch for 3.14.0, whose herdr backend was tested only against a fake server.
