@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.10.11-1] — 2026-10-11 — 3.16.0
+
+**`bwoc gates` — the verification gates, evaluated.** AGENTS.md §6 lists the four Padhana gates; the CLI can now check them instead of leaving "done" self-declared.
+
+### Added
+
+- **`bwoc gates` evaluates the Padhana-4 verification gates.** It maps Samvara, Pahana, Bhavana and Anurakkhana to the agent manifest's `lintCmd`, `formatCmd`, `testCmd` and `buildCmd` and reports each as PENDING, PASS, FAIL or UNCONFIGURED; empty, `{{placeholder}}` and `echo 'gate: ...'` stubs are UNCONFIGURED, never passed. The commands come from an untrusted manifest, so the default is a dry run that only prints them; `--run` executes each via `sh -c` in the agent directory with the scrubbed `bwoc-core` environment, a 600 s per-gate timeout, and (on unix) kills the whole process group on timeout. Exits 3 on any FAIL or UNCONFIGURED. English and Thai output; documented in `INCARNATION` (EN/TH).
+
+### Changed
+
+- **Agent-template `AGENTS.md` tightened (489 to 396 lines)** without changing a rule: section numbers, headings, placeholders, the gates table, the memory format and the Sila-5 table are unchanged; the backend table became a pointer to `neutrality.md`.
+- **Links follow the repo rename** to `bemindlabs/bwoc-framework` (README, docs EN/TH, `Cargo.toml`, CLI constants, issue template).
+- **Roadmap brought in line with what shipped** (EN and TH together): HELD items closed, twenty-one backends, five release targets, trust-gate and Trust v2 defaults, and the 3.0.1, 3.14.1 and 3.16.0 rows.
+
 ## [v2026.10.11-0] — 2026-10-11 — 3.15.0
 
 **Eleven more coding CLIs as backends.** BWOC now declares twenty-one backends.

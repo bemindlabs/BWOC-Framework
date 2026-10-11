@@ -480,7 +480,7 @@ The CLI has zero runtime dependencies beyond `libc` / `Win32`. No JVM, no Node, 
 
 **Current phase:** Phase 7 — _anicca_ (versioned change & the compatibility contract) — **DoD met; 3.0 shipped** (`v2026.9.13-0`, patch `v2026.9.13-1`), followed by 3.1 onward inside its contract; no next phase is defined yet. Phase 7 delivered: every framework-owned artifact declares its schema, `bwoc migrate` moves an installation forward, specification 3.0 is validated, and `[plugin].compat` is enforced. Phase 6 — _paññā_ (harness eval & cross-platform hardening) DoD met; Phases 1–5 DoD met and signed off: Phase 1 end-to-end **uppāda** for one backend; Phase 2 _ṭhiti operations_; Phase 3 the cross-workspace interconnect mesh + Kalyāṇamitta-7 trust; Phase 4 fleet governance; Phase 5 _saṃvara_ trust-boundary & sandbox hardening. Per-phase detail is in [`docs/en/ROADMAP.en.md`](docs/en/ROADMAP.en.md).
 
-**Latest release:** [`v2026.10.11-0`](https://github.com/bemindlabs/BWOC-Framework/releases/tag/v2026.10.11-0) (3.15.0) — **eleven more coding CLIs as backends**: `pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor` and `mastracode` — twenty-one declared backends, five with headless `bwoc run`.
+**Latest release:** [`v2026.10.11-1`](https://github.com/bemindlabs/bwoc-framework/releases/tag/v2026.10.11-1) (3.16.0) — **`bwoc gates`**: evaluate an agent's four Padhana verification gates (lint, format, test, build) from its manifest — dry run by default, `--run` to execute.
 
 | Area | Status |
 | --- | --- |

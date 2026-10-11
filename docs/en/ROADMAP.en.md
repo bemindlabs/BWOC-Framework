@@ -279,6 +279,7 @@ Released after 3.0 and inside its compatibility contract — no breaking change,
 | 3.13.0 | `v2026.10.4-0` | `PgUp`/`PgDn` in the chat recall lines already sent; a killed harness run still leaves its telemetry (`end_reason = "abandoned"`) |
 | 3.14.0 / 3.14.1 | `v2026.10.8-0` / `-1` | Opt-in herdr: `bwoc sessions` reports `blocked`/`done` agents; `fleet term --backend herdr`; `bwoc doctor` probes LiteLLM too; 3.14.1 makes `fleet term --backend herdr` work against herdr 0.9.3 |
 | 3.15.0 | `v2026.10.11-0` | Eleven more vendor-CLI backends (`pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`) — twenty-one declared; headless `bwoc run` for five of them |
+| 3.16.0 | `v2026.10.11-1` | `bwoc gates` evaluates the Padhana-4 verification gates from the agent manifest (dry run by default, `--run` to execute); agent-template `AGENTS.md` tightened 489 to 396 lines |
 
 **No next phase is defined yet.** The items under *Deliberately not in 3.0* above are the known candidates; choosing among them is a maintainer decision this document does not pre-empt.
 
