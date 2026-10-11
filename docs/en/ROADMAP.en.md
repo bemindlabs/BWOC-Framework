@@ -34,7 +34,7 @@ Phase-by-phase plan for BWOC. **Phases** describe implementation milestones; eac
 
 ### Shipped in Phase 1 v2.0
 
-All items below are now implemented. The phase's Definition of Done (end-to-end **uppāda** for one backend) is **met**. Only HELD policy items (`CODEOWNERS` · `ISSUE_TEMPLATE/config.yml`) remain pending user direction; the release pipeline now exists (see Phase 2).
+All items below are now implemented. The phase's Definition of Done (end-to-end **uppāda** for one backend) is **met**. The release pipeline is described under Phase 2.
 
 | Item | Spec | Status |
 |---|---|---|
@@ -72,7 +72,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 | Daemon-side inbox watch + cursor | Announces new envelopes to stderr; `.bwoc/inbox.cursor` survives restart |
 | `--json` across read-only commands | `list`, `status`, `workspace info`, `workspace validate`, `check` |
 | CI matrix | `ubuntu-latest` · `macos-latest` · `windows-latest` green on every push |
-| Release pipeline (CalVer) | `release.yml` triggers on `v<YYYY>.<M>.<D>-<patch>` tag; 4 cross-platform binaries + `.sha256` to auto-created GitHub Release |
+| Release pipeline (CalVer) | `release.yml` triggers on `v<YYYY>.<M>.<D>-<patch>` tag; 5 cross-platform binaries (linux x86_64/aarch64, macOS x86_64/aarch64, windows x86_64) + `.sha256` to auto-created GitHub Release |
 | Help system (in-binary) | 12 topics: `getting-started`, `backends`, `workspace`, `manifest`, `arc`, `lifecycle`, `daemon`, `messaging`, `persona`, `memory`, `doctor`, `script` |
 | Shell completion | `bwoc completion <bash\|zsh\|fish\|powershell\|elvish>` via clap_complete |
 | `bwoc init` writes `.gitignore` | Excludes daemon ephemerals (PID/socket/cursor) for user workspaces |
@@ -90,7 +90,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 
 ### Remaining for ship
 
-- **Cross-backend validation** — full uppāda + ṭhiti against all 5 backend CLIs in CI (proves Samānattatā); `bwoc-harness` (ollama) is the fifth.
+- **Cross-backend validation** — partly shipped: `cross-backend.yml` runs uppāda + ṭhiti nightly on `ollama` and `claude` (through `bwoc-harness`). Remaining: the vendor-CLI backends, which need the vendor CLI installed and authenticated in CI.
 - **Code signing** — Apple notarization + Windows Authenticode for release artifacts (user-cert authorization required).
 - **Linux musl build** — `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` ship; musl (Alpine / distroless) can be added when demanded.
 - ~~**Memory mining tooling and pluggable Tier 2 backend interface.**~~ — **shipped.** The interface (`bwoc-core::deep_memory`) and now its reference implementation (`bwoc-deep-memory`) both ship; see "Shipped beyond Phase 3" below.
@@ -110,7 +110,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 | `bwoc retire <name>` | Removes from registry; 3 file modes: default (delete dir), `--keep-files` (retain everything), `--keep-memory` (preserve just `memories/`, remove the rest — archives accumulated knowledge while letting the agent go). `--keep-files` and `--keep-memory` are clap-mutex. |
 | `bwoc workspace prune` | Reconciles phantom registry entries vs orphan agent dirs; `--apply` removes safe drift; `--json` emits `{ phantoms, orphans, applied, removed }` for CI gating. |
 | User → agent inbox (sammā-vācā Phase 0) | `bwoc send` + `bwoc inbox` ship as JSONL envelopes; foundation for agent → agent messaging. |
-| Kalyāṇamitta-7 trust (5 of 5 steps) | All implementation steps shipped 2026-05-23: (1) `bwoc-core::Manifest` deserialization, (2) `bwoc check` evidence verification, (3) `bwoc trust <agent> read`, (4) daemon-level refusal at inbox poll behind `BWOC_TRUST_GATING=1` with sidecar `inbox.refusals.jsonl` and `bwoc inbox` merge, (5) CHANGELOG roll-up + TH parity. Spec: [`modules/agent-template/interconnect/trust.md`](../../modules/agent-template/interconnect/trust.md). |
+| Kalyāṇamitta-7 trust (5 of 5 steps) | All implementation steps shipped 2026-05-23: (1) `bwoc-core::Manifest` deserialization, (2) `bwoc check` evidence verification, (3) `bwoc trust <agent> read`, (4) daemon-level refusal at inbox poll behind `BWOC_TRUST_GATING=1` (since 3.2 the gate also runs by default in warn-only mode: unset ⇒ deliver + `trust_warn` log, never refuse; `=0` disables) with sidecar `inbox.refusals.jsonl` and `bwoc inbox` merge, (5) CHANGELOG roll-up + TH parity. Spec: [`modules/agent-template/interconnect/trust.md`](../../modules/agent-template/interconnect/trust.md). |
 | Agent → agent messaging (sammā-vācā Phase 1) | `bwoc send --from <agent>` writes sender identity into envelope; recipient daemon's trust gate evaluates against sender's manifest; refusals surface via `bwoc inbox` JSON merge. **Sāraṇīyadhamma 6** norms in [`interconnect/messaging.md`](../../modules/agent-template/interconnect/messaging.md) (+ `.th.md`). |
 | Dual-mode `bwoc check` | Detects template (placeholder `manifest.name`) vs incarnation (real name). Template mode asserts placeholders exist + neutrality rules; incarnation mode asserts placeholders are gone (except runtime `{{taskId}}`) and skips neutrality checks. Closes the bug where un-personalized agents silently passed. |
 | Interconnect routing — Track A | `.bwoc/interconnect/routes.toml` per-workspace, peer-declared (no central broker). `bwoc-core::routing` `Routes` type + resolve (exact `agent` → longest `namespace` prefix → `NotFound`); `send` consults it only on a local-registry miss, local-hit path byte-for-byte unchanged. Composes with the trust gate (a cross-workspace sender resolves as `unknown_sender` → refused), so it ships without Trust v2. Spec: [`interconnect/routing.md`](../../modules/agent-template/interconnect/routing.md). **Anattā / SN 22.59.** |
@@ -121,7 +121,7 @@ All items below are now implemented. The phase's Definition of Done (end-to-end 
 
 Both halves of the DoD are met: *coordinate without a central authority* (interconnect routing) and *an agent's life ends cleanly* (`bwoc retire` full vaya) — both shipped above. The sequencing rationale and the worktree-lifecycle / routing design decisions are in [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md). Trust v2 has since shipped (first bullet), and the Tier 2 memory reference implementation has since shipped too (`bwoc-deep-memory`, see "Shipped beyond Phase 3") — **nothing remains deferred off the Phase 3 DoD**:
 
-- **Trust v2 — shipped.** Signed envelopes / identity proof via the dep-quarantined `bwoc-signing` crate (ed25519 over RFC 8785 canonical bytes, with `nonce` / `ts` / `messageId` bound into the signature for replay rejection), wired into `bwoc send --from` (sign) and the `bwoc-agent` trust gate (verify). `bwoc trust --keygen` provisions the per-agent keypair (private key `agents/<id>/.bwoc/agent.key`, `0600` on Unix, gitignored; public key in manifest `trust.signingPublicKey`). Configurable `warn` / `enforce` signature-refusal modes, plus a `BWOC_SIGNING_MODE=off` legacy escape hatch. Cross-workspace identity: the gate resolves a peer sender's manifest public key via the routing layer and **requires** a valid signature for any cross-workspace write (a missing one is refused as `unsigned_cross_workspace` in both modes). Spec: [`docs/en/SIGNING.en.md`](SIGNING.en.md).
+- **Trust v2 — shipped.** Signed envelopes / identity proof via the dep-quarantined `bwoc-signing` crate (ed25519 over RFC 8785 canonical bytes, with `nonce` / `ts` / `messageId` bound into the signature for replay rejection), wired into `bwoc send --from` (sign) and the `bwoc-agent` trust gate (verify). `bwoc trust --keygen` provisions the per-agent keypair (private key `agents/<id>/.bwoc/agent.key`, `0600` on Unix, gitignored; public key in manifest `trust.signingPublicKey`). Configurable `warn` / `enforce` signature-refusal modes (default `enforce`; key rotation is manual via `bwoc trust --keygen --force`; revocation lists remain deferred, see SIGNING §9), plus a `BWOC_SIGNING_MODE=off` legacy escape hatch. Cross-workspace identity: the gate resolves a peer sender's manifest public key via the routing layer and **requires** a valid signature for any cross-workspace write (a missing one is refused as `unsigned_cross_workspace` in both modes). Spec: [`docs/en/SIGNING.en.md`](SIGNING.en.md).
 - **Tier 2 memory — shipped.** Two pieces: the pluggable backend *interface* (`bwoc-core::deep_memory` — `DeepMemory` trait + `ShellDeepMemory` shell-out + factory, wired into `bwoc memory wake-up|search|mine` and `bwoc new --deep-memory-cmd`) and the *reference implementation* (`bwoc-deep-memory`, see "Shipped beyond Phase 3"). Tier 1 file-based memory was already complete.
 
 ---
@@ -218,8 +218,8 @@ on more than one operating system.
 
 **Phase 6 DoD is met.** t32 is not a gap in it: the investigation concluded that
 ANN recall is not yet needed at any real workload, and the note records the
-resume order (redaction on `mine`, then retention/TTL, then `sqlite-vec`) so the
-work is deferred rather than lost. Mattaññutā.
+resume order (redaction on `mine` — shipped; retention/TTL via `prune` — shipped; then
+`sqlite-vec` — still parked) so the work is deferred rather than lost. Mattaññutā.
 
 ---
 
@@ -253,7 +253,7 @@ Each of these is deferred with a reason, not forgotten:
 - **ACP adapter** (formerly #485, issue since deleted) — demand-gated; the gate is an actual editor user asking.
 - **A shared `Dispatch` seam** (formerly #452, issue since deleted) — earns its place at the first real third consumer, not before.
 - **HV3-4 / HV3-5 / HV3-6 (`agy`, `kimi`)** — features. A feature does not make a release major, and holding 3.0 for them would delay the contract that is ready.
-- **CLI surface reduction** — the 60 top-level subcommands and the 8.4k-line `check.rs` are real debt, but a different kind of breaking change with a different blast radius. Reserved for 4.0.
+- **CLI surface reduction** — the 60 top-level subcommands and the 8.4k-line `check.rs` are real debt, but a different kind of breaking change with a different blast radius. Reserved for 4.0 (duplicate entry points were already deprecated in 3.2, removal in 4.0).
 - **Code signing** (Apple notarization / Windows Authenticode) — blocked on the maintainer provisioning certificates, not on code. Still listed in [`RELEASING.en.md`](RELEASING.en.md).
 - **crates.io publish** — the Rust API is deliberately not a public surface; see [`COMPATIBILITY.en.md`](COMPATIBILITY.en.md#what-is-a-public-surface).
 
@@ -263,6 +263,7 @@ Released after 3.0 and inside its compatibility contract — no breaking change,
 
 | Release | Tag | What shipped |
 |---|---|---|
+| 3.0.1 | `v2026.9.13-1` | Patch: each bridged chat keeps its own conversation file; `bwoc new` stamps the current spec version; `bwoc init` no longer overwrites an existing `agents.toml` |
 | 3.1.0 | `v2026.9.13-2` | bwoc-bot phase 1: `[bot]` block for chat connectors — fixed slash-command replies, per-sender rate limits |
 | 3.2.0 | `v2026.9.15-0` | A bare `bwoc` opens a coding session over the current directory — no workspace or agent needed |
 | 3.3.0 | `v2026.9.19-0` | Several conversations per directory: `bwoc --new`, `--session <id>` |
@@ -276,7 +277,7 @@ Released after 3.0 and inside its compatibility contract — no breaking change,
 | 3.11.0 | `v2026.9.25-1` | A click on a pane's input box focuses it; `/undo` no longer deletes a file it could not read |
 | 3.12.0 | `v2026.9.26-0` | Release binaries carry the OpenTelemetry exporter (inert until configured); GenAI-convention span names; the real `gen_ai.provider.name` |
 | 3.13.0 | `v2026.10.4-0` | `PgUp`/`PgDn` in the chat recall lines already sent; a killed harness run still leaves its telemetry (`end_reason = "abandoned"`) |
-| 3.14.0 | `v2026.10.8-0` | Opt-in herdr: `bwoc sessions` reports `blocked`/`done` agents; `fleet term --backend herdr`; `bwoc doctor` probes LiteLLM too |
+| 3.14.0 / 3.14.1 | `v2026.10.8-0` / `-1` | Opt-in herdr: `bwoc sessions` reports `blocked`/`done` agents; `fleet term --backend herdr`; `bwoc doctor` probes LiteLLM too; 3.14.1 makes `fleet term --backend herdr` work against herdr 0.9.3 |
 | 3.15.0 | `v2026.10.11-0` | Eleven more vendor-CLI backends (`pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`) — twenty-one declared; headless `bwoc run` for five of them |
 
 **No next phase is defined yet.** The items under *Deliberately not in 3.0* above are the known candidates; choosing among them is a maintainer decision this document does not pre-empt.
@@ -286,7 +287,7 @@ Released after 3.0 and inside its compatibility contract — no breaking change,
 ## Cross-cutting (every phase)
 
 - **Bilingual parity** — every spec doc has EN canonical + TH (and future languages); the bilingual-reminder hook gates this.
-- **Backend neutrality** — every CLI feature works against any of the six declared backends; `/check-neutrality` gates this for `AGENTS.md`.
+- **Backend neutrality** — every CLI feature works against any declared backend (twenty-one as of 3.15); `/check-neutrality` gates this for `AGENTS.md`.
 - **Doc-version + software-version stay consistent** — both auto-stamped on every Claude Code edit.
 - **Open-source readiness** — every artifact a public contributor needs (CONTRIBUTING, SECURITY, CoC, LICENSE, VERSION, CHANGELOG, VISION, ROADMAP) is current and accurate.
 
