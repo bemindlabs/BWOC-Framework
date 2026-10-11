@@ -1,7 +1,7 @@
 //! `bwoc gates` — evaluate the four Padhana verification gates (Sammā-vayama,
 //! AGENTS.md §6) from an agent's `config.manifest.json`.
 //!
-//! Mapping (see `docs/en/CLI-GATES.en.md`):
+//! Mapping (see `docs/en/INCARNATION.en.md` (section "Verification Gates — `bwoc gates`")):
 //!
 //! | Gate | Meaning | Manifest key |
 //! |---|---|---|
@@ -129,7 +129,8 @@ struct GateResult {
 /// Run one command via `sh -c` — cwd = agent dir, scrubbed env, timeout. The
 /// command string is passed as a single argv element; nothing else is interpolated.
 fn execute(cmd: &str, dir: &Path, timeout: Duration, quiet: bool) -> (Status, Option<i32>) {
-    let child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
         .arg(cmd)
         .current_dir(dir)
@@ -141,9 +142,14 @@ fn execute(cmd: &str, dir: &Path, timeout: Duration, quiet: bool) -> (Status, Op
             Stdio::null()
         } else {
             Stdio::inherit()
-        })
-        .spawn();
-    let mut child = match child {
+        });
+    // Own process group, so a timeout can kill the gate's grandchildren too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("bwoc gates: spawn failed: {e}");
@@ -165,7 +171,7 @@ fn execute(cmd: &str, dir: &Path, timeout: Duration, quiet: bool) -> (Status, Op
                 );
             }
             Ok(None) if start.elapsed() >= timeout => {
-                let _ = child.kill();
+                kill_gate(&mut child);
                 let _ = child.wait();
                 eprintln!("bwoc gates: timed out after {}s", timeout.as_secs());
                 return (Status::Fail, None);
@@ -174,6 +180,23 @@ fn execute(cmd: &str, dir: &Path, timeout: Duration, quiet: bool) -> (Status, Op
             Err(_) => return (Status::Fail, None),
         }
     }
+}
+
+/// Kill the gate and everything it spawned. Unix: SIGKILL the whole process
+/// group (the child is its leader via `process_group(0)`); elsewhere: kill the
+/// direct child only.
+#[cfg(unix)]
+fn kill_gate(child: &mut std::process::Child) {
+    // SAFETY: plain kill(2) on the group we created for this child.
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn kill_gate(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 fn evaluate(
@@ -337,6 +360,31 @@ mod tests {
         assert_eq!(r[2].status, Status::Unconfigured);
         assert_eq!(r[3].status, Status::Fail);
         assert_eq!(r[3].exit_code, Some(7));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_backgrounded_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let cmd = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
+        let (s, _) = execute(&cmd, dir.path(), Duration::from_millis(500), true);
+        assert_eq!(s, Status::Fail);
+        let pid: libc::pid_t = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut gone = false;
+        for _ in 0..40 {
+            // kill(pid, 0) fails with ESRCH once the process is gone.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(gone, "grandchild survived the timeout");
     }
 
     #[test]
