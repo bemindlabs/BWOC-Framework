@@ -28,7 +28,7 @@ Full walkthrough: [`INCARNATION.en.md`](../../docs/en/INCARNATION.en.md) · [`IN
 | Path | Purpose |
 |---|---|
 | `AGENTS.md` | Agent instructions: the single source of truth, plain Markdown |
-| `AGY.md` · `CODEX.md` · `KIMI.md` · `COPILOT.md` · `GROK.md` · `OLLAMA.md` · `OPENAI.md` | Symlinks → `AGENTS.md` |
+| `AGY.md` · `CODEX.md` · `KIMI.md` · `COPILOT.md` · `GROK.md` · `PI.md` · `OMP.md` · `DEVIN.md` · `DROID.md` · `OPENCODE.md` · `KILO.md` · `HERMES.md` · `QODERCLI.md` · `QWEN.md` · `CURSOR.md` · `MASTRACODE.md` · `OLLAMA.md` · `OPENAI.md` | Symlinks → `AGENTS.md` |
 | `CLAUDE.md` | A **regular file** in the template repo (guidance for editing the template itself). `bwoc new` replaces it with a symlink → `AGENTS.md` in the incarnated agent. |
 | `config.manifest.json` | Placeholders + runtime config |
 | [`neutrality.md`](neutrality.md) · [`conventions.md`](conventions.md) | Backend-neutrality rules · communal conventions |

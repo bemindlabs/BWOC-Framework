@@ -6,7 +6,7 @@ A plugin extends the framework with a capability the **workspace** turns on once
 
 - **Agent skills** (`modules/agent-template/skills/`), which an individual agent declares.
 - **Framework skills** ([`modules/skills/`](../skills/)), the baseline capabilities any agent can opt into.
-- **Declared backends** (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`, `ollama`, `openai-compatible`, `openrouter`, `litellm`). These are first-class and live in the spec, not in plugins.
+- **Declared backends** (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`, `pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`, `ollama`, `openai-compatible`, `openrouter`, `litellm`). These are first-class and live in the spec, not in plugins.
 
 The full contract (kinds, manifest, lifecycle, trust gate) is in [`docs/en/PLUGINS.en.md`](../../docs/en/PLUGINS.en.md).
 

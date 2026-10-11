@@ -66,7 +66,7 @@ Buddhist principles are used here as **engineering thinking aids** — not relig
 BWOC provides a **template and doctrine** for creating AI coding agents with a consistent, principled foundation:
 
 - **One repo, one agent** — each agent lives in its own repository cloned from the template
-- **Backend-neutral** — one `AGENTS.md` runs on ten declared backends: Claude, Antigravity, Codex, Kimi, Copilot, Grok, or self-hosted / hosted models via `bwoc-harness` (Ollama, any OpenAI-compatible endpoint, OpenRouter, LiteLLM)
+- **Backend-neutral** — one `AGENTS.md` runs on twenty-one declared backends: Claude, Antigravity, Codex, Kimi, Copilot, Grok, Pi, Oh My Pi, Devin, Droid, OpenCode, Kilo, Hermes, Qoder, Qwen Code, Cursor, Mastra Code, or self-hosted / hosted models via `bwoc-harness` (Ollama, any OpenAI-compatible endpoint, OpenRouter, LiteLLM)
 - **Persistent memory** — accumulates knowledge across sessions with impermanence-aware pruning
 - **Multi-agent safe** — multiple agents co-operate in the same repo without collision
 
@@ -288,7 +288,7 @@ C4Container
     title BWOC Framework — Container view
 
     Person(operator, "Operator", "Human who incarnates and drives agents")
-    System_Ext(llm, "LLM backend", "Claude Code · Antigravity · Codex · Kimi · Copilot · Grok · Ollama · OpenAI-compatible · OpenRouter · LiteLLM")
+    System_Ext(llm, "LLM backend", "Claude Code · Antigravity · Codex · Kimi · Copilot · Grok · Pi · Oh My Pi · Devin · Droid · OpenCode · Kilo · Hermes · Qoder · Qwen Code · Cursor · Mastra Code · Ollama · OpenAI-compatible · OpenRouter · LiteLLM")
 
     System_Boundary(bwoc, "BWOC Framework — native Rust, local-first") {
         Container(cli, "bwoc CLI", "Rust static binary", "Incarnate · lifecycle · send/inbox · trust --keygen · audit · plugins/skills")
@@ -468,7 +468,7 @@ BWOC is specification-first. The reference implementation is a native, cross-pla
 | `bwoc` CLI                                              | Rust, single static binary                                                                                             | **macOS · Linux · Windows**                               |
 | `bwoc-agent` runtime (ships with each incarnated agent) | Rust, single static binary                                                                                             | **macOS · Linux · Windows**                               |
 | CLI i18n (output strings)                               | Project Fluent (`.ftl` per locale)                                                                                     | **Ships with TH · EN**; pluggable for any future language |
-| Backend integration | Ten declared backends: vendor CLIs as subprocesses (`claude`, `agy`, `codex`, `kimi`, `copilot`, `grok`) or `bwoc-harness` for `ollama` / `openai-compatible` / `openrouter` / `litellm` | Whatever the backend supports |
+| Backend integration | Twenty-one declared backends: vendor CLIs as subprocesses (`claude`, `agy`, `codex`, `kimi`, `copilot`, `grok`, `pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`) or `bwoc-harness` for `ollama` / `openai-compatible` / `openrouter` / `litellm` | Whatever the backend supports |
 | Distribution | GitHub Release binaries with SHA-256 checksums · Homebrew tap · `cargo install` from source | — |
 | License                                                 | MIT (see [`LICENSE`](LICENSE))                                                                                         | —                                                         |
 

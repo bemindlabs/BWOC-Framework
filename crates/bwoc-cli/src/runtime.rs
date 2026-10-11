@@ -14,7 +14,8 @@
 //!
 //! A harness backend (`anthropic`, `ollama`, …) opens the chat TUI on
 //! `bwoc-harness`. A vendor-CLI backend (`claude`, `codex`, `agy`, `kimi`,
-//! `grok`, `copilot`) hands the terminal to that CLI in the current directory:
+//! `grok`, `copilot`, `pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`,
+//! `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`) hands the terminal to that CLI in the current directory:
 //! it runs on the CLI's own login (a subscription needs no API key) with its own
 //! tools and permissions, so harness tools and trust gates do not apply (#529).
 //!
@@ -1323,7 +1324,25 @@ mod tests {
         let never = || panic!("no probe");
         let never_o = |_: Option<&str>| panic!("no probe");
         let p = probes(&never, &never_o);
-        for name in ["claude", "codex", "agy", "kimi", "grok", "copilot"] {
+        for name in [
+            "claude",
+            "codex",
+            "agy",
+            "kimi",
+            "grok",
+            "copilot",
+            "pi",
+            "omp",
+            "devin",
+            "droid",
+            "opencode",
+            "kilo",
+            "hermes",
+            "qodercli",
+            "qwen",
+            "cursor",
+            "mastracode",
+        ] {
             let expected = Backend::from_registry_name(name).unwrap();
             assert_eq!(
                 resolve(&layer(Some(name), None), &p),
@@ -1340,7 +1359,25 @@ mod tests {
         }
         assert_eq!(
             vendor_backends(),
-            ["claude", "agy", "codex", "kimi", "copilot", "grok"]
+            [
+                "claude",
+                "agy",
+                "codex",
+                "kimi",
+                "copilot",
+                "grok",
+                "pi",
+                "omp",
+                "devin",
+                "droid",
+                "opencode",
+                "kilo",
+                "hermes",
+                "qodercli",
+                "qwen",
+                "cursor",
+                "mastracode",
+            ]
         );
     }
 

@@ -621,6 +621,10 @@ mod tests {
             Backend::Antigravity,
             Backend::Copilot,
             Backend::Grok,
+            Backend::Pi,
+            Backend::Droid,
+            Backend::Opencode,
+            Backend::Cursor,
         ] {
             assert_eq!(
                 pane_command(&launch(b, false, Some("squad"))),

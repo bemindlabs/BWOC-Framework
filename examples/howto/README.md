@@ -7,7 +7,7 @@ Short, runnable, one-task-each. Each recipe lists prerequisites, exact commands,
 | Recipe | What you'll do | Time |
 |---|---|---|
 | [`first-agent.md`](first-agent.md) | Init a workspace, incarnate your first agent, spawn the backend | ~5 min |
-| [`configure-backends.md`](configure-backends.md) | Switch which of the ten declared LLM backends an agent uses | ~2 min |
+| [`configure-backends.md`](configure-backends.md) | Switch which of the twenty-one declared LLM backends an agent uses | ~2 min |
 | [`workspace-layout.md`](workspace-layout.md) | Organize a workspace: agents/, projects/, notes/, central memory | ~3 min |
 | [`diagnose-and-fix.md`](diagnose-and-fix.md) | Use `bwoc doctor` to find and auto-fix common issues | ~2 min |
 

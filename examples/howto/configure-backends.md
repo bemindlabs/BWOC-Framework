@@ -11,7 +11,7 @@ Understand the per-agent backend choice and how to switch it.
 
 ## Background
 
-BWOC supports ten declared backends (Samānattatā — equal treatment, no vendor lock-in):
+BWOC supports twenty-one declared backends (Samānattatā — equal treatment, no vendor lock-in):
 
 | Backend | CLI binary | Common models |
 |---|---|---|
@@ -23,6 +23,17 @@ BWOC supports ten declared backends (Samānattatā — equal treatment, no vendo
 | OpenAI-compatible | `bwoc-harness` | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini` |
 | Copilot | `copilot` | see the `bwoc new` picker |
 | Grok | `grok` | `grok-4.5`, `grok-code-fast-1`, `grok-build` |
+| Pi | `pi` | any (pass `--model`) |
+| Oh My Pi | `omp` | any (pass `--model`) |
+| Devin | `devin` | any (pass `--model`) |
+| Droid | `droid` | see the `bwoc new` picker |
+| OpenCode | `opencode` | `provider/model` ids |
+| Kilo | `kilo` | `provider/model` ids |
+| Hermes | `hermes` | see the `bwoc new` picker |
+| Qoder | `qodercli` | see the `bwoc new` picker |
+| Qwen Code | `qwen` | `qwen3-coder-plus`, `qwen3-coder-flash` |
+| Cursor | `agent` (backend id `cursor`) | see the `bwoc new` picker |
+| Mastra Code | `mastracode` | `provider/model` ids |
 | OpenRouter | `bwoc-harness` | any OpenRouter model id (key: `OPENROUTER_API_KEY`) |
 | LiteLLM | `bwoc-harness` | `gpt-5.5`, `claude-opus-4-8`, `gemini-2.5-pro` (base: `LITELLM_API_BASE`) |
 
@@ -71,7 +82,7 @@ Should print `Neutrality check passed.` regardless of which backend you switch t
 
 ## Caveats
 
-All ten backends use `AGENTS.md` as the single source of truth. The vendor-CLI backends (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`) reach it through their entry file (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` → `AGENTS.md`; Copilot and Grok read `AGENTS.md` natively). The harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) load `AGENTS.md` directly through `bwoc-harness`, so there is no `OPENROUTER.md` or `LITELLM.md` to look for.
+All twenty-one backends use `AGENTS.md` as the single source of truth. The vendor-CLI backends (`claude`, `antigravity`, `codex`, `kimi`, `copilot`, `grok`, `pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`) reach it through their entry file (`CLAUDE.md`, `AGY.md`, `CODEX.md`, `KIMI.md` → `AGENTS.md`; Copilot and Grok read `AGENTS.md` natively). The harness backends (`ollama`, `openai-compatible`, `openrouter`, `litellm`) load `AGENTS.md` directly through `bwoc-harness`, so there is no `OPENROUTER.md` or `LITELLM.md` to look for.
 - Model identifiers in the picker are a convenience catalog, not a whitelist — type any model name and it's accepted as-is.
 
 ## What's next
