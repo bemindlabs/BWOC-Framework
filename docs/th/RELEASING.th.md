@@ -29,7 +29,7 @@ BWOC ใช้ **เวอร์ชัน 2 ระบบโดยตั้งใ
 
 ก่อนกด tag — ผู้ดูแลควรตรวจสอบ:
 
-- [ ] **CI ผ่าน** บน `main` ของ commit ล่าสุด — ดูที่ [Actions → CI](https://github.com/bemindlabs/BWOC-Framework/actions/workflows/ci.yml)
+- [ ] **CI ผ่าน** บน `main` ของ commit ล่าสุด — ดูที่ [Actions → CI](https://github.com/bemindlabs/bwoc-framework/actions/workflows/ci.yml)
 - [ ] **`CHANGELOG.md`** มี section สำหรับ CalVer tag ที่จะกด เปลี่ยน `[Unreleased]` เป็น `[v2026.5.22-0] — 2026-05-22` แล้วสร้าง `[Unreleased]` ใหม่ที่ว่างเปล่าด้านบน
 - [ ] **`VERSION.md`** auto-update ทุกครั้งที่แก้ไฟล์อยู่แล้ว ไม่ต้องแก้เอง
 - [ ] **ไม่มีการแก้ที่ยัง uncommit** — release artifact ควรสะท้อน tree ที่สะอาด

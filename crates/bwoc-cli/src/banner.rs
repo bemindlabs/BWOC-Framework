@@ -13,8 +13,8 @@ use std::io::{self, IsTerminal};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const TAGLINE: &str = "Buddhist Way of Coding — an engineering framework for AI coding agents.";
-const REPO_URL: &str = "https://github.com/bemindlabs/BWOC-Framework";
-const DOCS_URL: &str = "https://bemindlabs.github.io/BWOC-Framework/";
+const REPO_URL: &str = "https://github.com/bemindlabs/bwoc-framework";
+const DOCS_URL: &str = "https://bemindlabs.github.io/bwoc-framework/";
 
 // ANSI Shadow font for "BWOC". 6 rows tall, ~36 cols wide.
 const WORDMARK: &str = "\

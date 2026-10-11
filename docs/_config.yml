@@ -20,7 +20,7 @@ search:
 heading_anchors: true
 aux_links:
   GitHub:
-    - https://github.com/bemindlabs/BWOC-Framework
+    - https://github.com/bemindlabs/bwoc-framework
 aux_links_new_tab: true
 back_to_top: true
 back_to_top_text: "Back to top"
