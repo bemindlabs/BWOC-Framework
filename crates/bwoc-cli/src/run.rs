@@ -12,9 +12,30 @@
 //! | `copilot`   | `copilot -p "<task>" --no-ask-user`                      | Real       |
 //! | `codex`     | `codex exec --skip-git-repo-check --color never --sandbox workspace-write -- "<task>"` | Real |
 //! | `grok`      | `grok --sandbox workspace [--effort <lvl>] -p "<task>"`  | Real       |
+//! | `droid`     | `droid exec --auto low --cwd <dir> [-r <lvl>] "<task>"`  | Real       |
+//! | `opencode`  | `opencode run [--variant <lvl>] -- "<task>"`             | Real       |
+//! | `kilo`      | `kilo run -- "<task>"`                                   | Real       |
+//! | `qodercli`  | `qodercli --max-turns 50 -p "<task>"`                    | Real       |
+//! | `mastracode`| `mastracode --permission-mode deny [--thinking-level <lvl>] -p "<task>"` | Real |
 //! | `ollama`    | `bwoc-harness --workdir <dir> --task "<task>" --model <model>` | Real |
 //! | `agy`       | `RunError::HeadlessUnsupported`                          | Deferred  |
 //! | `kimi`      | `RunError::HeadlessUnsupported`                          | Deferred  |
+//! | `pi`        | `RunError::HeadlessUnsupported` (no sandbox/permission layer) | Deferred |
+//! | `omp`       | `RunError::HeadlessUnsupported` (no sandbox)             | Deferred  |
+//! | `devin`     | `RunError::HeadlessUnsupported` (`-p` approval behaviour unverified) | Deferred |
+//! | `hermes`    | `RunError::HeadlessUnsupported` (`-z` bypasses approvals by design) | Deferred |
+//! | `qwen`      | `RunError::HeadlessUnsupported` (`-p` approval behaviour unverified) | Deferred |
+//! | `cursor`    | `RunError::HeadlessUnsupported` (`agent -p` only proposes unless `--force`) | Deferred |
+//!
+//! The new third-party vendor CLIs are wired Real only where a bounding or
+//! fail-closed mode exists, and never with a bypass flag (`--auto` on
+//! opencode/kilo, `--skip-permissions-unsafe` on droid, `--yolo` on
+//! qodercli/qwen, `--force` on cursor): droid is read-only without `--auto` and
+//! capped at `low`; mastracode's `--permission-mode deny` fails closed (tasks
+//! needing writes abort); qodercli `-p` auto-denies prompts; opencode/kilo
+//! reject unprompted permission requests without `--auto` and take no sandbox
+//! flag (bounding is their `permission` block in `opencode.json`). Deferred ones
+//! still work interactively via `bwoc spawn` / bare `bwoc --backend <x>`.
 //!
 //! `agy` and `kimi` each have interactive-only or OAuth-gated CLIs at the time
 //! of writing; no confirmed non-interactive exec flag exists, so we surface
@@ -502,6 +523,92 @@ pub fn build_command(
             args.push(task.to_string());
             Ok(("grok".to_string(), args))
         }
+        Backend::Droid => {
+            // `droid exec` (Factory) — read-only without `--auto`. `--auto low`
+            // permits local file edits only; `medium`/`high` (package installs,
+            // remote writes, deploys) are deliberately NOT used, nor is
+            // `--skip-permissions-unsafe`. `--cwd` pins the run to the jailed
+            // work dir. `-r` forwards the manifest effort. Task is the last
+            // positional.
+            let mut args = vec![
+                "exec".to_string(),
+                "--auto".to_string(),
+                "low".to_string(),
+                "--cwd".to_string(),
+                work_dir.to_string_lossy().into_owned(),
+            ];
+            if let Some(effort) = manifest_effort(config_dir) {
+                args.push("-r".to_string());
+                args.push(effort);
+            }
+            args.push(task.to_string());
+            Ok(("droid".to_string(), args))
+        }
+        Backend::Opencode => {
+            // `opencode run` — non-interactive. NOT `--auto` (auto-approves every
+            // permission not explicitly denied). `--variant` forwards the
+            // manifest effort. `--` so a task beginning with `-` is the message,
+            // not a flag (verified against opencode 1.18.31).
+            let mut args = vec!["run".to_string()];
+            if let Some(effort) = manifest_effort(config_dir) {
+                args.push("--variant".to_string());
+                args.push(effort);
+            }
+            args.push("--".to_string());
+            args.push(task.to_string());
+            Ok(("opencode".to_string(), args))
+        }
+        Backend::Kilo => {
+            // `kilo run` — OpenCode fork with the same shape. NOT `--auto`:
+            // without it, unprompted permission requests are rejected (exit 1),
+            // which is the fail-closed behaviour wanted here. No effort flag is
+            // forwarded (`--variant` unverified on the fork).
+            Ok((
+                "kilo".to_string(),
+                vec!["run".to_string(), "--".to_string(), task.to_string()],
+            ))
+        }
+        Backend::Qodercli => {
+            // `-p` print mode auto-denies permission prompts (fail-closed);
+            // `--yolo` is deliberately NOT passed. `--max-turns` bounds a runaway
+            // loop. Task is `-p`'s value, last.
+            Ok((
+                "qodercli".to_string(),
+                vec![
+                    "--max-turns".to_string(),
+                    "50".to_string(),
+                    "-p".to_string(),
+                    task.to_string(),
+                ],
+            ))
+        }
+        Backend::Mastracode => {
+            // `--permission-mode deny` is required: the default (`auto`)
+            // approves every tool call. `deny` fails closed — a task that needs
+            // a write aborts rather than being silently approved.
+            let mut args = vec!["--permission-mode".to_string(), "deny".to_string()];
+            if let Some(effort) = manifest_effort(config_dir) {
+                args.push("--thinking-level".to_string());
+                args.push(effort);
+            }
+            args.push("-p".to_string());
+            args.push(task.to_string());
+            Ok(("mastracode".to_string(), args))
+        }
+        // Deferred: no verified bounding / fail-closed headless mode.
+        //   pi / omp   — no sandbox or permission layer at all (only a tool allowlist).
+        //   devin      — `-p` approval behaviour unverified.
+        //   hermes     — `-z` bypasses approvals by design, no sandbox.
+        //   qwen       — `-p` approval behaviour unverified (default approvalMode `auto`).
+        //   cursor     — `agent -p` only proposes changes unless `--force` (a bypass).
+        Backend::Pi
+        | Backend::Omp
+        | Backend::Devin
+        | Backend::Hermes
+        | Backend::Qwen
+        | Backend::Cursor => Err(RunError::HeadlessUnsupported {
+            backend: backend.display_name().to_string(),
+        }),
         Backend::Antigravity => Err(RunError::HeadlessUnsupported {
             backend: "agy".to_string(),
         }),
@@ -613,6 +720,13 @@ pub fn execute(args: RunArgs, runner: &dyn CommandRunner) -> Result<(RunResult, 
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Manifest `reasoningEffort`, when the manifest loads and sets it.
+fn manifest_effort(config_dir: &Path) -> Option<String> {
+    Manifest::load_from_path(&config_dir.join("config.manifest.json"))
+        .ok()
+        .and_then(|m| m.reasoning_effort)
+}
 
 fn normalize_agent_id(name: &str) -> String {
     if name.starts_with("agent-") {
@@ -876,6 +990,125 @@ mod tests {
         );
         drop(dir);
         drop(tmp);
+    }
+
+    fn assert_no_bypass(args: &[String]) {
+        for bad in [
+            "--auto",
+            "--yolo",
+            "--force",
+            "--skip-permissions-unsafe",
+            "--dangerously-skip-permissions",
+            "bypassPermissions",
+        ] {
+            // `--auto low` for droid is the one sanctioned use; checked per-test.
+            if bad == "--auto" {
+                continue;
+            }
+            assert!(!args.iter().any(|a| a == bad), "{bad} in {args:?}");
+        }
+    }
+
+    #[test]
+    fn droid_dispatch_is_auto_low_without_bypass() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (program, args) =
+            build_command(Backend::Droid, tmp.path(), tmp.path(), "task", "m").unwrap();
+        assert_eq!(program, "droid");
+        let wd = tmp.path().to_string_lossy().into_owned();
+        assert_eq!(
+            args,
+            ["exec", "--auto", "low", "--cwd", wd.as_str(), "task"]
+        );
+        assert_no_bypass(&args);
+    }
+
+    #[test]
+    fn opencode_and_kilo_dispatch_plain_run_without_auto() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (b, bin) in [(Backend::Opencode, "opencode"), (Backend::Kilo, "kilo")] {
+            let (program, args) = build_command(b, tmp.path(), tmp.path(), "-x task", "m").unwrap();
+            assert_eq!(program, bin);
+            assert_eq!(args, ["run", "--", "-x task"]);
+            assert!(!args.iter().any(|a| a == "--auto"));
+            assert_no_bypass(&args);
+        }
+    }
+
+    #[test]
+    fn opencode_forwards_reasoning_effort_as_variant() {
+        let (dir, root, agent_dir) = make_workspace("opencode", "m");
+        let manifest = agent_dir.join("config.manifest.json");
+        let body = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            body.trim_end().trim_end_matches('}').to_string() + ", \"reasoningEffort\": \"high\" }",
+        )
+        .unwrap();
+        let (_p, args) = build_command(Backend::Opencode, &agent_dir, &root, "do it", "m").unwrap();
+        assert_eq!(args, ["run", "--variant", "high", "--", "do it"]);
+        drop(dir);
+    }
+
+    #[test]
+    fn qodercli_dispatch_is_print_mode_without_yolo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (program, args) =
+            build_command(Backend::Qodercli, tmp.path(), tmp.path(), "task", "m").unwrap();
+        assert_eq!(program, "qodercli");
+        assert_eq!(args, ["--max-turns", "50", "-p", "task"]);
+        assert_no_bypass(&args);
+    }
+
+    #[test]
+    fn mastracode_dispatch_denies_permissions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (program, args) =
+            build_command(Backend::Mastracode, tmp.path(), tmp.path(), "task", "m").unwrap();
+        assert_eq!(program, "mastracode");
+        assert_eq!(args, ["--permission-mode", "deny", "-p", "task"]);
+        assert!(!args.iter().any(|a| a == "auto"));
+        assert_no_bypass(&args);
+    }
+
+    #[test]
+    fn deferred_vendor_backends_report_headless_unsupported() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (b, name) in [
+            (Backend::Pi, "pi"),
+            (Backend::Omp, "omp"),
+            (Backend::Devin, "devin"),
+            (Backend::Hermes, "hermes"),
+            (Backend::Qwen, "qwen"),
+            (Backend::Cursor, "cursor"),
+        ] {
+            match build_command(b, tmp.path(), tmp.path(), "task", "m") {
+                Err(RunError::HeadlessUnsupported { backend }) => assert_eq!(backend, name),
+                other => panic!("{name}: expected HeadlessUnsupported, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn registry_parser_covers_new_vendor_clis() {
+        for n in [
+            "pi",
+            "omp",
+            "devin",
+            "droid",
+            "opencode",
+            "kilo",
+            "hermes",
+            "qodercli",
+            "qwen",
+            "cursor",
+            "mastracode",
+        ] {
+            assert_eq!(
+                Backend::from_registry_name(n).map(|b| b.display_name()),
+                Some(n)
+            );
+        }
     }
 
     #[test]

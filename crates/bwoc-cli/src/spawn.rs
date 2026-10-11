@@ -45,6 +45,17 @@ use crate::sessions::{SessionMarker, remove_marker, write_marker};
 /// - `"kimi"` → `Kimi`
 /// - `"copilot"` → `Copilot`
 /// - `"grok"` → `Grok`
+/// - `"pi"` → `Pi`
+/// - `"omp"` → `Omp`
+/// - `"devin"` → `Devin`
+/// - `"droid"` → `Droid`
+/// - `"opencode"` → `Opencode`
+/// - `"kilo"` → `Kilo`
+/// - `"hermes"` → `Hermes`
+/// - `"qodercli"` → `Qodercli`
+/// - `"qwen"` → `Qwen`
+/// - `"cursor"` → `Cursor`
+/// - `"mastracode"` → `Mastracode`
 /// - `"ollama"` → `Ollama`
 /// - `"openai-compatible"` → `OpenAiCompatible`
 /// - `"openrouter"` → `OpenRouter`
@@ -65,6 +76,28 @@ pub enum Backend {
     /// without a backend-named file (same as Copilot). Spawn execs it
     /// interactively; `bwoc run` uses its headless mode (`grok -p …`).
     Grok,
+    /// Pi coding agent CLI (`pi`). Reads `AGENTS.md` natively. Spawn execs it interactively; `bwoc run` is Deferred (no sandbox / permission layer).
+    Pi,
+    /// Oh My Pi CLI (`omp`). Reads `AGENTS.md` natively. Spawn execs it interactively; `bwoc run` is Deferred (no sandbox).
+    Omp,
+    /// Devin for Terminal (`devin`). Spawn execs it interactively; `bwoc run` is Deferred (headless approval behaviour unverified).
+    Devin,
+    /// Factory Droid CLI (`droid`). Spawn execs it interactively; `bwoc run` uses `droid exec` (read-only unless `--auto low`).
+    Droid,
+    /// OpenCode CLI (`opencode`). Reads `AGENTS.md` natively. Spawn execs it interactively; `bwoc run` uses `opencode run`.
+    Opencode,
+    /// Kilo Code CLI (`kilo`, an OpenCode fork). Spawn execs it interactively; `bwoc run` uses `kilo run`.
+    Kilo,
+    /// Nous Research Hermes agent CLI (`hermes`). Reads `AGENTS.md` natively. Spawn execs it interactively; `bwoc run` is Deferred (its headless `-z` bypasses approvals by design).
+    Hermes,
+    /// Qoder CLI (`qodercli`). Spawn execs it interactively; `bwoc run` uses `-p` (prompts auto-denied).
+    Qodercli,
+    /// Qwen Code CLI (`qwen`). Reads `AGENTS.md` natively. Spawn execs it interactively; `bwoc run` is Deferred (headless approval behaviour unverified).
+    Qwen,
+    /// Cursor Agent CLI. The backend id is `cursor` but the binary on PATH is `agent` (generic name: make sure it is Cursor's). Reads `AGENTS.md` natively. Spawn execs it interactively; `bwoc run` is Deferred (headless only proposes changes unless `--force`).
+    Cursor,
+    /// Mastra Code CLI (`mastracode`). Spawn execs it interactively; `bwoc run` uses `-p --permission-mode deny`.
+    Mastracode,
     /// Self-hosted Ollama.  Execs the `bwoc-harness` sibling binary with the
     /// default endpoint `http://localhost:11434/v1`, or with `baseUrl` from
     /// `config.manifest.json` when that field is present.
@@ -112,6 +145,17 @@ pub const BACKEND_ENTRY_FILES: &[&str] = &[
     "OLLAMA.md",
     "COPILOT.md",
     "GROK.md",
+    "PI.md",
+    "OMP.md",
+    "DEVIN.md",
+    "DROID.md",
+    "OPENCODE.md",
+    "KILO.md",
+    "HERMES.md",
+    "QODERCLI.md",
+    "QWEN.md",
+    "CURSOR.md",
+    "MASTRACODE.md",
     "OPENAI.md",
 ];
 
@@ -129,6 +173,17 @@ impl Backend {
             Backend::Kimi => Some("kimi"),
             Backend::Copilot => Some("copilot"),
             Backend::Grok => Some("grok"),
+            Backend::Pi => Some("pi"),
+            Backend::Omp => Some("omp"),
+            Backend::Devin => Some("devin"),
+            Backend::Droid => Some("droid"),
+            Backend::Opencode => Some("opencode"),
+            Backend::Kilo => Some("kilo"),
+            Backend::Hermes => Some("hermes"),
+            Backend::Qodercli => Some("qodercli"),
+            Backend::Qwen => Some("qwen"),
+            Backend::Cursor => Some("agent"),
+            Backend::Mastracode => Some("mastracode"),
             Backend::Ollama
             | Backend::OpenAiCompatible
             | Backend::OpenRouter
@@ -146,6 +201,17 @@ impl Backend {
             Backend::Kimi => "kimi",
             Backend::Copilot => "copilot",
             Backend::Grok => "grok",
+            Backend::Pi => "pi",
+            Backend::Omp => "omp",
+            Backend::Devin => "devin",
+            Backend::Droid => "droid",
+            Backend::Opencode => "opencode",
+            Backend::Kilo => "kilo",
+            Backend::Hermes => "hermes",
+            Backend::Qodercli => "qodercli",
+            Backend::Qwen => "qwen",
+            Backend::Cursor => "cursor",
+            Backend::Mastracode => "mastracode",
             Backend::Ollama => "ollama",
             Backend::OpenAiCompatible => "openai-compatible",
             Backend::OpenRouter => "openrouter",
@@ -199,10 +265,26 @@ impl Backend {
     pub fn vendor_effort_args(self, effort: &str) -> Vec<String> {
         match self {
             Backend::Claude | Backend::Grok => vec!["--effort".to_string(), effort.to_string()],
+            // Pi: `--thinking off|minimal|low|medium|high|xhigh|max`.
+            Backend::Pi => vec!["--thinking".to_string(), effort.to_string()],
+            // Mastra Code: `--thinking-level off|low|medium|high|xhigh`.
+            Backend::Mastracode => vec!["--thinking-level".to_string(), effort.to_string()],
             Backend::Codex => vec!["-c".to_string(), format!("model_reasoning_effort={effort}")],
             Backend::Antigravity
             | Backend::Kimi
             | Backend::Copilot
+            | Backend::Omp
+            | Backend::Devin
+            // Droid (`exec -r`) and OpenCode/Kilo (`run --variant`) take effort
+            // only on their headless subcommand, not on the interactive TUI;
+            // `bwoc run` forwards it there.
+            | Backend::Droid
+            | Backend::Opencode
+            | Backend::Kilo
+            | Backend::Hermes
+            | Backend::Qodercli
+            | Backend::Qwen
+            | Backend::Cursor
             | Backend::Ollama
             | Backend::OpenAiCompatible
             | Backend::OpenRouter
@@ -250,6 +332,25 @@ impl Backend {
             // xAI Grok Build. Its own model slugs; free-text input is always
             // accepted, so this is a convenience list, not a whitelist.
             Backend::Grok => &["grok-4.5", "grok-code-fast-1", "grok-build"],
+            // Third-party vendor CLIs below are multi-provider or account-routed;
+            // these are best-effort examples, free-text input is always accepted.
+            Backend::Pi | Backend::Omp => &["claude-sonnet-4-6", "gpt-5.5", "gemini-2.5-pro"],
+            Backend::Devin => &["claude-sonnet-4-6", "gpt-5.5"],
+            Backend::Droid => &["claude-opus-4-8", "claude-sonnet-4-6", "gpt-5.5"],
+            Backend::Opencode | Backend::Kilo => &[
+                "anthropic/claude-sonnet-4-6",
+                "openai/gpt-5.5",
+                "google/gemini-2.5-pro",
+            ],
+            Backend::Hermes => &["hermes-4-405b", "hermes-4-70b"],
+            Backend::Qodercli => &["auto", "performance", "ultimate"],
+            Backend::Qwen => &["qwen3-coder-plus", "qwen3-coder-flash"],
+            Backend::Cursor => &["auto", "claude-sonnet-4-6", "gpt-5.5"],
+            Backend::Mastracode => &[
+                "anthropic/claude-sonnet-4-6",
+                "openai/gpt-5.5",
+                "google/gemini-2.5-pro",
+            ],
             Backend::Ollama => &[
                 "qwen2.5-coder:7b",
                 "qwen2.5-coder:14b",
@@ -717,6 +818,15 @@ mod tests {
             vec!["-c".to_string(), "model_reasoning_effort=high".to_string()]
         );
         // No effort-level CLI control → empty (nothing passed).
+        assert_eq!(
+            Backend::Pi.vendor_effort_args("high"),
+            ["--thinking", "high"]
+        );
+        assert_eq!(
+            Backend::Mastracode.vendor_effort_args("low"),
+            ["--thinking-level", "low"]
+        );
+        assert!(Backend::Cursor.vendor_effort_args("high").is_empty());
         assert!(Backend::Kimi.vendor_effort_args("high").is_empty());
         assert!(Backend::Antigravity.vendor_effort_args("high").is_empty());
         assert!(Backend::Ollama.vendor_effort_args("high").is_empty());

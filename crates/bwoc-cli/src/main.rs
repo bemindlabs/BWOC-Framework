@@ -101,7 +101,8 @@ struct Cli {
     /// Bare `bwoc` only: provider backend for the coding session in the current
     /// directory (overrides BWOC_BACKEND and `[runtime]` / `[defaults]`
     /// backends). A vendor CLI (`claude`, `codex`, `agy`, `kimi`, `grok`,
-    /// `copilot`) is exec'd in place, on its own login.
+    /// `copilot`, `pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`,
+    /// `qodercli`, `qwen`, `cursor`, `mastracode`) is exec'd in place, on its own login.
     #[arg(long, value_name = "BACKEND")]
     backend: Option<String>,
 
