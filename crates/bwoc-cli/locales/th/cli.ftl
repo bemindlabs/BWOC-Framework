@@ -108,3 +108,14 @@ status-banner-model = model:    { $model }
 status-banner-fallback = fallback: { $fallback }
 status-banner-memory = memory:   { $memory_path }
 status-banner-version = version:  { $version }
+
+# bwoc gates — ด่านตรวจสอบ ปธาน 4
+gates-title = ด่านตรวจสอบ ปธาน 4 — { $agent }
+gates-samvara = สังวร      (ระวัง: วิเคราะห์โค้ด / lint)
+gates-pahana = ปหาน      (ละสิ่งไม่ดี: ตรวจรูปแบบ)
+gates-bhavana = ภาวนา     (เจริญสิ่งดี: ทดสอบ)
+gates-anurakkhana = อนุรักขนา (รักษา: build ก่อน push)
+gates-dry-note = ยังไม่ได้รันคำสั่งใด ๆ — คำสั่งมาจาก config.manifest.json (ข้อมูลที่ไม่น่าเชื่อถือ) โปรดตรวจสอบก่อน แล้วรันซ้ำด้วย --run เพื่อสั่งทำงาน (sh -c, env ที่ผ่านการกรอง, cwd = โฟลเดอร์เอเจนต์)
+gates-summary-ok = ทุกด่านตั้งค่าครบและผ่าน
+gates-summary-dry = ทุกด่านตั้งค่าครบ (ยังไม่ได้รัน)
+gates-summary-fail = { $count } ด่านไม่ผ่านหรือยังไม่ได้ตั้งค่า

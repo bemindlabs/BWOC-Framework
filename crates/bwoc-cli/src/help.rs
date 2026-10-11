@@ -361,6 +361,7 @@ The CLI maps directly:
     bwoc init <path>          establish the workspace
     bwoc new <name>            incarnate an agent
     bwoc check <path>          audit backend neutrality
+    bwoc gates [path] [--run]  Padhana-4 verification gates (dry by default)
     bwoc spawn --path <p>      bring the agent to life (exec the backend)
 
   Phase 2 (ṭhiti, in progress):

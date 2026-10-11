@@ -195,6 +195,25 @@ mkdir docs/ja
 
 ---
 
+## ด่านตรวจสอบ — `bwoc gates`
+
+`bwoc gates [<agent-path>] [--run] [--json]` ประเมินด่านปธาน 4 (สัมมาวายามะ, AGENTS.md §6) จาก `config.manifest.json` ของเอเจนต์:
+
+| ด่าน | ความหมาย | คีย์ใน manifest |
+|---|---|---|
+| Samvara (สังวร) | ระวัง — วิเคราะห์โค้ด | `lintCmd` |
+| Pahana (ปหาน) | ละสิ่งไม่ดี — ตรวจรูปแบบ | `formatCmd` |
+| Bhavana (ภาวนา) | เจริญสิ่งดี — ทดสอบ | `testCmd` |
+| Anurakkhana (อนุรักขนา) | รักษา — build ก่อน push | `buildCmd` |
+
+แถว "Regression tests" ใน template ไม่มีคีย์ของตัวเอง จึงให้ `testCmd` (Bhavana) ครอบคลุม regression และ Anurakkhana ผูกกับ `buildCmd` ซึ่งเป็นการตรวจ build ก่อน push
+
+- **ค่าเริ่มต้นคือ dry run** คำสั่งมาจาก manifest (ข้อมูลที่ไม่น่าเชื่อถือ) จึงพิมพ์ออกมาแต่ไม่รัน
+- **`--run`** รันแต่ละคำสั่งผ่าน `sh -c` โดย cwd = โฟลเดอร์เอเจนต์, env ที่ผ่านการกรอง (allowlist) และ timeout 600 วินาทีต่อด่าน
+- คำสั่งว่าง, `{{placeholder}}` ที่ยังไม่แทนค่า หรือ stub `echo 'gate: ...'` จะรายงานเป็น `UNCONFIGURED` ไม่นับว่าผ่าน
+- exit code ไม่ใช่ศูนย์ (3) หากมีด่าน `FAIL` หรือ `UNCONFIGURED` ส่วน `--json` ให้ `{ agent, executed, ok, gates: [{ gate, key, command, status, exit_code, duration_ms }] }`
+- ยังไม่เชื่อมกับ `bwoc run` (งานต่อเนื่อง)
+
 ## ดูเพิ่ม
 
 - [`ARCHITECTURE.th.md`](ARCHITECTURE.th.md) — ส่วนประกอบทำงานร่วมกันอย่างไรใน runtime
