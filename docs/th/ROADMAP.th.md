@@ -34,7 +34,7 @@ nav_order: 6
 
 ### ส่งมอบใน Phase 1 v2.0 (เสร็จแล้ว)
 
-รายการทั้งหมดด้านล่าง implement แล้ว Definition of Done ของ phase นี้ (uppāda end-to-end สำหรับ backend หนึ่ง) **บรรลุ** เหลือเฉพาะ HELD policy items (`CODEOWNERS` · `ISSUE_TEMPLATE/config.yml`) ที่รอ user direction; release pipeline พร้อมใช้แล้ว (ดู Phase 2)
+รายการทั้งหมดด้านล่าง implement แล้ว Definition of Done ของ phase นี้ (uppāda end-to-end สำหรับ backend หนึ่ง) **บรรลุ** pipeline ของ release อยู่ใต้ Phase 2
 
 | รายการ | สเปก | สถานะ |
 |---|---|---|
@@ -72,7 +72,7 @@ nav_order: 6
 | Daemon-side inbox watch + cursor | ประกาศ envelope ใหม่ไปยัง stderr; `.bwoc/inbox.cursor` รอด restart |
 | `--json` ครอบคลุม read-only commands | `list`, `status`, `workspace info`, `workspace validate`, `check` |
 | CI matrix | `ubuntu-latest` · `macos-latest` · `windows-latest` เขียวทุก push |
-| Release pipeline (CalVer) | `release.yml` trigger เมื่อ push tag `v<YYYY>.<M>.<D>-<patch>`; 4 binary cross-platform + `.sha256` → GitHub Release ที่สร้างอัตโนมัติ |
+| Release pipeline (CalVer) | `release.yml` trigger เมื่อ push tag `v<YYYY>.<M>.<D>-<patch>`; 5 binary cross-platform (linux x86_64/aarch64, macOS x86_64/aarch64, windows x86_64) + `.sha256` → GitHub Release ที่สร้างอัตโนมัติ |
 | Help system (ใน binary) | 12 topic: `getting-started`, `backends`, `workspace`, `manifest`, `arc`, `lifecycle`, `daemon`, `messaging`, `persona`, `memory`, `doctor`, `script` |
 | Shell completion | `bwoc completion <bash\|zsh\|fish\|powershell\|elvish>` ผ่าน clap_complete |
 | `bwoc init` เขียน `.gitignore` | exclude daemon ephemerals (PID/socket/cursor) สำหรับ user workspace |
@@ -90,7 +90,7 @@ nav_order: 6
 
 ### ที่เหลือก่อน ship
 
-- **Cross-backend validation** — uppāda + ṭhiti เต็มกับ 5 backend CLI ใน CI (พิสูจน์ Samānattatā); `bwoc-harness` (ollama) คือตัวที่ห้า
+- **Cross-backend validation** — ส่งมอบบางส่วน: `cross-backend.yml` รัน uppāda + ṭhiti ทุกคืนบน `ollama` และ `claude` (ผ่าน `bwoc-harness`) ที่เหลือคือ backend แบบ vendor CLI ซึ่งต้องติดตั้งและ login CLI ของผู้ขายใน CI
 - **Code signing** — Apple notarization + Windows Authenticode สำหรับ release artifact (ต้องการ user-cert authorization)
 - **Build Linux musl** — `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` ship แล้ว; musl (Alpine / distroless) เพิ่มได้เมื่อมีความต้องการ
 - ~~**เครื่องมือ memory mining และ interface Tier 2 backend ที่ pluggable**~~ — **ship แล้ว** ทั้ง interface (`bwoc-core::deep_memory`) และ reference implementation (`bwoc-deep-memory`); ดู "Ship นอก Phase 3" ด้านล่าง
@@ -110,7 +110,7 @@ nav_order: 6
 | `bwoc retire <name>` | ลบจาก registry; file mode 3 แบบ: default (ลบ dir), `--keep-files` (เก็บทั้งหมด), `--keep-memory` (เก็บแค่ `memories/`, ลบที่เหลือ — archive ความรู้ที่ agent สั่งสมในขณะที่ปล่อย agent ไป) `--keep-files` กับ `--keep-memory` เป็น clap-mutex |
 | `bwoc workspace prune` | ปรับ phantom registry entries vs orphan agent dirs; `--apply` ลบ drift ที่ปลอดภัย; `--json` emit `{ phantoms, orphans, applied, removed }` สำหรับ CI gating |
 | User → agent inbox (สัมมาวาจา Phase 0) | `bwoc send` + `bwoc inbox` ship เป็น JSONL envelope; รากฐานสำหรับ agent → agent messaging |
-| Kalyāṇamitta 7 trust (5 จาก 5 ขั้น) | implementation ทุกขั้น ship แล้ว 2026-05-23: (1) deserialization ใน `bwoc-core::Manifest`, (2) `bwoc check` ตรวจหลักฐาน, (3) `bwoc trust <agent> read`, (4) refusal ระดับ daemon ที่ inbox poll หลัง `BWOC_TRUST_GATING=1` พร้อม sidecar `inbox.refusals.jsonl` และ `bwoc inbox` merge, (5) CHANGELOG roll-up + TH parity Spec: [`modules/agent-template/interconnect/trust.md`](../../modules/agent-template/interconnect/trust.md) |
+| Kalyāṇamitta 7 trust (5 จาก 5 ขั้น) | implementation ทุกขั้น ship แล้ว 2026-05-23: (1) deserialization ใน `bwoc-core::Manifest`, (2) `bwoc check` ตรวจหลักฐาน, (3) `bwoc trust <agent> read`, (4) refusal ระดับ daemon ที่ inbox poll หลัง `BWOC_TRUST_GATING=1` (ตั้งแต่ 3.2 gate ทำงานโดยปริยายแบบ warn อย่างเดียว: ไม่ตั้ง ⇒ ส่งมอบ + log `trust_warn` ไม่ refuse; `=0` ปิด) พร้อม sidecar `inbox.refusals.jsonl` และ `bwoc inbox` merge, (5) CHANGELOG roll-up + TH parity Spec: [`modules/agent-template/interconnect/trust.md`](../../modules/agent-template/interconnect/trust.md) |
 | Agent → agent messaging (สัมมาวาจา Phase 1) | `bwoc send --from <agent>` เขียน sender identity ลง envelope; daemon ฝั่งผู้รับประเมินด้วย manifest ของ sender; refusals โผล่ผ่าน `bwoc inbox` JSON merge. กฎ **สาราณียธรรม 6** อยู่ใน [`interconnect/messaging.md`](../../modules/agent-template/interconnect/messaging.md) (+ `.th.md`) |
 | `bwoc check` แบบ dual-mode | ตรวจเทมเพลต (placeholder `manifest.name`) vs incarnation (ชื่อจริง) Template mode ยืนยันว่า placeholder ต้องมี + กฎ neutrality; incarnation mode ยืนยันว่า placeholder ต้องหายไป (ยกเว้น `{{taskId}}` ซึ่งเป็น runtime) และข้าม neutrality checks ปิด bug ที่ agent ยังไม่ personalize ผ่าน check แบบเงียบๆ |
 | Interconnect routing — Track A | `.bwoc/interconnect/routes.toml` ระดับ workspace, peer-declared (ไม่มี broker กลาง) `bwoc-core::routing` type `Routes` + resolve (exact `agent` → longest `namespace` prefix → `NotFound`); `send` consult เฉพาะตอน local-registry miss, path local-hit ไม่เปลี่ยน byte-for-byte compose กับ trust gate (sender ข้าม workspace → `unknown_sender` → refused) เลย ship ได้โดยไม่ต้องรอ Trust v2 Spec: [`interconnect/routing.md`](../../modules/agent-template/interconnect/routing.md) **อนัตตา / SN 22.59** |
@@ -121,7 +121,7 @@ nav_order: 6
 
 DoD ครบทั้งสองครึ่งแล้ว: *ประสานงานโดยไม่มีศูนย์กลาง* (interconnect routing) และ *ชีวิต agent จบอย่างสะอาด* (`bwoc retire` full vaya) — ship ทั้งคู่ข้างบน เหตุผลการเรียงลำดับ + การตัดสินใจ design ของ worktree-lifecycle / routing อยู่ใน [`notes/2026-05-23_phase3-remaining-sequencing.md`](../../notes/2026-05-23_phase3-remaining-sequencing.md) Trust v2 ship ไปแล้ว (bullet แรก) และ reference implementation ของ Tier 2 memory ก็ ship แล้วเช่นกัน (`bwoc-deep-memory` ดู "Ship นอก Phase 3") — **ไม่มีอะไรเหลือเลื่อนออกจาก DoD ของ Phase 3 แล้ว**:
 
-- **Trust v2 — ship แล้ว** signed envelopes / identity proof ผ่าน crate `bwoc-signing` ที่ dep-quarantine (ed25519 บน canonical bytes ตาม RFC 8785 โดยผูก `nonce` / `ts` / `messageId` ไว้ในลายเซ็นเพื่อกัน replay) wire เข้า `bwoc send --from` (sign) และ trust gate ของ `bwoc-agent` (verify) `bwoc trust --keygen` สร้าง keypair ต่อ agent (private key `agents/<id>/.bwoc/agent.key`, `0600` บน Unix, gitignored; public key อยู่ใน manifest `trust.signingPublicKey`) มี mode `warn` / `enforce` ให้เลือก + escape hatch `BWOC_SIGNING_MODE=off` แบบ legacy ส่วน cross-workspace: gate resolve public key จาก manifest ของ peer ผ่าน routing layer และ **บังคับ** ให้ cross-workspace write ต้องมีลายเซ็นที่ valid (ถ้าขาดจะ refuse เป็น `unsigned_cross_workspace` ทั้งสอง mode) Spec: [`docs/en/SIGNING.en.md`](../en/SIGNING.en.md)
+- **Trust v2 — ship แล้ว** signed envelopes / identity proof ผ่าน crate `bwoc-signing` ที่ dep-quarantine (ed25519 บน canonical bytes ตาม RFC 8785 โดยผูก `nonce` / `ts` / `messageId` ไว้ในลายเซ็นเพื่อกัน replay) wire เข้า `bwoc send --from` (sign) และ trust gate ของ `bwoc-agent` (verify) `bwoc trust --keygen` สร้าง keypair ต่อ agent (private key `agents/<id>/.bwoc/agent.key`, `0600` บน Unix, gitignored; public key อยู่ใน manifest `trust.signingPublicKey`) มี mode `warn` / `enforce` ให้เลือก (ค่าเริ่มต้น `enforce`; การหมุนคีย์ทำเอง `bwoc trust --keygen --force`; revocation list ยังเลื่อนไว้ ดู SIGNING §9) + escape hatch `BWOC_SIGNING_MODE=off` แบบ legacy ส่วน cross-workspace: gate resolve public key จาก manifest ของ peer ผ่าน routing layer และ **บังคับ** ให้ cross-workspace write ต้องมีลายเซ็นที่ valid (ถ้าขาดจะ refuse เป็น `unsigned_cross_workspace` ทั้งสอง mode) Spec: [`docs/en/SIGNING.en.md`](../en/SIGNING.en.md)
 - **Tier 2 memory — ship แล้ว** สองชิ้น: *interface* ของ backend ที่ pluggable (`bwoc-core::deep_memory` — trait `DeepMemory` + `ShellDeepMemory` shell-out + factory, wire เข้า `bwoc memory wake-up|search|mine` และ `bwoc new --deep-memory-cmd`) กับ *reference implementation* (`bwoc-deep-memory` ดู "Ship นอก Phase 3") Tier 1 file-based memory เสร็จอยู่ก่อนแล้ว
 
 ---
@@ -216,8 +216,8 @@ backend ได้อย่างทำซ้ำได้ — และเรื�
 | t32 | deep-memory sqlite-vec / governance | **พักไว้เพราะยังเร็วเกินไป** — ดู [`reports/retro/t32-deep-memory-design.md`](../../reports/retro/t32-deep-memory-design.md) |
 
 **Phase 6 ถึง DoD แล้ว** t32 ไม่ใช่ช่องโหว่ของมัน: การสำรวจสรุปว่า ANN recall ยังไม่จำเป็น
-กับ workload จริงใด ๆ และโน้ตบันทึกลำดับการรื้อฟื้นไว้ (redaction ตอน `mine` → retention/TTL
-→ `sqlite-vec`) งานจึงถูกเลื่อน ไม่ใช่ถูกทำหาย — Mattaññutā
+กับ workload จริงใด ๆ และโน้ตบันทึกลำดับการรื้อฟื้นไว้ (redaction ตอน `mine` — ส่งมอบแล้ว → retention/TTL ผ่าน `prune` — ส่งมอบแล้ว
+→ `sqlite-vec` — ยังพักไว้) งานจึงถูกเลื่อน ไม่ใช่ถูกทำหาย — Mattaññutā
 
 ---
 
@@ -249,7 +249,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 - **ACP adapter** (เดิมคือ #485 ซึ่ง issue ถูกลบไปแล้ว) — รอ demand; ประตูคือมีผู้ใช้ editor จริงมาขอ
 - **`Dispatch` seam ร่วม** (เดิมคือ #452 ซึ่ง issue ถูกลบไปแล้ว) — จะคุ้มค่าเมื่อมี consumer ที่สามจริง ๆ ไม่ใช่ก่อนหน้านั้น
 - **HV3-4 / HV3-5 / HV3-6 (`agy`, `kimi`)** — เป็น feature ซึ่ง feature ไม่ทำให้ release เป็น major และการดึง 3.0 ไว้รอมันจะทำให้ contract ที่พร้อมแล้วต้องรอ
-- **การลด CLI surface** — 60 subcommand ระดับบนและ `check.rs` 8.4k บรรทัดเป็นหนี้จริง แต่เป็น breaking change คนละชนิดที่มีรัศมีผลกระทบคนละแบบ จองไว้ให้ 4.0
+- **การลด CLI surface** — 60 subcommand ระดับบนและ `check.rs` 8.4k บรรทัดเป็นหนี้จริง แต่เป็น breaking change คนละชนิดที่มีรัศมีผลกระทบคนละแบบ จองไว้ให้ 4.0 (entry point ซ้ำถูก deprecate แล้วใน 3.2 และจะถูกลบใน 4.0)
 - **Code signing** (Apple notarization / Windows Authenticode) — ติดที่ผู้ดูแลต้องจัดหา certificate ไม่ใช่ติดที่โค้ด ยังอยู่ใน [`RELEASING.th.md`](RELEASING.th.md)
 - **publish ขึ้น crates.io** — Rust API ตั้งใจไม่ให้เป็น public surface ดู [`COMPATIBILITY.th.md`](COMPATIBILITY.th.md#อะไรคือ-public-surface)
 
@@ -259,6 +259,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 
 | Release | Tag | สิ่งที่ส่งมอบ |
 |---|---|---|
+| 3.0.1 | `v2026.9.13-1` | Patch: แต่ละ chat ที่ bridge มีไฟล์บทสนทนาของตัวเอง; `bwoc new` stamp spec version ปัจจุบัน; `bwoc init` ไม่ overwrite `agents.toml` ที่มีอยู่แล้ว |
 | 3.1.0 | `v2026.9.13-2` | bwoc-bot phase 1: block `[bot]` ของ chat connector — คำตอบ slash-command ตายตัว และ rate limit ต่อผู้ส่ง |
 | 3.2.0 | `v2026.9.15-0` | `bwoc` เปล่า ๆ เปิด coding session บนไดเรกทอรีปัจจุบัน — ไม่ต้องมี workspace หรือ agent |
 | 3.3.0 | `v2026.9.19-0` | หลายบทสนทนาต่อไดเรกทอรี: `bwoc --new`, `--session <id>` |
@@ -272,7 +273,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 | 3.11.0 | `v2026.9.25-1` | คลิกที่กล่องพิมพ์ของ pane เพื่อเลือก pane; `/undo` ไม่ลบไฟล์ที่อ่านไม่ได้อีกต่อไป |
 | 3.12.0 | `v2026.9.26-0` | binary ที่ release มี OpenTelemetry exporter ในตัว (ไม่ทำงานจนกว่าจะตั้งค่า); ชื่อ span ตาม GenAI conventions; `gen_ai.provider.name` เป็นค่าจริง |
 | 3.13.0 | `v2026.10.4-0` | `PgUp`/`PgDn` ในแชทเรียกข้อความที่เคยส่งกลับมา; harness run ที่ถูก kill ยังทิ้ง telemetry ไว้ (`end_reason = "abandoned"`) |
-| 3.14.0 | `v2026.10.8-0` | herdr แบบเลือกเปิด: `bwoc sessions` รายงาน agent ที่ `blocked`/`done`; `fleet term --backend herdr`; `bwoc doctor` ตรวจ LiteLLM ด้วย |
+| 3.14.0 / 3.14.1 | `v2026.10.8-0` / `-1` | herdr แบบเลือกเปิด: `bwoc sessions` รายงาน agent ที่ `blocked`/`done`; `fleet term --backend herdr`; `bwoc doctor` ตรวจ LiteLLM ด้วย; 3.14.1 แก้ `fleet term --backend herdr` ให้ใช้กับ herdr 0.9.3 ได้ |
 | 3.15.0 | `v2026.10.11-0` | backend CLI ของผู้ขายเพิ่มอีก 11 ตัว (`pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`) — ประกาศรวม 21 backend; `bwoc run` แบบ headless ใช้ได้กับ 5 ตัว |
 
 **ยังไม่ได้กำหนด phase ถัดไป** รายการใน *สิ่งที่ตั้งใจไม่เอาเข้า 3.0* ข้างบนคือผู้สมัครที่รู้อยู่แล้ว การเลือกเป็นการตัดสินใจของผู้ดูแล เอกสารนี้ไม่ตัดสินแทน
@@ -282,7 +283,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 ## ข้ามทุก Phase
 
 - **Bilingual parity** — เอกสารสเปกทุกฉบับมี EN canonical + TH (และภาษาอื่น ๆ ในอนาคต); hook bilingual-reminder gate สิ่งนี้
-- **Backend neutrality** — feature CLI ทุกตัวทำงานกับ backend 6 ตัวที่ประกาศ; `/check-neutrality` gate สิ่งนี้สำหรับ `AGENTS.md`
+- **Backend neutrality** — feature CLI ทุกตัวทำงานกับ backend ที่ประกาศไว้ทุกตัว (21 ตัวตั้งแต่ 3.15); `/check-neutrality` gate สิ่งนี้สำหรับ `AGENTS.md`
 - **Doc-version + software-version คงสอดคล้อง** — ทั้งคู่ stamped อัตโนมัติทุก edit ของ Claude Code
 - **Open-source readiness** — artifact ทุกตัวที่ contributor สาธารณะต้องการ (CONTRIBUTING, SECURITY, CoC, LICENSE, VERSION, CHANGELOG, VISION, ROADMAP) up to date และถูกต้อง
 
