@@ -19,7 +19,7 @@ tags:
 | Tier | Audience | Format | Files |
 |---|---|---|---|
 | **Documentation** | Humans (Obsidian vault) | Obsidian Markdown | `README.md`, `conventions.md`, `neutrality.md`, `interconnect/trust.md`, `persona/`, `memories/`, `skills/`, `mindsets/`, `projects/`, `docs/` |
-| **Instructions** | LLM backends | Plain Markdown | `AGENTS.md` (and symlinks: `AGY.md`, `CODEX.md`, `KIMI.md`) |
+| **Instructions** | LLM backends | Plain Markdown | `AGENTS.md` (and its backend symlinks) |
 
 `CLAUDE.md` is an exception — a real file with template-repo-specific guidance for Claude Code, not a symlink.
 
@@ -113,17 +113,7 @@ Double curly braces, camelCase:
 | `{{buildCmd}}` | Build command | resolved at runtime |
 | `{{worktreeBase}}` | Worktree base path | `/tmp` |
 
-#### Neutrality-Critical Placeholders
-
-Never hardcode these in `AGENTS.md` or base template files:
-
-| Placeholder | Anti-Pattern |
-|---|---|
-| `{{primaryModel}}` | `claude-opus-4-6`, `gemini-3.5-flash-medium` |
-| `{{deepMemoryCmd}}` | `mempalace`, `chromadb` |
-| `{{lintCmd}}` | `oxlint`, `eslint` |
-| `{{testCmd}}` | `vitest`, `cargo test` |
-| `{{buildCmd}}` | `pnpm build`, `cargo build` |
+Never hardcode model IDs, tool names, or vendor names in `AGENTS.md` or base template files — see [[neutrality|Neutrality]] for the neutral/not-neutral patterns.
 
 ### Branch Names: `type/task-id`
 
@@ -256,12 +246,7 @@ Before committing agent profile files:
 
 ### Neutrality Validation
 
-- [ ] No hardcoded LLM model IDs
-- [ ] No hardcoded tool/CLI names
-- [ ] No backend-specific language ("Claude will...", "Antigravity supports...")
-- [ ] All backend-varying config uses `{{camelCase}}` placeholders
-- [ ] Symlinks point to `AGENTS.md`
-- [ ] Run `bwoc check` — 0 violations
+- [ ] Run `bwoc check` — 0 violations (checks hardcoded models/tools, backend language, placeholders, symlinks; see [[neutrality|Neutrality]])
 
 ---
 
