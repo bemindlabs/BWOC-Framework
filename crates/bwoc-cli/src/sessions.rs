@@ -581,6 +581,23 @@ fn collect_sessions_with_herdr(
 ///
 /// Precedence: an exact marker-pid match beats a cwd match, so a second CLI
 /// started in the same agent dir cannot override the real session's state.
+/// The shared herdr call budget. Tests can raise it per thread (see
+/// `TEST_BUDGET`): the pid pass needs several round-trips, and on a loaded CI
+/// runner 300 ms made it bail to the cwd match.
+fn herdr_budget() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(d) = TEST_BUDGET.with(|b| b.get()) {
+        return d;
+    }
+    crate::herdr::DEFAULT_BUDGET
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BUDGET: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
 fn apply_herdr_states(workspace: &Path, socket: &Path, sessions: &mut [Session]) {
     let alive: Vec<(String, u32)> = sessions
         .iter()
@@ -590,7 +607,7 @@ fn apply_herdr_states(workspace: &Path, socket: &Path, sessions: &mut [Session])
     if alive.is_empty() {
         return; // nothing herdr could refine — do not touch the socket
     }
-    let client = crate::herdr::Client::new(socket.to_path_buf(), crate::herdr::DEFAULT_BUDGET);
+    let client = crate::herdr::Client::new(socket.to_path_buf(), herdr_budget());
     let Some(agents) = client.agent_list() else {
         return;
     };
@@ -1364,6 +1381,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn herdr_pid_match_beats_cwd_match() {
+        // Three round-trips share one budget; 300 ms flaked on loaded macOS runners.
+        super::TEST_BUDGET.with(|b| b.set(Some(std::time::Duration::from_secs(5))));
         let dir = make_workspace();
         let root = dir.path();
         let agent_dir = live_agent(root, "agent-p").display().to_string();
