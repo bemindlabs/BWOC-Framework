@@ -571,16 +571,6 @@ fn collect_sessions_with_herdr(
 
 // ── herdr matching ────────────────────────────────────────────────────────────
 
-/// Override the state of alive marker sessions with herdr's view, when herdr
-/// answers. Stale and scan sessions are never touched. One `agent.list`, then
-/// at most one `pane.process_info` per herdr agent — only while some alive
-/// marker agent has no exact pid match yet. Every call shares
-/// [`crate::herdr::DEFAULT_BUDGET`]; the first failure ends the pid lookup,
-/// and whatever is still unmatched falls back to the cwd match (which needs
-/// no further call).
-///
-/// Precedence: an exact marker-pid match beats a cwd match, so a second CLI
-/// started in the same agent dir cannot override the real session's state.
 /// The shared herdr call budget. Tests can raise it per thread (see
 /// `TEST_BUDGET`): the pid pass needs several round-trips, and on a loaded CI
 /// runner 300 ms made it bail to the cwd match.
@@ -598,6 +588,16 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// Override the state of alive marker sessions with herdr's view, when herdr
+/// answers. Stale and scan sessions are never touched. One `agent.list`, then
+/// at most one `pane.process_info` per herdr agent — only while some alive
+/// marker agent has no exact pid match yet. Every call shares
+/// [`crate::herdr::DEFAULT_BUDGET`]; the first failure ends the pid lookup,
+/// and whatever is still unmatched falls back to the cwd match (which needs
+/// no further call).
+///
+/// Precedence: an exact marker-pid match beats a cwd match, so a second CLI
+/// started in the same agent dir cannot override the real session's state.
 fn apply_herdr_states(workspace: &Path, socket: &Path, sessions: &mut [Session]) {
     let alive: Vec<(String, u32)> = sessions
         .iter()
