@@ -2,8 +2,9 @@
 //! `modules/agent-template/interconnect/trust.md` §"Refusal Semantics"
 //! and §"Refusal modes".
 //!
-//! On by default in **warn** mode; refusal stays behind the
-//! `BWOC_TRUST_GATING=1` opt-in (see [`GatingEnv`] for the precedence).
+//! On by default in **enforce** mode; `BWOC_TRUST_GATING=warn` downgrades to
+//! warn-only and `0`/`off`/`false` disables (see [`GatingEnv`] for the
+//! precedence).
 //! When the gate is active AND the recipient's manifest declares a non-empty
 //! `requiredTrust`, the daemon resolves each new inbox envelope's sender, reads
 //! the sender's `trust.declared`, and produces a `TrustOutcome`:
@@ -13,7 +14,7 @@
 //!   naming the sender and missing qualities (once per `(sender, missing)`
 //!   per daemon run — see [`TrustContext::first_warning`]).
 //! - `Refuse` — envelope is marked in `inbox.refusals.jsonl` and NOT
-//!   delivered. Only under `BWOC_TRUST_GATING=1`.
+//!   delivered. The default (unless `BWOC_TRUST_GATING=warn` or off).
 //!
 //! The original envelope in `inbox.jsonl` is NEVER deleted — auditability
 //! matters. `bwoc inbox` joins the two files at read time so
@@ -310,7 +311,7 @@ fn ts_outside_window(env_ts: &str) -> Option<&'static str> {
 
 /// Signature-enforcement posture (HV2-4 / `docs/en/SIGNING.en.md` §6).
 ///
-/// Independent of the Kalyāṇamitta `BWOC_TRUST_GATING` opt-in: signature
+/// Independent of the Kalyāṇamitta `BWOC_TRUST_GATING` gate: signature
 /// verification runs on its own, controlled by `BWOC_SIGNING_MODE`. A bad /
 /// tampered signature is refused in *every* mode (it is an attack); the mode
 /// only governs unsigned or unverifiable-but-not-tampered messages.
@@ -340,34 +341,32 @@ impl SigningMode {
 /// Precedence (env > manifest > default):
 ///
 /// 1. `0` / `off` / `false` → [`GatingEnv::Disabled`]: the gate is inert
-///    (escape hatch; the pre-3.2 unset behaviour).
-/// 2. `1` → [`GatingEnv::Enforce`]: the manifest's effective `trust.mode`
-///    governs, including `refuse` (explicit, or `mode` absent with a non-empty
-///    `requiredTrust`). Byte-for-byte the pre-3.2 `=1` semantics.
-/// 3. unset / empty / `warn` / anything else → [`GatingEnv::DefaultWarn`]:
-///    the gate runs but can never refuse. A manifest `mode: "off"` is honoured;
-///    every other effective mode is capped at `Warn`.
+///    (escape hatch).
+/// 2. `warn` → [`GatingEnv::Warn`]: the gate runs but can never refuse (the
+///    pre-enforce default). A manifest `mode: "off"` is honoured; every other
+///    effective mode is capped at `Warn`.
+/// 3. unset / empty / `1` / anything else → [`GatingEnv::Enforce`]: the
+///    manifest's effective `trust.mode` governs, including `refuse` (explicit,
+///    or `mode` absent with a non-empty `requiredTrust`). A manifest
+///    `mode: "off"` / `"warn"` still relaxes per its own semantics. Unknown
+///    values fail closed to enforce.
 ///
-/// The cap is the compatibility contract (`docs/en/COMPATIBILITY.en.md`): an
-/// envelope delivered before the gate was on by default must still be
-/// delivered, so a manifest may *relax* the default but only the env opt-in
-/// may escalate it to refusal.
+/// The manifest can therefore only relax the env (never escalate it): under
+/// `warn` it is capped at `Warn`; under enforce it may select `off` / `warn`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatingEnv {
     Disabled,
-    DefaultWarn,
+    Warn,
     Enforce,
 }
 
 impl GatingEnv {
     /// Parse a raw `BWOC_TRUST_GATING` value (`None` = unset).
     pub fn parse(raw: Option<&str>) -> Self {
-        match raw.map(str::trim) {
-            Some("1") => GatingEnv::Enforce,
-            Some(v) if matches!(v.to_ascii_lowercase().as_str(), "0" | "off" | "false") => {
-                GatingEnv::Disabled
-            }
-            _ => GatingEnv::DefaultWarn,
+        match raw.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("0" | "off" | "false") => GatingEnv::Disabled,
+            Some("warn") => GatingEnv::Warn,
+            _ => GatingEnv::Enforce,
         }
     }
 }
@@ -385,10 +384,10 @@ pub struct TrustContext {
     /// Effective refusal mode, computed from the recipient's manifest
     /// `trust.mode` field (explicit) or v1 rules (absent):
     /// empty required → `Off`, non-empty required → `Refuse`.
-    /// Capped at `Warn` unless `BWOC_TRUST_GATING=1` (see [`GatingEnv`]).
+    /// Capped at `Warn` under `BWOC_TRUST_GATING=warn` (see [`GatingEnv`]).
     pub mode: RefusalMode,
-    /// `true` when the gate is on only because `BWOC_TRUST_GATING` was not
-    /// set to an explicit value — i.e. warn-only. Drives the startup notice.
+    /// `true` when the gate is enforcing only because `BWOC_TRUST_GATING` was
+    /// unset/empty (the default). Drives the startup notice.
     pub gating_default: bool,
     /// `(sender, missing)` pairs already warned about this run, so a busy
     /// inbox logs each gap once instead of once per envelope.
@@ -397,7 +396,7 @@ pub struct TrustContext {
     /// daemon is running outside a workspace; sender lookup is impossible
     /// so gating refuses every non-`user` envelope when on.
     pub workspace_root: Option<PathBuf>,
-    /// Gate on (`BWOC_TRUST_GATING=1`, or the warn-only default). When false, the Kalyāṇamitta quality
+    /// Gate on (enforce default, or `warn`). When false, the Kalyāṇamitta quality
     /// gate is permissive (but signature verification still runs per
     /// `signing_mode`).
     pub gating_enabled: bool,
@@ -421,24 +420,19 @@ impl TrustContext {
             .as_ref()
             .map(|t| (t.required_trust.clone(), t.effective_mode()))
             .unwrap_or_else(|| (Vec::new(), RefusalMode::Off));
-        let gating = GatingEnv::parse(std::env::var("BWOC_TRUST_GATING").ok().as_deref());
+        let raw = std::env::var("BWOC_TRUST_GATING").ok();
+        let gating = GatingEnv::parse(raw.as_deref());
+        let unset = raw.as_deref().is_none_or(|v| v.trim().is_empty());
         let signing_mode = SigningMode::from_env();
         let (gating_enabled, gating_default, mode) = match gating {
-            GatingEnv::Enforce => (true, false, manifest_mode),
+            GatingEnv::Enforce => (true, unset, manifest_mode),
             GatingEnv::Disabled => (false, false, manifest_mode),
-            // `BWOC_SIGNING_MODE=off` keeps the whole trust layer idle: turning
-            // the gate on there would take `evaluate` off its fast path and run
-            // sender resolution, whose can't-verify arms refuse — a new refusal
-            // the warn-only default must never introduce.
-            GatingEnv::DefaultWarn if signing_mode == SigningMode::Off => {
-                (false, false, manifest_mode)
-            }
-            GatingEnv::DefaultWarn => {
+            GatingEnv::Warn => {
                 let capped = match manifest_mode {
                     RefusalMode::Off => RefusalMode::Off,
                     RefusalMode::Warn | RefusalMode::Refuse => RefusalMode::Warn,
                 };
-                (true, true, capped)
+                (true, false, capped)
             }
         };
         let workspace_root = find_workspace_root(cwd);
@@ -1231,20 +1225,28 @@ mod tests {
         }
         let ctx = TrustContext::build(&m, Path::new("/nonexistent-anywhere"));
         assert_eq!(ctx.required, vec!["vatta", "noCatthana"]);
-        // Unset env ⇒ warn-only default: the v1 implicit Refuse is capped.
-        assert_eq!(ctx.mode, RefusalMode::Warn);
+        // Unset env ⇒ enforce default: v1 compat (absent mode) → Refuse.
+        assert_eq!(ctx.mode, RefusalMode::Refuse);
         assert!(ctx.gating_enabled && ctx.gating_default);
         assert!(!ctx.is_inert());
 
-        // `=1` keeps the pre-default semantics: v1 compat → Refuse.
+        // Explicit `=1` is the same posture, but not "default".
         unsafe {
             std::env::set_var("BWOC_TRUST_GATING", "1");
+        }
+        let ctx = TrustContext::build(&m, Path::new("/nonexistent-anywhere"));
+        assert_eq!(ctx.mode, RefusalMode::Refuse);
+        assert!(ctx.gating_enabled && !ctx.gating_default);
+
+        // `=warn` caps the v1 implicit Refuse at Warn.
+        unsafe {
+            std::env::set_var("BWOC_TRUST_GATING", "warn");
         }
         let ctx = TrustContext::build(&m, Path::new("/nonexistent-anywhere"));
         unsafe {
             std::env::remove_var("BWOC_TRUST_GATING");
         }
-        assert_eq!(ctx.mode, RefusalMode::Refuse);
+        assert_eq!(ctx.mode, RefusalMode::Warn);
         assert!(ctx.gating_enabled && !ctx.gating_default);
     }
 
@@ -1255,9 +1257,12 @@ mod tests {
         for off in ["0", "off", "OFF", "false", " 0 "] {
             assert_eq!(GatingEnv::parse(Some(off)), GatingEnv::Disabled, "{off:?}");
         }
-        assert_eq!(GatingEnv::parse(Some("1")), GatingEnv::Enforce);
-        for warn in [None, Some(""), Some("warn"), Some("yes")] {
-            assert_eq!(GatingEnv::parse(warn), GatingEnv::DefaultWarn, "{warn:?}");
+        for warn in ["warn", "WARN", " warn "] {
+            assert_eq!(GatingEnv::parse(Some(warn)), GatingEnv::Warn, "{warn:?}");
+        }
+        // Unset / empty / `1` / unknown all fail closed to enforce.
+        for enforce in [None, Some(""), Some("1"), Some("yes")] {
+            assert_eq!(GatingEnv::parse(enforce), GatingEnv::Enforce, "{enforce:?}");
         }
     }
 
@@ -1327,11 +1332,29 @@ mod tests {
     }
 
     #[test]
-    fn unset_env_warns_delivers_and_dedups_the_warning() {
+    fn unset_env_refuses_missing_trust() {
         let _guard = ENV_LOCK.lock().unwrap();
         let ws = workspace_with_undeclared_sender();
-        // Absent `mode` + non-empty required is v1 Refuse; the default caps it.
+        // Absent `mode` + non-empty required is v1 Refuse; the default enforces it.
         let ctx = build_with_env(&recipient_requiring(None), ws.path(), None, Some("warn"));
+        assert_eq!(ctx.mode, RefusalMode::Refuse);
+        assert!(ctx.gating_default);
+        match evaluate(&ctx, &local_line(0), 0) {
+            TrustOutcome::Refuse(r) => assert_eq!(r.reason, "missing_trust"),
+            other => panic!("unset gate must refuse; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn warn_env_warns_delivers_and_dedups_the_warning() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let ws = workspace_with_undeclared_sender();
+        let ctx = build_with_env(
+            &recipient_requiring(None),
+            ws.path(),
+            Some("warn"),
+            Some("warn"),
+        );
         assert_eq!(ctx.mode, RefusalMode::Warn);
 
         let mut logged = 0;
@@ -1343,7 +1366,7 @@ mod tests {
                         logged += 1;
                     }
                 }
-                other => panic!("default gate must warn, never refuse; got {other:?}"),
+                other => panic!("warn gate must warn, never refuse; got {other:?}"),
             }
         }
         assert_eq!(logged, 1, "five envelopes, one trust_warn line");
@@ -1352,11 +1375,28 @@ mod tests {
     }
 
     #[test]
-    fn manifest_off_is_honoured_and_explicit_refuse_still_refuses() {
+    fn zero_env_disables_the_gate() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let ws = workspace_with_undeclared_sender();
+        let ctx = build_with_env(
+            &recipient_requiring(None),
+            ws.path(),
+            Some("0"),
+            Some("warn"),
+        );
+        assert!(!ctx.gating_enabled && ctx.is_inert());
+        assert!(matches!(
+            evaluate(&ctx, &local_line(0), 0),
+            TrustOutcome::Pass { .. }
+        ));
+    }
+
+    #[test]
+    fn manifest_mode_relaxes_but_never_escalates() {
         let _guard = ENV_LOCK.lock().unwrap();
         let ws = workspace_with_undeclared_sender();
 
-        // Manifest may relax the default.
+        // Under the enforce default a manifest `off` / `warn` still relaxes.
         let off = build_with_env(
             &recipient_requiring(Some(RefusalMode::Off)),
             ws.path(),
@@ -1367,23 +1407,33 @@ mod tests {
             evaluate(&off, &local_line(0), 0),
             TrustOutcome::Pass { .. }
         ));
-
-        // …but only `=1` escalates to refusal.
-        let manifest_refuse = recipient_requiring(Some(RefusalMode::Refuse));
-        let default = build_with_env(&manifest_refuse, ws.path(), None, Some("warn"));
+        let warn = build_with_env(
+            &recipient_requiring(Some(RefusalMode::Warn)),
+            ws.path(),
+            None,
+            Some("warn"),
+        );
         assert!(matches!(
-            evaluate(&default, &local_line(1), 1),
+            evaluate(&warn, &local_line(1), 1),
             TrustOutcome::Warn { .. }
         ));
-        let enforced = build_with_env(&manifest_refuse, ws.path(), Some("1"), Some("warn"));
-        match evaluate(&enforced, &local_line(2), 2) {
+
+        // Manifest refuse: enforced by default, capped to warn by env `warn`.
+        let manifest_refuse = recipient_requiring(Some(RefusalMode::Refuse));
+        let default = build_with_env(&manifest_refuse, ws.path(), None, Some("warn"));
+        match evaluate(&default, &local_line(2), 2) {
             TrustOutcome::Refuse(r) => assert_eq!(r.reason, "missing_trust"),
-            other => panic!("BWOC_TRUST_GATING=1 + refuse must refuse, got {other:?}"),
+            other => panic!("default + refuse must refuse, got {other:?}"),
         }
+        let capped = build_with_env(&manifest_refuse, ws.path(), Some("warn"), Some("warn"));
+        assert!(matches!(
+            evaluate(&capped, &local_line(3), 3),
+            TrustOutcome::Warn { .. }
+        ));
     }
 
     #[test]
-    fn explicit_off_and_signing_off_keep_the_gate_inert() {
+    fn explicit_off_keeps_the_gate_inert() {
         let _guard = ENV_LOCK.lock().unwrap();
         let m = recipient_requiring(None);
         let here = Path::new("/nonexistent-anywhere");
@@ -1391,25 +1441,20 @@ mod tests {
             let ctx = build_with_env(&m, here, Some(off), None);
             assert!(ctx.is_inert() && !ctx.gating_default, "{off}");
         }
-        // Signing off ⇒ the default does not engage, so `evaluate` keeps its
-        // no-resolution fast path (no new can't-verify refusals).
+        // Signing off no longer idles the gate: unset enforces like `=1`.
         let ctx = build_with_env(&m, here, None, Some("off"));
-        assert!(ctx.is_inert() && !ctx.gating_default);
-        assert!(matches!(
-            evaluate(&ctx, agent_line(), 0),
-            TrustOutcome::Pass { .. }
-        ));
+        assert!(!ctx.is_inert() && ctx.gating_default);
     }
 
-    /// The default touches only step 2: every signature / replay / can't-verify
-    /// refusal is identical with the gate disabled and in default warn.
+    /// The quality gate touches only step 2: every signature / replay /
+    /// can't-verify refusal is identical with the gate disabled and enforcing.
     #[test]
     fn default_gate_leaves_signature_and_replay_refusals_unchanged() {
         use std::fs;
         let _guard = ENV_LOCK.lock().unwrap();
         let m = recipient_requiring(None);
 
-        // Local unsigned sender under Enforce, and an unknown sender.
+        // Local unsigned sender, and an unknown sender.
         let ws = workspace_with_undeclared_sender();
         let unknown = local_line(9).replace("agent-local", "agent-nobody");
         for gating in [Some("0"), None] {
@@ -1445,9 +1490,10 @@ mod tests {
                 "m1",
                 "hi",
             );
-            // First delivery: Pass when disabled, Warn (still delivered) by default.
+            // First delivery: Pass when disabled, Refuse (missing_trust) by default.
             match (gating, evaluate(&ctx, &line, 0)) {
-                (Some(_), TrustOutcome::Pass { .. }) | (None, TrustOutcome::Warn { .. }) => {}
+                (Some(_), TrustOutcome::Pass { .. }) => {}
+                (None, TrustOutcome::Refuse(r)) => assert_eq!(r.reason, "missing_trust"),
                 (g, other) => panic!("{g:?}: unexpected first outcome {other:?}"),
             }
             match evaluate(&ctx, &line, 1) {

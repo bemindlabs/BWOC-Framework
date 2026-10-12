@@ -74,7 +74,7 @@ A new top-level `trust` block in `config.manifest.json`. Both halves are optiona
 
 The optional `"mode"` field on the trust block controls how the daemon responds when an incoming envelope's sender is missing a required quality. Accepted values: `"off"` | `"warn"` | `"refuse"`.
 
-**Backward-compat rule:** when `mode` is absent the framework computes an *effective mode* using v1 rules — empty `requiredTrust` → `off`; non-empty → `refuse`. This means existing manifests that predate the field are never silently demoted from refuse to warn. `warn` is strictly opt-in. (At runtime the daemon caps this at `warn` unless `BWOC_TRUST_GATING=1` — see [Daemon gating](#daemon-gating-bwoc_trust_gating).)
+**Backward-compat rule:** when `mode` is absent the framework computes an *effective mode* using v1 rules — empty `requiredTrust` → `off`; non-empty → `refuse`. This means existing manifests that predate the field are never silently demoted from refuse to warn. `warn` is strictly opt-in. (At runtime the daemon enforces this effective mode by default; `BWOC_TRUST_GATING=warn` caps it at `warn` — see [Daemon gating](#daemon-gating-bwoc_trust_gating).)
 
 To enable warn-mode on a specific agent, add `"mode": "warn"` to its `trust` block alongside a non-empty `requiredTrust`.
 
@@ -147,15 +147,15 @@ The daemon supports a 3-state refusal mode controlled by the `mode` field in the
 
 #### Daemon gating (`BWOC_TRUST_GATING`)
 
-The gate runs **on by default in warn-only form**; refusal is opt-in. Precedence is env > manifest > default:
+The gate runs **on by default in enforce form** (since the release following 3.16; `warn` was the default from 3.2). Precedence is env > manifest > default:
 
 | `BWOC_TRUST_GATING` | Gate | Effective mode |
 |---|---|---|
 | `0` / `off` / `false` | disabled | — (every envelope passes the quality gate) |
-| `1` | enforced | the manifest's effective `mode` above, **including `refuse`** |
-| unset / empty / `warn` / any other value | **default — warn only** | manifest `mode: "off"` → `off`; anything else (`warn`, `refuse`, or absent) → `warn` |
+| unset / empty / `1` / any unrecognised value | **default — enforced** | the manifest's effective `mode` above, **including `refuse`** (absent `mode` + non-empty `requiredTrust` → `refuse`) |
+| `warn` | warn only (the pre-enforce default) | manifest `mode: "off"` → `off`; anything else (`warn`, `refuse`, or absent) → `warn` |
 
-The default never refuses on missing qualities: a manifest may relax it to `off`, but only `BWOC_TRUST_GATING=1` escalates to `refuse`, so nothing delivered before the default existed is refused after it. With `BWOC_SIGNING_MODE=off` the default does not engage (the trust layer stays fully idle). Each `trust_warn` line is logged **once per `(sender, missing qualities)` per daemon run**, and warnings are never written to `inbox.refusals.jsonl`.
+**Manifest precedence.** The env var can only cap the manifest, never raise it: under `warn` a manifest `refuse` is capped at `warn`; under the enforced default a manifest `mode: "off"` or `"warn"` still relaxes per its own semantics (a manifest that explicitly asks for less than refuse is never escalated). Unrecognised env values fail closed to enforced. Behavior change: agents that declare `requiredTrust` now refuse senders lacking those qualities unless `BWOC_TRUST_GATING=warn` (or `0`) is set; `BWOC_SIGNING_MODE=off` no longer idles the gate. Each `trust_warn` line is logged **once per `(sender, missing qualities)` per daemon run**, and warnings are never written to `inbox.refusals.jsonl`.
 
 **Can't-verify paths always refuse regardless of mode.** When the daemon cannot resolve the sender's manifest (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`), the envelope is refused. An unverifiable sender is not warn-passable.
 
@@ -184,6 +184,8 @@ The motivation for this 3-state design: strict-by-default for a self-declared (u
   - `evaluate()` now returns `TrustOutcome` (`Pass` / `Warn { from, missing }` / `Refuse(Refusal)`) instead of `Option<Refusal>`.
   - Daemon caller handles `Warn`: delivers envelope normally + emits `trust_warn` log line via `announce_warned`. Does NOT record a refusal on `Warn`.
   - Can't-verify paths (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`) always produce `Refuse` regardless of mode.
+- **v2.2 / 2026-10-12 (enforce by default — BEHAVIOR CHANGE):**
+  - `BWOC_TRUST_GATING` unset/empty now means gate **enforced** (same as `=1`; was: on, capped at `warn`). New explicit `=warn` keeps the old warn-only behavior; `=0`/`off`/`false` disables. Manifest `mode: "off"` / `"warn"` still relax per their semantics. Unrecognised values fail closed to enforced.
 - **v2.1 / 2026-09-15 (default-on warn gating):**
   - `BWOC_TRUST_GATING` unset now means gate **on, capped at `warn`** (was: gate off). `=1` keeps its exact semantics; `=0`/`off`/`false` disables. Manifest `mode: "off"` still relaxes the default.
   - `trust_warn` deduplicated per `(sender, missing)` per daemon run. Signature verification and replay defense are unchanged.
@@ -197,7 +199,7 @@ The motivation for this 3-state design: strict-by-default for a self-declared (u
 5. Trust v2 warn-mode: `RefusalMode` enum + `mode` manifest field + `TrustOutcome` 3-state + `announce_warned`. ✓ done (v2, GH #6)
 6. CHANGELOG row + ROADMAP cross-reference + bilingual TH parity.
 
-Step 4+ runs warn-only by default; refusal is behind the `BWOC_TRUST_GATING=1` env opt-in (see [Daemon gating](#daemon-gating-bwoc_trust_gating)).
+Step 4+ enforces (refuses) by default; `BWOC_TRUST_GATING=warn` downgrades to warn-only and `0` disables (see [Daemon gating](#daemon-gating-bwoc_trust_gating)).
 
 ## Cross-References
 

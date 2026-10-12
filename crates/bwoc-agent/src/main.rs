@@ -211,32 +211,38 @@ where
     // before parsing any envelopes. Built once here so env reads + the
     // ancestor workspace walk happen only once per daemon lifetime.
     let trust_ctx = trust::TrustContext::build(manifest, cwd);
-    if trust_ctx.gating_default {
-        if !trust_ctx.is_inert() {
-            eprintln!(
-                "bwoc-agent --serve: trust gating WARN (default) — logging instead of \
-                 refusing senders missing {:?}; BWOC_TRUST_GATING=1 enforces \
-                 trust.mode, =0/off/false disables",
-                trust_ctx.required
-            );
-        }
-    } else if trust_ctx.gating_enabled {
+    let gating_source = if trust_ctx.gating_default {
+        "ENFORCE (default)"
+    } else {
+        "ON (BWOC_TRUST_GATING)"
+    };
+    if trust_ctx.gating_enabled {
         if trust_ctx.is_inert() {
             eprintln!(
-                "bwoc-agent --serve: trust gating ON (BWOC_TRUST_GATING=1) but \
+                "bwoc-agent --serve: trust gating {gating_source} but \
                  requiredTrust empty → no refusals will fire"
+            );
+        } else if trust_ctx.mode == bwoc_core::manifest::RefusalMode::Refuse {
+            eprintln!(
+                "bwoc-agent --serve: trust gating {gating_source} — refusing senders \
+                 missing {:?}; BWOC_TRUST_GATING=warn logs instead, =0/off/false disables",
+                trust_ctx.required
             );
         } else {
             eprintln!(
-                "bwoc-agent --serve: trust gating ON — refusing senders missing {:?}",
+                "bwoc-agent --serve: trust gating WARN — logging instead of refusing \
+                 senders missing {:?} (BWOC_TRUST_GATING=warn or manifest trust.mode)",
                 trust_ctx.required
             );
-            if trust_ctx.workspace_root.is_none() {
-                eprintln!(
-                    "bwoc-agent --serve: warning — no workspace found in ancestors; \
-                     non-`user` envelopes will refuse with reason=no_workspace"
-                );
-            }
+        }
+        if !trust_ctx.is_inert()
+            && trust_ctx.mode == bwoc_core::manifest::RefusalMode::Refuse
+            && trust_ctx.workspace_root.is_none()
+        {
+            eprintln!(
+                "bwoc-agent --serve: warning — no workspace found in ancestors; \
+                 non-`user` envelopes will refuse with reason=no_workspace"
+            );
         }
     }
 

@@ -1732,7 +1732,7 @@ mod tests {
         assert_eq!(v["to"], "agent-remote");
         // `from` is the bare local id — not workspace-qualified.
         // The recipient daemon sees this as an unknown_sender (not in its
-        // registry) and refuses under BWOC_TRUST_GATING=1. This is the
+        // registry) and refuses (trust gating enforces by default). This is the
         // intentional v1 seam; Trust v2 will add workspace-qualified signing.
         assert_eq!(v["from"], "agent-alpha");
         assert_eq!(v["message"], "gated ping");
