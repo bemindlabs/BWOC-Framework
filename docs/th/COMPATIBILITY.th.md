@@ -134,9 +134,10 @@ public surface จะถูกลบก็ต่อเมื่อผ่าน r
 จึงเหมือนคำสั่งที่มาแทนทุก byte script ที่ยังย้ายไม่ได้ให้ตั้ง `BWOC_NO_DEPRECATION_WARNINGS=1`
 
 **default เข้มขึ้นภายใน major เดียวกันได้แค่ระดับ warning** อะไรก็ตามที่เริ่ม *refuse*
-(ข้อความ คำสั่ง หรือการ load) ต้องมี opt-in ชัดเจนจนถึง major ถัดไป ตัวอย่าง: ตั้งแต่ 3.2
-trust gate Kalyāṇamitta ของ daemon ทำงานโดย default แต่เป็น warn เท่านั้น — การ refuse
-ยังต้องตั้ง `BWOC_TRUST_GATING=1`
+(ข้อความ คำสั่ง หรือการ load) ต้องมี opt-in ชัดเจนจนถึง major ถัดไป ข้อยกเว้นที่บันทึกไว้:
+trust gate Kalyāṇamitta ของ daemon ทำงานแบบ warn โดย default ตั้งแต่ 3.2 และ release
+ถัดไป (เจ้าของอนุมัติแล้ว) เปลี่ยนเป็น enforce (refuse) โดย default — เป็นการเปลี่ยนพฤติกรรม
+โดยตั้งใจ ติดธงใน CHANGELOG; ตั้ง `BWOC_TRUST_GATING=warn` เพื่อกลับพฤติกรรมเดิม
 (ดู [`trust.th.md` §Gating ของ daemon](../../modules/agent-template/interconnect/trust.th.md#gating-ของ-daemon-bwoc_trust_gating))
 
 ### Deprecated in 3.2 (removed in 4.0)

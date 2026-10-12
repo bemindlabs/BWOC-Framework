@@ -74,7 +74,7 @@ block `trust` ใหม่ระดับ top ใน `config.manifest.json` ท�
 
 field `"mode"` ใน trust block เป็น optional ควบคุมการตอบสนองของ daemon เมื่อ envelope ขาคุณสมบัติที่ require ค่าที่รับได้: `"off"` | `"warn"` | `"refuse"`
 
-**กฎ backward-compat:** เมื่อ `mode` ไม่มี framework คำนวณ effective mode ด้วยกฎ v1 — `requiredTrust` ว่าง → `off`; ไม่ว่าง → `refuse` หมายความว่า manifest เก่าที่ไม่มี field นี้ไม่ถูกเปลี่ยนจาก refuse เป็น warn โดยเงียบ ๆ `warn` เป็น opt-in เท่านั้น (ตอน runtime daemon จำกัดไว้ที่ `warn` เว้นแต่ตั้ง `BWOC_TRUST_GATING=1` — ดู [Gating ของ daemon](#gating-ของ-daemon-bwoc_trust_gating))
+**กฎ backward-compat:** เมื่อ `mode` ไม่มี framework คำนวณ effective mode ด้วยกฎ v1 — `requiredTrust` ว่าง → `off`; ไม่ว่าง → `refuse` หมายความว่า manifest เก่าที่ไม่มี field นี้ไม่ถูกเปลี่ยนจาก refuse เป็น warn โดยเงียบ ๆ `warn` เป็น opt-in เท่านั้น (ตอน runtime daemon บังคับใช้ effective mode นี้โดย default; `BWOC_TRUST_GATING=warn` จำกัดไว้ที่ `warn` — ดู [Gating ของ daemon](#gating-ของ-daemon-bwoc_trust_gating))
 
 เพื่อเปิด warn-mode บน agent ใด เพิ่ม `"mode": "warn"` ใน trust block พร้อมกับ `requiredTrust` ที่ไม่ว่าง
 
@@ -147,15 +147,15 @@ daemon รองรับ 3-state refusal mode ควบคุมด้วย fi
 
 #### Gating ของ daemon (`BWOC_TRUST_GATING`)
 
-gate **เปิดโดย default ในรูปแบบ warn เท่านั้น**; การ refuse เป็น opt-in ลำดับความสำคัญคือ env > manifest > default:
+gate **เปิดโดย default ในรูปแบบ enforce** (ตั้งแต่ release หลัง 3.16; ก่อนหน้านี้ตั้งแต่ 3.2 default คือ `warn`) ลำดับความสำคัญคือ env > manifest > default:
 
 | `BWOC_TRUST_GATING` | Gate | Effective mode |
 |---|---|---|
 | `0` / `off` / `false` | ปิด | — (ทุก envelope ผ่าน quality gate) |
-| `1` | บังคับ | effective `mode` จาก manifest ข้างบน **รวมถึง `refuse`** |
-| ไม่ตั้ง / ค่าว่าง / `warn` / ค่าอื่นใด | **default — warn เท่านั้น** | manifest `mode: "off"` → `off`; ค่าอื่น (`warn`, `refuse` หรือไม่มี) → `warn` |
+| ไม่ตั้ง / ค่าว่าง / `1` / ค่าที่ไม่รู้จัก | **default — บังคับ** | effective `mode` จาก manifest ข้างบน **รวมถึง `refuse`** (ไม่มี `mode` + `requiredTrust` ไม่ว่าง → `refuse`) |
+| `warn` | warn เท่านั้น (default เดิมก่อน enforce) | manifest `mode: "off"` → `off`; ค่าอื่น (`warn`, `refuse` หรือไม่มี) → `warn` |
 
-default ไม่เคย refuse เพราะขาด quality: manifest ผ่อนเป็น `off` ได้ แต่มีแค่ `BWOC_TRUST_GATING=1` ที่ยกระดับเป็น `refuse` ดังนั้นสิ่งที่เคย deliver ก่อนมี default นี้จะไม่ถูก refuse หลังจากนั้น เมื่อ `BWOC_SIGNING_MODE=off` default จะไม่ทำงาน (trust layer idle ทั้งหมด) log line `trust_warn` ถูกเขียน **ครั้งเดียวต่อ `(sender, คุณสมบัติที่ขาด)` ต่อการรัน daemon หนึ่งรอบ** และ warning ไม่ถูกเขียนลง `inbox.refusals.jsonl`
+**ลำดับความสำคัญกับ manifest** env จำกัด manifest ได้อย่างเดียว ยกระดับไม่ได้: ภายใต้ `warn` manifest `refuse` ถูกจำกัดที่ `warn`; ภายใต้ default แบบบังคับ manifest `mode: "off"` หรือ `"warn"` ยังผ่อนได้ตาม semantics ของมันเอง (manifest ที่ขอน้อยกว่า refuse โดยชัดเจนจะไม่ถูกยกระดับ) ค่า env ที่ไม่รู้จักจะ fail closed เป็นบังคับ การเปลี่ยนพฤติกรรม: agent ที่ประกาศ `requiredTrust` จะ refuse sender ที่ขาดคุณสมบัติเหล่านั้น เว้นแต่ตั้ง `BWOC_TRUST_GATING=warn` (หรือ `0`); `BWOC_SIGNING_MODE=off` ไม่ทำให้ gate idle อีกต่อไป log line `trust_warn` ถูกเขียน **ครั้งเดียวต่อ `(sender, คุณสมบัติที่ขาด)` ต่อการรัน daemon หนึ่งรอบ** และ warning ไม่ถูกเขียนลง `inbox.refusals.jsonl`
 
 **Can't-verify paths refuse เสมอโดยไม่คำนึง mode** เมื่อ daemon resolve manifest ของผู้ส่งไม่ได้ (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`) envelope ถูกปฏิเสธ ผู้ส่งที่ตรวจสอบไม่ได้ไม่สามารถ warn-pass ได้
 
@@ -184,6 +184,8 @@ default ไม่เคย refuse เพราะขาด quality: manifest ผ
   - `evaluate()` return `TrustOutcome` (`Pass` / `Warn { from, missing }` / `Refuse(Refusal)`) แทน `Option<Refusal>`
   - daemon caller จัดการ `Warn`: ส่ง envelope ตามปกติ + emit `trust_warn` log line ผ่าน `announce_warned` ไม่บันทึก refusal บน `Warn`
   - Can't-verify paths (`no_workspace`, `registry_unreadable`, `unknown_sender`, `sender_manifest_unreadable`) produce `Refuse` เสมอโดยไม่คำนึง mode
+- **v2.2 / 2026-10-12 (enforce โดย default — BEHAVIOR CHANGE):**
+  - `BWOC_TRUST_GATING` ไม่ตั้ง/ค่าว่าง ตอนนี้หมายถึง gate **บังคับ** (เหมือน `=1`; เดิม: เปิด จำกัดไว้ที่ `warn`) ค่าใหม่ `=warn` คงพฤติกรรม warn เดิม; `=0`/`off`/`false` ปิด gate; manifest `mode: "off"` / `"warn"` ยังผ่อนได้ตาม semantics ค่าที่ไม่รู้จัก fail closed เป็นบังคับ
 - **v2.1 / 2026-09-15 (gating แบบ warn เปิดโดย default):**
   - `BWOC_TRUST_GATING` ไม่ตั้ง ตอนนี้หมายถึง gate **เปิด จำกัดไว้ที่ `warn`** (เดิม: gate ปิด) `=1` คง semantics เดิมทุกประการ; `=0`/`off`/`false` ปิด gate; manifest `mode: "off"` ยังผ่อน default ได้
   - `trust_warn` dedup ต่อ `(sender, missing)` ต่อการรัน daemon หนึ่งรอบ signature verification และ replay defense ไม่เปลี่ยน
@@ -197,7 +199,7 @@ default ไม่เคย refuse เพราะขาด quality: manifest ผ
 5. Trust v2 warn-mode: enum `RefusalMode` + field `mode` + `TrustOutcome` 3-state + `announce_warned` ✓ done (v2, GH #6)
 6. row CHANGELOG + ROADMAP cross-reference + bilingual TH parity
 
-Step 4+ ทำงานแบบ warn เท่านั้นโดย default; การ refuse อยู่หลัง env opt-in `BWOC_TRUST_GATING=1` (ดู [Gating ของ daemon](#gating-ของ-daemon-bwoc_trust_gating))
+Step 4+ enforce (refuse) โดย default; `BWOC_TRUST_GATING=warn` ลดเป็น warn เท่านั้น และ `0` ปิด (ดู [Gating ของ daemon](#gating-ของ-daemon-bwoc_trust_gating))
 
 ## อ้างอิงข้าม
 
