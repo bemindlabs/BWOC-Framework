@@ -146,7 +146,7 @@ cannot migrate yet sets `BWOC_NO_DEPRECATION_WARNINGS=1`.
 A **default may tighten within a major only as far as a warning.** Anything that
 starts *refusing* (a message, a command, a load) needs an explicit opt-in until
 the next major. Documented exception: the daemon's Kalyāṇamitta trust gate ran
-in warn mode by default from 3.2, and the owner-approved next release makes it
+in warn mode by default from 3.2 through 3.16, and 3.17 (owner-approved) makes it
 enforce (refuse) by default — a deliberate, CHANGELOG-flagged behavior change;
 `BWOC_TRUST_GATING=warn` restores the old behavior
 (see [`trust.md` §Daemon gating](../../modules/agent-template/interconnect/trust.md#daemon-gating-bwoc_trust_gating)).

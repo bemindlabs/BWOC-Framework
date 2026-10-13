@@ -20,7 +20,7 @@ pub const HEADLINE: &str = concat!(
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
     env!("CARGO_PKG_VERSION_MINOR"),
-    " — bwoc gates: evaluate the Padhana-4 verification gates (lint, format, test, build) from the agent manifest"
+    " — the trust gate refuses by default: senders missing requiredTrust are refused; BWOC_TRUST_GATING=warn keeps warn-only"
 );
 
 /// Short highlight bullets for the current MAJOR.MINOR. Keep ≤6, each a
@@ -31,12 +31,12 @@ pub const HEADLINE: &str = concat!(
 /// the auto-version hook bumps the minor without anyone refreshing this
 /// prose — i.e. "update What's New every release" is enforced, not trusted.
 pub const HIGHLIGHTS: &[&str] = &[
+    "**The trust gate refuses by default (3.17).** The daemon's Kalyāṇamitta quality gate used to deliver a message from a sender missing the recipient's `requiredTrust` qualities with a `trust_warn` log line; it now refuses it and records the refusal in `inbox.refusals.jsonl`. Set `BWOC_TRUST_GATING=warn` to keep the old behavior, or `0` to disable; a manifest `trust.mode` of `off`/`warn` still relaxes it.",
     "**Check the gates, don't just declare them (3.16).** `bwoc gates` maps an agent's four Padhana verification gates to its manifest (`lintCmd`, `formatCmd`, `testCmd`, `buildCmd`) and reports PENDING / PASS / FAIL / UNCONFIGURED — a stub or `{{placeholder}}` is never a pass. The default is a dry run that only prints the commands; `--run` executes them with a scrubbed environment and a 600 s timeout per gate; exit 3 on any FAIL or UNCONFIGURED.",
     "**Eleven more coding CLIs as backends (3.15).** `pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor` and `mastracode` are declared backends — spawn, bare `bwoc --backend <name>`, model pickers and effort forwarding; `droid`, `opencode`, `kilo`, `qodercli` and `mastracode` also run headless with `bwoc run` (never with a bypass flag). Twenty-one backends in all.",
     "**See who is waiting on you (3.14).** With `[integrations.herdr] enabled = true`, `bwoc sessions` shows agents that are `blocked` on you or `done` and unread, from a running herdr server; `bwoc fleet term --backend herdr` opens the fleet as herdr panes, and `[fleet] pane_backend = \"herdr\"` makes `bwoc send` wake agents there. Off by default; unix only.",
     "**Bring back what you sent (3.13).** In the chat, `PgUp`/`PgDn` step through the lines you already sent from that input — the first `PgUp` sets your half-typed line aside, `PgDn` past the newest brings it back; scrolling stays on `↑`/`↓`, the wheel and `End`. A harness run that is killed (SIGKILL, OOM, panic) is still recorded on the next run, as `end_reason = \"abandoned\"` with an Error span.",
     "**Traces you can turn on (3.12).** Release binaries now carry the OpenTelemetry exporter: set `OTEL_EXPORTER_OTLP_ENDPOINT` and a session emits `invoke_agent` → `chat <model>` → `execute_tool <tool>` spans in the GenAI conventions, with `gen_ai.provider.name` taken from the live client. Unset, nothing is sent.",
-    "**Click a pane to talk to it (3.11).** With agent panes open, a click on a pane's input box focuses it (Shift/Option-drag selects text while panes are open); `/undo` no longer deletes a file the harness could not read; the context pane's changed-files list puts re-edits first and a linked worktree shows its branch.",
 ];
 
 /// `MAJOR.MINOR` of the current build (the patch component churns on every
