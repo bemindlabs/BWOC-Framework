@@ -6,9 +6,18 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.10.14-0] — 2026-10-14 — 3.17.0
+
+**The trust gate refuses by default.** The daemon's Kalyāṇamitta quality gate warned since 3.2; it now enforces unless you opt out.
+
 ### Changed
 
 - **BEHAVIOR CHANGE: the daemon's Kalyāṇamitta trust quality gate now enforces (refuses) by default.** `BWOC_TRUST_GATING` unset or empty now behaves like `=1`: a sender missing any of the recipient's `requiredTrust` qualities is refused (recorded in `inbox.refusals.jsonl`), where it used to be delivered with a `trust_warn` log line. New explicit value `warn` keeps the old warn-only behavior; `0`/`off`/`false` still disables; unrecognised values fail closed to enforce. A manifest `trust.mode` of `off`/`warn` still relaxes the gate. `BWOC_SIGNING_MODE=off` no longer idles the gate. **Migration:** set `BWOC_TRUST_GATING=warn` to keep the old behavior. Agents that declare `requiredTrust` but whose senders lack those qualities will now be refused. Spec: `trust.md` v2.2 (EN/TH); `COMPATIBILITY` notes this as a documented exception to "defaults tighten only as far as a warning".
+- **`uses_harness` has one definition.** `bwoc spawn` and the TUI each kept their own list of harness-driven backends, joined by a "keep in sync" comment; the CLI now reads the TUI's, and a test pins the set against every `Backend` variant. No behavior change.
+
+### Fixed
+
+- **A herdr session test flaked on macOS CI.** `herdr_pid_match_beats_cwd_match` shared one 300 ms budget across three herdr round-trips; tests now get their own budget. Test-only.
 
 ## [v2026.10.11-1] — 2026-10-11 — 3.16.0
 
