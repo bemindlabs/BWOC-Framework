@@ -40,6 +40,8 @@ mod markdown;
 mod panel;
 mod session;
 
+pub use session::is_harness_drivable;
+
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
