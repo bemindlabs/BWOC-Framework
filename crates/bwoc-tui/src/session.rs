@@ -28,9 +28,9 @@ pub struct AgentInfo {
     pub inbox_count: u32,
 }
 
-/// Whether the fleet can drive `backend` through `bwoc-harness --chat`. Mirrors
-/// `bwoc_cli::spawn::Backend::uses_harness` (the TUI must not depend on
-/// `bwoc-cli`): the OpenAI-compatible family and `anthropic` (the harness's
+/// Whether the fleet can drive `backend` through `bwoc-harness --chat`. The one
+/// definition of the harness set: `bwoc_cli::spawn::Backend::uses_harness`
+/// calls this (the TUI must not depend on `bwoc-cli`). The OpenAI-compatible family and `anthropic` (the harness's
 /// Anthropic Messages provider) speak `chat_proto`, while vendor CLIs
 /// (claude / agy / codex / kimi / copilot / grok / pi / omp / devin / droid /
 /// opencode / kilo / hermes / qodercli / qwen / cursor / mastracode) speak their own interactive

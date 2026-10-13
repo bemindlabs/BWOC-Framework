@@ -234,16 +234,11 @@ impl Backend {
     }
 
     /// Returns `true` for backends that exec `bwoc-harness` rather than an
-    /// external vendor CLI. Keep in sync with `bwoc_tui::session::is_harness_drivable`.
+    /// external vendor CLI. Delegates to `bwoc_tui::is_harness_drivable`
+    /// — the TUI cannot depend on `bwoc-cli`, so the list lives there and this
+    /// is the only other reader.
     pub fn uses_harness(self) -> bool {
-        matches!(
-            self,
-            Backend::Ollama
-                | Backend::OpenAiCompatible
-                | Backend::OpenRouter
-                | Backend::LiteLlm
-                | Backend::Anthropic
-        )
+        bwoc_tui::is_harness_drivable(self.display_name())
     }
 
     /// CLI args that set the reasoning-effort level for a **vendor** backend,
@@ -903,6 +898,28 @@ mod tests {
     fn gpt_5_5_is_recommended_for_openai_surfaces() {
         assert_eq!(Backend::Codex.models().first(), Some(&"gpt-5.5"));
         assert_eq!(Backend::OpenAiCompatible.models().first(), Some(&"gpt-5.5"));
+    }
+
+    /// Pins the harness set against the enum, so a new variant is classified
+    /// on purpose rather than by falling through the name match.
+    #[test]
+    fn uses_harness_covers_every_variant() {
+        use clap::ValueEnum;
+        let harness: Vec<&str> = Backend::value_variants()
+            .iter()
+            .filter(|b| b.uses_harness())
+            .map(|b| b.display_name())
+            .collect();
+        assert_eq!(
+            harness,
+            [
+                "ollama",
+                "openai-compatible",
+                "openrouter",
+                "litellm",
+                "anthropic"
+            ]
+        );
     }
 
     #[test]
