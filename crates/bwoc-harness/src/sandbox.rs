@@ -1167,7 +1167,7 @@ mod tests {
 
     /// With the escape-hatch engaged (`BWOC_SANDBOX_ALLOW_NET=1`) the rendered
     /// profile must NOT deny network — the platform-symmetric opt-out seam — but
-    /// the FS-jail rules must be byte-for-byte unchanged.
+    /// the FS-jail write rules must still be present.
     #[cfg(target_os = "macos")]
     #[test]
     fn sbpl_profile_network_escape_hatch_toggles() {
@@ -1285,7 +1285,7 @@ mod tests {
 
     /// With the escape-hatch engaged (`allow_secret_read = true`) the profile
     /// must contain NO `(deny file-read*` arm, while the FS-jail write rules stay
-    /// byte-for-byte present. Pure.
+    /// present. Pure.
     #[cfg(target_os = "macos")]
     #[test]
     fn sbpl_profile_secret_read_escape_hatch_toggles() {
