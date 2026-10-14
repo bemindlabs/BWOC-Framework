@@ -220,7 +220,9 @@ pub fn fixture_requires_tools(fixture: &Fixture) -> bool {
 /// Run a single fixture through the harness against `provider`, score the
 /// result, and return an [`EvalResult`].
 ///
-/// The fixture's `seed/` directory is copied into `workdir` before the run.
+/// The fixture's `seed/` directory is copied into `workdir` before the run
+/// (a fixture skipped by the ambient guard below returns before seeding, so
+/// its `workdir` is left untouched).
 /// The `expected/` directory (if present at `fixture_dir/expected/`) is used
 /// for `file_matches` checks.
 ///

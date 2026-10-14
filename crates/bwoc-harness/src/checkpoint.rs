@@ -59,6 +59,12 @@ pub struct RunState {
     /// the taint.
     #[serde(default)]
     pub untrusted_seen: bool,
+    /// Cumulative tokens (prompt + completion) spent so far — the HV2-6 budget
+    /// counter. Persisted so a `--resume` continues the same per-run budget
+    /// instead of starting a fresh one. `serde(default)` → `0` on checkpoints
+    /// written before this field existed.
+    #[serde(default)]
+    pub total_tokens: u64,
 }
 
 impl RunState {
@@ -242,6 +248,7 @@ mod tests {
             active_model: "mock".to_string(),
             workdir: PathBuf::from("/tmp/bwoc-wt"),
             untrusted_seen: false,
+            total_tokens: 0,
         }
     }
 

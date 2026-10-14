@@ -52,7 +52,8 @@ impl DeepMemoryCmd {
         Self::from_cmd(m.deep_memory_cmd.as_deref())
     }
 
-    /// Same filtering rules as `bwoc-core::deep_memory::from_manifest_cmd`.
+    /// Same filtering rules as `bwoc-core::deep_memory::from_manifest_cmd`,
+    /// plus whitespace-only values also count as unconfigured.
     pub fn from_cmd(cmd: Option<&str>) -> Option<Self> {
         match cmd {
             None => None,
@@ -82,7 +83,12 @@ impl DeepMemoryCmd {
         };
         args.extend(sub_args.iter().map(|s| s.to_string()));
 
-        let fut = tokio::process::Command::new(&program).args(&args).output();
+        // `kill_on_drop`: when the timeout fires the `output()` future is
+        // dropped; without it the timed-out process would be left running.
+        let fut = tokio::process::Command::new(&program)
+            .args(&args)
+            .kill_on_drop(true)
+            .output();
         let output = tokio::time::timeout(timeout, fut)
             .await
             .map_err(|_| format!("`{program}` timed out after {}s", timeout.as_secs()))?
@@ -248,6 +254,34 @@ mod tests {
         // only assert plumbing, not the reference backend's semantics.
         let out = dm.wake_up().await.expect("echo always succeeds");
         assert!(out.contains("prior-context"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_cmd_is_killed_not_orphaned() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = dir.path().join("slow-memory");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nsleep 1\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dm = DeepMemoryCmd::from_cmd(script.to_str()).unwrap();
+
+        let err = dm
+            .invoke(&["mine"], Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(err.contains("timed out"), "got {err}");
+        // Had the process been orphaned it would finish its sleep and touch.
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            !marker.exists(),
+            "timed-out deep-memory process kept running"
+        );
     }
 
     #[cfg(unix)]

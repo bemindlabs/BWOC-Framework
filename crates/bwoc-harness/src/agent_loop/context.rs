@@ -3,7 +3,8 @@
 //! Helpers the loop driver (`super`) calls to decide when to auto-switch to a
 //! larger model under token pressure, when to compact, and when a model's
 //! tool-call output is malformed enough to trigger fallback. Pure functions
-//! (no I/O); split out so the loop driver stays focused on orchestration.
+//! apart from a stderr warning in `find_larger_vetted_model`; split out so the
+//! loop driver stays focused on orchestration.
 
 use std::collections::HashMap;
 
@@ -34,10 +35,21 @@ pub(crate) fn has_malformed_tool_calls(calls: &[ToolCall]) -> bool {
 ///
 /// Rough heuristic: 1 token ≈ 4 characters (works for English + code; good
 /// enough for a compaction trigger — exact counts come from `usage` fields).
+/// Tool-call names and arguments count too (as in `compact::estimate_tokens`):
+/// they are sent to the provider, and a large tool-call JSON would otherwise
+/// let the history pass the trigger while overflowing the window.
 pub(super) fn estimate_context_tokens(history: &[ChatMessage]) -> u32 {
     let total_chars: usize = history
         .iter()
-        .map(|m| m.content.as_deref().map_or(0, |c| c.len()))
+        .map(|m| {
+            let content = m.content.as_deref().map_or(0, str::len);
+            let tools: usize = m.tool_calls.as_deref().map_or(0, |tcs| {
+                tcs.iter()
+                    .map(|t| t.function.name.len() + t.function.arguments.len())
+                    .sum()
+            });
+            content + tools
+        })
         .sum();
     (total_chars / 4) as u32
 }

@@ -355,7 +355,7 @@ fn timeout_tail<'a>(rest: &'a [&'a str]) -> Option<&'a [&'a str]> {
 /// expansion survives in the token text and [`has_expansion`] rejects it where
 /// it matters). It exists so `sh -c 'rm -rf /'` tokenizes to three tokens, not
 /// five, closing the quote-unaware gap the old `split_whitespace` had.
-fn tokenize(s: &str) -> Option<Vec<String>> {
+pub(crate) fn tokenize(s: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut in_tok = false;

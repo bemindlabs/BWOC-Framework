@@ -1016,8 +1016,8 @@ impl ToolImpl for Git {
 /// output.  Returns a structured report.
 ///
 /// The manifest is located by searching upward from `ctx.workdir` for
-/// `config.manifest.json`.  The commands are run via `sh -c` with the
-/// worktree root as `cwd`.
+/// `config.manifest.json`.  The commands are run via `sh -c` (Unix) or
+/// `cmd /C` (Windows) with the worktree root as `cwd`.
 ///
 /// Source of gate definitions: `bwoc-core::manifest::Manifest` (already a dep).
 pub struct RunGates;

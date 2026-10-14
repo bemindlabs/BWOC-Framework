@@ -81,11 +81,24 @@ fn c9_child_env_has_no_api_keys_or_secrets() {
     let _serial = serial();
     // Plant a provider key + a generic secret in THIS (parent) process. scrub_env
     // reads the parent env at spawn, so a leak would surface in the child report.
+    // Removes the canaries on scope exit — panic included — so a failed
+    // assertion cannot leak them into later tests in this binary.
+    struct EnvCanaries;
+    impl Drop for EnvCanaries {
+        fn drop(&mut self) {
+            // SAFETY: the suite is serialized by `serial()`; no concurrent reader.
+            unsafe {
+                std::env::remove_var("ANTHROPIC_API_KEY");
+                std::env::remove_var("BWOC_T5_FAKE_SECRET");
+            }
+        }
+    }
     // SAFETY: set before the spawn in a test that is the sole env mutator.
     unsafe {
         std::env::set_var("ANTHROPIC_API_KEY", "leak-canary-anthropic");
         std::env::set_var("BWOC_T5_FAKE_SECRET", "leak-canary-secret");
     }
+    let _canaries = EnvCanaries;
 
     let work = tempfile::tempdir().unwrap();
     let out = run_isolated_selftest(&harness_bin(), work.path()).unwrap();
@@ -116,11 +129,6 @@ fn c9_child_env_has_no_api_keys_or_secrets() {
             !sensitive,
             "C9: credential-like key leaked into child env: {k}"
         );
-    }
-
-    unsafe {
-        std::env::remove_var("ANTHROPIC_API_KEY");
-        std::env::remove_var("BWOC_T5_FAKE_SECRET");
     }
 }
 

@@ -49,6 +49,13 @@ pub trait RpcTransport: Send + Sync {
 /// the agent loop forever.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Split a `--mcp` command-line spec into `program` + args. Quote-aware
+/// (`"…"` / `'…'`), so a program path or argument containing spaces survives;
+/// no shell expansion. `None` for an empty spec or an unterminated quote.
+pub fn split_stdio_spec(spec: &str) -> Option<Vec<String>> {
+    crate::policy::argv::tokenize(spec).filter(|parts| !parts.is_empty())
+}
+
 /// Line-delimited JSON-RPC 2.0 over a subprocess's stdio.
 pub struct StdioTransport {
     stdin: Mutex<ChildStdin>,
@@ -76,7 +83,10 @@ impl StdioTransport {
             .envs(&safe_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::inherit())
+            // tokio leaves a dropped `Child` running by default; without this a
+            // harness exit would orphan the MCP server.
+            .kill_on_drop(true);
         cmd
     }
 
@@ -780,6 +790,33 @@ mod tests {
             err.to_string().contains("unsupported protocol version"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn spawn_command_kills_the_server_on_drop() {
+        let cmd = StdioTransport::scrubbed_command("true", &[]);
+        assert!(
+            cmd.get_kill_on_drop(),
+            "a dropped transport must not orphan its MCP server"
+        );
+    }
+
+    #[test]
+    fn stdio_spec_is_split_quote_aware() {
+        assert_eq!(
+            split_stdio_spec(r#""C:\Program Files\mcp\server.exe" --root "my dir""#),
+            Some(vec![
+                r"C:\Program Files\mcp\server.exe".to_string(),
+                "--root".to_string(),
+                "my dir".to_string(),
+            ])
+        );
+        assert_eq!(
+            split_stdio_spec("my-mcp-server --flag"),
+            Some(vec!["my-mcp-server".to_string(), "--flag".to_string()])
+        );
+        assert_eq!(split_stdio_spec("server 'unterminated"), None);
+        assert_eq!(split_stdio_spec("   "), None);
     }
 
     #[test]

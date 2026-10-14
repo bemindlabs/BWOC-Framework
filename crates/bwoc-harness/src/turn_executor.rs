@@ -391,10 +391,11 @@ fn current_uid_proc_count() -> u64 {
     if count == 0 { 64 } else { count }
 }
 
-/// Darwin/BSD: `proc_listpids(PROC_UID_ONLY, uid, NULL, 0)` returns the byte size
+/// macOS: `proc_listpids(PROC_UID_ONLY, uid, NULL, 0)` returns the byte size
 /// of the matching pid array; dividing by `sizeof(pid)` gives the process count.
 /// (A size-query avoids allocating or enumerating the pids themselves.)
-#[cfg(all(unix, not(target_os = "linux")))]
+/// `proc_listpids` is a Darwin-only libproc API, hence the macOS gate.
+#[cfg(target_os = "macos")]
 fn current_uid_proc_count() -> u64 {
     // PROC_UID_ONLY from <libproc.h>; not re-exported by libc, so spelled here.
     const PROC_UID_ONLY: u32 = 4;
@@ -407,6 +408,13 @@ fn current_uid_proc_count() -> u64 {
     } else {
         64
     }
+}
+
+/// Other unix (e.g. FreeBSD): no portable per-UID count — use the same
+/// conservative floor the other platforms fall back to on a failed measurement.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn current_uid_proc_count() -> u64 {
+    64
 }
 
 /// Build the full rlimit table for the current platform + env (PARENT side).
@@ -562,7 +570,7 @@ fn snapshot_rlimits() -> Vec<RlimitView> {
 pub struct SelfTestReport {
     pub pid: u32,
     pub cwd: String,
-    /// Every fd in `[0, 1024)` that is currently open in the child.
+    /// Every fd in `[0, SELFTEST_FD_PROBE_MAX)` that is currently open in the child.
     pub fds: Vec<i32>,
     pub env_keys: Vec<String>,
     pub ipc_fd: i32,
@@ -1292,12 +1300,19 @@ fn respond(
     write_frame(sock, &payload)
 }
 
-/// Every open fd in `[0, 1024)` (probed via `fcntl(F_GETFD)` — no fd of its own,
-/// unlike reading `/proc/self/fd`, so the result is exact).
+/// Upper bound (exclusive) of the selftest fd probe. Well above the child's
+/// `RLIMIT_NOFILE` (≤ 8192): a descriptor inherited from the parent keeps its
+/// number even when it exceeds the lowered limit, so probing only `[0, 1024)`
+/// would miss exactly the high leaked fds the C10 check exists to catch.
+#[cfg(unix)]
+const SELFTEST_FD_PROBE_MAX: i32 = 65_536;
+
+/// Every open fd in `[0, SELFTEST_FD_PROBE_MAX)` (probed via `fcntl(F_GETFD)` —
+/// no fd of its own, unlike reading `/proc/self/fd`, so the result is exact).
 #[cfg(unix)]
 fn snapshot_open_fds() -> Vec<i32> {
     let mut fds = Vec::new();
-    for fd in 0..1024 {
+    for fd in 0..SELFTEST_FD_PROBE_MAX {
         // SAFETY: F_GETFD only queries the descriptor flags; no side effects.
         if unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1 {
             fds.push(fd);

@@ -291,7 +291,7 @@ impl ToolImpl for RunCommand {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Shell command to run (runs via sh -c)."
+                    "description": "Shell command to run (via `sh -c` on Unix, `cmd /C` on Windows)."
                 },
                 "timeout_secs": {
                     "type": "integer",

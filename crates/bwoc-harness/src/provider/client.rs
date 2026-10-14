@@ -237,13 +237,16 @@ pub fn resolve_openai_compatible_api_key() -> String {
         .unwrap_or_default()
 }
 
-/// Per-request timeout applied to every HTTP call the client makes.
+/// Request timeout for the client's HTTP calls.
 ///
 /// Without it, `reqwest::Client::new()` has no request timeout, so a hung
 /// blocking completion never resolves — it bypasses the agent loop's
-/// retry/backoff/budget logic entirely. Bounding the request lets the timeout
-/// surface as a `reqwest` error, which the `send().await` arms below map to
-/// [`HarnessError::TransientProvider`] so the existing retry path can see it.
+/// retry/backoff/budget logic entirely. Non-streaming requests are bounded by
+/// it end to end; the SSE stream is bounded per read instead (an idle gap of
+/// this length), so a long but live generation is never cut mid-stream. A
+/// timed-out completion surfaces as a `reqwest` error, which the completion
+/// `send().await` arms below map to [`HarnessError::TransientProvider`] so the
+/// existing retry path can see it.
 ///
 /// `pub(crate)` so the Anthropic client — which cannot use reqwest's
 /// `.timeout()` (it would cut the SSE stream body) and instead wraps its
@@ -274,25 +277,42 @@ pub struct OllamaClient {
     /// provider-specific attribution headers (e.g. OpenRouter's optional
     /// `HTTP-Referer` / `X-Title` ranking headers). Set via [`Self::with_headers`].
     extra_headers: Vec<(String, String)>,
+    /// End-to-end bound for every non-streaming request.
+    request_timeout: Duration,
     client: Client,
 }
 
 impl OllamaClient {
     /// Create a client with an explicit base URL.
     pub fn new(base_url: impl Into<String>) -> Self {
-        // A request timeout (vs. `Client::new()`'s unbounded default) ensures a
-        // hung completion fails instead of stalling forever; `build()` only
-        // errors on TLS/system init, so fall back to the default client.
+        Self::with_timeouts(base_url, REQUEST_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// Build with an explicit end-to-end `request_timeout` (non-streaming
+    /// calls) and `idle_timeout` (connect + each read, which is what bounds a
+    /// stream). A client-wide `.timeout()` is deliberately NOT set: it would
+    /// also cover the SSE body and cut a healthy generation that runs longer
+    /// than the bound.
+    fn with_timeouts(
+        base_url: impl Into<String>,
+        request_timeout: Duration,
+        idle_timeout: Duration,
+    ) -> Self {
+        // `build()` only errors on TLS/system init — the same condition under
+        // which `Client::new()` panics — so there is no unbounded fallback to
+        // degrade to; fail loudly instead of silently dropping the timeouts.
         let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(idle_timeout)
+            .read_timeout(idle_timeout)
             .build()
-            .unwrap_or_default();
+            .expect("failed to initialize the HTTP client (TLS backend)");
         Self {
             base_url: base_url.into(),
             reasoning_effort: None,
             max_tokens: None,
             api_key: None,
             extra_headers: Vec::new(),
+            request_timeout,
             client,
         }
     }
@@ -353,6 +373,12 @@ impl OllamaClient {
         rb
     }
 
+    /// [`Self::auth`] plus the end-to-end request timeout — for every request
+    /// except the SSE stream, whose body is bounded per read instead.
+    fn bounded(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        self.auth(rb).timeout(self.request_timeout)
+    }
+
     fn completions_url(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
@@ -365,11 +391,11 @@ impl OllamaClient {
     ///
     /// `base_url` ends in `/v1` (OpenAI-compat path); strip it to get the
     /// Ollama root so we can reach native endpoints like `POST /api/show`.
+    /// Trailing slashes are trimmed first, so `.../v1/` resolves the same way
+    /// instead of yielding `.../v1//api/show`.
     fn ollama_root(&self) -> String {
-        self.base_url
-            .strip_suffix("/v1")
-            .unwrap_or(&self.base_url)
-            .to_string()
+        let base = self.base_url.trim_end_matches('/');
+        base.strip_suffix("/v1").unwrap_or(base).to_string()
     }
 
     /// URL for Ollama's native model-info endpoint.
@@ -412,7 +438,7 @@ impl ProviderClient for OllamaClient {
         );
 
         let resp = self
-            .auth(self.client.post(self.completions_url()).json(&body))
+            .bounded(self.client.post(self.completions_url()).json(&body))
             .send()
             .await
             .map_err(|e| HarnessError::transient(format!("HTTP request failed: {e}")))?;
@@ -524,7 +550,7 @@ impl ProviderClient for OllamaClient {
     async fn validate_model(&self, model: &str) -> Result<(), HarnessError> {
         // GET /v1/models returns a list; check the model is present.
         let resp = self
-            .auth(self.client.get(self.models_url()))
+            .bounded(self.client.get(self.models_url()))
             .send()
             .await
             .map_err(|e| HarnessError::Provider(format!("Model list request failed: {e}")))?;
@@ -565,7 +591,7 @@ impl ProviderClient for OllamaClient {
     /// list shape (`{"data": [{"id": ...}, ...]}`). LiteLLM answers with only
     /// the models the key may call, so the list is already the right one.
     async fn try_list_models(&self) -> Result<Vec<String>, HarnessError> {
-        fetch_model_ids(self.auth(self.client.get(self.models_url()))).await
+        fetch_model_ids(self.bounded(self.client.get(self.models_url()))).await
     }
 
     /// Query Ollama's native `POST /api/show` endpoint for the model's
@@ -598,6 +624,7 @@ impl OllamaClient {
         let resp = self
             .client
             .post(self.show_url())
+            .timeout(self.request_timeout)
             .json(&body)
             .send()
             .await
@@ -665,7 +692,7 @@ impl OllamaClient {
     }
 
     async fn get_json(&self, url: &str) -> Option<Value> {
-        let resp = self.auth(self.client.get(url)).send().await.ok()?;
+        let resp = self.bounded(self.client.get(url)).send().await.ok()?;
         if !resp.status().is_success() {
             return None;
         }
@@ -1201,13 +1228,107 @@ mod tests {
         // zero/unset the request could stall past the retry/budget logic.
         assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(120));
 
-        // `OllamaClient::new` must construct via the timeout-bearing builder, not
-        // fall back to the unbounded default. `Client::builder().timeout(..)` only
-        // fails on TLS/system init, so a successful build here proves the path.
-        assert!(Client::builder().timeout(REQUEST_TIMEOUT).build().is_ok());
+        // `OllamaClient::new` carries the bound for its non-streaming calls.
+        assert_eq!(
+            OllamaClient::new(DEFAULT_ENDPOINT).request_timeout,
+            REQUEST_TIMEOUT
+        );
+    }
 
-        // Construction itself stays infallible.
-        let _ = OllamaClient::new(DEFAULT_ENDPOINT);
+    #[test]
+    fn ollama_root_tolerates_a_trailing_slash() {
+        for base in [
+            "http://host:11434/v1",
+            "http://host:11434/v1/",
+            "http://host:11434/v1//",
+        ] {
+            assert_eq!(
+                OllamaClient::new(base).show_url(),
+                "http://host:11434/api/show",
+                "base `{base}`"
+            );
+        }
+        assert_eq!(
+            OllamaClient::new("http://host:11434/").show_url(),
+            "http://host:11434/api/show"
+        );
+    }
+
+    /// Serve one HTTP response on a loopback port: the head, then each body
+    /// part after `gap`. Returns the `/v1` base URL to point a client at.
+    async fn slow_server(head: &'static str, parts: Vec<String>, gap: Duration) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 64 * 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(head.as_bytes()).await;
+            for part in parts {
+                tokio::time::sleep(gap).await;
+                if sock.write_all(part.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}/v1")
+    }
+
+    /// A live stream that runs longer than the end-to-end request bound must
+    /// not be cut: the stream is bounded per read (idle), not in total.
+    #[tokio::test]
+    async fn stream_outlives_the_request_timeout_while_data_keeps_flowing() {
+        use futures_util::StreamExt;
+        let parts: Vec<String> = (0..6)
+            .map(|i| {
+                format!(
+                    "data: {{\"id\":\"c\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{i}\"}}}}]}}\n\n"
+                )
+            })
+            .chain(std::iter::once("data: [DONE]\n\n".to_string()))
+            .collect();
+        let base = slow_server(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+            parts,
+            Duration::from_millis(100),
+        )
+        .await;
+        // ~700ms of streaming against a 300ms end-to-end bound.
+        let client =
+            OllamaClient::with_timeouts(base, Duration::from_millis(300), Duration::from_secs(5));
+        let mut stream = client.stream(Vec::new(), Vec::new(), "m").await.unwrap();
+        let mut text = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.expect("stream must not be cut while data flows");
+            for c in chunk.choices {
+                text.push_str(c.delta.content.as_deref().unwrap_or(""));
+            }
+        }
+        assert_eq!(text, "012345");
+    }
+
+    /// A non-streaming completion stays bounded end to end and surfaces as a
+    /// transient (retryable) error.
+    #[tokio::test]
+    async fn blocking_completion_is_bounded_and_transient() {
+        let base = slow_server(
+            "",
+            vec!["HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}".to_string()],
+            Duration::from_secs(2),
+        )
+        .await;
+        let client =
+            OllamaClient::with_timeouts(base, Duration::from_millis(200), Duration::from_secs(5));
+        let err = client
+            .complete(Vec::new(), Vec::new(), "m")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, HarnessError::TransientProvider { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
