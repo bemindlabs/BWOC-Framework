@@ -141,7 +141,24 @@ fn lock_is_stale(path: &Path) -> bool {
 
 // --- shared loaders --------------------------------------------------------
 
+/// `true` iff `id` is exactly one normal path component (not empty, `.`, `..`,
+/// absolute, or containing a separator).
+fn is_single_segment(id: &str) -> bool {
+    let mut comps = Path::new(id).components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) && !id.contains(['/', '\\'])
+}
+
 pub(crate) fn load_team(workspace: &Path, team_id: &str) -> Result<Team, String> {
+    // The id becomes a path segment under `.bwoc/teams/` (and the chat /
+    // tasks paths beside it); an absolute or `..` id would escape it.
+    if !is_single_segment(team_id) {
+        return Err(format!(
+            "invalid team id {team_id:?} — must be a single name (no path separators or `..`)"
+        ));
+    }
     let path = team_toml_path(workspace, team_id);
     let body = fs::read_to_string(&path).map_err(|_| {
         format!(
@@ -930,6 +947,23 @@ pub fn run_task_review(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_team_rejects_ids_that_escape_the_teams_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real team file outside `.bwoc/teams/` that a traversal would hit.
+        fs::write(
+            dir.path().join("outside.toml"),
+            "id = \"outside\"\nmembers = [\"agent-a\"]\n",
+        )
+        .unwrap();
+        let abs = dir.path().join("outside").display().to_string();
+        for bad in ["../../outside", "a/b", "..", ".", "", abs.as_str()] {
+            let err = load_team(dir.path(), bad).unwrap_err();
+            assert!(err.contains("invalid team id"), "{bad:?}: {err}");
+        }
+        assert!(is_single_segment("core-team"));
+    }
 
     /// Write a hook script from a child process, never from this one: a
     /// writable fd held here leaks into any child another test thread forks

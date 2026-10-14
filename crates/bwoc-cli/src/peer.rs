@@ -4,8 +4,8 @@
 //! epic:
 //!
 //! - `bwoc peer list`               — list peers declared in routes.toml
-//! - `bwoc peer <key>`              — show a peer's agents + open team tasks
-//! - `bwoc peer <key> status`       — alias for the above
+//! - `bwoc peer status <key>`       — show a peer's agents + open team tasks
+//!   (alias: `bwoc peer view <key>`)
 //! - `bwoc peer learn <key>`        — list shared docs from the peer's allowlist
 //! - `bwoc peer learn <key> <doc>`  — print one shared doc (allowlist-gated)
 //!
@@ -16,11 +16,16 @@
 //! share = ["research", "retrospectives"]   # doc-kind names
 //! ```
 //!
+//! Kind names resolve against the **peer's** doc-kind registry (built-ins plus
+//! the peer's own `.bwoc/doc-kinds.toml`), so a peer can share a custom kind.
+//!
 //! Absent/empty file → nothing shared (safe default).
 //!
 //! Enforcement: every file path that `learn` resolves is checked to be
-//! path-contained inside the allowlisted kind directory (see
-//! `is_path_contained`). Any attempt to read outside that boundary is refused.
+//! path-contained inside the allowlisted kind directory — lexically (see
+//! `is_path_contained`) and again after resolving symlinks (see
+//! `resolves_inside`), and the kind directory itself must resolve inside the
+//! peer workspace. Any attempt to read outside that boundary is refused.
 //!
 //! Read-only. No write to peer workspace; auto-ingest into local memory is
 //! deferred to a later phase.
@@ -125,7 +130,7 @@ fn run_list(routes: &Routes) -> i32 {
     0
 }
 
-// ── `bwoc peer <key> [status]` ───────────────────────────────────────────────
+// ── `bwoc peer status <key>` ─────────────────────────────────────────────────
 
 fn run_view(key: &str, routes: &Routes, local_root: &Path) -> i32 {
     let peer_ws = match routes.resolve(key) {
@@ -276,8 +281,55 @@ fn is_path_contained(base: &Path, candidate: &Path) -> bool {
     cand_n.starts_with(&base_n)
 }
 
-/// Resolve a peer key to its workspace root, or print an error and return
-/// `None`.  Shared by `run_view` and `run_learn` to avoid duplication.
+/// Return `true` iff `candidate`, with every symlink resolved, lies inside
+/// `base` (also resolved). Both must exist; any canonicalization failure is a
+/// refusal. Complements the lexical [`is_path_contained`]: a symlink planted in
+/// a shared kind directory that points elsewhere passes the lexical check but
+/// fails this one.
+fn resolves_inside(base: &Path, candidate: &Path) -> bool {
+    match (fs::canonicalize(base), fs::canonicalize(candidate)) {
+        (Ok(b), Ok(c)) => c.starts_with(&b),
+        _ => false,
+    }
+}
+
+/// Lexical and symlink-resolved containment — the gate every `learn` read uses.
+fn is_contained(base: &Path, candidate: &Path) -> bool {
+    is_path_contained(base, candidate) && resolves_inside(base, candidate)
+}
+
+/// Resolve an allowlisted kind name against the peer's doc-kind registry and
+/// return its directory, or `None` (with a warning when `warn`) if the kind is
+/// unknown, its directory is absent, or it resolves outside the peer workspace
+/// (a custom kind's `dir` is peer-authored, so it is not trusted to stay put).
+fn shared_kind_dir(peer_ws: &Path, kind_name: &str, warn: bool) -> Option<PathBuf> {
+    let kind = match doc_kind::resolve_kind(kind_name, peer_ws) {
+        Ok(k) => k,
+        Err(_) => {
+            if warn {
+                eprintln!(
+                    "  [warn] kind '{kind_name}' in shared.toml is not a known doc-kind — skipping"
+                );
+            }
+            return None;
+        }
+    };
+    let kind_dir = peer_ws.join(kind.dir.trim_end_matches('/'));
+    if !kind_dir.is_dir() {
+        // Kind dir missing in peer → no docs for this kind, not an error.
+        return None;
+    }
+    if !is_contained(peer_ws, &kind_dir) {
+        if warn {
+            eprintln!("  [warn] kind '{kind_name}' resolves outside the peer workspace — skipping");
+        }
+        return None;
+    }
+    Some(kind_dir)
+}
+
+/// Resolve a peer key to its workspace root; `None` when the key is not
+/// declared. Prints nothing — the caller reports the unknown key.
 fn resolve_peer_ws<'a>(key: &str, routes: &'a Routes) -> Option<&'a Path> {
     let peer_ws = routes.resolve(key)?;
     Some(peer_ws)
@@ -335,66 +387,64 @@ fn run_learn(key: &str, doc: Option<&str>, routes: &Routes) -> i32 {
     }
 }
 
+/// One listed shared document: `(kind, filename, title)`.
+type SharedDoc = (String, String, String);
+
+/// Every shared document across the allowlisted kinds, in allowlist order and
+/// filename order within a kind. Only contained `.md` files are returned.
+fn shared_docs(peer_ws: &Path, share: &[String]) -> Vec<SharedDoc> {
+    let mut out = Vec::new();
+    for kind_name in share {
+        let Some(kind_dir) = shared_kind_dir(peer_ws, kind_name, true) else {
+            continue;
+        };
+        let Ok(entries) = fs::read_dir(&kind_dir) else {
+            continue;
+        };
+        let mut docs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .filter(|p| p.is_file() && is_contained(&kind_dir, p))
+            .collect();
+        docs.sort();
+        for doc_path in docs {
+            let filename = doc_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let title = first_heading(&doc_path).unwrap_or_else(|| filename.clone());
+            out.push((kind_name.clone(), filename, title));
+        }
+    }
+    out
+}
+
 /// List shared documents across all allowlisted kinds.
 fn run_learn_list(key: &str, peer_ws: &Path, share: &[String]) -> i32 {
     println!();
     println!("Shared documents from peer '{key}':");
     println!();
 
-    let mut any = false;
-
-    for kind_name in share {
-        // Resolve the doc-kind to get its directory.
-        let kind = match doc_kind::kind(kind_name) {
-            Some(k) => k,
-            None => {
-                eprintln!(
-                    "  [warn] kind '{kind_name}' in shared.toml is not a known doc-kind — skipping"
-                );
-                continue;
-            }
-        };
-
-        let kind_dir = peer_ws.join(&kind.dir);
-        if !kind_dir.is_dir() {
-            // Kind dir missing in peer → no docs for this kind, not an error.
-            continue;
-        }
-
-        let entries = match fs::read_dir(&kind_dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let mut docs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
-            .collect();
-        docs.sort();
-
-        if docs.is_empty() {
-            continue;
-        }
-
-        println!("  [{kind_name}]");
-        for doc_path in &docs {
-            // Enforce containment — belt-and-suspenders.
-            if !is_path_contained(&kind_dir, doc_path) {
-                continue;
-            }
-            let filename = doc_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            let title = first_heading(doc_path).unwrap_or_else(|| filename.to_string());
-            println!("    {filename}  —  {title}");
-            any = true;
-        }
-        println!();
-    }
-
-    if !any {
+    let docs = shared_docs(peer_ws, share);
+    if docs.is_empty() {
         println!("  (no documents found in shared kinds)");
         println!();
+        return 0;
     }
+    let mut current: Option<&str> = None;
+    for (kind_name, filename, title) in &docs {
+        if current != Some(kind_name.as_str()) {
+            if current.is_some() {
+                println!();
+            }
+            println!("  [{kind_name}]");
+            current = Some(kind_name.as_str());
+        }
+        println!("    {filename}  —  {title}");
+    }
+    println!();
     0
 }
 
@@ -402,18 +452,11 @@ fn run_learn_list(key: &str, peer_ws: &Path, share: &[String]) -> i32 {
 fn run_learn_view(key: &str, doc_name: &str, peer_ws: &Path, share: &[String]) -> i32 {
     // Walk each allowlisted kind and look for a match.
     for kind_name in share {
-        let kind = match doc_kind::kind(kind_name) {
-            Some(k) => k,
-            None => {
-                // Unknown kind — silently skip (warning already emitted in list).
-                continue;
-            }
-        };
-
-        let kind_dir = peer_ws.join(&kind.dir);
-        if !kind_dir.is_dir() {
+        // Unknown / missing / escaping kinds are skipped silently here (the
+        // list path warns about them).
+        let Some(kind_dir) = shared_kind_dir(peer_ws, kind_name, false) else {
             continue;
-        }
+        };
 
         // Accept exact filename or filename-without-extension.
         let candidate_exact = kind_dir.join(doc_name);
@@ -424,8 +467,9 @@ fn run_learn_view(key: &str, doc_name: &str, peer_ws: &Path, share: &[String]) -
                 continue;
             }
 
-            // Path-containment check — never read outside the kind dir.
-            if !is_path_contained(&kind_dir, candidate) {
+            // Path-containment check — never read outside the kind dir, even
+            // through a symlink.
+            if !is_contained(&kind_dir, candidate) {
                 eprintln!(
                     "bwoc peer learn: path '{}' is outside the allowlisted \
                      kind directory — refused.",
@@ -461,9 +505,13 @@ fn run_learn_view(key: &str, doc_name: &str, peer_ws: &Path, share: &[String]) -
 
 /// Extract the first Markdown heading (`# ...`) from a file as a plain string,
 /// or return `None` when no heading is present.
+/// Streams the file and stops at the first heading, so listing many large
+/// documents never loads them whole.
 fn first_heading(path: &Path) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
-    for line in content.lines() {
+    use std::io::BufRead;
+    let reader = io::BufReader::new(fs::File::open(path).ok()?);
+    for line in reader.lines() {
+        let line = line.ok()?;
         let trimmed = line.trim_start_matches('#').trim();
         if line.starts_with('#') && !trimmed.is_empty() {
             return Some(trimmed.to_string());
@@ -866,7 +914,78 @@ mod tests {
             workspace: Some(local.clone()),
         });
         assert_eq!(code, 0);
+        let shared = bwoc_core::routing::SharedAllowlist::load(&peer);
+        let docs = shared_docs(&peer, &shared.share);
+        assert_eq!(
+            docs,
+            vec![(
+                "research".to_string(),
+                "2026-05-24_test-topic.md".to_string(),
+                "Test Topic".to_string()
+            )],
+            "only the allowlisted research doc may be listed"
+        );
         let _ = fs::remove_dir_all(&local);
+        let _ = fs::remove_dir_all(&peer);
+    }
+
+    #[test]
+    fn learn_resolves_custom_kind_from_peer_registry() {
+        let peer = make_peer_ws("learn-custom", &[]);
+        fs::write(
+            peer.join(".bwoc/doc-kinds.toml"),
+            "[[kind]]\nname = \"playbooks\"\ndir = \"playbooks/\"\n",
+        )
+        .unwrap();
+        seed_shared_doc(
+            &peer,
+            &["playbooks"],
+            "playbooks/",
+            "deploy.md",
+            "# Deploy\n",
+        );
+        let docs = shared_docs(&peer, &["playbooks".to_string()]);
+        assert_eq!(docs.len(), 1, "custom kind must resolve: {docs:?}");
+        assert_eq!(
+            run_learn_view("k", "deploy", &peer, &["playbooks".to_string()]),
+            0
+        );
+        let _ = fs::remove_dir_all(&peer);
+    }
+
+    #[test]
+    fn learn_refuses_custom_kind_dir_outside_peer() {
+        let peer = make_peer_ws("learn-custom-escape", &[]);
+        let outside = make_local_ws("learn-custom-escape-outside");
+        fs::write(outside.join("leak.md"), "# Leak\n").unwrap();
+        fs::write(
+            peer.join(".bwoc/doc-kinds.toml"),
+            format!("[[kind]]\nname = \"evil\"\ndir = '{}'\n", outside.display()),
+        )
+        .unwrap();
+        let share = vec!["evil".to_string()];
+        assert!(shared_docs(&peer, &share).is_empty());
+        assert_ne!(run_learn_view("k", "leak", &peer, &share), 0);
+        let _ = fs::remove_dir_all(&peer);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn learn_refuses_symlink_escaping_kind_dir() {
+        let peer = make_peer_ws("learn-symlink", &[]);
+        seed_shared_doc(&peer, &["research"], "research/", "ok.md", "# Ok\n");
+        // A symlink inside the shared kind dir pointing at a non-shared file.
+        std::os::unix::fs::symlink(
+            peer.join(".bwoc/agents.toml"),
+            peer.join("research/agents.md"),
+        )
+        .unwrap();
+        let share = vec!["research".to_string()];
+        let docs = shared_docs(&peer, &share);
+        assert_eq!(docs.len(), 1, "symlinked file must not be listed: {docs:?}");
+        assert_eq!(docs[0].1, "ok.md");
+        assert_ne!(run_learn_view("k", "agents", &peer, &share), 0);
         let _ = fs::remove_dir_all(&peer);
     }
 

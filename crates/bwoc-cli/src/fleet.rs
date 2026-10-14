@@ -289,7 +289,8 @@ fn condition_1_regular_meetings(
         };
     }
 
-    let threshold_secs = stale_days * 24 * 60 * 60;
+    // Saturating: a huge `--stale-days` must not wrap to a tiny threshold.
+    let threshold_secs = stale_days.saturating_mul(24 * 60 * 60);
     let now = std::time::SystemTime::now();
     let mut stale: Vec<String> = Vec::new();
 
@@ -297,15 +298,19 @@ fn condition_1_regular_meetings(
         let agent_dir = workspace.join(&agent.path);
         // Use the most-recently-modified file in .bwoc/ or the dir mtime
         // itself, whichever is newer.
-        let last_touched = dir_last_touched(&agent_dir);
-        if let Some(elapsed_secs) = last_touched
-            .and_then(|t| now.duration_since(t).ok())
+        // A missing/unreadable agent dir is reported, not silently counted as
+        // fresh. An mtime in the future (clock skew) counts as just touched.
+        let Some(last_touched) = dir_last_touched(&agent_dir) else {
+            stale.push(format!("{} (agent dir missing or unreadable)", agent.id));
+            continue;
+        };
+        let elapsed_secs = now
+            .duration_since(last_touched)
             .map(|d| d.as_secs())
-        {
-            if elapsed_secs >= threshold_secs {
-                let days = elapsed_secs / 86_400;
-                stale.push(format!("{} ({days}d ago)", agent.id));
-            }
+            .unwrap_or(0);
+        if elapsed_secs >= threshold_secs {
+            let days = elapsed_secs / 86_400;
+            stale.push(format!("{} ({days}d ago)", agent.id));
         }
     }
 
@@ -325,7 +330,7 @@ fn condition_1_regular_meetings(
             name: NAME,
             status: ConditionStatus::Warn,
             finding: format!(
-                "{} agent(s) untouched >{stale_days}d: {}",
+                "{} agent(s) untouched ≥{stale_days}d: {}",
                 stale.len(),
                 stale.join(", ")
             ),
@@ -587,10 +592,9 @@ fn condition_5_protect_vulnerable(workspace: &Path, registry: &AgentsRegistry) -
     let mut totals: Vec<(String, usize)> = Vec::new();
 
     for agent in &registry.agents {
-        let refusals_path = workspace
-            .join(&agent.path)
-            .join(".bwoc/inbox.refusals.jsonl");
-        let count = count_jsonl_lines(&refusals_path);
+        // Same counting rule (malformed lines skipped) as the dashboard/trust
+        // surfaces, so the numbers agree.
+        let (count, _) = crate::livecheck::refusal_summary(workspace, agent);
         if count > 0 {
             totals.push((agent.id.clone(), count));
         }
@@ -628,23 +632,15 @@ fn condition_5_protect_vulnerable(workspace: &Path, registry: &AgentsRegistry) -
     }
 }
 
-/// Count non-empty lines in a JSONL file. Missing file → 0 (not an error).
-fn count_jsonl_lines(path: &Path) -> usize {
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count()
-}
-
 // ── Condition 6: Honor shared resources — cetiya ─────────────────────────────
 //
 // `git log --format=%an -- .bwoc/agents.toml` → unique set of committer names.
 // `git config user.name`                      → operator identity.
 //
-//   ✓  → all authors == operator name (or no history yet)
+//   ✓  → all authors == operator name
 //   ⚠  → any author != operator
-//   ℹ  → git command fails or no commit history for agents.toml
+//   ℹ  → git command fails, `user.name` is unset, or no commit history for
+//        agents.toml
 
 fn condition_6_honor_shared_resources(
     workspace: &Path,
@@ -652,7 +648,8 @@ fn condition_6_honor_shared_resources(
 ) -> ConditionResult {
     const NAME: &str = "Honor shared resources (cetiya)";
 
-    // Resolve operator identity — best-effort; empty string if unavailable.
+    // Resolve operator identity — best-effort; empty string if unavailable
+    // (checked below, after the not-a-git-repo case).
     let operator = git_runner
         .git(&["config", "user.name"], workspace)
         .map(|s| s.trim().to_string())
@@ -689,16 +686,24 @@ fn condition_6_honor_shared_resources(
         };
     }
 
-    // Collect non-operator authors (if operator is unknown, treat all as non-operator).
-    let non_operator: Vec<&str> = if operator.is_empty() {
-        authors.iter().copied().collect()
-    } else {
-        authors
-            .iter()
-            .copied()
-            .filter(|&a| a != operator.as_str())
-            .collect()
-    };
+    // Without an operator identity there is nothing to compare against —
+    // degrade to ℹ rather than flag every historical author.
+    if operator.is_empty() {
+        return ConditionResult {
+            number: 6,
+            name: NAME,
+            status: ConditionStatus::Info,
+            finding: "git `user.name` is not set — cannot tell operator from non-operator \
+                      authors of .bwoc/agents.toml."
+                .into(),
+        };
+    }
+
+    let non_operator: Vec<&str> = authors
+        .iter()
+        .copied()
+        .filter(|&a| a != operator.as_str())
+        .collect();
 
     if non_operator.is_empty() {
         ConditionResult {
@@ -1194,22 +1199,11 @@ mod tests {
     }
 
     #[test]
-    fn cond1_old_mtime_warns() {
-        let ws = fresh_workspace("c1-old");
+    fn cond1_zero_threshold_warns() {
+        let ws = fresh_workspace("c1-zero");
         add_agent(&ws, "agent-beta");
-
-        // Back-date the agent directory's mtime to 30 days ago.
-        let agent_dir = ws.join("agents/agent-beta");
-        let thirty_days_ago = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(30 * 86_400))
-            .unwrap();
-        // Manipulate via writing a file with a back-dated mtime — we can't
-        // set mtime directly without libc, so instead we check the ⚠ path by
-        // passing a very small stale_days threshold (0) that any file will exceed.
-        let _ = agent_dir;
         let registry = AgentsRegistry::load(&ws).unwrap();
-        // With stale_days=0, even a file modified just now (a few ms) exceeds threshold.
-        // This deterministically exercises the ⚠ branch.
+        // With stale_days=0, even an agent touched just now meets the threshold.
         let result = condition_1_regular_meetings(&ws, &registry, 0);
         assert_eq!(
             result.status,
@@ -1217,7 +1211,53 @@ mod tests {
             "stale_days=0 should warn: {}",
             result.finding
         );
-        let _ = thirty_days_ago; // referenced for docs
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    // Back-dating a directory's mtime needs `File::open` on a directory,
+    // which Windows refuses — unix-only.
+    #[cfg(unix)]
+    #[test]
+    fn cond1_backdated_mtime_warns() {
+        let ws = fresh_workspace("c1-old");
+        add_agent(&ws, "agent-beta");
+        let thirty_days_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(30 * 86_400))
+            .unwrap();
+        fs::File::open(ws.join("agents/agent-beta"))
+            .unwrap()
+            .set_modified(thirty_days_ago)
+            .unwrap();
+        let registry = AgentsRegistry::load(&ws).unwrap();
+        let result = condition_1_regular_meetings(&ws, &registry, 7);
+        assert_eq!(result.status, ConditionStatus::Warn, "{}", result.finding);
+        assert!(
+            result.finding.contains("agent-beta (30d ago)"),
+            "{}",
+            result.finding
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn cond1_missing_agent_dir_warns() {
+        let ws = fresh_workspace("c1-missing");
+        add_agent(&ws, "agent-ghost");
+        fs::remove_dir_all(ws.join("agents/agent-ghost")).unwrap();
+        let registry = AgentsRegistry::load(&ws).unwrap();
+        let result = condition_1_regular_meetings(&ws, &registry, 7);
+        assert_eq!(result.status, ConditionStatus::Warn, "{}", result.finding);
+        assert!(result.finding.contains("agent-ghost"), "{}", result.finding);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn cond1_huge_stale_days_does_not_overflow() {
+        let ws = fresh_workspace("c1-huge");
+        add_agent(&ws, "agent-delta");
+        let registry = AgentsRegistry::load(&ws).unwrap();
+        let result = condition_1_regular_meetings(&ws, &registry, u64::MAX);
+        assert_eq!(result.status, ConditionStatus::Ok, "{}", result.finding);
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -1488,6 +1528,36 @@ mod tests {
         let result = condition_6_honor_shared_resources(ws, &git);
         assert_eq!(result.status, ConditionStatus::Info, "{}", result.finding);
         assert!(result.finding.contains("not a git repo"));
+    }
+
+    #[test]
+    fn cond6_unset_operator_is_info_not_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        // History exists but `git config user.name` fails (unset).
+        let git = MockGitRunner::new().on("log", "agents.toml", Ok("Alice\nBob\n"));
+        let result = condition_6_honor_shared_resources(ws, &git);
+        assert_eq!(result.status, ConditionStatus::Info, "{}", result.finding);
+        assert!(result.finding.contains("user.name"), "{}", result.finding);
+    }
+
+    #[test]
+    fn cond5_skips_malformed_refusal_lines() {
+        let ws = fresh_workspace("c5-malformed");
+        add_agent(&ws, "agent-eta");
+        fs::write(
+            ws.join("agents/agent-eta/.bwoc/inbox.refusals.jsonl"),
+            "{\"reason\":\"unsigned\",\"envelopeFrom\":\"x\"}\nnot json\n\n",
+        )
+        .unwrap();
+        let registry = AgentsRegistry::load(&ws).unwrap();
+        let result = condition_5_protect_vulnerable(&ws, &registry);
+        assert!(
+            result.finding.starts_with("1 refusal(s)"),
+            "{}",
+            result.finding
+        );
+        let _ = fs::remove_dir_all(&ws);
     }
 
     // ── fleet status (#297) ──────────────────────────────────────────────────

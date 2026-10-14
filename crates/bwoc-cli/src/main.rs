@@ -1375,10 +1375,8 @@ enum PeerCommand {
         #[arg(long = "workspace")]
         workspace: Option<PathBuf>,
     },
-    /// View a peer's agents and open team tasks.
-    /// Alias: `bwoc peer <key>` (no subcommand) is not yet supported in clap;
-    /// use `bwoc peer status <key>` or `bwoc peer view <key>`.
-    #[command(name = "status")]
+    /// View a peer's agents and open team tasks (alias: `view`).
+    #[command(name = "status", alias = "view")]
     View {
         /// Peer key as declared in routes.toml (agent id or namespace prefix).
         key: String,
@@ -4144,6 +4142,19 @@ mod deprecation_tests {
             "memory t2-search",
             "memory search --tier 2",
         );
+    }
+
+    #[test]
+    fn peer_view_is_an_alias_of_peer_status() {
+        for sub in ["status", "view"] {
+            assert!(
+                matches!(
+                    parse(&["peer", sub, "agent-x"]),
+                    Commands::Peer(PeerCommand::View { ref key, .. }) if key == "agent-x"
+                ),
+                "`bwoc peer {sub} <key>` must parse"
+            );
+        }
     }
 
     #[test]

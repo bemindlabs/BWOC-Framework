@@ -68,11 +68,19 @@ fn every_crate_manifest_declares_its_readme() {
     for dir in crate_dirs() {
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
         let manifest = fs::read_to_string(dir.join("Cargo.toml")).expect("crate has a Cargo.toml");
-        // Match the key at line start so a `readme` word inside a description
-        // or dependency block cannot satisfy the gate.
-        let declared = manifest
-            .lines()
-            .any(|l| l.trim_start().starts_with("readme") && l.contains("README.md"));
+        // Only `readme = "README.md"` (exact value) inside `[package]` counts —
+        // not `README.md.bak`, `../README.md`, or a `readme` key in another table.
+        let mut in_package = false;
+        let declared = manifest.lines().any(|l| {
+            let l = l.trim();
+            if l.starts_with('[') {
+                in_package = l == "[package]";
+                return false;
+            }
+            in_package
+                && l.split_once('=')
+                    .is_some_and(|(k, v)| k.trim() == "readme" && v.trim() == "\"README.md\"")
+        });
         if !declared {
             undeclared.push(name);
         }

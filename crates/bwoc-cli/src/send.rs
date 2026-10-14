@@ -635,9 +635,23 @@ pub(crate) fn redeliver(
             .unwrap_or_default()
             .to_string()
     };
-    let to = field("to");
-    let from = field("from");
-    let message_id = field("messageId");
+    // A spooled line missing its routing/dedup ids is corrupt: replaying it
+    // would deliver an envelope with an empty id that dedup cannot catch.
+    let required = |k: &str| -> Result<String, SendError> {
+        let s = field(k);
+        if s.is_empty() {
+            Err(SendError::Json(
+                <serde_json::Error as serde::de::Error>::custom(format!(
+                    "spooled envelope has no `{k}`"
+                )),
+            ))
+        } else {
+            Ok(s)
+        }
+    };
+    let to = required("to")?;
+    let from = required("from")?;
+    let message_id = required("messageId")?;
     let message = field("message");
     let (target, recipient_id) = resolve_target_for(workspace, registry, &to, &to, false)?;
     // The sender's signing key dir (gateway login). `user` / unknown sender → None.
@@ -903,7 +917,8 @@ pub fn run_group(args: GroupArgs) -> i32 {
                 // send() spools remote relay failures (→ Ok(Spooled)); a hard
                 // error here is a real failure (local I/O, unknown recipient,
                 // unsigned gateway, missing sibling binary). Reported and counted;
-                // a soft leftover (e.g. an io error while spooling) is tolerated.
+                // only a remote relay failure (`is_spoolable`: gateway relay /
+                // MQTT publish) is a tolerated soft leftover.
                 if is_spoolable(&e) {
                     soft += 1;
                     println!("  • {id:<28} not delivered live — {e}");

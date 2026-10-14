@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bwoc peer learn` no longer follows symlinks out of a shared kind directory**, resolves kinds against the peer's own registry (custom kinds), and skips a kind whose directory resolves outside the peer workspace. `bwoc peer view <key>` now works as an alias of `peer status`.
+- **`bwoc doc view` refuses non-plain names and ambiguous date prefixes** (lists the candidates) instead of reading outside the kind directory or picking the first match; `bwoc doc new` refuses a title with no ASCII letters/digits instead of writing `YYYY-MM-DD_.md`.
+- **`bwoc spawn` reports an unreadable/invalid `config.manifest.json` as such** instead of `MissingBaseUrl` (or silently ignoring it).
+- **`bwoc sessions` no longer deletes every live marker on Windows**, where there is no liveness probe.
+- **`bwoc fleet health`**: a missing agent directory is reported, not counted as fresh; huge `--stale-days` no longer overflows; an unset `git user.name` is ℹ instead of a warning naming every author; refusal counts match the dashboard.
+- **`bwoc chat --team`** rejects a team id that is not a single path segment; **`bwoc outbox flush`** refuses a spooled envelope missing `to`/`from`/`messageId`.
+
 ## [v2026.10.14-0] — 2026-10-14 — 3.17.0
 
 **The trust gate refuses by default.** The daemon's Kalyāṇamitta quality gate warned since 3.2; it now enforces unless you opt out.

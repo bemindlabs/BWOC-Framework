@@ -187,7 +187,7 @@ spawned + supervised by the agent daemon. Per agent, add connectors/<platform>.t
   bwoc status                 # shows a Connectors line per running bridge
 
 Tokens resolve from the OS keyring (macOS/Windows) or an env var:
-TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN / LINE_CHANNEL_ACCESS_TOKEN (+ _SECRET).
+TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN / LINE_CHANNEL_ACCESS_TOKEN + LINE_CHANNEL_SECRET.
 A [group] team = \"<id>\" binding bridges a room to a Saṅgha team's shared chat.
 Telegram/Discord stream the reply live (edit-in-place); LINE sends it once.
 Full reference: docs/en/CONNECTORS.en.md.",
@@ -203,7 +203,7 @@ daemon ของ agent เป็นคน spawn + ดูแลให้ ต่�
   bwoc status                 # แสดงบรรทัด Connectors ต่อ bridge ที่รันอยู่
 
 Token มาจาก OS keyring (macOS/Windows) หรือ env var:
-TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN / LINE_CHANNEL_ACCESS_TOKEN (+ _SECRET)
+TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN / LINE_CHANNEL_ACCESS_TOKEN + LINE_CHANNEL_SECRET
 ตั้ง [group] team = \"<id>\" เพื่อผูกห้องกลุ่มเข้ากับ chat ร่วมของทีม Saṅgha
 Telegram/Discord สตรีมคำตอบสด (แก้ข้อความเดิม); LINE ส่งครั้งเดียว
 อ้างอิงเต็ม: docs/th/CONNECTORS.th.md",

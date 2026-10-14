@@ -923,7 +923,7 @@ pub fn run(args: RunArgs) -> i32 {
         Ok(p) => p,
         Err(e) => {
             eprintln!("bwoc audit run: {e}");
-            return 2;
+            return crate::exit::USAGE;
         }
     };
 
@@ -958,7 +958,7 @@ pub fn run(args: RunArgs) -> i32 {
                     plugins_dir(&root).display()
                 );
             }
-            return 2;
+            return crate::exit::USAGE;
         };
         vec![p.clone()]
     } else {
@@ -991,7 +991,7 @@ pub fn run(args: RunArgs) -> i32 {
         }
         if args.plugin.is_some() {
             // Unreachable — handled above. Defensive only.
-            return 2;
+            return crate::exit::USAGE;
         }
         println!(
             "Audit run — workspace: {}\n(no audit plugins enabled in workspace.toml [plugins])",
