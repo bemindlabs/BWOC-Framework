@@ -49,13 +49,14 @@ CLI ใช้ **ชุดเดียว** ของ exit code (ก่อน 3.0
 | `0` | สำเร็จ |
 | `1` | ตัวคำสั่งเองผิดพลาด (I/O, parse, network, internal ที่กู้ได้) — "เครื่องมือพัง" |
 | `2` | เรียกใช้ผิด หรือหา workspace / agent / target ที่จำเป็น **ไม่พบ** |
-| `3` | คำสั่งทำงานได้แต่คำตอบเป็น **ลบ**: `check` / `workspace validate` มี violation, `council` ยังไม่ resolve, `audit` มี failure — "เครื่องมือทำงาน แต่ผลคือ 'ไม่'" |
+| `3` | คำสั่งทำงานได้แต่คำตอบเป็น **ลบ**: `check` / `workspace validate` มี violation, `workspace prune` เหลือ orphan, `council` ยังไม่ resolve — "เครื่องมือทำงาน แต่ผลคือ 'ไม่'" (`audit run` ไม่ใช้ `3` ในความหมายนี้; ดู `254`) |
 | `4` | plugin ที่จำเป็นไม่ได้ติดตั้ง / discover ไม่เจอ |
-| `254` | เพดานของ `audit run` — มันเข้ารหัส **จำนวน** fail (`1..=254`) ไว้ที่นี่ เป็นข้อยกเว้นเดียวที่ตั้งใจ |
+| `254` | เพดานของ `audit run` — `audit run` คืน **จำนวน** fail (`1..=254`, clamp) เป็น exit code ดังนั้นสำหรับมัน `1`/`2`/`3` คือจำนวน ไม่ใช่ความหมายข้างบน — เป็นข้อยกเว้นเดียวที่ตั้งใจ |
 | `255` | error ระดับ framework/internal ที่ผู้เรียกทำอะไรไม่ได้ |
 
 จุดสำคัญคือ **`1` vs `3`**: crash กับ finding เชิงลบ. **breaking ใน 3.0:** `bwoc check`
-violation ย้าย `1 → 3` และ `bwoc workspace validate` violation ย้าย `2 → 3`. `|| fail`
+violation ย้าย `1 → 3` ส่วน `bwoc workspace validate` violation และ orphan ที่เหลือจาก
+`bwoc workspace prune` ย้าย `2 → 3`. `|| fail`
 ยังทำงาน (ทั้งคู่ non-zero); script ที่เช็ค `[ $? -eq 1 ]` / `-eq 2` เจาะจงต้องเปลี่ยนเป็น `-eq 3`
 
 ---

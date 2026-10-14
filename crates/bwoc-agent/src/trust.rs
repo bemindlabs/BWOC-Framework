@@ -788,8 +788,9 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
 
     // Apply the effective mode to the missing-quality case only.
     match ctx.mode {
-        // Shouldn't reach here (is_inert guards Off), but keep the identity
-        // faithful rather than inventing or dropping one.
+        // Reached when the manifest sets `mode: off` explicitly with a
+        // non-empty `requiredTrust` (`is_inert` only covers gating-off / empty
+        // requirements): deliver, keeping the identity faithful.
         RefusalMode::Off => TrustOutcome::Pass { verified_from },
         RefusalMode::Warn => TrustOutcome::Warn { from, missing },
         RefusalMode::Refuse => TrustOutcome::Refuse(Refusal {
@@ -802,17 +803,6 @@ pub fn evaluate(ctx: &TrustContext, envelope_line: &str, envelope_offset: u64) -
     }
 }
 
-/// Signature step of [`evaluate`] (HV2-4 / `docs/en/SIGNING.en.md` §5).
-///
-/// Returns `Some(outcome)` to short-circuit, or `None` to proceed to the
-/// quality gate:
-/// - valid signature → `None` (identity proven).
-/// - bad / tampered signature → `Refuse(bad_signature)` in EVERY mode (attack).
-/// - signed but malformed published key → `bad_pubkey` (refuse in Enforce).
-/// - signed but sender publishes no key → `no_pubkey` (refuse in Enforce).
-/// - unsigned → `unsigned` (refuse in Enforce).
-///
-/// In Warn mode the unverifiable-but-not-tampered cases proceed (`None`).
 /// What a signature check concluded.
 ///
 /// Replaces an `Option<TrustOutcome>` whose `None` conflated two very different
@@ -831,6 +821,16 @@ enum SignatureCheck {
     Refused(Box<TrustOutcome>),
 }
 
+/// Signature step of [`evaluate`] (HV2-4 / `docs/en/SIGNING.en.md` §5).
+///
+/// - valid signature → [`SignatureCheck::Verified`] (identity proven).
+/// - bad / tampered signature → `Refused(bad_signature)` in EVERY mode (attack).
+/// - signed but malformed published key → `Refused(bad_pubkey)` when enforcing.
+/// - signed but sender publishes no key → `Refused(no_pubkey)` when enforcing.
+/// - unsigned → `Refused(unsigned)` when enforcing.
+///
+/// When not enforcing, the unverifiable-but-not-tampered cases proceed as
+/// [`SignatureCheck::Unproven`] — never an identity.
 fn verify_signature(
     enforce: bool,
     env: &serde_json::Value,

@@ -59,6 +59,6 @@ Even at Full-v1 scope, build in order so each lands behind gates:
 
 ## Related
 
-- Epic issue (TBD), #40 (Trust v2 ed25519), #20 (give-feedback — A2A network transport unblocks cross-WS)
+- Epic #48, #40 (Trust v2 ed25519), #20 (give-feedback — A2A network transport unblocks cross-WS)
 - `modules/agent-template/interconnect/`: `messaging.md`, `routing.md`, `sangha.md`, `trust.md`, `capabilities.md`
 - `crates/bwoc-core/src/team.rs` (Saṅgha task model — the A2A task integration point)

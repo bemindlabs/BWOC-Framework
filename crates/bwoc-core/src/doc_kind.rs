@@ -2,7 +2,8 @@
 //!
 //! A `DocKind` describes a first-class document category that lives under a
 //! well-known directory and follows the `YYYY-MM-DD_<slug>.md` naming
-//! convention.  All kinds are committed to the repository (`committed: true`).
+//! convention.  The built-in kinds are always committed to the repository;
+//! a custom kind chooses per kind via `committed` (default `true`).
 //!
 //! The built-in lookup covers three kinds: `notes`, `retrospectives`, and
 //! `research`.  One generic engine (`bwoc-cli::doc_cmd`) consumes the
@@ -19,14 +20,19 @@
 //! name = "decision"
 //! dir = "decisions"
 //! committed = true
-//! template = "# {date} — <Decision>\n\n## Context\n\n## Decision\n\n## Consequences\n"
+//! template = "# YYYY-MM-DD — <Decision>\n\n## Context\n\n## Decision\n\n## Consequences\n"
 //! # OR: template_file = ".bwoc/templates/decision.md"
 //! ```
+//!
+//! Templates are written verbatim (no placeholder interpolation). `dir` and
+//! `template_file` must be workspace-relative paths that stay inside the
+//! workspace (no absolute path, no `..`), and `template` / `template_file`
+//! are mutually exclusive — an entry breaking either rule is skipped.
 //!
 //! Resolution order: built-in first, then `.bwoc/doc-kinds.toml`.
 //! Unknown kind → error listing all available kinds.
 
-use std::path::Path;
+use std::path::{Component, Path};
 
 // ---------------------------------------------------------------------------
 // DocKind — unified built-in + custom descriptor
@@ -241,10 +247,22 @@ struct RawDocKindsFile {
     kinds: Vec<RawKindEntry>,
 }
 
+/// True when `p` is a non-empty relative path made only of normal segments
+/// (`.` allowed), so joining it onto the workspace root cannot escape it.
+fn is_contained_rel_path(p: &str) -> bool {
+    let path = Path::new(p);
+    path.components().next().is_some()
+        && path
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
 /// Load custom kinds declared in `<workspace_root>/.bwoc/doc-kinds.toml`.
 ///
 /// Returns an empty `Vec` (never errors) when the file is absent or
-/// unparseable — custom kinds are additive, not required.
+/// unparseable — custom kinds are additive, not required. Entries whose
+/// `dir` / `template_file` would escape the workspace, or that set both
+/// `template` and `template_file`, are skipped.
 pub fn load_custom_kinds(workspace_root: &Path) -> Vec<DocKind> {
     let path = workspace_root.join(".bwoc/doc-kinds.toml");
     let content = match std::fs::read_to_string(&path) {
@@ -258,6 +276,14 @@ pub fn load_custom_kinds(workspace_root: &Path) -> Vec<DocKind> {
 
     raw.kinds
         .into_iter()
+        .filter(|entry| {
+            is_contained_rel_path(&entry.dir)
+                && entry
+                    .template_file
+                    .as_deref()
+                    .is_none_or(is_contained_rel_path)
+                && !(entry.template.is_some() && entry.template_file.is_some())
+        })
         .map(|entry| {
             let template_source = match (entry.template, entry.template_file) {
                 (Some(inline), _) => TemplateSource::Inline(inline),
@@ -359,6 +385,48 @@ mod tests {
     }
 
     // ---- custom kinds loading -----------------------------------------------
+
+    #[test]
+    fn custom_kinds_that_escape_the_workspace_or_set_both_templates_are_skipped() {
+        let dir = tmp();
+        let bwoc_dir = dir.path().join(".bwoc");
+        fs::create_dir_all(&bwoc_dir).unwrap();
+        fs::write(
+            bwoc_dir.join("doc-kinds.toml"),
+            r#"
+[[kind]]
+name = "abs"
+dir = "/tmp/elsewhere"
+
+[[kind]]
+name = "up"
+dir = "../outside"
+
+[[kind]]
+name = "leak"
+dir = "leaks"
+template_file = "../../etc/passwd"
+
+[[kind]]
+name = "both"
+dir = "both"
+template = "inline"
+template_file = ".bwoc/templates/both.md"
+
+[[kind]]
+name = "ok"
+dir = "./decisions/"
+template_file = ".bwoc/templates/ok.md"
+"#,
+        )
+        .unwrap();
+
+        let names: Vec<String> = load_custom_kinds(dir.path())
+            .into_iter()
+            .map(|k| k.name)
+            .collect();
+        assert_eq!(names, ["ok"]);
+    }
 
     #[test]
     fn custom_kind_inline_template() {

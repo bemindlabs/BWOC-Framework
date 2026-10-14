@@ -115,8 +115,8 @@ pub struct Manifest {
     /// that are selected on the CLI with `--backend`. `"openrouter"` (hosted
     /// OpenAI-compatible aggregator) optionally takes `baseUrl`, defaulting to
     /// `https://openrouter.ai/api/v1`; its key comes from `OPENROUTER_API_KEY`
-    /// or `~/.bwoc/secrets.toml`. When present, `bwoc spawn` can auto-select the
-    /// backend without an explicit flag.
+    /// or `~/.bwoc/secrets.toml`. `bwoc spawn` does not read this field — it
+    /// takes the backend from `--backend` (default `claude`).
     #[serde(rename = "backend", skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     /// Vendor CLI executable for `backend = "cli"` (e.g. `"claude"`, `"codex"`).
@@ -712,6 +712,11 @@ mod tests {
         let json_no_mode = r#"{"schemaVersion":1}"#;
         let b: TrustBlock = serde_json::from_str(json_no_mode).unwrap();
         assert!(b.mode.is_none());
+
+        // Explicit null → None
+        let json_null_mode = r#"{"schemaVersion":1,"mode":null}"#;
+        let b_null: TrustBlock = serde_json::from_str(json_null_mode).unwrap();
+        assert!(b_null.mode.is_none());
 
         // Present → Some(Warn)
         let json_warn = r#"{"schemaVersion":1,"mode":"warn"}"#;

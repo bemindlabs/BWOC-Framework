@@ -1,6 +1,6 @@
 ---
 title: Loop Engineering — วิศวกรรม Loop
-parent: ไทย
+parent: ภาษาไทย
 nav_order: 8
 ---
 

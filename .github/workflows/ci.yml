@@ -184,6 +184,9 @@ jobs:
           for p in $(cat /sys/fs/cgroup/cgroup.procs); do
             echo "$p" > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
           done
+          # Anything still listed here could not be moved and will make the
+          # `+pids` write below fail with EBUSY — print it so the cause is visible.
+          echo "left in cgroup-ns root after drain:"; cat /sys/fs/cgroup/cgroup.procs
           echo '+pids' > /sys/fs/cgroup/cgroup.subtree_control
           grep -qw pids /sys/fs/cgroup/agent/cgroup.controllers
           # Locate the freshly-built test binary (skip the `.d` depfile).

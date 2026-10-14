@@ -104,6 +104,11 @@ This proof is strong but bounded. We **do not** claim "fully proven":
   inputs per tool — grep match **and** no-match, file/dir **present and absent**,
   and paths **inside and outside** confinement. This samples the input space; it
   does not exhaust it.
+- **Non-TCP networking is not behaviorally proven.** Landlock (v4) mediates only
+  TCP connect/bind, and the self-test trips only a TCP connect. UDP, raw sockets,
+  and UDP DNS resolution in the Network/DNS rows of the Scope table are covered
+  here only by the static floor (`std::net` / `tokio::net`), not by the
+  behavioral proof; closing them at runtime is t11's seccomp job, not t4's.
 - **Timing** is an accepted residual (see Scope above).
 
 The honest summary: the behavioral test proves the listed tools make no

@@ -1,6 +1,6 @@
 ---
 title: Plugins
-parent: ไทย
+parent: ภาษาไทย
 nav_order: 12
 ---
 

@@ -516,9 +516,10 @@ mod tests {
     /// Auto-process is REFUSED on an ambient backend (`cli`) even when the flag
     /// is on and a manifest is present: feeding Untrusted remote input to an
     /// unconfined tool-capable subprocess would void the #271 read-only
-    /// guarantee, so the gate fails closed. (`is_active()` also requires the
-    /// sibling binaries, but `ambient_backend` must independently force it off —
-    /// this asserts the field is set so the refusal holds wherever it is read.)
+    /// guarantee, so the gate fails closed. `is_active()` also requires the
+    /// sibling binaries, which may not resolve under `cargo test`, so the test
+    /// forces every other precondition on — then only `ambient_backend` can be
+    /// what keeps the gate off.
     #[test]
     fn ambient_backend_refuses_auto_process() {
         let tmp = TempDir::new().unwrap();
@@ -531,12 +532,19 @@ mod tests {
             r#"{"name":"x","agentId":"agent-x","agentRole":"r","primaryModel":"m","backend":"cli","memoryPath":"memories/","lintCmd":"x","formatCmd":"x","testCmd":"x","buildCmd":"x","version":"1"}"#,
         )
         .unwrap();
-        let ap = AutoProcessor::detect(tmp.path());
+        let mut ap = AutoProcessor::detect(tmp.path());
         assert!(ap.ambient_backend, "cli backend must be flagged ambient");
+        ap.harness = Some(PathBuf::from("/bin/bwoc-harness"));
+        ap.bwoc = Some(PathBuf::from("/bin/bwoc"));
+        assert!(ap.enabled && !ap.self_id.is_empty());
         assert!(
             !ap.is_active(),
             "ambient backend must force auto-process off (fail-closed)"
         );
+        // Control: the same processor with a confined backend IS active, so the
+        // assertion above is attributable to `ambient_backend` alone.
+        ap.ambient_backend = false;
+        assert!(ap.is_active());
     }
 
     /// A confined (HTTP) backend is NOT flagged ambient — the refusal is

@@ -244,7 +244,9 @@ for file in "${LIVE_RS[@]}"; do
       ticket="$(ticket_of "$token")"
       # Escape hatch: `// DEFERRED(tNN):` on the same line or the line above,
       # in the ORIGINAL file, with the matching ticket.
-      annot_re="// *DEFERRED($ticket):"
+      # Parens escaped: unescaped, ERE reads `(t9)` as a group and would accept
+      # `DEFERREDt9:` while rejecting `//DEFERRED(t9):`.
+      annot_re="// *DEFERRED\\($ticket\\):"
       same="$(sed -n "${lineno}p" "$file")"
       prev_no=$(( lineno > 1 ? lineno - 1 : 1 ))
       prev="$(sed -n "${prev_no}p" "$file")"

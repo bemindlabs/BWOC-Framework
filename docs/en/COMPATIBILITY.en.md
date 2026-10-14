@@ -51,14 +51,15 @@ of truth is `crates/bwoc-cli/src/exit.rs`:
 | `0` | Success. |
 | `1` | The command itself errored (I/O, parse, network, recoverable-internal) — "the tool broke". |
 | `2` | Bad invocation, or a required workspace / agent / target was **not found**. |
-| `3` | The command ran but the answer is **negative**: `check` / `workspace validate` violations, `council` not-resolved, an `audit` with failures — "the tool worked; the result is 'no'". |
+| `3` | The command ran but the answer is **negative**: `check` / `workspace validate` violations, `workspace prune` leftover orphans, `council` not-resolved — "the tool worked; the result is 'no'". (`audit run` does not use `3` for this; see `254`.) |
 | `4` | A required plugin is not installed / not discoverable. |
-| `254` | `audit run` ceiling — it additionally encodes its fail **count** (`1..=254`) here, the one deliberate exception. |
+| `254` | `audit run` ceiling — `audit run` exits with its fail **count** (`1..=254`, clamped), so for it `1`/`2`/`3` are counts, not the meanings above — the one deliberate exception. |
 | `255` | Framework/internal error the caller cannot act on. |
 
 The load-bearing distinction is **`1` vs `3`**: a crash vs. a negative finding.
-**3.0 breaking change:** `bwoc check` violations moved `1 → 3` and `bwoc
-workspace validate` violations moved `2 → 3`. A `|| fail` guard still fires (both
+**3.0 breaking change:** `bwoc check` violations moved `1 → 3`, and `bwoc
+workspace validate` violations and `bwoc workspace prune` leftover orphans moved
+`2 → 3`. A `|| fail` guard still fires (both
 are non-zero); a script testing `[ $? -eq 1 ]` / `-eq 2` specifically must move
 to `-eq 3`.
 

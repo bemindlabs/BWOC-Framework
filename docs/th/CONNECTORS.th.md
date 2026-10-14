@@ -1,6 +1,6 @@
 ---
 title: Connectors
-parent: ไทย
+parent: ภาษาไทย
 nav_order: 13
 ---
 
@@ -205,6 +205,6 @@ Telegram และ Discord **สตรีมคำตอบสด**: bridge ส�
 
 ## ที่เกี่ยวข้อง
 
-- [[PLUGINS]] — framework plugins (แกนส่วนขยายคนละแบบ)
-- [[HARNESS]] — session `bwoc-harness --chat` ที่ connector ขับเคลื่อน
+- [[PLUGINS.th.md]] — framework plugins (แกนส่วนขยายคนละแบบ)
+- [[HARNESS.th.md]] — session `bwoc-harness --chat` ที่ connector ขับเคลื่อน
 - `notes/2026-06-07_connect-subsystem-complete.md` และโน้ตต่อแพลตฟอร์ม

@@ -1,6 +1,6 @@
 ---
 title: Skills
-parent: ไทย
+parent: ภาษาไทย
 nav_order: 11
 ---
 

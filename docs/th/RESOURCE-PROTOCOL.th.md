@@ -10,7 +10,7 @@ tags:
   - meta/framework
 status: draft (v2026.7.25 — ship slice A–C: snapshot + gate-check + client advertise/discover + gateway broker (ครึ่ง discovery); claim/lease + offload เลื่อนไป slice D)
 canonical-source: DN 16 (Mahāparinibbāna Sutta) §1.4 — Aparihāniya-dhamma 7 ข้อ 6 (เคารพทรัพยากรส่วนรวม)
-parent: ไทย
+parent: ภาษาไทย
 nav_order: 11
 ---
 
