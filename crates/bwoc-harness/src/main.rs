@@ -163,8 +163,8 @@ struct Args {
     cost_per_1m: Option<f64>,
 
     /// Launch an external MCP tool server and register its tools (HV2-5).
-    /// Value is the server command line, e.g. `--mcp "my-mcp-server --flag"`.
-    /// Repeatable.  Tools are exposed as `mcp__<server>__<tool>`.
+    /// Value is the server command line, e.g. `--mcp "my-mcp-server --flag"`;
+    /// quote a path or argument that contains spaces. Repeatable.  Tools are exposed as `mcp__<server>__<tool>`.
     #[arg(long)]
     mcp: Vec<String>,
 
@@ -669,6 +669,17 @@ async fn run() -> HarnessResult<()> {
     // full history, so `mine` turns this session into tomorrow's memory.
     let mine_artifact = checkpoint.as_ref().map(|c| c.path());
 
+    // The task this run works on: on `--resume` the checkpoint's original task
+    // (so the Tier 2 transcript and the worker envelope keep the real prompt),
+    // else `--task`.
+    let task_label = run_task_label(
+        args.task.as_deref(),
+        checkpoint
+            .as_ref()
+            .and_then(|c| c.resume.as_ref())
+            .map(|s| s.task.as_str()),
+    );
+
     // ── Loop config ───────────────────────────────────────────────────────
     let config = LoopConfig {
         model: resolved_model.clone(),
@@ -720,10 +731,7 @@ async fn run() -> HarnessResult<()> {
         .with_journal(journal_dir);
 
     // ── Run ───────────────────────────────────────────────────────────────
-    println!(
-        "\ntask: {}",
-        args.task.as_deref().unwrap_or("(resumed run)")
-    );
+    println!("\ntask: {task_label}");
     println!("─────────────────────────────────────────────");
 
     let outcome = run_loop(
@@ -775,9 +783,7 @@ async fn run() -> HarnessResult<()> {
             (Ok(res), _) => {
                 let transcript = format!(
                     "## Task\n\n{}\n\n## Outcome ({} turn(s))\n\n{}\n",
-                    args.task.as_deref().unwrap_or("(resumed run)"),
-                    res.turns,
-                    res.final_response
+                    task_label, res.turns, res.final_response
                 );
                 let bwoc_dir = workdir.join(".bwoc");
                 let path = bwoc_dir.join("last-run.md");
@@ -797,10 +803,7 @@ async fn run() -> HarnessResult<()> {
     // failure, before the abort propagates below; best-effort like the mine.
     {
         use bwoc_harness::result::{DiffSummary, WorkerResult};
-        let task = args
-            .task
-            .clone()
-            .unwrap_or_else(|| "(resumed run)".to_string());
+        let task = task_label.clone();
         let diff = DiffSummary::from_worktree(&workdir);
         let envelope = match &outcome {
             Ok(res) => WorkerResult::completed(task, res, diff),
@@ -822,6 +825,16 @@ async fn run() -> HarnessResult<()> {
     Ok(())
 }
 
+/// The task label for a run: a resumed run's checkpointed task wins (it is the
+/// prompt the history was built from), then `--task`, then a placeholder.
+fn run_task_label(cli_task: Option<&str>, resumed_task: Option<&str>) -> String {
+    resumed_task
+        .filter(|t| !t.trim().is_empty())
+        .or(cli_task)
+        .unwrap_or("(resumed run)")
+        .to_string()
+}
+
 /// Connect every `--mcp` (stdio command line) and `--mcp-http` (URL) server
 /// and register its tools. Shared by the batch and chat paths. Failures are
 /// warned on stderr, not fatal — the session keeps the built-in tools. Returns
@@ -834,7 +847,10 @@ async fn register_mcp_servers(
 ) -> Vec<String> {
     let mut registered = Vec::new();
     for spec in stdio {
-        let parts: Vec<String> = spec.split_whitespace().map(String::from).collect();
+        let Some(parts) = bwoc_harness::mcp::split_stdio_spec(spec) else {
+            eprintln!("[bwoc-harness] warning: --mcp `{spec}`: empty or unbalanced quotes");
+            continue;
+        };
         let Some((program, prog_args)) = parts.split_first() else {
             continue;
         };
@@ -1615,6 +1631,19 @@ mod tests {
         for backend in ["ollama", "openai-compatible", "claude", "anthropic"] {
             assert!(ensure_backend_credentials(backend).is_ok());
         }
+    }
+
+    #[test]
+    fn resumed_run_keeps_its_original_task() {
+        assert_eq!(
+            run_task_label(None, Some("fix the parser")),
+            "fix the parser"
+        );
+        assert_eq!(run_task_label(Some("new"), Some("orig")), "orig");
+        assert_eq!(run_task_label(Some("fresh task"), None), "fresh task");
+        // A legacy checkpoint with no task recorded falls back.
+        assert_eq!(run_task_label(None, Some("")), "(resumed run)");
+        assert_eq!(run_task_label(None, None), "(resumed run)");
     }
 
     #[test]

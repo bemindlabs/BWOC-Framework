@@ -176,8 +176,24 @@ pub async fn compact_context(
     history: &mut Vec<ChatMessage>,
     workdir: &std::path::Path,
 ) -> Compaction {
+    compact_context_with_usage(provider, model, max_tokens, history, workdir)
+        .await
+        .0
+}
+
+/// [`compact_context`], also returning the tokens (prompt + completion) the
+/// summarizer call spent as the provider reported them (`0` when no call was
+/// made or no usage came back). The batch loop adds this to its HV2-6 budget
+/// counter so compaction spend is not invisible to the gate.
+pub async fn compact_context_with_usage(
+    provider: &dyn ProviderClient,
+    model: &str,
+    max_tokens: usize,
+    history: &mut Vec<ChatMessage>,
+    workdir: &std::path::Path,
+) -> (Compaction, u64) {
     let Some(split) = plan_compaction(history, max_tokens) else {
-        return Compaction::None;
+        return (Compaction::None, 0);
     };
 
     let excerpt = render(&history[1..split]);
@@ -197,13 +213,18 @@ pub async fn compact_context(
         ChatMessage::system(SUMMARIZE_SYSTEM),
         ChatMessage::user(format!("Conversation excerpt to summarize:\n\n{excerpt}")),
     ];
+    let mut spent = 0u64;
     let summary = match provider.complete(messages, Vec::new(), model).await {
-        Ok(c) => c
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|ch| ch.message.content)
-            .unwrap_or_default(),
+        Ok(c) => {
+            if let Some(u) = &c.usage {
+                spent = u64::from(u.prompt_tokens) + u64::from(u.completion_tokens);
+            }
+            c.choices
+                .into_iter()
+                .next()
+                .and_then(|ch| ch.message.content)
+                .unwrap_or_default()
+        }
         Err(_) => String::new(),
     };
 
@@ -250,7 +271,7 @@ pub async fn compact_context(
         }
     }
 
-    outcome
+    (outcome, spent)
 }
 
 #[cfg(test)]
@@ -420,7 +441,8 @@ mod tests {
             ChatMessage::user("ok"),
         ];
         let before = h.len();
-        let out = compact_context(&mock, "m", 100_000, &mut h, std::path::Path::new("/tmp")).await;
+        let wd = tempfile::tempdir().unwrap();
+        let out = compact_context(&mock, "m", 100_000, &mut h, wd.path()).await;
         assert_eq!(out, Compaction::None);
         assert_eq!(h.len(), before, "history untouched under budget");
     }
@@ -429,7 +451,8 @@ mod tests {
     async fn engine_summarizes_when_provider_succeeds() {
         let mock = EngineMock::summarizing("DECISIONS: kept rustls; edited foo.rs");
         let mut h = over_budget_history(12);
-        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        let wd = tempfile::tempdir().unwrap();
+        let out = compact_context(&mock, "m", 60, &mut h, wd.path()).await;
         let removed = match out {
             Compaction::Summarized { removed } => removed,
             other => panic!("expected Summarized, got {other:?}"),
@@ -442,11 +465,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_reports_summarizer_spend() {
+        // The summarizer call is a paid provider call: its usage must reach the
+        // caller so the batch loop's budget gate (HV2-6) can count it.
+        let mock = EngineMock::summarizing("DECISIONS: kept rustls");
+        let mut h = over_budget_history(12);
+        let wd = tempfile::tempdir().unwrap();
+        let (out, spent) = compact_context_with_usage(&mock, "m", 60, &mut h, wd.path()).await;
+        assert!(matches!(out, Compaction::Summarized { .. }), "got {out:?}");
+        assert_eq!(spent, 2, "mock reports 1 prompt + 1 completion token");
+
+        // No summarizer call → nothing spent.
+        let mock = EngineMock::summarizing("unused");
+        let mut small = vec![ChatMessage::system("sys"), ChatMessage::user("hi")];
+        let (out, spent) =
+            compact_context_with_usage(&mock, "m", 100_000, &mut small, wd.path()).await;
+        assert_eq!((out, spent), (Compaction::None, 0));
+    }
+
+    #[tokio::test]
     async fn engine_falls_back_to_truncation_on_summarizer_failure() {
         let mock = EngineMock::failing();
         let mut h = over_budget_history(12);
         let before = h.len();
-        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        let wd = tempfile::tempdir().unwrap();
+        let out = compact_context(&mock, "m", 60, &mut h, wd.path()).await;
         let removed = match out {
             Compaction::Truncated { removed } => removed,
             other => panic!("expected Truncated fallback, got {other:?}"),
@@ -502,7 +545,8 @@ mod tests {
             )));
         }
 
-        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        let wd = tempfile::tempdir().unwrap();
+        let out = compact_context(&mock, "m", 60, &mut h, wd.path()).await;
         assert!(
             matches!(out, Compaction::Summarized { .. }),
             "precondition: the untrusted teammate/tool messages must be folded; got {out:?}"
@@ -602,7 +646,8 @@ mod tests {
         // Compact. The Untrusted teammate message is folded into a Trusted
         // SelfAgent system summary.
         let mock = EngineMock::summarizing("a tidy summary");
-        let out = compact_context(&mock, "m", 60, &mut h, std::path::Path::new("/tmp")).await;
+        let wd = tempfile::tempdir().unwrap();
+        let out = compact_context(&mock, "m", 60, &mut h, wd.path()).await;
         assert!(
             matches!(out, Compaction::Summarized { .. }),
             "precondition: the untrusted window must be folded; got {out:?}"

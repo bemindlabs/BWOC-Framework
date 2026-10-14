@@ -103,7 +103,6 @@ seccompiler = "0.5"
 # HTTP mock server for offline provider tests
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-tempfile = "3"
 # Ingress-labeling invariant fuzz (Phase 5 t1). Dev-only.
 proptest = { workspace = true }
 

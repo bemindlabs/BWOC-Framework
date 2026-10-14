@@ -116,7 +116,7 @@ fn parse_numstat(numstat: &str) -> (u32, u32, u32) {
     (files, ins, del)
 }
 
-/// Run `git -C <worktree> <args…>`, returning trimmed stdout on exit 0.
+/// Run `git -C <worktree> <args…>`, returning its raw stdout on exit 0.
 ///
 /// Phase 5 t7a / C7 — the worktree may have been mutated by an isolated child
 /// turn, so it is **untrusted** here. Two layers protect the parent:
@@ -137,8 +137,9 @@ fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
     cmd.args(args);
 
     // C7 — confine git to the worktree + its git dir. Best-effort: on a kernel
-    // without Landlock (or a non-jail platform) the `-c` hardening above still
-    // stands; `jail_command` emits a LOUD warning, never a silent pass.
+    // without Landlock (or a unix platform with no jail) the `-c` hardening
+    // above still stands; `jail_command` emits a LOUD warning, never a silent
+    // pass. (Windows skips the call entirely — see below.)
     //
     // The process FS jail (`jail::jail_command`: Landlock on Linux, sandbox-exec
     // write-confine on macOS) is `#[cfg(unix)]` by design. On Windows it is
@@ -157,6 +158,11 @@ fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Upper bound on a linked worktree's `.git` file (`gitdir: <path>`): a real
+/// one is a single path line, so anything near this size is not a git file.
+#[cfg(unix)]
+const GIT_FILE_MAX_BYTES: u64 = 64 * 1024;
+
 /// Resolve the git **common dir** for `worktree` so the C7 jail can grant git
 /// rw there (a linked worktree's gitdir lives outside the worktree). Returns
 /// `None` for a standard repo (`.git` is a dir under the worktree, already in
@@ -173,9 +179,21 @@ fn git_common_dir(worktree: &Path) -> Option<PathBuf> {
     if meta.is_dir() {
         return None;
     }
-    // Linked worktree: `.git` is a file `gitdir: <path>`.
-    let content = std::fs::read_to_string(&dot_git).ok()?;
-    let raw = content.lines().find_map(|l| l.strip_prefix("gitdir:"))?;
+    // Linked worktree: `.git` is a file `gitdir: <path>`. The worktree is
+    // untrusted (a child turn may have rewritten it), so read at most the
+    // bound and refuse anything larger instead of allocating it in the parent.
+    let mut content = String::new();
+    std::io::Read::read_to_string(
+        &mut std::io::Read::take(std::fs::File::open(&dot_git).ok()?, GIT_FILE_MAX_BYTES + 1),
+        &mut content,
+    )
+    .ok()?;
+    if content.len() as u64 > GIT_FILE_MAX_BYTES {
+        return None;
+    }
+    let raw = content
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("gitdir:"))?;
     let mut gitdir = PathBuf::from(raw.trim());
     if gitdir.is_relative() {
         gitdir = worktree.join(gitdir);
@@ -325,6 +343,24 @@ mod tests {
     use super::*;
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn git_common_dir_bounds_and_tolerates_the_dot_git_file() {
+        let wt = TempDir::new().unwrap();
+        // Leading whitespace before `gitdir:` is tolerated.
+        std::fs::write(
+            wt.path().join(".git"),
+            "  gitdir: /repo/.git/worktrees/wt\n",
+        )
+        .unwrap();
+        assert_eq!(git_common_dir(wt.path()), Some(PathBuf::from("/repo/.git")));
+        // An oversized `.git` (hostile worktree) is refused, not read whole.
+        let mut big = String::from("gitdir: /repo/.git/worktrees/wt\n");
+        big.push_str(&"x".repeat(GIT_FILE_MAX_BYTES as usize));
+        std::fs::write(wt.path().join(".git"), big).unwrap();
+        assert_eq!(git_common_dir(wt.path()), None);
+    }
 
     #[test]
     fn parse_numstat_sums_files_and_lines() {

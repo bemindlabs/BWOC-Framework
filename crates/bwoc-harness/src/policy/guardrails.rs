@@ -234,13 +234,52 @@ fn check_destruction_argv(tokens: &[&str], worktree_root: &Path) -> Result<(), G
     }
 
     // ── Windows destructive commands (#31) ───────────────────────────────────
-    // The guardrail matches the command string, so this protects any host that
-    // runs an agent emitting a Windows shell command — WS7 enabled `bwoc-harness`
-    // on Windows, where `rm -rf` doesn't apply but `del /s`, `rmdir /s`, `format`,
-    // and `Remove-Item -Recurse -Force` do. Windows commands are case-insensitive.
+    check_windows_destructive(tokens, worktree_root)
+}
+
+/// Windows destructive commands (#31). The guardrail matches the command
+/// string, so this protects any host that runs an agent emitting a Windows
+/// shell command — WS7 enabled `bwoc-harness` on Windows, where `rm -rf`
+/// doesn't apply but `del /s`, `rmdir /s`, `format`, and `Remove-Item -Recurse
+/// -Force` do. Windows commands are case-insensitive, and the binary may be
+/// path-qualified (`C:\Windows\System32\format.com`). A PowerShell host
+/// (`powershell` / `pwsh`) is looked through: its script is scanned for a
+/// `Remove-Item` (or one of its aliases) and checked as one.
+fn check_windows_destructive(
+    tokens: &[&str],
+    worktree_root: &Path,
+) -> Result<(), GuardrailViolation> {
+    let Some(binary) = tokens.first() else {
+        return Ok(());
+    };
+    let bin_lc = windows_bin_name(binary);
+    if matches!(bin_lc.as_str(), "powershell" | "pwsh") {
+        // `-Command`/`-c` scripts may arrive as one quoted token: re-split and
+        // drop quote characters so the verb and its arguments are visible.
+        let script: Vec<String> = tokens[1..]
+            .iter()
+            .flat_map(|t| t.split_whitespace())
+            .map(|t| {
+                t.trim_matches(|c| c == '"' || c == '\'' || c == ';')
+                    .to_string()
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        let verb = script.iter().position(|t| {
+            matches!(
+                t.to_ascii_lowercase().as_str(),
+                "remove-item" | "ri" | "rm" | "del" | "erase" | "rd" | "rmdir"
+            )
+        });
+        if let Some(i) = verb {
+            let mut inner: Vec<&str> = vec!["remove-item"];
+            inner.extend(script[i + 1..].iter().map(String::as_str));
+            return check_windows_destructive(&inner, worktree_root);
+        }
+        return Ok(());
+    }
     {
-        let bin_lc = binary.to_ascii_lowercase();
-        let bin_lc = bin_lc.strip_suffix(".exe").unwrap_or(&bin_lc);
+        let bin_lc = bin_lc.as_str();
         let toks_lc: Vec<String> = tokens.iter().map(|t| t.to_ascii_lowercase()).collect();
         let has_slash_s = toks_lc.iter().any(|t| t == "/s");
         // Windows flags start with `/`, PowerShell params with `-`; the rest are paths.
@@ -285,6 +324,24 @@ fn check_destruction_argv(tokens: &[&str], worktree_root: &Path) -> Result<(), G
     }
 
     Ok(())
+}
+
+/// Lower-cased basename of a Windows command token, without a `.exe` / `.com`
+/// suffix — `C:\Windows\System32\format.com` → `format`. Splits on both `\`
+/// and `/` so a path-qualified binary cannot slip past the name match.
+fn windows_bin_name(binary: &str) -> String {
+    let base = binary
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(binary)
+        .to_ascii_lowercase();
+    match base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".com"))
+    {
+        Some(stem) => stem.to_string(),
+        None => base,
+    }
 }
 
 /// Sīla 2 — Adinnādāna: block writing content that contains patterns
@@ -656,22 +713,30 @@ fn is_dangerous_root(path: &Path, worktree_root: &Path) -> bool {
 
 /// `true` if `raw` looks like a protected root for a Windows destructive command:
 /// a drive root (`C:`, `C:\`, `C:/`), a filesystem root (`/`, `\`), the cwd
-/// (`.`), or the worktree root. Pure string check — no fs I/O.
+/// (`.`), or the worktree root — including dot-segment spellings of them
+/// (`C:\..`, `C:\.`, `\..`, `sub\..`). Pure string check — no fs I/O.
 fn is_windows_root_like(raw: &str, worktree_root: &Path) -> bool {
-    let p = raw.trim_matches('"');
-    if matches!(p, "/" | "\\" | "." | "./" | ".\\") {
-        return true;
-    }
+    // Both separators are equivalent on Windows; normalise to `/`.
+    let p = raw.trim_matches('"').replace('\\', "/");
     let b = p.as_bytes();
-    // Drive root: `C:`, `C:\`, `C:/`
-    if b.len() >= 2
-        && b[0].is_ascii_alphabetic()
-        && b[1] == b':'
-        && (p.len() == 2 || (p.len() == 3 && matches!(b[2], b'\\' | b'/')))
-    {
-        return true;
+    let has_drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    let rest = if has_drive { &p[2..] } else { p.as_str() };
+    // A drive root (`C:`) or an absolute path (`C:/…`, `/…`): collapse `.` and
+    // `..` lexically; anything that lands on the root is the root.
+    if (has_drive && rest.is_empty()) || rest.starts_with('/') {
+        let mut depth = 0usize;
+        for seg in rest.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => depth = depth.saturating_sub(1),
+                _ => depth += 1,
+            }
+        }
+        if depth == 0 {
+            return true;
+        }
     }
-    let resolved = resolve_target(p, worktree_root);
+    let resolved = resolve_target(&p, worktree_root);
     is_dangerous_root(&resolved, worktree_root)
 }
 
@@ -959,6 +1024,41 @@ mod tests {
     fn allows_win_del_single_file_no_recursive() {
         let cmd = r#"{"command": "del old.txt"}"#;
         assert!(check("run_command", cmd, &wt()).is_ok());
+    }
+
+    #[test]
+    fn blocks_path_qualified_win_binaries() {
+        for cmd in [
+            r#"{"command": "C:\\Windows\\System32\\format.com C: /q"}"#,
+            r#"{"command": "C:/Windows/System32/FORMAT.EXE C:"}"#,
+        ] {
+            assert!(check("run_command", cmd, &wt()).is_err(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn blocks_remove_item_through_a_powershell_host() {
+        for cmd in [
+            r#"{"command": "powershell -Command Remove-Item -Recurse -Force C:"}"#,
+            r#"{"command": "pwsh -NoProfile -c 'Remove-Item -Recurse -Force C:/'"}"#,
+            r#"{"command": "powershell.exe -Command \"rm -Recurse -Force C:/\""}"#,
+        ] {
+            assert!(check("run_command", cmd, &wt()).is_err(), "{cmd}");
+        }
+        // A scoped delete through PowerShell stays allowed.
+        let ok = r#"{"command": "pwsh -c 'Remove-Item -Recurse -Force build'"}"#;
+        assert!(check("run_command", ok, &wt()).is_ok());
+    }
+
+    #[test]
+    fn win_root_check_sees_through_dot_segments() {
+        let w = wt();
+        for raw in ["C:\\..", "C:\\.", "C:/sub/..", "\\..", "/..", "sub\\.."] {
+            assert!(is_windows_root_like(raw, &w), "{raw}");
+        }
+        for raw in ["C:\\Users", "build\\out", "C:/sub/../x"] {
+            assert!(!is_windows_root_like(raw, &w), "{raw}");
+        }
     }
 
     #[test]

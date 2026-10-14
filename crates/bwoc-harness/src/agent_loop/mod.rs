@@ -198,7 +198,8 @@ pub struct LoopConfig {
     /// the loop detect pressure per-model and switch to a larger-context
     /// model rather than compacting.
     ///
-    /// `0` values are treated as "no limit" (same as absent).
+    /// `0` values are treated as absent: the provider-queried limit, then
+    /// `context_limit`, applies.
     ///
     /// # Example
     /// ```text
@@ -411,6 +412,9 @@ pub async fn run_loop(
         // if a legacy checkpoint defaults this to `false`, the per-turn scan of
         // the replayed `history` below re-latches if the taint is still present.
         session_trust = SessionTrust::from_latched(state.untrusted_seen);
+        // Continue the per-run budget (HV2-6) rather than resetting it — a
+        // resume must not grant a fresh allowance.
+        total_tokens = state.total_tokens;
     }
 
     loop {
@@ -422,8 +426,14 @@ pub async fn run_loop(
         // ── Provider limit cache — query once per model ───────────────────────
         // If this model has not been seen yet this session, ask the provider
         // for its context-window size.  Failures are stored as `None` so we
-        // don't retry on every turn.
-        if !provider_limit_cache.contains_key(active_model.as_str()) {
+        // don't retry on every turn.  Skipped when a static
+        // `model_context_limits` entry exists: it always wins, so the network
+        // call would be wasted (and may be blocked or slow).
+        let has_static_limit = config
+            .model_context_limits
+            .get(active_model.as_str())
+            .is_some_and(|&n| n > 0);
+        if !has_static_limit && !provider_limit_cache.contains_key(active_model.as_str()) {
             let queried = provider.model_context_limit(&active_model).await;
             provider_limit_cache.insert(active_model.clone(), queried);
         }
@@ -461,11 +471,15 @@ pub async fn run_loop(
                     active_model = larger_model;
                     token_pressure_switches += 1;
                     this_turn_pressure_switch = 1;
-                    // Continue to the compaction check; if the new model also
-                    // has a limit configured and we're already over it (edge
-                    // case: model limits very close together), compaction will
-                    // fire on the next iteration.  For the common case the new
-                    // model has plenty of headroom and we skip compaction.
+                    // The malformed-call streak belongs to the previous model;
+                    // carrying it over would let one bad reply from the new
+                    // model trip the error-based fallback.
+                    consecutive_malformed = 0;
+                    // Continue to the compaction check just below (same
+                    // iteration); if the new model also has a limit configured
+                    // and we're already over it (edge case: model limits very
+                    // close together), compaction fires there.  For the common
+                    // case the new model has plenty of headroom and we skip it.
                 }
                 // If no qualifying model was found we fall through to the
                 // standard compaction path below.
@@ -491,7 +505,7 @@ pub async fn run_loop(
                     // Unified context engine (HV3-2): summarize-first with a
                     // truncate fallback — and what falls out of the window is
                     // mined into Tier 2 memory when configured.
-                    let outcome = crate::compact::compact_context(
+                    let (outcome, spent) = crate::compact::compact_context_with_usage(
                         provider.as_ref(),
                         &active_model,
                         threshold as usize,
@@ -499,6 +513,9 @@ pub async fn run_loop(
                         &ctx.workdir,
                     )
                     .await;
+                    // The summarizer call is paid spend: count it toward the
+                    // budget gate checked after this turn's call (HV2-6).
+                    total_tokens += spent;
                     if outcome.removed() > 0 {
                         compactions += 1;
                     }
@@ -531,12 +548,20 @@ pub async fn run_loop(
             tb.tokens_in = usage.prompt_tokens;
             tb.tokens_out = usage.completion_tokens;
             total_tokens += u64::from(usage.prompt_tokens) + u64::from(usage.completion_tokens);
-        } else if !config.budget.is_unlimited() && !budget_usage_warned {
-            eprintln!(
-                "[bwoc-harness] WARNING: a budget is configured but the provider returned no \
-                 usage data — the budget gate cannot account for spend and will not trip."
-            );
-            budget_usage_warned = true;
+        } else if !config.budget.is_unlimited() {
+            // No provider usage: fall back to the same chars/4 heuristic the
+            // compaction trigger uses (prompt = the history sent, completion =
+            // the reply), so a configured budget still trips instead of
+            // silently never firing.
+            total_tokens += u64::from(estimate_context_tokens(&history))
+                + u64::from(estimate_context_tokens(std::slice::from_ref(&completion)));
+            if !budget_usage_warned {
+                eprintln!(
+                    "[bwoc-harness] WARNING: a budget is configured but the provider returned \
+                     no usage data — enforcing the budget against a heuristic token estimate."
+                );
+                budget_usage_warned = true;
+            }
         }
 
         // ── Budget hard gate (HV2-6) ─────────────────────────────────────────
@@ -557,6 +582,7 @@ pub async fn run_loop(
                     &active_model,
                     &ctx.workdir,
                     session_trust.latched(),
+                    total_tokens,
                 );
                 return Err(e);
             }
@@ -628,6 +654,7 @@ pub async fn run_loop(
                     &active_model,
                     &ctx.workdir,
                     session_trust.latched(),
+                    total_tokens,
                 );
                 continue;
             }
@@ -740,6 +767,7 @@ pub async fn run_loop(
             &active_model,
             &ctx.workdir,
             session_trust.latched(),
+            total_tokens,
         );
         // Continue to next turn.
     }
@@ -763,6 +791,7 @@ fn persist_checkpoint(
     active_model: &str,
     workdir: &std::path::Path,
     untrusted_seen: bool,
+    total_tokens: u64,
 ) {
     let Some(cfg) = checkpoint else { return };
     let state = RunState {
@@ -777,6 +806,7 @@ fn persist_checkpoint(
         workdir: std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf()),
         // Phase 5 t2 — persist the monotonic trust latch across reload.
         untrusted_seen,
+        total_tokens,
     };
     if let Err(e) = cfg.save(&state) {
         eprintln!("[bwoc-harness] warning: checkpoint save failed: {e}");
@@ -2139,7 +2169,7 @@ mod tests {
         );
     }
 
-    /// (d) Larger model exists but fails the vetted gate → does NOT switch
+    /// (e) Larger model exists but fails the vetted gate → does NOT switch
     ///     (falls through to compaction instead).
     #[tokio::test]
     async fn token_pressure_unvetted_candidate_does_not_switch() {
@@ -2407,6 +2437,7 @@ mod tests {
             active_model: "mock".to_string(),
             workdir: std::path::PathBuf::new(), // empty → resume guard skipped
             untrusted_seen: false,
+            total_tokens: 0,
         };
         let ckpt = CheckpointConfig {
             run_id: "resume-1".to_string(),
@@ -2469,6 +2500,7 @@ mod tests {
             // A different worktree than `ctx` → must be refused.
             workdir: tmp.path().join("some-other-worktree"),
             untrusted_seen: false,
+            total_tokens: 0,
         };
         let mut config = test_config(20);
         config.checkpoint = Some(CheckpointConfig {
@@ -2787,5 +2819,181 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.final_response, "done");
+    }
+    #[tokio::test]
+    async fn token_budget_enforced_by_estimate_when_provider_omits_usage() {
+        // A provider that never reports usage must not make a configured budget
+        // inert: the heuristic estimate (chars / 4) still trips the gate.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(MockProvider::new(vec![make_final_response(
+            &"y".repeat(400),
+        )]));
+        let mut config = test_config(5);
+        config.budget = crate::budget::BudgetConfig {
+            max_tokens: Some(50), // the ~100-token reply alone exceeds it
+            ..Default::default()
+        };
+        let err = run_loop(
+            provider,
+            Arc::new(default_registry()),
+            ToolContext::new(tmp.path()),
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("go")],
+            &mut noop_telemetry(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, HarnessError::BudgetExceeded { kind: "token", .. }),
+            "expected token BudgetExceeded, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_continues_the_token_budget() {
+        // 95 tokens were spent before the checkpoint; this turn's 13 must be
+        // added to them, not to a fresh zero, so the 100-token budget trips.
+        let tmp = TempDir::new().unwrap();
+        let state = RunState {
+            run_id: "resume-budget".to_string(),
+            task: "t".to_string(),
+            history: vec![ChatMessage::system("s"), ChatMessage::user("go")],
+            turns: 1,
+            compactions: 0,
+            token_pressure_switches: 0,
+            active_model: "mock".to_string(),
+            workdir: std::path::PathBuf::new(),
+            untrusted_seen: false,
+            total_tokens: 95,
+        };
+        let mut config = test_config(5);
+        config.checkpoint = Some(CheckpointConfig {
+            run_id: "resume-budget".to_string(),
+            root: tmp.path().join("runs"),
+            resume: Some(state),
+        });
+        config.budget = crate::budget::BudgetConfig {
+            max_tokens: Some(100),
+            ..Default::default()
+        };
+        let provider = Arc::new(MockProvider::new(vec![make_final_response_with_usage(
+            "done", 8, 5,
+        )]));
+        let err = run_loop(
+            provider,
+            Arc::new(default_registry()),
+            ToolContext::new(tmp.path()),
+            config,
+            "sys".to_string(),
+            Vec::new(),
+            &mut noop_telemetry(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, HarnessError::BudgetExceeded { kind: "token", .. }),
+            "expected token BudgetExceeded after resume, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctx_limit_static_entry_skips_provider_query() {
+        // A static `model_context_limits` entry always wins, so the provider's
+        // context-limit endpoint must not be called for that model at all.
+        let tmp = TempDir::new().unwrap();
+        let provider = Arc::new(LimitedMockProvider::new(
+            vec![make_final_response("done")],
+            Some(16_384),
+        ));
+        let mut config = test_config(5);
+        config
+            .model_context_limits
+            .insert("mock".to_string(), 32_768u32);
+        run_loop(
+            provider.clone(),
+            Arc::new(default_registry()),
+            ToolContext::new(tmp.path()),
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("go")],
+            &mut noop_telemetry(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(provider.query_count(), 0);
+    }
+
+    #[test]
+    fn context_estimate_counts_tool_call_arguments() {
+        let call = ToolCall {
+            id: "c".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "write_file".to_string(),
+                arguments: "a".repeat(4_000),
+            },
+        };
+        let history = vec![ChatMessage::assistant(None, Some(vec![call]))];
+        assert!(
+            estimate_context_tokens(&history) >= 1_000,
+            "tool-call JSON is sent to the provider and must count"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_pressure_switch_resets_malformed_streak() {
+        // Turn 1 on small-model: one malformed call (streak 1) whose large
+        // arguments push the history over small-model's limit. Turn 2 switches
+        // to large-model under token pressure; its first malformed reply must
+        // start a new streak (1), not complete the old one (2 → fallback →
+        // AllModelsExhausted, as no fallback model is configured).
+        let tmp = TempDir::new().unwrap();
+        let malformed = || {
+            let call = ToolCall {
+                id: String::new(),
+                kind: "function".to_string(),
+                function: FunctionCall {
+                    name: "read_file".to_string(),
+                    arguments: "x".repeat(600),
+                },
+            };
+            ChatCompletion {
+                id: "mock-id".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: ChatMessage::assistant(None, Some(vec![call])),
+                    finish_reason: Some(FinishReason::ToolCalls),
+                }],
+                usage: None,
+            }
+        };
+        let provider = Arc::new(MockProvider::new(vec![
+            malformed(),
+            malformed(),
+            make_final_response("done"),
+        ]));
+        let mut limits = std::collections::HashMap::new();
+        limits.insert("small-model".to_string(), 100u32);
+        limits.insert("large-model".to_string(), 32_768u32);
+        let config = LoopConfig {
+            model: "small-model".to_string(),
+            token_pressure_models: vec!["large-model".to_string()],
+            model_context_limits: limits,
+            ..test_config(10)
+        };
+        let result = run_loop(
+            provider,
+            Arc::new(default_registry()),
+            ToolContext::new(tmp.path()),
+            config,
+            "sys".to_string(),
+            vec![ChatMessage::user("go")],
+            &mut noop_telemetry(),
+        )
+        .await
+        .expect("the new model's first malformed reply must not trip the fallback");
+        assert_eq!(result.active_model, "large-model");
+        assert_eq!(result.token_pressure_switches, 1);
     }
 }

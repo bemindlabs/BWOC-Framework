@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - **`bwoc sessions` no longer deletes every live marker on Windows**, where there is no liveness probe.
 - **`bwoc fleet health`**: a missing agent directory is reported, not counted as fresh; huge `--stale-days` no longer overflows; an unset `git user.name` is ℹ instead of a warning naming every author; refusal counts match the dashboard.
 - **`bwoc chat --team`** rejects a team id that is not a single path segment; **`bwoc outbox flush`** refuses a spooled envelope missing `to`/`from`/`messageId`.
+- **bwoc-harness:** the per-run token/cost budget survives `--resume`, counts compaction's summarizer call, and is enforced against a heuristic estimate when the provider omits `usage` (it previously never tripped).
+- **bwoc-harness:** streaming completions on the OpenAI-compatible client are no longer cut after 120s while data keeps flowing (the stream is bounded per read; blocking calls stay bounded end to end).
+- **bwoc-harness:** MCP stdio servers and timed-out deep-memory commands are killed instead of orphaned; `--mcp` command lines honour quotes.
+- **bwoc-harness:** Windows destructive-command guardrail catches path-qualified binaries, `powershell`/`pwsh -Command Remove-Item …`, and dot-segment root spellings (`C:\..`).
 
 ## [v2026.10.14-0] — 2026-10-14 — 3.17.0
 

@@ -487,12 +487,19 @@ pub fn harden_child_fds(keep_max: i32) -> std::io::Result<()> {
             && (st.st_mode as u32 & libc::S_IFMT as u32) == libc::S_IFSOCK as u32
         {
             // SAFETY: open/dup2/close act on our own descriptors only.
+            // Fail closed: if stdio cannot be re-pointed, the socket would stay
+            // held, so abort the spawn rather than run with it.
             let nul = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
-            if nul >= 0 {
-                unsafe { libc::dup2(nul, i) };
-                if nul > 2 {
-                    unsafe { libc::close(nul) };
-                }
+            if nul < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if nul != i && unsafe { libc::dup2(nul, i) } < 0 {
+                let err = std::io::Error::last_os_error();
+                unsafe { libc::close(nul) };
+                return Err(err);
+            }
+            if nul > 2 {
+                unsafe { libc::close(nul) };
             }
         }
         i += 1;

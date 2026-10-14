@@ -77,14 +77,16 @@ impl OsSandbox for NoopOsSandbox {}
 
 /// Linux landlock sandbox.
 ///
-/// In `apply`, registers a `pre_exec` hook that installs a landlock ruleset
-/// restricting filesystem **writes** to `worktree_root`.  Reads remain
-/// unrestricted so tools that inspect files outside the worktree (e.g. `cat`,
-/// `ls`) continue to work.
+/// In `apply`, builds a landlock ruleset restricting filesystem **writes** to
+/// `worktree_root` (in the parent) and registers a `pre_exec` hook that only
+/// enforces it on the child (`restrict_self`).  Reads remain unrestricted so
+/// tools that inspect files outside the worktree (e.g. `cat`, `ls`) continue
+/// to work.
 ///
-/// Degrades gracefully: if the running kernel does not support landlock (older
-/// than 5.13, or CONFIG_SECURITY_LANDLOCK not set), `apply` logs a warning and
-/// does nothing — the worktree+allowlist layer still protects the host.
+/// Degrades gracefully: if the ruleset cannot be built, `apply` logs a warning
+/// and does nothing; on a kernel without landlock (older than 5.13, or
+/// CONFIG_SECURITY_LANDLOCK not set) the crate's best-effort mode makes
+/// enforcement a no-op — the worktree+allowlist layer still protects the host.
 #[cfg(target_os = "linux")]
 pub struct LandlockSandbox {
     worktree_root: std::path::PathBuf,
@@ -107,52 +109,50 @@ impl OsSandbox for LandlockSandbox {
             RulesetCreatedAttr,
         };
 
-        // Probe whether this kernel supports landlock before committing.
-        // `Ruleset::new()` creates the ruleset; if the kernel is too old it
-        // returns an error and we fall back to noop.
+        // Build the whole ruleset HERE, in the parent: `pre_exec` runs after
+        // `fork()` in a multi-threaded process, where allocation and library
+        // code can deadlock. The kernel-facing `create()` also happens here, so
+        // a failure degrades to a warning instead of failing the spawn.
+        // Restrict all write-family operations; read + exec stay unrestricted
+        // so tools can inspect files anywhere. Write is allowed beneath the
+        // worktree root (recursive).
         let abi = LandlockABI::V1;
-        // We probe by attempting to create a ruleset.  If the kernel rejects
-        // it we warn and skip rather than hard-failing.
-        if let Err(e) = Ruleset::default().handle_access(AccessFs::from_write(abi)) {
-            // Kernel does not support landlock or config disabled.
-            eprintln!(
-                "[bwoc-harness] WARNING: landlock unavailable ({e}); \
-                 falling back to worktree-allowlist sandbox only."
-            );
-            return;
-        }
-
-        let worktree = self.worktree_root.clone();
+        let built = (|| -> Result<_, String> {
+            let path_fd =
+                PathFd::new(&self.worktree_root).map_err(|e| format!("open worktree: {e}"))?;
+            Ruleset::default()
+                .handle_access(AccessFs::from_write(abi))
+                .map_err(|e| e.to_string())?
+                .create()
+                .map_err(|e| e.to_string())?
+                .add_rule(PathBeneath::new(path_fd, AccessFs::from_write(abi)))
+                .map_err(|e| e.to_string())
+        })();
+        let ruleset = match built {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "[bwoc-harness] WARNING: landlock unavailable ({e}); \
+                     falling back to worktree-allowlist sandbox only."
+                );
+                return;
+            }
+        };
+        let mut slot = Some(ruleset);
 
         // SAFETY: pre_exec runs after fork, before exec, in the child process.
-        // It must be async-signal-safe.  The landlock crate's API is designed
-        // for exactly this use case.
+        // The body is only `restrict_self` (prctl + landlock_restrict_self
+        // syscalls) on the parent-built ruleset — no allocation on the success
+        // path, and the error path maps to a bare errno.
         unsafe {
-            cmd.pre_exec(move || {
-                // Build the ruleset: restrict all write-family operations.
-                // Read + exec operations are left unrestricted so tools can
-                // inspect files anywhere.
-                let abi = LandlockABI::V1;
-                let ruleset = Ruleset::default()
-                    .handle_access(AccessFs::from_write(abi))
-                    .map_err(|e| std::io::Error::other(format!("landlock: {e}")))?
-                    .create()
-                    .map_err(|e| std::io::Error::other(format!("landlock: {e}")))?;
-
-                // Allow write access to the worktree root (recursive).
-                let path_fd = PathFd::new(&worktree)
-                    .map_err(|e| std::io::Error::other(format!("landlock: open worktree: {e}")))?;
-                let rule = PathBeneath::new(path_fd, AccessFs::from_write(abi));
-
-                let restricted = ruleset
-                    .add_rule(rule)
-                    .map_err(|e| std::io::Error::other(format!("landlock: {e}")))?;
-
-                // Restrict: all write ops outside the worktree are now denied.
-                restricted
+            cmd.pre_exec(move || match slot.take() {
+                Some(ruleset) => ruleset
                     .restrict_self()
-                    .map_err(|e| std::io::Error::other(format!("landlock restrict_self: {e}")))
                     .map(|_| ())
+                    .map_err(|_| std::io::Error::from_raw_os_error(libc::EPERM)),
+                // The ruleset is single-use: a second spawn of this command
+                // would run unconfined, so refuse it (fail closed).
+                None => Err(std::io::Error::from_raw_os_error(libc::EPERM)),
             });
         }
     }
@@ -164,11 +164,11 @@ impl OsSandbox for LandlockSandbox {
 
 /// macOS `sandbox-exec` sandbox.
 ///
-/// In `apply`, registers a `pre_exec` hook that replaces the child process
-/// image (via `execvp`) with:
+/// In `apply`, rewrites the command in place (via `as_std_mut()`, no
+/// `pre_exec`) so the child is launched as:
 ///
 /// ```text
-/// sandbox-exec -p <profile> <original-program> <original-args...>
+/// sandbox-exec -p <profile> sh -c <original-command>
 /// ```
 ///
 /// The SBPL profile allows all reads, allows all writes **inside** the
@@ -543,7 +543,16 @@ pub fn scan_args(cmd: &str) -> Result<(), ArgScanViolation> {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(t);
-                matches!(bin, "sh" | "bash" | "zsh" | "fish" | "ksh" | "dash")
+                // Windows shells too (the harness runs `cmd /C` there); case-
+                // insensitive, with an optional `.exe`, matched on the last
+                // `/` or `\` component so `C:\...\pwsh.exe` counts.
+                let bin = bin.rsplit(['/', '\\']).next().unwrap_or(bin);
+                let bin = bin.to_ascii_lowercase();
+                let bin = bin.strip_suffix(".exe").unwrap_or(&bin);
+                matches!(
+                    bin,
+                    "sh" | "bash" | "zsh" | "fish" | "ksh" | "dash" | "powershell" | "pwsh" | "cmd"
+                )
             } else {
                 false
             }
@@ -1400,9 +1409,9 @@ mod tests {
 
     // ── Linux landlock ───────────────────────────────────────────────────────
 
-    /// Smoke test: `LandlockSandbox::new` constructs without panic.
-    /// The `apply` is exercised (it either installs landlock or degrades to
-    /// noop with a warning).  Full write-blocking is verified on Linux CI.
+    /// A write outside the worktree must be blocked wherever the kernel runs
+    /// the landlock LSM; on a kernel without it the test is skipped (graceful
+    /// degrade — `confine_path` remains the primary layer).
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn landlock_write_outside_worktree_blocked_or_skipped() {
@@ -1418,22 +1427,35 @@ mod tests {
 
         let result = run_sandboxed(&write_outside, worktree.path(), &sandbox).await;
 
-        // If landlock is active, write should fail (non-zero exit or harness error).
-        // If landlock is not supported (older kernel), the command may succeed —
-        // we log a warning but do NOT hard-fail (graceful degrade).
-        // The test passes in either case: security is provided by `confine_path`
-        // regardless; landlock is defence-in-depth only.
-        match result {
-            Ok(out) => {
-                // Either blocked (non-zero) or degraded gracefully (zero, outside
-                // file was written).  Either is acceptable here; CI will catch the
-                // landlock-blocked case on a kernel that supports it.
-                let _ = out;
-            }
-            Err(_) => {
-                // Also acceptable — harness blocked it.
-            }
+        // The active-LSM list says whether landlock can enforce here.
+        let landlock_active = std::fs::read_to_string("/sys/kernel/security/lsm")
+            .map(|l| l.split(',').any(|m| m.trim() == "landlock"))
+            .unwrap_or(false);
+        if !landlock_active {
+            eprintln!("skipping: landlock is not an active LSM on this kernel");
+            return;
         }
+        let blocked = match result {
+            Err(_) => true,
+            Ok(out) => out.exit_code != 0,
+        };
+        assert!(
+            blocked,
+            "landlock is active but the outside write was not denied"
+        );
+        assert!(
+            !outside_file.exists(),
+            "landlock is active but the outside file was written"
+        );
+
+        // And a write inside the worktree still works.
+        let inside_file = worktree.path().join("inside.txt");
+        let write_inside = format!("echo ok > {}", inside_file.to_string_lossy());
+        let inside = run_sandboxed(&write_inside, worktree.path(), &sandbox)
+            .await
+            .unwrap();
+        assert_eq!(inside.exit_code, 0);
+        assert!(inside_file.exists());
     }
 
     /// Test that `LandlockSandbox::apply` does not panic and mutates the

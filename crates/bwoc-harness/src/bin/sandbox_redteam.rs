@@ -148,8 +148,20 @@ fn kill_arm<F: FnOnce() -> i32>(f: F) -> serde_json::Value {
         return serde_json::json!({ "blocked": false, "detail": "fork() failed" });
     }
     let mut status: libc::c_int = 0;
-    // SAFETY: waitpid only writes `status`.
-    unsafe { libc::waitpid(pid, &mut status, 0) };
+    // SAFETY: waitpid only writes `status`. Retry on EINTR; any other failure
+    // leaves `status` meaningless, so report it loudly rather than decode it.
+    loop {
+        if unsafe { libc::waitpid(pid, &mut status, 0) } == pid {
+            break;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return serde_json::json!({
+                "blocked": false,
+                "detail": format!("waitpid failed: {err} — arm verdict unknown")
+            });
+        }
+    }
     if libc::WIFSIGNALED(status) {
         let sig = libc::WTERMSIG(status);
         return serde_json::json!({
