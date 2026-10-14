@@ -222,13 +222,17 @@ pub fn run(args: TuiArgs) -> i32 {
         None => {
             let manifest =
                 Manifest::load_from_path(&args.agent_path.join("config.manifest.json")).ok();
-            (
-                manifest.as_ref().map(|m| m.primary_model.clone()),
-                manifest
-                    .as_ref()
-                    .and_then(|m| m.base_url.clone())
-                    .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string()),
-            )
+            let endpoint = match agent_endpoint(
+                &backend_name,
+                manifest.as_ref().and_then(|m| m.base_url.clone()),
+            ) {
+                Ok(e) => e,
+                Err(msg) => {
+                    eprintln!("{label}: {msg}");
+                    return 2;
+                }
+            };
+            (manifest.as_ref().map(|m| m.primary_model.clone()), endpoint)
         }
     };
 
@@ -362,6 +366,22 @@ pub fn run(args: TuiArgs) -> i32 {
             eprintln!("bwoc chat --tui: {e}");
             1
         }
+    }
+}
+
+/// Endpoint for an agent session from the manifest's `baseUrl`. Falls back to
+/// [`DEFAULT_ENDPOINT`] (which the harness treats as "use the backend's own
+/// default"), except for `openai-compatible`, which has no default endpoint and
+/// requires `baseUrl` — the same rule `bwoc spawn` / `bwoc run` enforce, so the
+/// TUI never silently talks to a local Ollama instead.
+fn agent_endpoint(backend: &str, base_url: Option<String>) -> Result<String, String> {
+    match base_url {
+        Some(url) => Ok(url),
+        None if backend == "openai-compatible" => Err(
+            "backend `openai-compatible` requires a `\"baseUrl\"` field in config.manifest.json"
+                .to_string(),
+        ),
+        None => Ok(DEFAULT_ENDPOINT.to_string()),
     }
 }
 
@@ -3716,9 +3736,27 @@ mod tests {
             .position(|a| a == "--team-chat")
             .expect("flag present");
         assert_eq!(
+            i + 2,
+            argv.len(),
+            "--team-chat <path> must be the last pair"
+        );
+        assert_eq!(
             argv.get(i + 1).map(String::as_str),
             Some("/ws/.bwoc/teams/squad/chat.jsonl")
         );
+    }
+
+    #[test]
+    fn agent_endpoint_requires_base_url_for_openai_compatible() {
+        assert!(agent_endpoint("openai-compatible", None).is_err());
+        assert_eq!(
+            agent_endpoint("openai-compatible", Some("https://api.example/v1".into())).unwrap(),
+            "https://api.example/v1"
+        );
+        // Backends with their own default keep the harness-default sentinel.
+        for b in ["ollama", "openrouter", "litellm", "anthropic"] {
+            assert_eq!(agent_endpoint(b, None).unwrap(), DEFAULT_ENDPOINT);
+        }
     }
 
     #[test]

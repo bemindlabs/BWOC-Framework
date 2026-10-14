@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # auto-version.sh — PostToolUse Write|Edit hook
 #
-# On every Claude Code Write|Edit:
+# On a Claude Code Write|Edit made on the `main` branch (every other branch,
+# a detached HEAD, or a git-less checkout exits early — see the guard below):
 # - If the edited file is *.rs / *.toml under a crate or Cargo workspace,
 #   bump [workspace.package].version in Cargo.toml,
 #   and mirror it into VERSION.md's Software-Version line.
 # - If the edited file is *.md (anywhere except the auto-managed files
 #   themselves), bump VERSION.md's Document-Version line.
-# - Always update VERSION.md's Last-Updated stamp to current UTC ISO 8601.
+# - Update VERSION.md's Last-Updated stamp to current UTC ISO 8601.
 #
 # Bump level — patch by default. To queue a MINOR or MAJOR bump for the
 # NEXT hook fire of a given domain, write a sentinel file:

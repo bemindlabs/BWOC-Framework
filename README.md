@@ -296,7 +296,7 @@ C4Container
         Container(harness, "bwoc-harness", "Rust", "Sandboxed run loop (landlock / sandbox-exec); durable checkpoints; Saṅgha subprocess workers")
         Container(signing, "bwoc-signing", "Rust lib", "ed25519 keygen / sign / verify over RFC 8785 (JCS) canonical bytes")
         Container(core, "bwoc-core", "Rust lib", "Shared types: manifest, workspace, identity (dep-quarantined / lean)")
-        ContainerDb(fs, "Workspace state", "Local filesystem (.bwoc/)", "workspace.toml · agents.toml · inbox.jsonl · inbox.refusals.jsonl · teams/ · agent.key · config.manifest.json")
+        ContainerDb(fs, "Workspace + agent state", "Local filesystem", "workspace .bwoc/: workspace.toml · agents.toml · teams/ — per agent: config.manifest.json · .bwoc/inbox.jsonl · .bwoc/inbox.refusals.jsonl · .bwoc/agent.key")
     }
 
     Rel(operator, cli, "runs commands")
@@ -307,14 +307,15 @@ C4Container
     Rel(agent, fs, "reads inbox · logs refusals")
     Rel(agent, signing, "verifies envelope signature")
     Rel(agent, harness, "runs the agent's tasks")
-    Rel(harness, llm, "drives as a subprocess")
+    Rel(cli, llm, "execs a vendor CLI (bwoc spawn / chat)")
+    Rel(harness, llm, "HTTP API (ollama · openai-compatible · openrouter · litellm · anthropic); vendor CLI subprocess for backend cli")
     Rel(harness, fs, "tool writes confined to the worktree")
 ```
 
 Inter-agent messages are **signed envelopes** appended to the recipient's
-`inbox.jsonl`; the daemon's trust gate verifies the sender's signature (and the
-Kalyāṇamitta-7 quality check) before delivery, logging rejects to
-`inbox.refusals.jsonl`. See [`SIGNING.en.md`](docs/en/SIGNING.en.md).
+`<agent>/.bwoc/inbox.jsonl`; the daemon's trust gate verifies the sender's
+signature (and the Kalyāṇamitta-7 quality check) before delivery, logging
+rejects to `<agent>/.bwoc/inbox.refusals.jsonl`. See [`SIGNING.en.md`](docs/en/SIGNING.en.md).
 
 ---
 

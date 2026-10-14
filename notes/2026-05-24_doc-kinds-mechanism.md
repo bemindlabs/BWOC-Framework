@@ -1,6 +1,6 @@
 # 2026-05-24 — Generic Workspace Document-Kind Mechanism (#12)
 
-Implements the generic document-kind mechanism for BWOC workspaces, subsuming epics #10 (notes CLI) and #11 (retro CLI). One registry + one engine covers all three built-in kinds (`notes`, `retrospectives`, `research`) and is designed to accept workspace-declared custom kinds in a future iteration.
+Implements the generic document-kind mechanism for BWOC workspaces, subsuming epics #10 (retro CLI) and #11 (research CLI). One registry + one engine covers all three built-in kinds (`notes`, `retrospectives`, `research`) and is designed to accept workspace-declared custom kinds in a future iteration.
 
 ## What changed
 

@@ -59,29 +59,31 @@ impl AgentCard {
     }
 
     /// Whether the card declares an HTTP **Bearer** auth requirement: a
-    /// non-empty `security` list plus at least one `securitySchemes` entry of
+    /// `security` requirement that names a `securitySchemes` entry of
     /// `{type:"http", scheme:"bearer"}` (scheme matched case-insensitively).
-    /// The outbound client (AP5) uses this to present a bearer credential only
-    /// to a peer that asked for one — never leaking the token otherwise.
+    /// A bearer scheme that is declared but not referenced by any `security`
+    /// requirement does not count. The outbound client (AP5) uses this to
+    /// present a bearer credential only to a peer that asked for one — never
+    /// leaking the token otherwise.
     pub fn requires_bearer(&self) -> bool {
-        let has_requirement = self
-            .security
+        let Some(schemes) = self.security_schemes.as_ref().and_then(|s| s.as_object()) else {
+            return false;
+        };
+        let is_bearer = |name: &str| {
+            schemes.get(name).is_some_and(|v| {
+                v.get("type").and_then(serde_json::Value::as_str) == Some("http")
+                    && v.get("scheme")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|s| s.eq_ignore_ascii_case("bearer"))
+            })
+        };
+        self.security
             .as_ref()
             .and_then(|s| s.as_array())
-            .is_some_and(|a| !a.is_empty());
-        if !has_requirement {
-            return false;
-        }
-        self.security_schemes
-            .as_ref()
-            .and_then(|s| s.as_object())
-            .is_some_and(|schemes| {
-                schemes.values().any(|v| {
-                    v.get("type").and_then(serde_json::Value::as_str) == Some("http")
-                        && v.get("scheme")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|s| s.eq_ignore_ascii_case("bearer"))
-                })
+            .is_some_and(|reqs| {
+                reqs.iter()
+                    .filter_map(serde_json::Value::as_object)
+                    .any(|req| req.keys().any(|name| is_bearer(name)))
             })
     }
 }
@@ -366,5 +368,17 @@ mod tests {
         }));
         upper.security = Some(serde_json::json!([{ "b": [] }]));
         assert!(upper.requires_bearer());
+        // A bearer scheme that is declared but NOT referenced by `security`
+        // (the peer requires only apiKey) must not attract the bearer token.
+        let mut unreferenced = bare_card();
+        unreferenced.security_schemes = Some(serde_json::json!({
+            "k": { "type": "apiKey", "in": "header", "name": "X-API-Key" },
+            "b": { "type": "http", "scheme": "bearer" }
+        }));
+        unreferenced.security = Some(serde_json::json!([{ "k": [] }]));
+        assert!(!unreferenced.requires_bearer());
+        // ...but it counts once a requirement names it (alternatives list).
+        unreferenced.security = Some(serde_json::json!([{ "k": [] }, { "b": [] }]));
+        assert!(unreferenced.requires_bearer());
     }
 }
