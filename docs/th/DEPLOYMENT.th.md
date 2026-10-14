@@ -1,6 +1,6 @@
 ---
 title: Deployment
-parent: ไทย
+parent: ภาษาไทย
 nav_order: 16
 ---
 

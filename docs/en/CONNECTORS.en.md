@@ -214,6 +214,6 @@ turn end. This is automatic — a transport advertises `supports_edit`.
 
 ## Related
 
-- [[PLUGINS]] — framework plugins (a different extension axis)
-- [[HARNESS]] — the `bwoc-harness --chat` session each connector drives
+- [[PLUGINS.en.md]] — framework plugins (a different extension axis)
+- [[HARNESS.en.md]] — the `bwoc-harness --chat` session each connector drives
 - `notes/2026-06-07_connect-subsystem-complete.md` and the per-platform notes
