@@ -8,14 +8,18 @@
 //! `<workspace>/.bwoc/sessions/<agentId>.json`.  This module reads every
 //! `*.json` marker and validates pid liveness via `libc::kill(pid, 0)`.
 //!
-//! - Alive pid → `running`, source `marker`
+//! - Alive pid → `working` / `idle` / `running` per the activity rules below,
+//!   source `marker`
 //! - Dead pid  → `stale`, source `marker`; best-effort deletion of stale file
+//!
+//! Off Unix there is no liveness probe: every marker is treated as alive
+//! (never `stale`, never deleted) rather than wrongly reaped.
 //!
 //! ## Scan fallback (heuristic)
 //!
 //! For sessions without a live marker the module shells out (via a
 //! `ScanRunner` trait seam, mirroring `run.rs`'s `CommandRunner`) to
-//! `pgrep -l <name>` / `pgrep <name>` and looks for processes matching
+//! `pgrep -x <name>` (exact process-name match) and looks for processes matching
 //! backend CLI program names.  The scan result is heuristic: no agentId
 //! can be inferred from process names alone, so those entries appear with
 //! `agentId: null`.
@@ -233,7 +237,9 @@ impl SessionMarker {
         let v: serde_json::Value = serde_json::from_str(s).ok()?;
         let agent_id = v.get("agentId")?.as_str()?.to_string();
         let backend = v.get("backend")?.as_str()?.to_string();
-        let pid = v.get("pid")?.as_u64()? as u32;
+        // Checked: a tampered/corrupt pid > u32::MAX must not truncate into
+        // some other live process's pid.
+        let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
         let started_at = v.get("startedAt")?.as_str()?.to_string();
         let tmux = v
             .get("tmux")
@@ -312,7 +318,8 @@ impl ScanRunner for ProcessScanRunner {
 
 /// True iff the process with `pid` is alive and signal-reachable.
 /// Uses `libc::kill(pid, 0)` — the standard Unix liveness probe.
-/// Always false on non-Unix (no `sysinfo`/`procfs` needed).
+/// Always true on non-Unix: with no probe, liveness is unknown, and assuming
+/// dead would mark every marker `stale` and delete it.
 #[cfg(unix)]
 fn pid_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) has no side effects — probe only.
@@ -321,7 +328,7 @@ fn pid_alive(pid: u32) -> bool {
 
 #[cfg(not(unix))]
 fn pid_alive(_pid: u32) -> bool {
-    false
+    true
 }
 
 // ── Wall-clock helper (std-only, no chrono) ───────────────────────────────────
@@ -930,9 +937,9 @@ mod tests {
         };
         write_marker(root, &marker);
 
-        // idle_secs=0 → any mtime ≥ now means working; but since no tmux and
-        // the marker was just written, mtime ~= now → could be working.
-        // Use idle_secs=0 to verify alive (not stale); state may be working or idle.
+        // No tmux, so activity comes from the marker mtime (just written).
+        // idle_secs=60 only matters for working-vs-idle; the point here is
+        // alive (not stale).
         let runner = MockScanRunner::empty();
         let sessions = collect_sessions(root, &runner, 60);
 
@@ -946,6 +953,8 @@ mod tests {
     }
 
     /// (b) Marker with bogus dead pid → listed as `stale/marker`.
+    // Needs a liveness probe to tell a dead pid apart — unix-only.
+    #[cfg(unix)]
     #[test]
     fn stale_marker_dead_pid() {
         let dir = make_workspace();
@@ -1124,6 +1133,34 @@ mod tests {
         assert!(SessionMarker::from_json("{}").is_none()); // missing required fields
     }
 
+    #[test]
+    fn from_json_rejects_pid_beyond_u32() {
+        // 2^32 + 1 would truncate to pid 1 (init) with an `as u32` cast.
+        let json = r#"{"agentId":"agent-x","backend":"claude","pid":4294967297,"startedAt":"2026-05-24T10:00:00Z","tmux":null}"#;
+        assert!(SessionMarker::from_json(json).is_none());
+    }
+
+    /// Off Unix there is no liveness probe; a marker must survive a scan
+    /// instead of being classified stale and deleted.
+    #[cfg(not(unix))]
+    #[test]
+    fn marker_is_kept_without_liveness_probe() {
+        let dir = make_workspace();
+        let root = dir.path();
+        let marker = SessionMarker {
+            agent_id: "agent-test".to_string(),
+            backend: "claude".to_string(),
+            pid: 4_000_000,
+            started_at: "2026-05-24T10:00:00Z".to_string(),
+            tmux: None,
+        };
+        write_marker(root, &marker);
+        let sessions = collect_sessions(root, &MockScanRunner::empty(), 60);
+        assert_eq!(sessions.len(), 1);
+        assert_ne!(sessions[0].state, SessionState::Stale);
+        assert!(root.join(".bwoc/sessions/agent-test.json").exists());
+    }
+
     // ── v2 activity tests ─────────────────────────────────────────────────────
 
     /// tmux session with activity within idle-secs → `working`.
@@ -1203,6 +1240,8 @@ mod tests {
     }
 
     /// Dead pid → `stale`, regardless of idle_secs. (v1 regression guard.)
+    // Needs a liveness probe to tell a dead pid apart — unix-only.
+    #[cfg(unix)]
     #[test]
     fn dead_pid_is_stale_v2() {
         let dir = make_workspace();

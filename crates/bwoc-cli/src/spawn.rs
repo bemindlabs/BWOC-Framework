@@ -423,6 +423,11 @@ pub enum SpawnError {
          (e.g. \"https://api.openai.com/v1\"); none found in {0}"
     )]
     MissingBaseUrl(PathBuf),
+    /// `config.manifest.json` exists but could not be read or parsed — kept
+    /// apart from [`SpawnError::MissingBaseUrl`] so a broken manifest is not
+    /// misreported as a missing field (or silently ignored).
+    #[error("cannot use {path}: {reason}")]
+    InvalidManifest { path: PathBuf, reason: String },
     /// `bwoc spawn` attaches an interactive backend session, which needs a
     /// TTY on stdin. Surfaced before exec so the user gets an actionable
     /// message instead of a cryptic vendor-CLI failure.
@@ -446,7 +451,8 @@ pub fn run(args: SpawnArgs) -> i32 {
             | SpawnError::BackendNotFound { .. }
             | SpawnError::HarnessNotFound
             | SpawnError::NotInteractive
-            | SpawnError::MissingBaseUrl(_)),
+            | SpawnError::MissingBaseUrl(_)
+            | SpawnError::InvalidManifest { .. }),
         ) => {
             eprintln!("bwoc spawn: {e}");
             2
@@ -465,6 +471,33 @@ pub fn run(args: SpawnArgs) -> i32 {
 /// passes `io::stdin().is_terminal()` and the env-var presence).
 fn spawn_blocked_by_no_tty(stdin_is_tty: bool, override_set: bool) -> bool {
     !stdin_is_tty && !override_set
+}
+
+/// The `baseUrl` a harness backend forwards as `--endpoint`. Pure (no exec) so
+/// the config contract is testable without launching `bwoc-harness`.
+///
+/// - A manifest file that exists but failed to load → `InvalidManifest`
+///   (never mistaken for "no baseUrl", never silently skipped).
+/// - `requires_base_url` (openai-compatible) with no `baseUrl` → `MissingBaseUrl`.
+fn harness_base_url(
+    manifest: Option<&Manifest>,
+    load_error: Option<&str>,
+    manifest_path: &Path,
+    requires_base_url: bool,
+) -> Result<Option<String>, SpawnError> {
+    if let Some(reason) = load_error {
+        if manifest_path.exists() {
+            return Err(SpawnError::InvalidManifest {
+                path: manifest_path.to_path_buf(),
+                reason: reason.to_string(),
+            });
+        }
+    }
+    let base_url = manifest.and_then(|m| m.base_url.clone());
+    if requires_base_url && base_url.is_none() {
+        return Err(SpawnError::MissingBaseUrl(manifest_path.to_path_buf()));
+    }
+    Ok(base_url)
 }
 
 pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
@@ -502,20 +535,24 @@ pub fn spawn(args: SpawnArgs) -> Result<i32, SpawnError> {
     // Load the manifest once (best-effort) — used for harness `--endpoint` /
     // `--model` forwarding and vendor `reasoningEffort` passthrough.
     let manifest_path = path.join("config.manifest.json");
-    let manifest = Manifest::load_from_path(&manifest_path).ok();
+    let (manifest, manifest_error) = match Manifest::load_from_path(&manifest_path) {
+        Ok(m) => (Some(m), None),
+        Err(e) => (None, Some(e.to_string())),
+    };
 
     let mut cmd = if args.backend.uses_harness() {
         // Read baseUrl *before* locating the harness binary so a missing-baseUrl
         // error is reported before a harness-not-found error. This ordering
         // matters for `openai-compatible` where baseUrl is required; a clear
         // config error should take priority over a binary lookup error.
-        let base_url: Option<String> = manifest.as_ref().and_then(|m| m.base_url.clone());
-
         // For OpenAiCompatible, enforce that baseUrl is present before we
         // bother finding (or failing to find) the harness binary.
-        if args.backend == Backend::OpenAiCompatible && base_url.is_none() {
-            return Err(SpawnError::MissingBaseUrl(manifest_path));
-        }
+        let base_url = harness_base_url(
+            manifest.as_ref(),
+            manifest_error.as_deref(),
+            &manifest_path,
+            args.backend == Backend::OpenAiCompatible,
+        )?;
 
         let harness = Backend::harness_binary().ok_or(SpawnError::HarnessNotFound)?;
         let mut c = Command::new(&harness);
@@ -997,22 +1034,13 @@ mod tests {
         );
     }
 
-    /// `openai-compatible` spawn with `baseUrl` present would proceed to exec
-    /// bwoc-harness; we can only verify it fails with HarnessNotFound (since
-    /// the binary doesn't exist in a unit test context where CARGO_BIN_EXE
-    /// isn't set).  The key assertion: it must NOT return MissingBaseUrl.
+    /// A present `baseUrl` is forwarded and does not trip `MissingBaseUrl`.
+    /// Tested on the pure helper — calling `spawn()` here could find a real
+    /// `bwoc-harness` on PATH and launch it.
     #[test]
-    fn openai_compatible_with_base_url_attempts_harness() {
-        use std::fs;
-        use tempfile::TempDir;
-
-        let tmp = TempDir::new().unwrap();
-        let agent_dir = tmp.path().join("agent-openai");
-        fs::create_dir_all(&agent_dir).unwrap();
-
-        fs::write(agent_dir.join("AGENTS.md"), "# Agent").unwrap();
-
-        let manifest_json = r#"{
+    fn openai_compatible_with_base_url_is_forwarded() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{
             "name": "test", "agentId": "agent-openai", "agentRole": "x",
             "primaryModel": "gpt-4o", "memoryPath": "memories/",
             "lintCmd": "true", "formatCmd": "true",
@@ -1020,24 +1048,52 @@ mod tests {
             "version": "2.0",
             "backend": "openai-compatible",
             "baseUrl": "https://api.openai.com/v1"
-        }"#;
-        fs::write(agent_dir.join("config.manifest.json"), manifest_json).unwrap();
+        }"#,
+        )
+        .unwrap();
+        let path = Path::new("config.manifest.json");
+        let url = harness_base_url(Some(&manifest), None, path, true).unwrap();
+        assert_eq!(url.as_deref(), Some("https://api.openai.com/v1"));
+        // Not required (ollama etc.) and absent → None, not an error.
+        assert_eq!(harness_base_url(None, None, path, false).unwrap(), None);
+    }
 
-        let args = SpawnArgs {
-            path: Some(agent_dir),
+    /// A manifest that exists but does not parse is reported as such — not as
+    /// `MissingBaseUrl`, and not silently skipped for optional-baseUrl backends.
+    #[test]
+    fn invalid_manifest_is_not_reported_as_missing_base_url() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("agent-broken");
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::write(agent_dir.join("AGENTS.md"), "# Agent").unwrap();
+        fs::write(agent_dir.join("config.manifest.json"), "{ not json").unwrap();
+
+        // Errors before any harness lookup / exec, so this never launches anything.
+        let result = spawn(SpawnArgs {
+            path: Some(agent_dir.clone()),
             backend: Backend::OpenAiCompatible,
-            extra: vec!["-t".into(), "ping".into()],
+            extra: vec![],
             lang: "en".to_string(),
-        };
-
-        let result = spawn(args);
-        // MissingBaseUrl must NOT appear — we did provide baseUrl.
+        });
         assert!(
-            !matches!(result, Err(SpawnError::MissingBaseUrl(_))),
-            "baseUrl was provided; must not get MissingBaseUrl"
+            matches!(result, Err(SpawnError::InvalidManifest { .. })),
+            "expected InvalidManifest, got: {result:?}"
         );
-        // Without the harness binary available, we expect HarnessNotFound or
-        // a non-zero exit (binary launched or not found).  Either way, not MissingBaseUrl.
+
+        let path = agent_dir.join("config.manifest.json");
+        assert!(matches!(
+            harness_base_url(None, Some("bad json"), &path, false),
+            Err(SpawnError::InvalidManifest { .. })
+        ));
+        // No manifest file at all → not an InvalidManifest.
+        let absent = agent_dir.join("nope.json");
+        assert!(matches!(
+            harness_base_url(None, Some("not found"), &absent, true),
+            Err(SpawnError::MissingBaseUrl(_))
+        ));
     }
 
     #[test]

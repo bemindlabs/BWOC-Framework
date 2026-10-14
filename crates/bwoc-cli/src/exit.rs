@@ -16,7 +16,7 @@
 //! | `0`   | [`OK`]             | Success. |
 //! | `1`   | [`ERROR`]          | The command itself errored (I/O, parse, network, internal-but-recoverable). "The tool broke." |
 //! | `2`   | [`USAGE`]          | Bad invocation, or a required workspace / agent / target was **not found**. |
-//! | `3`   | [`FINDINGS`]       | The command ran fine but the **answer is negative**: `check`/`validate` violations, `council` not-resolved, an `audit` with failures. "The tool worked; the result is 'no'." |
+//! | `3`   | [`FINDINGS`]       | The command ran fine but the **answer is negative**: `check`/`validate` violations, `council` not-resolved. "The tool worked; the result is 'no'." (`audit run` encodes its fail count instead — see `254`.) |
 //! | `4`   | [`NO_PLUGIN`]      | A required plugin is not installed / not discoverable. |
 //! | `254` | [`FAIL_COUNT_MAX`] | Ceiling for `audit run`, which additionally encodes its fail **count** (`1..=254`) in the exit code — the one deliberate exception to the table (see `audit.rs`). |
 //! | `255` | [`INTERNAL`]       | Framework/internal error the caller cannot act on (broker failure, invariant break). |
@@ -36,8 +36,9 @@ pub const ERROR: i32 = 1;
 pub const USAGE: i32 = 2;
 
 /// The command ran but the answer is negative: `check`/`validate` violations,
-/// `council` not-resolved, an `audit` with failures. Distinct from [`ERROR`]
-/// (the command worked; the result is "no").
+/// `council` not-resolved. Distinct from [`ERROR`] (the command worked; the
+/// result is "no"). `audit run` does not use it — it encodes its fail count
+/// (see [`FAIL_COUNT_MAX`]).
 pub const FINDINGS: i32 = 3;
 
 /// A required plugin is not installed / not discoverable.

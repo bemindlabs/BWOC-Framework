@@ -38,9 +38,10 @@ pub struct ChatArgs {
     /// backends only; falls back to the default exec path otherwise.
     pub tui: bool,
     /// Join a team's shared chat channel (HV3-3a): teammate replies are
-    /// injected into context and this agent's replies broadcast back. Requires
-    /// `--tui` with a harness backend (ollama / openai-compatible / openrouter);
-    /// ignored otherwise. The agent must be a member of the team.
+    /// injected into context and this agent's replies broadcast back. The team
+    /// must exist and the agent must be a member (otherwise the command fails).
+    /// Only harness backends can broadcast; any other backend warns and runs
+    /// the session solo.
     pub team: Option<String>,
     /// Open the multi-agent **fleet** TUI (left sidebar of every agent, `Tab`
     /// to switch, one live session per agent) instead of a single-agent chat.

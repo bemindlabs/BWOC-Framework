@@ -45,8 +45,22 @@ pub fn run(kind: DocKind, action: DocAction, workspace_root: &Path) -> i32 {
 // ---------------------------------------------------------------------------
 
 fn cmd_new(kind: DocKind, title: String, root: &Path) -> i32 {
+    cmd_new_dated(kind, title, root, &date_prefix())
+}
+
+/// [`cmd_new`] with the `YYYY-MM-DD` prefix supplied by the caller, so tests
+/// are not at the mercy of the UTC date rolling over mid-test.
+fn cmd_new_dated(kind: DocKind, title: String, root: &Path, date: &str) -> i32 {
     let slug = slugify(&title);
-    let date = date_prefix();
+    // The note audit requires `YYYY-MM-DD_<[a-z0-9-]+>.md`; a title with no
+    // ASCII letters/digits would produce `YYYY-MM-DD_.md`.
+    if slug.is_empty() {
+        eprintln!(
+            "bwoc {}: title {title:?} has no ASCII letters or digits to build a filename slug from",
+            kind.name
+        );
+        return 1;
+    }
     let filename = format!("{date}_{slug}.md");
 
     let dir = root.join(kind.dir.trim_end_matches('/'));
@@ -132,7 +146,30 @@ fn cmd_view(kind: DocKind, name: String, root: &Path) -> i32 {
     let dir = root.join(kind.dir.trim_end_matches('/'));
 
     // Resolve: try exact filename first, then prefix match.
-    let path = resolve_name(&dir, &name);
+    let path = match resolve_name(&dir, &name) {
+        Ok(p) => p,
+        Err(Resolve::Invalid) => {
+            eprintln!(
+                "bwoc {}: {name:?} is not a plain document name (no path separators or `..`)",
+                kind.name
+            );
+            return 1;
+        }
+        Err(Resolve::Ambiguous(candidates)) => {
+            eprintln!(
+                "bwoc {}: {name:?} matches more than one document — be more specific:",
+                kind.name
+            );
+            for c in candidates {
+                eprintln!("  {c}");
+            }
+            return 1;
+        }
+        Err(Resolve::Io(e)) => {
+            eprintln!("bwoc {}: could not read {}: {e}", kind.name, dir.display());
+            return 2;
+        }
+    };
     match path {
         Some(p) => match fs::read_to_string(&p) {
             Ok(content) => {
@@ -281,13 +318,14 @@ fn date_prefix() -> String {
 }
 
 /// Turn a human title into a lowercase-hyphen slug suitable for filenames.
-/// Collapses runs of non-alphanumeric characters into single hyphens and
-/// strips leading/trailing hyphens.
+/// Keeps only ASCII letters/digits (the note-naming audit's `[a-z0-9-]+`),
+/// collapses every other run of characters into a single hyphen and strips
+/// leading/trailing hyphens. May return an empty string.
 fn slugify(title: &str) -> String {
     let mut slug = String::with_capacity(title.len());
     let mut prev_hyphen = false;
     for ch in title.chars() {
-        if ch.is_alphanumeric() {
+        if ch.is_ascii_alphanumeric() {
             slug.push(ch.to_ascii_lowercase());
             prev_hyphen = false;
         } else if !prev_hyphen && !slug.is_empty() {
@@ -314,30 +352,51 @@ pub(crate) fn collect_md_files(dir: &Path) -> Result<Vec<String>, std::io::Error
     Ok(out)
 }
 
+/// Why [`resolve_name`] could not pick a single document.
+#[derive(Debug)]
+enum Resolve {
+    /// `name` is not a plain filename stem (separator, `..`, absolute path).
+    Invalid,
+    /// A prefix lookup matched several documents (sorted filenames).
+    Ambiguous(Vec<String>),
+    /// The kind directory could not be listed.
+    Io(std::io::Error),
+}
+
 /// Try to find a file in `dir` matching `name`:
 /// 1. Exact filename match (with or without `.md` extension).
-/// 2. Any file whose name starts with `name` (date-prefix lookup).
-fn resolve_name(dir: &Path, name: &str) -> Option<PathBuf> {
+/// 2. The single file whose name starts with `name` (date-prefix lookup);
+///    several matches are an ambiguity error, not an arbitrary pick.
+///
+/// `Ok(None)` = nothing matches. `name` must be a plain stem so the lookup can
+/// never escape `dir`.
+fn resolve_name(dir: &Path, name: &str) -> Result<Option<PathBuf>, Resolve> {
     // Normalise: strip trailing ".md" so both "2026-05-24_foo" and
     // "2026-05-24_foo.md" work as lookup keys.
     let stem = name.strip_suffix(".md").unwrap_or(name);
+    if stem.is_empty() || stem.contains(['/', '\\']) || stem.contains("..") {
+        return Err(Resolve::Invalid);
+    }
 
     let exact_md = dir.join(format!("{stem}.md"));
-    if exact_md.exists() {
-        return Some(exact_md);
+    if exact_md.is_file() {
+        return Ok(Some(exact_md));
+    }
+    if !dir.exists() {
+        return Ok(None);
     }
 
-    // Prefix scan — pick the first lexicographic match.
-    if let Ok(mut candidates) = collect_md_files(dir) {
-        candidates.sort();
-        for candidate in candidates {
-            let cand_stem = candidate.strip_suffix(".md").unwrap_or(&candidate);
-            if cand_stem.starts_with(stem) {
-                return Some(dir.join(candidate));
-            }
-        }
+    let mut matches: Vec<String> = collect_md_files(dir)
+        .map_err(Resolve::Io)?
+        .into_iter()
+        .filter(|c| c.strip_suffix(".md").unwrap_or(c).starts_with(stem))
+        .collect();
+    matches.sort();
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(Some(dir.join(&matches[0]))),
+        _ => Err(Resolve::Ambiguous(matches)),
     }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -434,25 +493,58 @@ mod tests {
         let dir = tmp();
         let k = kind("notes").unwrap();
 
-        // Create file once.
-        let code1 = run(
-            k.clone(),
-            DocAction::New {
-                title: "same title".into(),
-            },
-            dir.path(),
-        );
+        // Create file once. A fixed date keeps both calls on the same filename
+        // even if the test straddles UTC midnight.
+        let code1 = cmd_new_dated(k.clone(), "same title".into(), dir.path(), "2026-05-24");
         assert_eq!(code1, 0);
 
         // Attempt to create again with the same date → same filename → should fail.
-        let code2 = run(
-            k,
-            DocAction::New {
-                title: "same title".into(),
-            },
-            dir.path(),
-        );
+        let code2 = cmd_new_dated(k, "same title".into(), dir.path(), "2026-05-24");
         assert_eq!(code2, 1, "expected clobber protection to return exit 1");
+    }
+
+    #[test]
+    fn new_rejects_title_without_ascii_slug() {
+        let dir = tmp();
+        let k = kind("notes").unwrap();
+        for title in ["!!!", "   ", "บันทึก"] {
+            let code = cmd_new_dated(k.clone(), title.into(), dir.path(), "2026-05-24");
+            assert_eq!(code, 1, "title {title:?} must be refused");
+        }
+        assert!(!dir.path().join("notes/2026-05-24_.md").exists());
+    }
+
+    #[test]
+    fn resolve_name_rejects_traversal() {
+        let dir = tmp();
+        fs::write(dir.path().join("secret.md"), "x").unwrap();
+        let docs = dir.path().join("notes");
+        fs::create_dir_all(&docs).unwrap();
+        for bad in ["../secret", "../secret.md", "a/b", "..", ""] {
+            assert!(
+                matches!(resolve_name(&docs, bad), Err(Resolve::Invalid)),
+                "{bad:?} must be refused"
+            );
+        }
+        let abs = dir.path().join("secret").display().to_string();
+        assert!(matches!(resolve_name(&docs, &abs), Err(Resolve::Invalid)));
+    }
+
+    #[test]
+    fn resolve_name_reports_ambiguous_prefix() {
+        let dir = tmp();
+        fs::write(dir.path().join("2026-05-24_alpha.md"), "a").unwrap();
+        fs::write(dir.path().join("2026-05-24_beta.md"), "b").unwrap();
+        match resolve_name(dir.path(), "2026-05-24") {
+            Err(Resolve::Ambiguous(c)) => {
+                assert_eq!(c, vec!["2026-05-24_alpha.md", "2026-05-24_beta.md"])
+            }
+            other => panic!("expected ambiguity, got {other:?}"),
+        }
+        // A unique prefix still resolves.
+        let p = resolve_name(dir.path(), "2026-05-24_b").unwrap().unwrap();
+        assert!(p.ends_with("2026-05-24_beta.md"));
+        assert!(resolve_name(dir.path(), "2027").unwrap().is_none());
     }
 
     #[test]
@@ -635,6 +727,8 @@ mod tests {
         assert_eq!(slugify("My First Note!"), "my-first-note");
         assert_eq!(slugify("  spaces  "), "spaces");
         assert_eq!(slugify("A--B"), "a-b");
+        assert_eq!(slugify("Café notes"), "caf-notes");
+        assert_eq!(slugify("?!"), "");
     }
 
     // ---- retro metrics prefill (Feature B) ---------------------------------
