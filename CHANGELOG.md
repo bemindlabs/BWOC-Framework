@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ## [Unreleased]
 
+## [v2026.10.14-1] — 2026-10-14 — 3.17.1
+
+**Fixes from a review of 531 old review comments.** Path checks for `peer learn`, `doc view`, team ids and custom doc kinds; harness budget, streaming and process-cleanup fixes; Windows guardrail and session-marker fixes. No behaviour changes beyond the fixes listed.
+
 ### Fixed
 
 - **`bwoc peer learn` no longer follows symlinks out of a shared kind directory**, resolves kinds against the peer's own registry (custom kinds), and skips a kind whose directory resolves outside the peer workspace. `bwoc peer view <key>` now works as an alias of `peer status`.
@@ -18,6 +22,10 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 - **bwoc-harness:** streaming completions on the OpenAI-compatible client are no longer cut after 120s while data keeps flowing (the stream is bounded per read; blocking calls stay bounded end to end).
 - **bwoc-harness:** MCP stdio servers and timed-out deep-memory commands are killed instead of orphaned; `--mcp` command lines honour quotes.
 - **bwoc-harness:** Windows destructive-command guardrail catches path-qualified binaries, `powershell`/`pwsh -Command Remove-Item …`, and dot-segment root spellings (`C:\..`).
+- **Custom doc kinds can no longer read or write outside the workspace.** A kind whose `dir` or `template_file` is absolute or uses `..` is skipped, as is one that sets both `template` and `template_file`.
+- **A2A sends a bearer token only to a peer whose `security` requirement asks for it**, not to every peer that merely lists a bearer scheme.
+- **The chat TUI stops with an error for an `openai-compatible` agent with no `baseUrl`**, as `spawn` and `run` already do, instead of silently connecting to a local Ollama.
+- **Docs:** six `docs/th` pages had the wrong nav parent and were missing from the Thai menu; the COMPATIBILITY exit-code table now says `audit run` encodes its fail count instead of using `3`.
 
 ## [v2026.10.14-0] — 2026-10-14 — 3.17.0
 

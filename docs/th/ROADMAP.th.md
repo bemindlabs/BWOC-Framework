@@ -276,7 +276,7 @@ Phase ที่ผลิต **3.0** — major release แรกที่เก�
 | 3.14.0 / 3.14.1 | `v2026.10.8-0` / `-1` | herdr แบบเลือกเปิด: `bwoc sessions` รายงาน agent ที่ `blocked`/`done`; `fleet term --backend herdr`; `bwoc doctor` ตรวจ LiteLLM ด้วย; 3.14.1 แก้ `fleet term --backend herdr` ให้ใช้กับ herdr 0.9.3 ได้ |
 | 3.15.0 | `v2026.10.11-0` | backend CLI ของผู้ขายเพิ่มอีก 11 ตัว (`pi`, `omp`, `devin`, `droid`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`) — ประกาศรวม 21 backend; `bwoc run` แบบ headless ใช้ได้กับ 5 ตัว |
 | 3.16.0 | `v2026.10.11-1` | `bwoc gates` ประเมิน verification gate ทั้งสี่ของ Padhana จาก manifest ของ agent (ค่าเริ่มต้นเป็น dry run, ใส่ `--run` เพื่อรันจริง); `AGENTS.md` ของ agent-template กระชับลงจาก 489 เหลือ 396 บรรทัด |
-| 3.17.0 | `v2026.10.14-0` | trust gate แบบ Kalyāṇamitta ของ daemon เปลี่ยนเป็น enforce (ปฏิเสธ) โดย default; ตั้ง `BWOC_TRUST_GATING=warn` เพื่อคงแบบเตือนอย่างเดียว |
+| 3.17.0 / 3.17.1 | `v2026.10.14-0` / `-1` | trust gate แบบ Kalyāṇamitta ของ daemon เปลี่ยนเป็น enforce (ปฏิเสธ) โดย default; ตั้ง `BWOC_TRUST_GATING=warn` เพื่อคงแบบเตือนอย่างเดียว |
 
 **ยังไม่ได้กำหนด phase ถัดไป** รายการใน *สิ่งที่ตั้งใจไม่เอาเข้า 3.0* ข้างบนคือผู้สมัครที่รู้อยู่แล้ว การเลือกเป็นการตัดสินใจของผู้ดูแล เอกสารนี้ไม่ตัดสินแทน
 
